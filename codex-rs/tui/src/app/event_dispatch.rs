@@ -1411,6 +1411,88 @@ impl App {
                 self.chat_widget
                     .add_token_activity_output(crate::chatwidget::TokenActivityView::Daily);
             }
+            AppEvent::OpenLocalUsage { query } => {
+                self.chat_widget.open_local_usage(query);
+            }
+            AppEvent::RefreshLocalUsage { request_id, query } => {
+                self.refresh_local_usage(app_server, request_id, query);
+            }
+            AppEvent::LocalUsageLoaded {
+                request_id,
+                query,
+                result,
+            } => {
+                self.chat_widget
+                    .finish_local_usage(request_id, query, result);
+            }
+            AppEvent::ShowLocalUsageToolDetail { tool, back } => {
+                self.chat_widget.show_local_usage_tool_detail(tool, back);
+            }
+            AppEvent::ShowLocalUsageActivityDetail { activity, back } => {
+                self.chat_widget
+                    .show_local_usage_activity_detail(activity, back);
+            }
+            AppEvent::ShowLocalUsageFactDetail {
+                title,
+                detail,
+                back,
+            } => {
+                self.chat_widget
+                    .show_local_usage_fact_detail(title, detail, back);
+            }
+            AppEvent::OpenAccountProfiles { request } => {
+                self.chat_widget.open_account_profiles_request(request);
+            }
+            AppEvent::RefreshAccountProfiles {
+                request_id,
+                request,
+            } => {
+                self.refresh_account_profiles(app_server, request_id, request);
+            }
+            AppEvent::AccountProfilesLoaded {
+                request_id,
+                request,
+                result,
+            } => {
+                self.chat_widget
+                    .finish_account_profiles_request(request_id, request, result);
+            }
+            AppEvent::ShowAccountProfileActions { profile } => {
+                self.chat_widget.show_account_actions(profile);
+            }
+            AppEvent::OpenAccountAliasPrompt { value, error } => {
+                self.chat_widget.show_account_alias_prompt(value, error);
+            }
+            AppEvent::OpenAccountLoginChoice { alias } => {
+                self.chat_widget.show_account_login_choice(alias);
+            }
+            AppEvent::OpenAccountAliasEditor {
+                profile,
+                value,
+                error,
+            } => {
+                self.chat_widget
+                    .show_account_alias_editor(profile, value, error);
+            }
+            AppEvent::OpenAccountPriorityEditor {
+                profile,
+                value,
+                error,
+            } => {
+                self.chat_widget
+                    .show_account_priority_editor(profile, value, error);
+            }
+            AppEvent::OpenAccountNoteEditor {
+                profile,
+                value,
+                error,
+            } => {
+                self.chat_widget
+                    .show_account_note_editor(profile, value, error);
+            }
+            AppEvent::OpenAccountRemoveConfirmation { profile } => {
+                self.chat_widget.show_account_remove_confirmation(profile);
+            }
             AppEvent::OpenRateLimitResetCredits => {
                 let request_id = self.chat_widget.show_rate_limit_reset_loading_popup();
                 self.refresh_rate_limits(

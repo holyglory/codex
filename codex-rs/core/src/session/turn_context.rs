@@ -14,6 +14,8 @@ use codex_core_plugins::ResolvedPluginMetricsOperation;
 use codex_core_plugins::TrustedPluginRoots;
 use codex_exec_server::ExecutorFileSystem;
 use codex_file_system::FileSystemSandboxContext;
+use codex_login::AccountLease;
+use codex_login::RouterExternalAuthState;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -209,6 +211,10 @@ pub struct TurnContext {
     pub(crate) initial_settings: Arc<ResolvedStepSettings>,
     /// Snapshot for the next step; request consumers use their captured StepContext.
     pub(super) current_settings: ArcSwap<ResolvedStepSettings>,
+    pub(crate) account_lease: Option<AccountLease>,
+    pub(crate) profile_auth_error: Option<String>,
+    /// Legacy turn model; step-scoped execution should use `StepContext::model_info`.
+    pub(crate) model_info: Arc<ModelInfo>,
     /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
@@ -239,12 +245,14 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
+    pub(crate) automatic_account_switch_occurred: Arc<AtomicBool>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
     /// Effective cyber treatment for this turn, including any child-agent inheritance.
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
 }
 
+#[derive(Clone, Copy)]
 enum TurnMultiAgentRuntime {
     ResolveAndStore,
     Preview,
@@ -289,6 +297,32 @@ impl TurnContext {
             .selected_collaboration_mode()
             .settings
             .developer_instructions
+    }
+
+    pub(crate) fn auth_lease(&self) -> Option<Arc<codex_login::AuthManagerLease>> {
+        if self.profile_auth_error.is_some() {
+            return None;
+        }
+        self.extension_data.get::<codex_login::AuthManagerLease>()
+    }
+
+    pub(crate) fn plugin_auth_cached(&self) -> Option<CodexAuth> {
+        if self.profile_auth_error.is_some() {
+            return None;
+        }
+        self.auth_manager
+            .as_ref()
+            .and_then(|auth_manager| auth_manager.auth_cached())
+    }
+
+    pub(crate) async fn plugin_auth(&self) -> Option<CodexAuth> {
+        if self.profile_auth_error.is_some() {
+            return None;
+        }
+        match &self.auth_manager {
+            Some(auth_manager) => auth_manager.auth().await,
+            None => None,
+        }
     }
 
     pub(crate) fn skills_snapshot(&self) -> Arc<HostSkillsSnapshot> {
@@ -502,7 +536,7 @@ impl TurnContext {
         );
         let step_settings = Arc::new(ResolvedStepSettings::new(
             Arc::new(selected),
-            model_info,
+            Arc::clone(&model_info),
             config.features.enabled(Feature::FastMode),
         ));
         config.service_tier = step_settings.service_tier.clone();
@@ -519,6 +553,9 @@ impl TurnContext {
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
             current_settings: ArcSwap::from(step_settings),
+            account_lease: self.account_lease.clone(),
+            profile_auth_error: self.profile_auth_error.clone(),
+            model_info: Arc::clone(&model_info),
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
@@ -543,6 +580,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             terminal_error: Arc::clone(&self.terminal_error),
+            automatic_account_switch_occurred: Arc::clone(&self.automatic_account_switch_occurred),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
             ),
@@ -711,6 +749,7 @@ impl Session {
         thread_id: ThreadId,
         session_id: SessionId,
         auth_manager: Option<Arc<AuthManager>>,
+        account_lease: Option<AccountLease>,
         session_telemetry: &SessionTelemetry,
         provider: SharedModelProvider,
         session_configuration: &SessionConfiguration,
@@ -727,7 +766,7 @@ impl Session {
         sub_id: String,
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
-        let model_info = &step_settings.model_info;
+        let model_info = Arc::clone(&step_settings.model_info);
         let session_telemetry_for_context = step_settings.telemetry(session_telemetry);
         let session_source = session_configuration.session_source.clone();
         let available_models = models_manager.try_list_models().unwrap_or_default();
@@ -746,7 +785,7 @@ impl Session {
         per_turn_config.token_budget = resolve_token_budget(
             configured_token_budget.as_ref(),
             use_model_token_budget_defaults,
-            model_info,
+            model_info.as_ref(),
         );
         if step_settings.reasoning_effort() == Some(&ReasoningEffort::Persistent) {
             super::time_reminder::apply_persistent_defaults(&mut per_turn_config);
@@ -773,13 +812,20 @@ impl Session {
             session_configuration.windows_sandbox_level,
             network.is_some(),
             auto_review_enabled,
-            model_info,
+            model_info.as_ref(),
         ));
         turn_metadata_state
             .set_responses_api_metadata(per_turn_config.responses_api_metadata.clone());
         let (current_date, timezone) = local_time_context();
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(skills_snapshot);
+        if let Some(auth_manager) = auth_manager.as_ref() {
+            let auth_lease = account_lease.clone().map_or_else(
+                || codex_login::AuthManagerLease::legacy(Arc::clone(auth_manager)),
+                codex_login::AuthManagerLease::profile,
+            );
+            extension_data.insert(auth_lease);
+        }
         TurnContext {
             sub_id,
             trace_id: current_span_trace_id(),
@@ -791,6 +837,9 @@ impl Session {
             auth_manager,
             initial_settings: Arc::clone(&step_settings),
             current_settings: ArcSwap::from(step_settings),
+            account_lease,
+            profile_auth_error: None,
+            model_info,
             session_telemetry: session_telemetry_for_context,
             provider,
             session_source,
@@ -815,6 +864,7 @@ impl Session {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            automatic_account_switch_occurred: Arc::new(AtomicBool::new(false)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
             cyber_access_program: None,
@@ -885,20 +935,23 @@ impl Session {
         session_configuration: SessionConfiguration,
         options: NewTurnContextOptions,
     ) -> Arc<TurnContext> {
+        let turn_environments = self.services.turn_environments.snapshot().await;
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
             options,
             TurnMultiAgentRuntime::ResolveAndStore,
             self.git_enrichment_policy,
+            turn_environments,
         )
         .await
     }
 
-    async fn new_startup_prewarm_turn_from_configuration(
+    pub(crate) async fn new_startup_prewarm_turn_from_configuration(
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
+        turn_environments: TurnEnvironmentSnapshot,
     ) -> Arc<TurnContext> {
         self.new_turn_context_from_configuration(
             sub_id,
@@ -906,6 +959,7 @@ impl Session {
             NewTurnContextOptions::default(),
             TurnMultiAgentRuntime::Preview,
             GitEnrichmentPolicy::Skip,
+            turn_environments,
         )
         .await
     }
@@ -918,8 +972,8 @@ impl Session {
         options: NewTurnContextOptions,
         multi_agent_runtime: TurnMultiAgentRuntime,
         git_enrichment_policy: GitEnrichmentPolicy,
+        turn_environments: TurnEnvironmentSnapshot,
     ) -> Arc<TurnContext> {
-        let turn_environments = self.services.turn_environments.snapshot().await;
         let primary_turn_environment = turn_environments.primary();
         // TODO(anp): Migrate per-turn config and legacy TurnContext cwd consumers to PathUri so
         // a foreign primary environment does not fall back to the session's host cwd.
@@ -928,6 +982,63 @@ impl Session {
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
         let per_turn_config = self.build_per_turn_config(&session_configuration, cwd.clone());
+        let (account_lease, profile_auth_error) = match &self.services.profile_auth_router {
+            Some(router) => {
+                let chatgpt_base_url = per_turn_config.chatgpt_base_url.clone();
+                let http_client_factory = per_turn_config.http_client_factory();
+                let external_auth = router_external_auth_state(&per_turn_config);
+                let probe = move |lease| {
+                    codex_backend_client::fetch_profile_rate_limits(
+                        lease,
+                        chatgpt_base_url.clone(),
+                        http_client_factory.clone(),
+                    )
+                };
+                let lease = match multi_agent_runtime {
+                    TurnMultiAgentRuntime::ResolveAndStore => {
+                        router
+                            .lease_for_turn_with_external_auth_and_probe(external_auth, probe)
+                            .await
+                    }
+                    TurnMultiAgentRuntime::Preview => {
+                        router
+                            .lease_for_startup_prewarm_with_external_auth_and_probe(
+                                external_auth,
+                                probe,
+                            )
+                            .await
+                    }
+                };
+                match lease {
+                    Ok(lease) => (lease, None),
+                    Err(error) => (None, Some(error.safe_message())),
+                }
+            }
+            None => (None, None),
+        };
+        let turn_auth_manager = account_lease
+            .as_ref()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+        let turn_auth = if profile_auth_error.is_none() {
+            turn_auth_manager.auth().await
+        } else {
+            None
+        };
+        let turn_models_manager = account_lease.as_ref().map_or_else(
+            || Arc::clone(&self.services.models_manager),
+            |lease| {
+                let mut model_config = per_turn_config.clone();
+                model_config.codex_home = per_turn_config
+                    .codex_home
+                    .join("accounts")
+                    .join(lease.account_id().as_str());
+                crate::thread_manager::build_models_manager(
+                    &model_config,
+                    Arc::clone(lease.auth_manager()),
+                )
+            },
+        );
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()
@@ -935,7 +1046,7 @@ impl Session {
         let model_info = session_configuration
             .step_settings
             .resolve_model_info(
-                self.services.models_manager.as_ref(),
+                turn_models_manager.as_ref(),
                 &session_configuration.model_info_overrides,
                 self.features.enabled(Feature::Personality),
             )
@@ -957,7 +1068,7 @@ impl Session {
         let plugin_outcome = self
             .services
             .plugins_manager
-            .plugins_for_config(&plugins_input)
+            .plugins_for_config_with_auth(&plugins_input, turn_auth.as_ref())
             .await;
         let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
             &plugin_outcome,
@@ -975,7 +1086,7 @@ impl Session {
             let plugin_skill_snapshots = self
                 .services
                 .plugins_manager
-                .plugin_skill_snapshots_for_config(&plugins_input);
+                .plugin_skill_snapshots_for_config_with_auth(&plugins_input, turn_auth.as_ref());
             let skills_input =
                 skills_load_input_from_config(&per_turn_config, effective_skill_roots)
                     .with_plugin_skill_snapshots(plugin_skill_snapshots);
@@ -991,10 +1102,19 @@ impl Session {
             Arc::new(model_info),
             self.features.enabled(Feature::FastMode),
         ));
+        if matches!(multi_agent_runtime, TurnMultiAgentRuntime::ResolveAndStore) {
+            self.refresh_hooks_for_turn(
+                &per_turn_config,
+                primary_turn_environment,
+                turn_auth.as_ref(),
+            )
+            .await;
+        }
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),
-            Some(Arc::clone(&self.services.auth_manager)),
+            Some(turn_auth_manager),
+            account_lease,
             &self.services.session_telemetry,
             session_configuration.provider.clone(),
             &session_configuration,
@@ -1004,7 +1124,7 @@ impl Session {
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             step_settings,
-            &self.services.models_manager,
+            &turn_models_manager,
             self.services
                 .network_proxy
                 .load_full()
@@ -1020,6 +1140,7 @@ impl Session {
             sub_id,
             skills_snapshot,
         );
+        turn_context.profile_auth_error = profile_auth_error;
         turn_context.code_mode_available = self.services.code_mode_service.is_available();
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
@@ -1097,17 +1218,42 @@ impl Session {
             .await
     }
 
-    pub(crate) async fn new_startup_prewarm_turn_with_sub_id(
-        &self,
-        sub_id: String,
-    ) -> Arc<TurnContext> {
-        let session_configuration = self.default_turn_configuration().await;
-        self.new_startup_prewarm_turn_from_configuration(sub_id, session_configuration)
-            .await
-    }
-
-    async fn default_turn_configuration(&self) -> SessionConfiguration {
+    pub(crate) async fn default_turn_configuration(&self) -> SessionConfiguration {
         let state = self.state.lock().await;
         state.session_configuration.clone()
+    }
+}
+
+pub(super) fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
+    let provider = &config.model_provider;
+    let is_auth_header = |name: &str| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "api-key" | "x-api-key" | "x-goog-api-key"
+        )
+    };
+    let direct_header = provider
+        .http_headers
+        .as_ref()
+        .is_some_and(|headers| headers.keys().any(|name| is_auth_header(name)));
+    let environment_header = provider.env_http_headers.as_ref().is_some_and(|headers| {
+        headers.iter().any(|(name, environment_variable)| {
+            is_auth_header(name)
+                && std::env::var_os(environment_variable).is_some_and(|value| !value.is_empty())
+        })
+    });
+    let environment_key = provider
+        .env_key
+        .as_ref()
+        .is_some_and(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    RouterExternalAuthState {
+        header_or_host: !provider.requires_openai_auth
+            || provider.experimental_bearer_token.is_some()
+            || provider.auth.is_some()
+            || provider.aws.is_some()
+            || direct_header
+            || environment_header
+            || environment_key,
+        ..Default::default()
     }
 }

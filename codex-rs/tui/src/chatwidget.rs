@@ -361,7 +361,10 @@ mod input_restore;
 mod input_submission;
 mod interrupts;
 use self::interrupts::InterruptManager;
+mod account_profiles;
 mod keymap_picker;
+mod local_usage;
+mod local_usage_report;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod misalignment_policy;
@@ -431,6 +434,15 @@ mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
 mod thread_usage;
+pub(crate) use self::account_profiles::AccountLoginChoice;
+#[cfg(test)]
+pub(crate) use self::account_profiles::AccountPostListAction;
+pub(crate) use self::account_profiles::AccountProfilesError;
+pub(crate) use self::account_profiles::AccountProfilesListData;
+pub(crate) use self::account_profiles::AccountProfilesRequest;
+pub(crate) use self::account_profiles::AccountProfilesResponse;
+pub(crate) use self::local_usage::LocalUsageQuery;
+pub(crate) use self::local_usage::LocalUsageResponse;
 pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tokens;
 pub(crate) use self::tokens::TokenActivityView;
@@ -571,6 +583,8 @@ pub(crate) struct ChatWidget {
     has_chatgpt_account: bool,
     pub(crate) requires_openai_auth: bool,
     has_codex_backend_auth: bool,
+    local_usage_supported: bool,
+    account_profiles_supported: bool,
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
     model_popup_model_ids: Vec<String>,
@@ -593,6 +607,12 @@ pub(crate) struct ChatWidget {
     rate_limit_reset_picker_request_id: Option<u64>,
     pending_rate_limit_reset_hint_request_id: Option<u64>,
     pending_usage_menu_rate_limit_request_id: Option<u64>,
+    next_local_usage_request_id: u64,
+    pending_local_usage_request: Option<(u64, local_usage::LocalUsageQuery)>,
+    next_account_profiles_request_id: u64,
+    pending_account_profiles_request: Option<(u64, account_profiles::AccountProfilesRequest)>,
+    account_profiles: Vec<codex_app_server_protocol::AccountProfile>,
+    account_auto_selection_enabled: Option<bool>,
     pending_rate_limit_reset_hint: Option<PlainHistoryCell>,
     available_rate_limit_reset_credits: Option<i64>,
     next_rate_limit_reset_request_id: u64,

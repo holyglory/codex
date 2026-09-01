@@ -3,9 +3,53 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::provider_usage::ProviderUsage;
 use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
+
+/// Content-free terminal status exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalStatus {
+    Completed,
+    Failed,
+    Denied,
+    TimedOut,
+    Cancelled,
+}
+
+/// Content-free terminal error category exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalErrorCategory {
+    Tool,
+    Timeout,
+    Cancelled,
+    Provider,
+}
+
+/// Typed terminal outcome for a tool execution, with no payload or error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsageTerminalOutcome {
+    pub status: UsageTerminalStatus,
+    pub error_category: Option<UsageTerminalErrorCategory>,
+}
+
+impl UsageTerminalOutcome {
+    pub const COMPLETED: Self = Self {
+        status: UsageTerminalStatus::Completed,
+        error_category: None,
+    };
+
+    pub const FAILED: Self = Self {
+        status: UsageTerminalStatus::Failed,
+        error_category: Some(UsageTerminalErrorCategory::Tool),
+    };
+
+    pub const TIMED_OUT: Self = Self {
+        status: UsageTerminalStatus::TimedOut,
+        error_category: Some(UsageTerminalErrorCategory::Timeout),
+    };
+}
 
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
@@ -16,6 +60,20 @@ pub trait ToolOutput: Send {
     fn log_output(&self) -> String;
 
     fn success_for_logging(&self) -> bool;
+
+    /// Returns a content-free accounting outcome without inspecting model-facing output.
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        if self.success_for_logging() {
+            UsageTerminalOutcome::COMPLETED
+        } else {
+            UsageTerminalOutcome::FAILED
+        }
+    }
+
+    /// Content-free provider usage returned by a nested tool-owned provider request, if any.
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        None
+    }
 
     /// Whether this output contains external context that should disable memory generation when
     /// `memories.disable_on_external_context` is enabled.
@@ -72,6 +130,14 @@ where
 
     fn success_for_logging(&self) -> bool {
         (**self).success_for_logging()
+    }
+
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        (**self).usage_terminal_outcome()
+    }
+
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        (**self).provider_usage()
     }
 
     fn contains_external_context(&self) -> bool {

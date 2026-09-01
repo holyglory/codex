@@ -48,6 +48,9 @@ use codex_config::RequirementsLayerEntry;
 use codex_config::SkillConfigRules;
 use codex_config::compose_requirements;
 use codex_config::types::McpServerTransportConfig;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::test_support::auth_manager_with_agent_identity;
 use codex_model_provider::AMAZON_BEDROCK_PROVIDER_ID;
@@ -141,7 +144,18 @@ fn plugins_config_input_with_requirements(
 #[tokio::test]
 async fn plugins_manager_reads_auth_mode_from_auth_manager() {
     let tmp = TempDir::new().unwrap();
-    let auth_manager = test_auth_manager(/*auth_mode*/ None);
+    let auth_manager = Arc::new(
+        AuthManager::new(
+            tmp.path().join("auth-manager"),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            codex_login::test_support::transport_default_auth_route_config(),
+        )
+        .await,
+    );
     let manager = test_plugins_manager_with_auth_manager(
         tmp.path().to_path_buf(),
         Some(Product::Codex),
@@ -682,15 +696,18 @@ async fn plugin_auth_projection_reprojects_cached_plugins_when_auth_changes() {
     write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
     write_auth_projection_plugin(codex_home.path(), "docs", /*include_app*/ false);
     let config = auth_projection_config(codex_home.path()).await;
-    let auth_manager = test_auth_manager(/*auth_mode*/ None);
-    set_test_auth_mode(&auth_manager, Some(AuthMode::Chatgpt)).await;
-    let manager = test_plugins_manager_with_auth_manager(
-        codex_home.path().to_path_buf(),
-        Some(Product::Codex),
-        Arc::clone(&auth_manager),
-    );
+    let manager = test_plugins_manager(codex_home.path().to_path_buf());
+    let chatgpt_auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let api_key_auth = CodexAuth::from_api_key("test-api-key");
 
-    let chatgpt_outcome = manager.plugins_for_config(&config).await;
+    let chatgpt_outcome = manager
+        .plugins_for_config_with_auth(&config, Some(&chatgpt_auth))
+        .await;
+    assert!(
+        manager
+            .plugin_skill_snapshots_for_config_with_auth(&config, Some(&chatgpt_auth))
+            .is_some()
+    );
     assert_eq!(
         sorted_effective_mcp_server_names(&chatgpt_outcome),
         vec!["docs".to_string()]
@@ -723,8 +740,14 @@ async fn plugin_auth_projection_reprojects_cached_plugins_when_auth_changes() {
         ]
     );
 
-    set_test_auth_mode(&auth_manager, Some(AuthMode::ApiKey)).await;
-    let api_key_outcome = manager.plugins_for_config(&config).await;
+    let api_key_outcome = manager
+        .plugins_for_config_with_auth(&config, Some(&api_key_auth))
+        .await;
+    assert!(
+        manager
+            .plugin_skill_snapshots_for_config_with_auth(&config, Some(&api_key_auth))
+            .is_some()
+    );
 
     assert_eq!(
         sorted_effective_mcp_server_names(&api_key_outcome),
@@ -753,6 +776,12 @@ async fn plugin_auth_projection_reprojects_cached_plugins_when_auth_changes() {
                 app_connector_ids: Vec::new(),
             },
         ]
+    );
+    assert_eq!(
+        manager
+            .plugins_for_config_with_auth(&config, Some(&chatgpt_auth))
+            .await,
+        chatgpt_outcome
     );
 }
 
@@ -857,6 +886,15 @@ fn remote_installed_linear_plugin() -> RemoteInstalledPlugin {
 
 fn remote_installed_plugin(name: &str) -> RemoteInstalledPlugin {
     remote_installed_plugin_in_marketplace(name, REMOTE_GLOBAL_MARKETPLACE_NAME)
+}
+
+fn write_remote_installed_cache_for_manager(
+    manager: &PluginsManager,
+    config: &PluginsConfigInput,
+    plugins: Vec<RemoteInstalledPlugin>,
+) {
+    let auth = manager.current_auth();
+    manager.write_remote_installed_plugins_cache_with_auth(config, plugins, auth.as_ref());
 }
 
 fn remote_installed_plugin_in_marketplace(
@@ -1218,7 +1256,11 @@ approval_mode = "approve"
         Some(Product::Codex),
         Some(AuthMode::Chatgpt),
     );
-    manager.write_remote_installed_plugins_cache(vec![remote_installed_linear_plugin()]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![remote_installed_linear_plugin()],
+    );
 
     let outcome = manager.plugins_for_config(&config).await;
     let plugin = outcome
@@ -1257,7 +1299,11 @@ plugins = true
 
     let config = load_config(codex_home.path(), codex_home.path()).await;
     let manager = test_plugins_manager(codex_home.path().to_path_buf());
-    manager.write_remote_installed_plugins_cache(vec![remote_installed_linear_plugin()]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![remote_installed_linear_plugin()],
+    );
 
     let outcome = manager.plugins_for_config(&config).await;
     assert_eq!(outcome, PluginLoadOutcome::default());
@@ -1547,10 +1593,14 @@ enabled = true
         Some(Product::Codex),
         Some(AuthMode::Chatgpt),
     );
-    manager.write_remote_installed_plugins_cache(vec![
-        remote_installed_plugin("linear"),
-        remote_installed_plugin("remote-only"),
-    ]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![
+            remote_installed_plugin("linear"),
+            remote_installed_plugin("remote-only"),
+        ],
+    );
 
     assert_eq!(
         loaded_plugin_names(&manager, &config).await,
@@ -1584,7 +1634,11 @@ enabled = true
         Some(Product::Codex),
         Some(AuthMode::Chatgpt),
     );
-    manager.write_remote_installed_plugins_cache(vec![remote_installed_plugin("linear")]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![remote_installed_plugin("linear")],
+    );
 
     assert_eq!(
         loaded_plugin_names(&manager, &config).await,
@@ -1622,10 +1676,14 @@ enabled = true
         Some(Product::Codex),
         Some(AuthMode::Chatgpt),
     );
-    manager.write_remote_installed_plugins_cache(vec![
-        remote_installed_plugin("linear"),
-        remote_installed_plugin("remote-only"),
-    ]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![
+            remote_installed_plugin("linear"),
+            remote_installed_plugin("remote-only"),
+        ],
+    );
 
     assert_eq!(
         loaded_plugin_names(&manager, &config).await,
@@ -1663,7 +1721,11 @@ enabled = true
         Some(Product::Codex),
         Arc::clone(&auth_manager),
     );
-    manager.write_remote_installed_plugins_cache(vec![remote_installed_plugin("remote-only")]);
+    write_remote_installed_cache_for_manager(
+        &manager,
+        &config,
+        vec![remote_installed_plugin("remote-only")],
+    );
     assert_eq!(
         loaded_plugin_names(&manager, &config).await,
         vec!["remote-only@openai-curated-remote".to_string()]
@@ -1675,7 +1737,11 @@ enabled = true
         vec!["linear@openai-api-curated".to_string()]
     );
 
-    for auth_mode in [AuthMode::ApiKey, AuthMode::BedrockApiKey] {
+    for auth_mode in [
+        AuthMode::ApiKey,
+        AuthMode::BedrockApiKey,
+        AuthMode::BedrockAccessKeys,
+    ] {
         set_test_auth_mode(&auth_manager, Some(auth_mode)).await;
 
         assert_eq!(
@@ -3071,7 +3137,7 @@ enabled = true
             Some(AuthMode::Chatgpt),
         );
         if let Some(installed_plugins) = installed_plugins {
-            manager.write_remote_installed_plugins_cache(installed_plugins);
+            write_remote_installed_cache_for_manager(&manager, &config, installed_plugins);
         }
 
         let plugin_outcome = manager.plugins_for_config(&config).await;
@@ -3116,7 +3182,8 @@ fn loaded_plugins_cache_evicts_least_recently_used_configuration() {
             )]),
             skill_config_rules: SkillConfigRules::default(),
             remote_global_catalog_active: false,
-            auth_identity: None,
+            chatgpt_base_url: String::new(),
+            auth_identity: PluginAuthIdentity::from_auth(/*auth*/ None),
             excluded_plugin_ids: BTreeSet::new(),
         })
         .collect::<Vec<_>>();
@@ -3161,7 +3228,8 @@ fn loaded_plugins_cache_invalidation_rejects_stale_load_completion() {
         configured_plugins: HashMap::new(),
         skill_config_rules: SkillConfigRules::default(),
         remote_global_catalog_active: false,
-        auth_identity: None,
+        chatgpt_base_url: String::new(),
+        auth_identity: PluginAuthIdentity::from_auth(/*auth*/ None),
         excluded_plugin_ids: BTreeSet::new(),
     };
     let stale_generation = manager.loaded_plugins_cache_generation();
@@ -3193,17 +3261,22 @@ async fn plugins_for_config_discards_in_flight_load_after_account_change() {
         String::new(),
         test_http_client_factory(),
     );
-    let auth_manager = test_auth_manager(Some(AuthMode::ChatgptAuthTokens));
+    let account_a = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.test",
+        "test-account",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("build first ChatGPT auth");
+    let auth_manager = AuthManager::from_auth_for_testing_with_home(
+        account_a.clone(),
+        codex_home.path().join("auth-manager"),
+    );
     let manager = Arc::new(test_plugins_manager_with_auth_manager(
         codex_home.path().to_path_buf(),
         Some(Product::Codex),
         Arc::clone(&auth_manager),
     ));
     manager.write_remote_installed_plugins_cache(vec![remote_installed_plugin("remote-only")]);
-    let account_a = auth_manager
-        .auth_cached()
-        .expect("capture first ChatGPT auth");
-
     let load_permit = manager
         .loaded_plugins_load_semaphore
         .try_acquire()
@@ -5822,7 +5895,7 @@ plugins = true
     config.chatgpt_base_url = server.uri();
     let manager = std::sync::Arc::new(test_plugins_manager(tmp.path().to_path_buf()));
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let cache_key = recommended_plugins_cache_key(&config);
+    let cache_key = recommended_plugins_cache_key(&config, Some(&auth));
 
     manager.maybe_start_remote_plugin_caches_refresh(
         &config,
@@ -6017,6 +6090,64 @@ async fn recommended_plugins_cache_clear_rejects_stale_fetch_completion() {
 }
 
 #[tokio::test]
+async fn recommended_plugins_cache_isolated_across_accounts_a_b_a() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        "[features]\nplugins = true\nremote_plugin = true\n",
+    );
+    let server = MockServer::start().await;
+    for (account_id, plugin_id, name) in [
+        ("account-a", "plugin_alpha", "alpha"),
+        ("account-b", "plugin_beta", "beta"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/ps/plugins/suggested/codex"))
+            .and(query_param("scope", "GLOBAL"))
+            .and(header("chatgpt-account-id", account_id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "enabled": true,
+                "plugins": [{
+                    "id": plugin_id,
+                    "name": name,
+                    "display_name": name
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let mut config = load_config(tmp.path(), tmp.path()).await;
+    config.chatgpt_base_url = server.uri();
+    let manager = test_plugins_manager(tmp.path().to_path_buf());
+    let auth_a = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-a",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account A auth");
+    let auth_b = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-b",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account B auth");
+
+    let mode_a = manager
+        .recommended_plugins_mode_for_config(&config, Some(&auth_a))
+        .await;
+    let mode_b = manager
+        .recommended_plugins_mode_for_config(&config, Some(&auth_b))
+        .await;
+    let mode_a_again = manager
+        .recommended_plugins_mode_for_config(&config, Some(&auth_a))
+        .await;
+
+    assert_eq!(mode_a_again, mode_a);
+    assert_ne!(mode_a, mode_b);
+}
+
+#[tokio::test]
 async fn recommended_plugin_candidates_filter_installed_and_disabled_plugins() {
     let tmp = tempfile::tempdir().unwrap();
     write_file(
@@ -6057,12 +6188,18 @@ plugins = true
     let manager = test_plugins_manager(tmp.path().to_path_buf());
     let mut installed_linear = remote_installed_plugin("linear");
     installed_linear.id = "plugin_linear".to_string();
-    manager.write_remote_installed_plugins_cache(vec![installed_linear]);
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &config,
+        vec![installed_linear],
+        Some(&auth),
+    );
     let disabled_tools = [ToolSuggestDisabledTool::plugin(
         "github@openai-curated-remote",
     )];
-    let loaded_plugins = manager.plugins_for_config(&config).await;
+    let loaded_plugins = manager
+        .plugins_for_config_with_auth(&config, Some(&auth))
+        .await;
 
     let candidates = manager
         .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
@@ -7056,15 +7193,16 @@ enabled = true
         );
     }
     let config = load_config(codex_home.path(), codex_home.path()).await;
-    let auth_manager = test_auth_manager(Some(AuthMode::Chatgpt));
-    let manager = test_plugins_manager_with_auth_manager(
-        codex_home.path().to_path_buf(),
-        Some(Product::Codex),
-        Arc::clone(&auth_manager),
-    );
+    let manager = test_plugins_manager(codex_home.path().to_path_buf());
+    let chatgpt_auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let api_key_auth = CodexAuth::from_api_key("test-api-key");
 
     let chatgpt_hooks = manager
-        .plugin_hooks_for_layer_stack(&config.config_layer_stack, &config)
+        .plugin_hooks_for_layer_stack_with_auth(
+            &config.config_layer_stack,
+            &config,
+            Some(&chatgpt_auth),
+        )
         .await;
     assert_eq!(
         chatgpt_hooks
@@ -7075,9 +7213,12 @@ enabled = true
         vec!["linear@openai-curated"]
     );
 
-    set_test_auth_mode(&auth_manager, Some(AuthMode::ApiKey)).await;
     let api_hooks = manager
-        .plugin_hooks_for_layer_stack(&config.config_layer_stack, &config)
+        .plugin_hooks_for_layer_stack_with_auth(
+            &config.config_layer_stack,
+            &config,
+            Some(&api_key_auth),
+        )
         .await;
     assert_eq!(
         api_hooks
@@ -7088,9 +7229,12 @@ enabled = true
         vec!["linear@openai-api-curated"]
     );
 
-    set_test_auth_mode(&auth_manager, /*auth_mode*/ None).await;
     let bedrock_hooks = manager
-        .plugin_hooks_for_layer_stack(&config.config_layer_stack, &config)
+        .plugin_hooks_for_layer_stack_with_auth(
+            &config.config_layer_stack,
+            &config,
+            /*auth*/ None,
+        )
         .await;
     assert_eq!(
         bedrock_hooks
@@ -7109,10 +7253,13 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
     let materialization_callback_count =
         std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let unrelated_callback_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cache_identity = PluginAuthCacheIdentity::new("https://example.com", /*auth*/ None);
     manager
         .remote_installed_plugins_cache_refresh_state
         .write()
         .expect("refresh state lock")
+        .entry(cache_identity.clone())
+        .or_default()
         .in_flight = true;
     let materialization = |name: &str| RemotePluginMaterialization {
         plugin_id: PluginId::new(
@@ -7133,17 +7280,16 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
         });
         callback
     };
-    let generation = manager
-        .prepare_remote_installed_plugins_cache_generation(/*auth*/ None)
-        .expect("prepare remote installed cache generation");
+    let generation = manager.prepare_remote_installed_plugins_cache_generation(&cache_identity);
     let request =
         |change, on_effective_plugins_changed| RemoteInstalledPluginsCacheRefreshRequest {
+            cache_identity: cache_identity.clone(),
             generation,
             service_config: RemotePluginServiceConfig::new(
                 "https://example.com".to_string(),
                 test_http_client_factory(),
             ),
-            auth: None,
+            auth_job: manager.legacy_auth_job(/*auth*/ None),
             notify: RemoteInstalledPluginsCacheRefreshNotify::IfCacheChanged,
             on_effective_plugins_changed: Some(on_effective_plugins_changed),
             change,
@@ -7162,7 +7308,10 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
         .remote_installed_plugins_cache_refresh_state
         .read()
         .expect("refresh state lock");
-    let request = state.requested.as_ref().expect("pending refresh");
+    let request = state
+        .get(&cache_identity)
+        .and_then(|state| state.requested.as_ref())
+        .expect("pending refresh");
     assert_eq!(
         request.change,
         EffectivePluginsChange {
@@ -7180,6 +7329,195 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
     assert_eq!(
         unrelated_callback_count.load(std::sync::atomic::Ordering::Relaxed),
         0
+    );
+}
+
+#[tokio::test]
+async fn remote_installed_cache_isolated_by_backend_and_account_a_b_a() {
+    let tmp = TempDir::new().unwrap();
+    let mut config = load_config(tmp.path(), tmp.path()).await;
+    config.chatgpt_base_url = "https://backend-one.example".to_string();
+    let mut other_backend = config.clone();
+    other_backend.chatgpt_base_url = "https://backend-two.example".to_string();
+    let manager = test_plugins_manager(tmp.path().to_path_buf());
+    let auth_a = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-a",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account A auth");
+    let auth_b = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-b",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account B auth");
+
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &config,
+        vec![remote_installed_plugin("alpha")],
+        Some(&auth_a),
+    );
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &config,
+        vec![remote_installed_plugin("beta")],
+        Some(&auth_b),
+    );
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &other_backend,
+        vec![remote_installed_plugin("gamma")],
+        Some(&auth_a),
+    );
+
+    let plugin_names = |config: &PluginsConfigInput, auth: &CodexAuth| {
+        manager
+            .build_remote_installed_plugin_marketplaces_from_cache_with_auth(
+                config,
+                &[REMOTE_GLOBAL_MARKETPLACE_NAME],
+                Some(auth),
+            )
+            .expect("identity-scoped remote cache")
+            .into_iter()
+            .flat_map(|marketplace| marketplace.plugins)
+            .map(|plugin| plugin.name)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(plugin_names(&config, &auth_a), vec!["alpha"]);
+    assert_eq!(plugin_names(&config, &auth_b), vec!["beta"]);
+    assert_eq!(plugin_names(&config, &auth_a), vec!["alpha"]);
+    assert_eq!(plugin_names(&other_backend, &auth_a), vec!["gamma"]);
+}
+
+#[tokio::test]
+async fn queued_bundle_sync_retains_operation_auth_lease() {
+    let tmp = TempDir::new().unwrap();
+    let config = load_config(tmp.path(), tmp.path()).await;
+    let manager = Arc::new(test_plugins_manager(tmp.path().to_path_buf()));
+    let auth = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-a",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account A auth");
+    let operation_auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+    let weak_operation_auth_manager = Arc::downgrade(&operation_auth_manager);
+    let cache_identity = PluginAuthCacheIdentity::new(&config.chatgpt_base_url, Some(&auth));
+    manager
+        .remote_installed_plugin_bundle_sync_state
+        .write()
+        .expect("bundle state lock")
+        .entry(cache_identity.clone())
+        .or_default()
+        .in_flight = true;
+
+    manager.maybe_start_remote_installed_plugin_bundle_sync_with_auth_lease(
+        &config,
+        AuthManagerLease::legacy(Arc::clone(&operation_auth_manager)),
+        Some(auth),
+        /*on_effective_plugins_changed*/ None,
+    );
+    drop(operation_auth_manager);
+    assert!(weak_operation_auth_manager.upgrade().is_some());
+
+    let request = manager
+        .remote_installed_plugin_bundle_sync_state
+        .write()
+        .expect("bundle state lock")
+        .get_mut(&cache_identity)
+        .and_then(|state| state.requested.take())
+        .expect("queued bundle sync");
+    drop(request);
+    assert!(weak_operation_auth_manager.upgrade().is_none());
+}
+
+#[test]
+fn installed_refresh_coalescing_never_merges_cross_profile_requests() {
+    let tmp = TempDir::new().unwrap();
+    let manager = Arc::new(test_plugins_manager(tmp.path().to_path_buf()));
+    let auth_a = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-a",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account A auth");
+    let auth_b = CodexAuth::from_external_chatgpt_tokens(
+        "header.e30.signature",
+        "account-b",
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("account B auth");
+    let request = |auth: CodexAuth, name: &str| {
+        let cache_identity = PluginAuthCacheIdentity::new("https://example.com", Some(&auth));
+        let generation = manager.prepare_remote_installed_plugins_cache_generation(&cache_identity);
+        RemoteInstalledPluginsCacheRefreshRequest {
+            cache_identity,
+            generation,
+            service_config: RemotePluginServiceConfig::new(
+                "https://example.com".to_string(),
+                test_http_client_factory(),
+            ),
+            auth_job: manager.legacy_auth_job(Some(auth)),
+            notify: RemoteInstalledPluginsCacheRefreshNotify::IfCacheChanged,
+            on_effective_plugins_changed: None,
+            change: EffectivePluginsChange {
+                materialized_remote_plugins: vec![RemotePluginMaterialization {
+                    plugin_id: PluginId::new(
+                        name.to_string(),
+                        REMOTE_WORKSPACE_MARKETPLACE_NAME.to_string(),
+                    )
+                    .expect("plugin id"),
+                    scope: RemotePluginScope::Workspace,
+                    discoverability: None,
+                    authenticated_account_id: Some(name.to_string()),
+                }],
+            },
+        }
+    };
+    let request_a = request(auth_a.clone(), "alpha");
+    let identity_a = request_a.cache_identity.clone();
+    let request_b = request(auth_b, "beta");
+    let identity_b = request_b.cache_identity.clone();
+    {
+        let mut states = manager
+            .remote_installed_plugins_cache_refresh_state
+            .write()
+            .expect("refresh state lock");
+        states.entry(identity_a.clone()).or_default().in_flight = true;
+        states.entry(identity_b.clone()).or_default().in_flight = true;
+    }
+    manager.schedule_remote_installed_plugins_cache_refresh(request_a);
+    manager.schedule_remote_installed_plugins_cache_refresh(request_b);
+    manager.schedule_remote_installed_plugins_cache_refresh(request(auth_a, "again"));
+
+    let states = manager
+        .remote_installed_plugins_cache_refresh_state
+        .read()
+        .expect("refresh state lock");
+    assert_eq!(states.len(), 2);
+    assert_eq!(
+        states[&identity_a]
+            .requested
+            .as_ref()
+            .expect("account A request")
+            .change
+            .materialized_remote_plugins
+            .iter()
+            .map(|plugin| plugin.plugin_id.plugin_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["again", "alpha"]
+    );
+    assert_eq!(
+        states[&identity_b]
+            .requested
+            .as_ref()
+            .expect("account B request")
+            .change
+            .materialized_remote_plugins
+            .iter()
+            .map(|plugin| plugin.plugin_id.plugin_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["beta"]
     );
 }
 
@@ -7692,7 +8030,11 @@ remote_plugin = true
     previous_malformed.id = malformed_remote_plugin_id.to_string();
     previous_malformed.version = Some("local".to_string());
     previous_malformed.enabled = false;
-    manager.write_remote_installed_plugins_cache(vec![previous_malformed.clone()]);
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &config,
+        vec![previous_malformed.clone()],
+        Some(&auth),
+    );
 
     let result = manager
         .reconcile_remote_installed_plugins(&config, Some(&auth))
@@ -7705,13 +8047,14 @@ remote_plugin = true
         ))
     ));
     server.verify().await;
+    let cache_identity = PluginAuthCacheIdentity::new(&config.chatgpt_base_url, Some(&auth));
     assert_eq!(
         manager
             .remote_installed_plugins_cache
             .read()
             .expect("installed plugin cache lock")
-            .plugins
-            .clone(),
+            .get(&cache_identity)
+            .and_then(|cache| cache.plugins.clone()),
         Some(vec![previous_malformed])
     );
     let plugin_cache_root = codex_home.path().join("plugins/cache");
@@ -7734,15 +8077,17 @@ remote_plugin = true
 fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
     let codex_home = TempDir::new().unwrap();
     let manager = test_plugins_manager(codex_home.path().to_path_buf());
+    let cache_identity = PluginAuthCacheIdentity::new("", /*auth*/ None);
     let reconcile_generation = manager
-        .begin_remote_installed_plugins_reconcile(/*auth*/ None)
+        .begin_remote_installed_plugins_reconcile(&cache_identity)
         .expect("begin reconciliation");
     let stale_refresh_generation = manager
-        .remote_installed_plugins_cache_generation_if_current(/*auth*/ None)
+        .remote_installed_plugins_cache_generation_if_current(&cache_identity)
         .expect("capture concurrent refresh generation");
 
     assert_eq!(
         manager.write_remote_installed_plugins_cache_snapshot(
+            &cache_identity,
             stale_refresh_generation,
             Vec::new(),
             /*auth*/ None,
@@ -7753,6 +8098,7 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
     );
     assert_eq!(
         manager.write_remote_installed_plugins_cache_snapshot(
+            &cache_identity,
             reconcile_generation,
             vec![remote_installed_linear_plugin()],
             /*auth*/ None,
@@ -7762,10 +8108,11 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
         Some(true)
     );
     let cancelled_generation = manager
-        .begin_remote_installed_plugins_reconcile(/*auth*/ None)
+        .begin_remote_installed_plugins_reconcile(&cache_identity)
         .expect("begin cancelled reconciliation");
     let reconciliation = RemoteInstalledPluginsReconciliationGuard {
         manager: &manager,
+        cache_identity: cache_identity.clone(),
         generation: cancelled_generation,
         committed: false,
     };
@@ -7773,10 +8120,11 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
     drop(reconciliation);
 
     let refresh_generation = manager
-        .remote_installed_plugins_cache_generation_if_current(/*auth*/ None)
+        .remote_installed_plugins_cache_generation_if_current(&cache_identity)
         .expect("capture refresh generation after cancellation");
     assert_eq!(
         manager.write_remote_installed_plugins_cache_snapshot(
+            &cache_identity,
             refresh_generation,
             vec![remote_installed_plugin("beta")],
             /*auth*/ None,
@@ -7786,10 +8134,11 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
         Some(true)
     );
     let retry_generation = manager
-        .begin_remote_installed_plugins_reconcile(/*auth*/ None)
+        .begin_remote_installed_plugins_reconcile(&cache_identity)
         .expect("begin retry after cancellation");
     assert_eq!(
         manager.write_remote_installed_plugins_cache_snapshot(
+            &cache_identity,
             retry_generation,
             vec![remote_installed_plugin("beta")],
             /*auth*/ None,

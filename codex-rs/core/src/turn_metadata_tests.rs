@@ -1124,7 +1124,7 @@ async fn turn_metadata_state_preserves_subagent_parent_after_git_enrichment() {
         }),
         /*thread_source*/ None,
         "turn-a".to_string(),
-        repo_path,
+        repo_path.clone(),
         &permission_profile,
         WindowsSandboxLevel::Disabled,
         /*enforce_managed_network*/ false,
@@ -1299,7 +1299,7 @@ async fn turn_metadata_state_git_enrichment_cancellation_is_retryable_and_errors
         &SessionSource::Exec,
         /*thread_source*/ None,
         "turn-a".to_string(),
-        repo_path,
+        repo_path.clone(),
         &permission_profile,
         WindowsSandboxLevel::Disabled,
         /*enforce_managed_network*/ false,
@@ -1319,7 +1319,10 @@ async fn turn_metadata_state_git_enrichment_cancellation_is_retryable_and_errors
     tokio::time::timeout(Duration::from_secs(2), state.wait_for_git_enrichment())
         .await
         .expect("cancelled git enrichment should unblock waiters");
-    assert!(state.current_workspaces().is_empty());
+    assert_eq!(
+        serde_json::to_value(state.current_workspaces()).expect("workspace metadata"),
+        serde_json::json!({repo_path.to_string_lossy().as_ref(): {}})
+    );
 
     state.spawn_git_enrichment_task(git_root_discovery);
     let json = wait_for_git_enrichment(&state).await;
@@ -1357,5 +1360,8 @@ async fn turn_metadata_state_git_enrichment_cancellation_is_retryable_and_errors
     )
     .await
     .expect("failed git enrichment should complete");
-    assert!(invalid_state.current_workspaces().is_empty());
+    assert_eq!(
+        serde_json::to_value(invalid_state.current_workspaces()).expect("workspace metadata"),
+        serde_json::json!({invalid_repo.path().to_string_lossy().as_ref(): {}})
+    );
 }

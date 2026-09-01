@@ -6,9 +6,21 @@ use super::*;
 use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
 use chrono::DateTime;
+use chrono::Utc;
+use codex_account_registry::AccountId;
+use codex_account_registry::OpaqueServiceId;
+use codex_account_registry::RegistryStore;
+use codex_account_registry::RegistryStoreError;
+use codex_app_server_protocol::AccountProfileActiveChangedNotification;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
+use codex_login::AccountLease;
 use codex_login::LoginOnboardingEntrypoint;
+use codex_login::ProfileAuthStorage;
+use codex_login::SharedProfileAuthRouter;
+use codex_login::login_with_api_key_to_profile;
 use codex_login::login_with_bedrock_access_keys;
+use codex_login::login_with_bedrock_access_keys_to_profile;
+use codex_login::login_with_bedrock_api_key_to_profile;
 use codex_model_provider::is_supported_amazon_bedrock_region;
 
 mod bedrock_setup;
@@ -90,6 +102,18 @@ pub(crate) struct AccountRequestProcessor {
     config: Arc<Config>,
     config_manager: ConfigManager,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
+    profile_auth_router: SharedProfileAuthRouter,
+    active_profile_id: Option<AccountId>,
+}
+
+struct ChatgptLoginCompletionContext {
+    outgoing: Arc<OutgoingMessageSender>,
+    config_manager: ConfigManager,
+    thread_manager: Arc<ThreadManager>,
+    config: Arc<Config>,
+    auth_manager: Arc<AuthManager>,
+    profile_auth_router: SharedProfileAuthRouter,
+    active_profile_id: Option<AccountId>,
 }
 
 impl AccountRequestProcessor {
@@ -99,6 +123,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        profile_auth_router: SharedProfileAuthRouter,
     ) -> Self {
         Self {
             auth_manager,
@@ -107,6 +132,8 @@ impl AccountRequestProcessor {
             config,
             config_manager,
             active_login: Arc::new(Mutex::new(None)),
+            profile_auth_router,
+            active_profile_id: None,
         }
     }
 
@@ -115,14 +142,16 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
         params: LoginAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.login_v2(request_id, params).await.map(|()| None)
+        let processor = self.active_profile_management_view().await?;
+        processor.login_v2(request_id, params).await.map(|()| None)
     }
 
     pub(crate) async fn logout_account(
         &self,
         request_id: ConnectionRequestId,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.logout_v2(request_id).await.map(|()| None)
+        let processor = self.active_profile_management_view().await?;
+        processor.logout_v2(request_id).await.map(|()| None)
     }
 
     pub(crate) async fn cancel_login_account(
@@ -138,7 +167,9 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_response(params)
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_account_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -147,7 +178,9 @@ impl AccountRequestProcessor {
         &self,
         params: GetAuthStatusParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_auth_status_response(params)
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_auth_status_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -155,7 +188,9 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_account_rate_limits(
         &self,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_rate_limits_response()
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_account_rate_limits_response()
             .await
             .map(|response| Some(response.into()))
     }
@@ -164,7 +199,9 @@ impl AccountRequestProcessor {
         &self,
         params: Option<GetAccountTokenUsageParams>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_token_usage_response(params)
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_account_token_usage_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -172,7 +209,9 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_workspace_messages(
         &self,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_workspace_messages_response()
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_workspace_messages_response()
             .await
             .map(|response| Some(response.into()))
     }
@@ -181,7 +220,9 @@ impl AccountRequestProcessor {
         &self,
         params: SendAddCreditsNudgeEmailParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.send_add_credits_nudge_email_response(params)
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .send_add_credits_nudge_email_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -191,6 +232,62 @@ impl AccountRequestProcessor {
         if let Some(active_login) = guard.take() {
             drop(active_login);
         }
+    }
+
+    async fn active_profile_view(&self) -> Result<(Self, Option<AccountLease>), JSONRPCErrorError> {
+        let Some(router) = self
+            .profile_auth_router
+            .router_if_configured()
+            .await
+            .map_err(super::account_profile_processor::router_error)?
+        else {
+            return Ok((self.clone(), None));
+        };
+        let lease = router
+            .lease_for_turn()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let mut processor = self.clone();
+        processor.auth_manager = Arc::clone(lease.auth_manager());
+        processor.active_profile_id = Some(lease.account_id().clone());
+        Ok((processor, Some(lease)))
+    }
+
+    async fn active_profile_management_view(&self) -> Result<Self, JSONRPCErrorError> {
+        let Some(router) = self
+            .profile_auth_router
+            .router_if_configured()
+            .await
+            .map_err(super::account_profile_processor::router_error)?
+        else {
+            return Ok(self.clone());
+        };
+        let (account_id, auth_manager) = router
+            .active_manager_for_management()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        router
+            .check_credential_management_allowed(&account_id)
+            .map_err(super::account_profile_processor::router_error)?;
+        let mut processor = self.clone();
+        processor.auth_manager = auth_manager;
+        processor.active_profile_id = Some(account_id);
+        Ok(processor)
+    }
+
+    fn active_profile_storage(&self) -> Result<Option<ProfileAuthStorage>, JSONRPCErrorError> {
+        self.active_profile_id
+            .as_ref()
+            .map(|account_id| {
+                ProfileAuthStorage::new(
+                    &self.config.codex_home,
+                    account_id.clone(),
+                    self.config.cli_auth_credentials_store_mode,
+                    self.config.auth_keyring_backend_kind(),
+                )
+                .map_err(|_| internal_error("account profile credential backend is unavailable"))
+            })
+            .transpose()
     }
 
     pub(crate) fn clear_external_auth(&self) {
@@ -225,11 +322,20 @@ impl AccountRequestProcessor {
     async fn maybe_refresh_plugin_caches_for_current_config(
         config_manager: &ConfigManager,
         thread_manager: &Arc<ThreadManager>,
-        auth: Option<CodexAuth>,
+        profile_auth_router: &SharedProfileAuthRouter,
+        auth_manager: Arc<AuthManager>,
     ) {
         thread_manager
             .plugins_manager()
             .clear_recommended_plugins_cache();
+
+        let (auth_lease, auth) = match profile_auth_router.lease_for_operation().await {
+            Ok(auth_lease) => {
+                let auth = auth_lease.auth_manager().auth().await;
+                (auth_lease, auth)
+            }
+            Err(_) => (codex_login::AuthManagerLease::legacy(auth_manager), None),
+        };
 
         match config_manager
             .load_latest_config(/*fallback_cwd*/ None)
@@ -239,28 +345,33 @@ impl AccountRequestProcessor {
                 Self::spawn_effective_plugins_changed_task(
                     Arc::clone(thread_manager),
                     config_manager.clone(),
+                    auth_lease.clone(),
                 );
                 let plugins_config = config.plugins_config_input();
                 let refresh_thread_manager = Arc::clone(thread_manager);
                 let refresh_config_manager = config_manager.clone();
+                let refresh_auth_lease = auth_lease.clone();
                 let on_effective_plugins_changed: Arc<
                     dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync,
                 > = Arc::new(move |_change| {
                     Self::spawn_effective_plugins_changed_task(
                         Arc::clone(&refresh_thread_manager),
                         refresh_config_manager.clone(),
+                        refresh_auth_lease.clone(),
                     );
                 });
                 thread_manager
                     .plugins_manager()
-                    .maybe_start_curated_repo_sync_for_config(
+                    .maybe_start_curated_repo_sync_for_config_with_auth(
                         &plugins_config,
+                        auth.as_ref(),
                         Some(Arc::clone(&on_effective_plugins_changed)),
                     );
                 thread_manager
                     .plugins_manager()
-                    .maybe_start_remote_plugin_caches_refresh(
+                    .maybe_start_remote_plugin_caches_refresh_with_auth_lease(
                         &plugins_config,
+                        auth_lease,
                         auth,
                         Some(on_effective_plugins_changed),
                     );
@@ -276,13 +387,22 @@ impl AccountRequestProcessor {
     fn spawn_effective_plugins_changed_task(
         thread_manager: Arc<ThreadManager>,
         config_manager: ConfigManager,
+        auth_lease: codex_login::AuthManagerLease,
     ) {
         tokio::spawn(async move {
             thread_manager.plugins_manager().clear_cache();
             thread_manager.skills_service().clear_cache();
-            crate::mcp_refresh::reload_mcp_config_best_effort(&thread_manager, &config_manager)
+            crate::effective_plugin_change::reload_plugin_runtime_configs_without_mcp_prewarm(
+                &thread_manager,
+                &config_manager,
+            )
+            .await;
+            thread_manager
+                .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
                 .await;
-            thread_manager.invalidate_mcp_runtimes().await;
+            thread_manager
+                .invalidate_mcp_runtimes_with_auth_lease(auth_lease)
+                .await;
         });
     }
 
@@ -329,6 +449,11 @@ impl AccountRequestProcessor {
                 chatgpt_account_id,
                 chatgpt_plan_type,
             } => {
+                if self.active_profile_id.is_some() {
+                    return Err(invalid_request(
+                        "externally managed ChatGPT authentication cannot be attached to a local account profile",
+                    ));
+                }
                 self.login_chatgpt_auth_tokens(
                     request_id,
                     access_token,
@@ -421,12 +546,16 @@ impl AccountRequestProcessor {
             }
         }
 
-        match login_with_api_key(
-            &self.config.codex_home,
-            &params.api_key,
-            self.config.cli_auth_credentials_store_mode,
-            self.config.auth_keyring_backend_kind(),
-        ) {
+        let saved = match self.active_profile_storage()? {
+            Some(profile) => login_with_api_key_to_profile(&profile, &params.api_key),
+            None => login_with_api_key(
+                &self.config.codex_home,
+                &params.api_key,
+                self.config.cli_auth_credentials_store_mode,
+                self.config.auth_keyring_backend_kind(),
+            ),
+        };
+        match saved {
             Ok(()) => {
                 self.auth_manager.reload().await;
                 self.config_manager.clear_cloud_config_bundle_loader();
@@ -496,14 +625,20 @@ impl AccountRequestProcessor {
             )
             .await?;
 
+            let profile = self.active_profile_storage()?;
             match credentials {
-                BedrockLoginCredentials::ApiKey(api_key) => login_with_bedrock_api_key(
-                    &self.config.codex_home,
-                    api_key.trim(),
-                    region,
-                    self.config.cli_auth_credentials_store_mode,
-                    self.config.auth_keyring_backend_kind(),
-                ),
+                BedrockLoginCredentials::ApiKey(api_key) => match profile.as_ref() {
+                    Some(profile) => {
+                        login_with_bedrock_api_key_to_profile(profile, api_key.trim(), region)
+                    }
+                    None => login_with_bedrock_api_key(
+                        &self.config.codex_home,
+                        api_key.trim(),
+                        region,
+                        self.config.cli_auth_credentials_store_mode,
+                        self.config.auth_keyring_backend_kind(),
+                    ),
+                },
                 BedrockLoginCredentials::AccessKeys {
                     access_key_id,
                     secret_access_key,
@@ -513,14 +648,22 @@ impl AccountRequestProcessor {
                         .as_deref()
                         .map(str::trim)
                         .filter(|token| !token.is_empty());
-                    login_with_bedrock_access_keys(
-                        &self.config.codex_home,
-                        access_key_id.trim(),
-                        secret_access_key.trim(),
-                        session_token,
-                        self.config.cli_auth_credentials_store_mode,
-                        self.config.auth_keyring_backend_kind(),
-                    )
+                    match profile.as_ref() {
+                        Some(profile) => login_with_bedrock_access_keys_to_profile(
+                            profile,
+                            access_key_id.trim(),
+                            secret_access_key.trim(),
+                            session_token,
+                        ),
+                        None => login_with_bedrock_access_keys(
+                            &self.config.codex_home,
+                            access_key_id.trim(),
+                            secret_access_key.trim(),
+                            session_token,
+                            self.config.cli_auth_credentials_store_mode,
+                            self.config.auth_keyring_backend_kind(),
+                        ),
+                    }
                 }
             }
             .map_err(|err| internal_error(format!("failed to save Amazon Bedrock auth: {err}")))?;
@@ -571,6 +714,10 @@ impl AccountRequestProcessor {
                 config.auth_keyring_backend_kind(),
                 config.auth_route_config(),
             )
+        };
+        let opts = match self.active_profile_storage()? {
+            Some(profile) => opts.with_profile_auth_storage(profile),
+            None => opts,
         };
         #[cfg(debug_assertions)]
         let opts = {
@@ -644,6 +791,9 @@ impl AccountRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_manager = Arc::clone(&self.thread_manager);
         let config = Arc::clone(&self.config);
+        let auth_manager = Arc::clone(&self.auth_manager);
+        let profile_auth_router = self.profile_auth_router.clone();
+        let active_profile_id = self.active_profile_id.clone();
         let active_login = self.active_login.clone();
         let auth_url = server.auth_url.clone();
         tokio::spawn(async move {
@@ -662,7 +812,7 @@ impl AccountRequestProcessor {
                             DesktopOnboardingEntrypoint::LifeSciences
                         }),
                 ),
-                Ok(Err(err)) => (false, Some(format!("Login server error: {err}")), None),
+                Ok(Err(_)) => (false, Some("Login failed".to_string()), None),
                 Err(_elapsed) => {
                     shutdown_handle.shutdown();
                     (false, Some("Login timed out".to_string()), None)
@@ -670,10 +820,15 @@ impl AccountRequestProcessor {
             };
 
             Self::send_chatgpt_login_completion_notifications(
-                &outgoing_clone,
-                config_manager,
-                thread_manager,
-                config,
+                ChatgptLoginCompletionContext {
+                    outgoing: outgoing_clone,
+                    config_manager,
+                    thread_manager,
+                    config,
+                    auth_manager,
+                    profile_auth_router,
+                    active_profile_id,
+                },
                 AccountLoginCompletedNotification {
                     login_id: Some(login_id.to_string()),
                     success,
@@ -734,6 +889,9 @@ impl AccountRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_manager = Arc::clone(&self.thread_manager);
         let config = Arc::clone(&self.config);
+        let auth_manager = Arc::clone(&self.auth_manager);
+        let profile_auth_router = self.profile_auth_router.clone();
+        let active_profile_id = self.active_profile_id.clone();
         let active_login = self.active_login.clone();
         tokio::spawn(async move {
             let (success, error_msg) = tokio::select! {
@@ -743,16 +901,21 @@ impl AccountRequestProcessor {
                 r = complete_device_code_login(opts, device_code) => {
                     match r {
                         Ok(()) => (true, None),
-                        Err(err) => (false, Some(err.to_string())),
+                        Err(_) => (false, Some("Login failed".to_string())),
                     }
                 }
             };
 
             Self::send_chatgpt_login_completion_notifications(
-                &outgoing_clone,
-                config_manager,
-                thread_manager,
-                config,
+                ChatgptLoginCompletionContext {
+                    outgoing: outgoing_clone,
+                    config_manager,
+                    thread_manager,
+                    config,
+                    auth_manager,
+                    profile_auth_router,
+                    active_profile_id,
+                },
                 AccountLoginCompletedNotification {
                     login_id: Some(login_id.to_string()),
                     success,
@@ -849,9 +1012,9 @@ impl AccountRequestProcessor {
         if let Some(expected_workspaces) = self.auth_manager.effective_chatgpt_workspaces()
             && !expected_workspaces.contains(&chatgpt_account_id)
         {
-            return Err(invalid_request(format!(
-                "External auth must use one of workspace(s) {expected_workspaces:?}, but received {chatgpt_account_id:?}.",
-            )));
+            return Err(invalid_request(
+                "External authentication does not satisfy the configured workspace restriction.",
+            ));
         }
 
         let auth = CodexAuth::from_external_chatgpt_tokens(
@@ -880,10 +1043,17 @@ impl AccountRequestProcessor {
     }
 
     async fn send_login_success_notifications(&self, login_id: Option<Uuid>) {
+        let profile_generation = match &self.active_profile_id {
+            Some(account_id) => {
+                sync_profile_registry(&self.config, account_id, /*refresh_metadata*/ true).ok()
+            }
+            None => None,
+        };
         Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
             &self.thread_manager,
-            self.auth_manager.auth_cached(),
+            &self.profile_auth_router,
+            Arc::clone(&self.auth_manager),
         )
         .await;
 
@@ -904,22 +1074,45 @@ impl AccountRequestProcessor {
                 self.current_account_updated_notification(),
             ))
             .await;
+        if let (Some(account_id), Some(generation)) =
+            (self.active_profile_id.as_ref(), profile_generation)
+        {
+            self.send_profile_auth_changed(account_id, generation).await;
+        }
+    }
+
+    async fn send_profile_auth_changed(&self, account_id: &AccountId, generation: u64) {
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountProfileActiveChanged(
+                AccountProfileActiveChangedNotification {
+                    account_id: account_id.to_string(),
+                    previous_account_id: Some(account_id.to_string()),
+                    changed_at: Utc::now().timestamp(),
+                    generation,
+                },
+            ))
+            .await;
     }
 
     async fn send_chatgpt_login_completion_notifications(
-        outgoing: &OutgoingMessageSender,
-        config_manager: ConfigManager,
-        thread_manager: Arc<ThreadManager>,
-        config: Arc<Config>,
+        context: ChatgptLoginCompletionContext,
         payload_v2: AccountLoginCompletedNotification,
     ) {
+        let ChatgptLoginCompletionContext {
+            outgoing,
+            config_manager,
+            thread_manager,
+            config,
+            auth_manager,
+            profile_auth_router,
+            active_profile_id,
+        } = context;
         let success = payload_v2.success;
         outgoing
             .send_server_notification(ServerNotification::AccountLoginCompleted(payload_v2))
             .await;
 
         if success {
-            let auth_manager = thread_manager.auth_manager();
             auth_manager.reload().await;
             config_manager.replace_cloud_config_bundle_loader(
                 auth_manager.clone(),
@@ -930,13 +1123,14 @@ impl AccountRequestProcessor {
                 .sync_default_client_residency_requirement()
                 .await;
 
-            let auth = auth_manager.auth_cached();
             Self::maybe_refresh_plugin_caches_for_current_config(
                 &config_manager,
                 &thread_manager,
-                auth.clone(),
+                &profile_auth_router,
+                Arc::clone(&auth_manager),
             )
             .await;
+            let auth = auth_manager.auth_cached();
             let payload_v2 = AccountUpdatedNotification {
                 auth_mode: auth
                     .as_ref()
@@ -947,6 +1141,21 @@ impl AccountRequestProcessor {
             outgoing
                 .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
                 .await;
+            if let Some(account_id) = active_profile_id
+                && let Ok(generation) =
+                    sync_profile_registry(&config, &account_id, /*refresh_metadata*/ true)
+            {
+                outgoing
+                    .send_server_notification(ServerNotification::AccountProfileActiveChanged(
+                        AccountProfileActiveChangedNotification {
+                            account_id: account_id.to_string(),
+                            previous_account_id: Some(account_id.to_string()),
+                            changed_at: Utc::now().timestamp(),
+                            generation,
+                        },
+                    ))
+                    .await;
+            }
         }
     }
 
@@ -980,7 +1189,8 @@ impl AccountRequestProcessor {
         Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
             &self.thread_manager,
-            self.auth_manager.auth_cached(),
+            &self.profile_auth_router,
+            Arc::clone(&self.auth_manager),
         )
         .await;
 
@@ -995,6 +1205,13 @@ impl AccountRequestProcessor {
 
     async fn logout_v2(&self, request_id: ConnectionRequestId) -> Result<(), JSONRPCErrorError> {
         let result = self.logout_common().await;
+        let profile_generation = if result.is_ok() {
+            self.active_profile_id.as_ref().and_then(|account_id| {
+                sync_profile_registry(&self.config, account_id, /*refresh_metadata*/ false).ok()
+            })
+        } else {
+            None
+        };
         let account_updated =
             result
                 .as_ref()
@@ -1012,6 +1229,11 @@ impl AccountRequestProcessor {
             self.outgoing
                 .send_server_notification(ServerNotification::AccountUpdated(payload))
                 .await;
+        }
+        if let (Some(account_id), Some(generation)) =
+            (self.active_profile_id.as_ref(), profile_generation)
+        {
+            self.send_profile_auth_changed(account_id, generation).await;
         }
         Ok(())
     }
@@ -1159,6 +1381,15 @@ impl AccountRequestProcessor {
             return Err(internal_error(
                 "failed to fetch codex rate limits: no snapshots returned",
             ));
+        }
+        if let Some(account_id) = &self.active_profile_id {
+            self.profile_auth_router
+                .record_rate_limits(
+                    account_id.clone(),
+                    Utc::now().timestamp(),
+                    response.rate_limits.clone(),
+                )
+                .map_err(|_| internal_error("account rate-limit response is invalid"))?;
         }
 
         let rate_limits_by_limit_id: HashMap<_, _> = response
@@ -1482,6 +1713,86 @@ fn workspace_message_type_from_backend(
 
 fn workspace_messages_feature_disabled(err: &BackendRequestError) -> bool {
     err.status().is_some_and(|status| status.as_u16() == 404)
+}
+
+fn sync_profile_registry(
+    config: &Config,
+    account_id: &AccountId,
+    refresh_metadata: bool,
+) -> Result<u64, ()> {
+    let identity = if refresh_metadata {
+        let profile = ProfileAuthStorage::new(
+            &config.codex_home,
+            account_id.clone(),
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+        )
+        .map_err(|_| ())?;
+        let auth = profile.load().map_err(|_| ())?.ok_or(())?;
+        Some(auth.profile_metadata())
+    } else {
+        None
+    };
+    let service_identity = identity
+        .as_ref()
+        .and_then(|identity| {
+            identity
+                .service_account_id
+                .as_ref()
+                .zip(identity.service_workspace_id.as_ref())
+        })
+        .map(|(account, workspace)| {
+            Ok::<_, ()>((
+                OpaqueServiceId::new(account.clone()).map_err(|_| ())?,
+                OpaqueServiceId::new(workspace.clone()).map_err(|_| ())?,
+            ))
+        })
+        .transpose()?;
+    let store = RegistryStore::new(&config.codex_home);
+    for _ in 0..3 {
+        let registry = store.read().map_err(|_| ())?;
+        if !registry
+            .accounts
+            .iter()
+            .any(|account| &account.id == account_id)
+        {
+            return Err(());
+        }
+        let guard = store.acquire_lock().map_err(|_| ())?;
+        let update = store.compare_and_swap_with_guard(&guard, registry.generation, |registry| {
+            if let Some(identity) = &identity
+                && let Some(account) = registry
+                    .accounts
+                    .iter_mut()
+                    .find(|account| &account.id == account_id)
+            {
+                account.auth_mode = identity.auth_mode;
+                account.email = identity.email.clone();
+                account.plan_type = identity.plan_type.clone();
+                account.service_account_id = service_identity
+                    .as_ref()
+                    .map(|(account, _)| account.clone());
+                account.service_workspace_id = service_identity
+                    .as_ref()
+                    .map(|(_, workspace)| workspace.clone());
+            }
+        });
+        match update {
+            Ok(updated) => return Ok(updated.generation),
+            Err(RegistryStoreError::GenerationConflict { .. }) => {}
+            Err(RegistryStoreError::CommittedDurabilityUncertain { .. }) => {
+                store
+                    .repair_committed_durability_with_guard(&guard)
+                    .map_err(|_| ())?;
+                return store
+                    .read()
+                    .map(|registry| registry.generation)
+                    .map_err(|_| ());
+            }
+            Err(_) => return Err(()),
+        }
+    }
+    Err(())
 }
 
 #[cfg(test)]

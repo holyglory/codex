@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use super::CellId;
 use super::CodeModeNestedToolCall;
@@ -296,19 +295,26 @@ async fn wait_until_finished<T>(task: &tokio::task::JoinHandle<T>) {
 }
 
 async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) {
-    for _ in 0..10_000 {
-        if delegate.tool_started.load(Ordering::Acquire) {
-            return;
+    let tool_started = delegate.tool_started.notified();
+    tokio::pin!(tool_started);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut tool_started => return,
+            _ = tokio::task::yield_now() => {}
         }
-        tokio::task::yield_now().await;
+        assert!(
+            Instant::now() < deadline,
+            "nested code-mode tool did not start"
+        );
     }
-    panic!("nested code-mode tool did not start");
 }
 
 #[derive(Default)]
 struct ReleasableToolDelegate {
     tool_release: Notify,
-    tool_started: AtomicBool,
+    tool_started: Notify,
 }
 
 impl ReleasableToolDelegate {
@@ -323,7 +329,7 @@ impl CodeModeSessionDelegate for ReleasableToolDelegate {
         _invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
     ) -> ToolInvocationFuture<'a> {
-        self.tool_started.store(true, Ordering::Release);
+        self.tool_started.notify_one();
         Box::pin(async move {
             tokio::select! {
                 _ = self.tool_release.notified() => Ok(JsonValue::Null),

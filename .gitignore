@@ -94,3 +94,9 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+
+# Local project state (database-backed completion ledger)
+/.state/
+
+# Local code-indexing workspace state
+/.serena/

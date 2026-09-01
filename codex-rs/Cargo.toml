@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "account-registry",
+    "account-selection",
     "aws-auth",
     "analytics",
     "agent-graph-store",
@@ -88,6 +90,7 @@ members = [
     "process-hardening",
     "realtime-webrtc",
     "voice-host",
+    "private-storage",
     "protocol",
     "prompts",
     "rollout",
@@ -101,6 +104,7 @@ members = [
     "otel-trace-websocket",
     "tui",
     "tools",
+    "usage",
     "v8-poc",
     "websocket-client",
     "worktree",
@@ -147,7 +151,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.153.0-alpha.6"
+version = "0.153.0-alpha.6+multi.4"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -159,6 +163,8 @@ license = "Apache-2.0"
 # Internal
 codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
+codex-account-registry = { path = "account-registry" }
+codex-account-selection = { path = "account-selection" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
@@ -243,6 +249,7 @@ codex-otel-trace-websocket = { path = "otel-trace-websocket" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
+codex-private-storage = { path = "private-storage" }
 codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
 codex-queue-extension = { path = "ext/queue" }
@@ -264,6 +271,7 @@ codex-test-binary-support = { path = "test-binary-support" }
 codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tui = { path = "tui" }
+codex-usage = { path = "usage" }
 codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }

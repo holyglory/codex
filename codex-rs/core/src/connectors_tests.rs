@@ -261,6 +261,35 @@ async fn refresh_accessible_connectors_cache_from_mcp_tools_writes_latest_instal
     );
 }
 
+#[tokio::test]
+async fn cached_accessible_connectors_use_captured_auth_identity() {
+    let codex_home = tempdir().expect("tempdir should succeed");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await
+        .expect("config should load");
+    let _ = config.features.set_enabled(Feature::Apps, /*enabled*/ true);
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let tools = vec![codex_app_tool(
+        "calendar_list_events",
+        "calendar",
+        Some("Calendar"),
+        &[],
+    )];
+
+    let cached = with_accessible_connectors_cache_cleared(|| {
+        refresh_accessible_connectors_cache_from_mcp_tools(&config, Some(&auth), &tools);
+        list_cached_accessible_connectors_from_mcp_tools_with_auth(&config, Some(&auth))
+            .expect("captured account cache should be populated")
+    });
+
+    assert_eq!(
+        cached,
+        accessible_connectors_for_app_list_from_mcp_tools(&tools)
+    );
+}
+
 #[test]
 fn accessible_connectors_from_mcp_tools_preserves_description() {
     let mcp_tools = vec![ToolInfo {

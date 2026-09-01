@@ -1,6 +1,7 @@
 //! Exposes shared installed-plugin reconciliation with hook lifecycle updates.
 
 use super::*;
+use crate::effective_plugin_change::reload_plugin_runtime_configs_without_mcp_prewarm;
 use crate::effective_plugin_change::trust_materialized_plugin_hooks;
 use crate::request_serialization::RequestSerializationAccess;
 use crate::request_serialization::RequestSerializationQueueKey;
@@ -20,7 +21,10 @@ impl PluginRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let plugins_input = config.plugins_config_input();
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth_manager = Arc::clone(auth_lease.auth_manager());
+        let auth = auth_manager.auth().await;
+        let originating_account_id = auth.as_ref().and_then(CodexAuth::get_account_id);
         if !plugins_input.plugins_enabled
             || !auth.as_ref().is_some_and(CodexAuth::uses_codex_backend)
         {
@@ -63,16 +67,26 @@ impl PluginRequestProcessor {
                     async move {
                         let result = trust_materialized_plugin_hooks(
                             materializations,
-                            &processor.auth_manager,
+                            originating_account_id,
+                            auth.as_ref(),
+                            &auth_manager,
                             &processor.thread_manager,
                             &processor.config_manager,
                             &config_processor,
                         )
                         .await;
+                        reload_plugin_runtime_configs_without_mcp_prewarm(
+                            &processor.thread_manager,
+                            &processor.config_manager,
+                        )
+                        .await;
                         // Removals and disablements have no trust write to rebuild loaded hooks.
                         // Rebuild after the trust attempt, even if it failed, to drop stale hooks.
                         if hooks_changed {
-                            processor.thread_manager.refresh_hook_runtimes().await;
+                            processor
+                                .thread_manager
+                                .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
+                                .await;
                         }
                         let _ = complete.send(result);
                     },

@@ -28,6 +28,7 @@ use std::net::TcpStream;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
@@ -77,6 +78,14 @@ fn strip_proxy_env(env: &mut HashMap<String, String>) {
         env.remove(*key);
         let lower = key.to_ascii_lowercase();
         env.remove(lower.as_str());
+    }
+}
+
+fn codex_linux_sandbox_exe() -> PathBuf {
+    let sandbox_program = PathBuf::from(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    match sandbox_program.canonicalize() {
+        Ok(path) => path,
+        Err(_) => sandbox_program,
     }
 }
 
@@ -176,7 +185,7 @@ fn linux_sandbox_command(
     args.push("--".to_string());
     args.extend(command.iter().map(|entry| (*entry).to_string()));
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    let mut cmd = Command::new(codex_linux_sandbox_exe());
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
@@ -318,16 +327,25 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
         return;
     }
 
-    let Some(system_bwrap) = codex_sandboxing::find_system_bwrap_in_path() else {
-        eprintln!("skipping system bwrap fallback test: no system bubblewrap is available");
-        return;
+    let system_bwrap = if option_env!("BAZEL_PACKAGE").is_some() {
+        let bwrap_runfile =
+            std::env::var("CARGO_BIN_EXE_bwrap").expect("Bazel should provide the bwrap runfile");
+        let runfiles_dir =
+            std::env::var_os("TEST_SRCDIR").expect("Bazel should provide its runfiles directory");
+        PathBuf::from(runfiles_dir).join(bwrap_runfile)
+    } else {
+        let Some(system_bwrap) = codex_sandboxing::find_system_bwrap_in_path() else {
+            eprintln!("skipping system bwrap fallback test: no system bubblewrap is available");
+            return;
+        };
+        system_bwrap
     };
 
     let tempdir = tempfile::tempdir().expect("create isolated sandbox installation");
     let sandbox_executable = tempdir.path().join("codex-linux-sandbox");
-    let original_executable = env!("CARGO_BIN_EXE_codex-linux-sandbox");
-    if std::fs::hard_link(original_executable, &sandbox_executable).is_err() {
-        std::fs::copy(original_executable, &sandbox_executable).expect("copy sandbox executable");
+    let original_executable = codex_linux_sandbox_exe();
+    if std::fs::hard_link(&original_executable, &sandbox_executable).is_err() {
+        std::fs::copy(&original_executable, &sandbox_executable).expect("copy sandbox executable");
     }
 
     let resources_dir = tempdir.path().join("codex-resources");
@@ -591,7 +609,8 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+    let sandbox_helper = codex_linux_sandbox_exe();
+    let sandbox_helper_dir = sandbox_helper
         .parent()
         .expect("sandbox helper should have a parent");
     let file_system_sandbox_policy =

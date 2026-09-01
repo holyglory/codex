@@ -90,6 +90,8 @@ pub use runtime::sqlite_error_detail_is_corruption;
 pub use runtime::sqlite_error_detail_is_lock;
 pub use runtime::sqlite_integrity_check;
 pub use sqlite::RuntimeDbPath;
+pub use sqlite::SqlitePoolProfile;
+pub use sqlite::open_sqlite_pool;
 pub use telemetry::DbTelemetry;
 pub use telemetry::DbTelemetryHandle;
 pub use telemetry::install_process_db_telemetry;

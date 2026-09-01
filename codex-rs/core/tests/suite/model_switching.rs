@@ -1276,37 +1276,24 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
         )
         .await;
 
-    test.codex
-        .start_or_steer_turn(read_only_user_turn(
-            &test,
-            vec![UserInput::Text {
-                text: "generate a lobster".to_string(),
-                text_elements: Vec::new(),
-            }],
-            image_model_slug.to_string(),
-        ))
+    test.submit_turn_with_permission_profile("generate a lobster", PermissionProfile::read_only())
         .await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     test.codex
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
-    wait_for_event(&test.codex, |ev| {
-        matches!(ev, EventMsg::ThreadRolledBack(_))
+    let rollback_event = wait_for_event(&test.codex, |ev| {
+        matches!(ev, EventMsg::ThreadRolledBack(_) | EventMsg::Error(_))
     })
     .await;
+    match rollback_event {
+        EventMsg::ThreadRolledBack(_) => {}
+        EventMsg::Error(error) => anyhow::bail!("thread rollback failed: {}", error.message),
+        event => panic!("expected thread rollback result, got {event:?}"),
+    }
 
-    test.codex
-        .start_or_steer_turn(read_only_user_turn(
-            &test,
-            vec![UserInput::Text {
-                text: "after rollback".to_string(),
-                text_elements: Vec::new(),
-            }],
-            image_model_slug.to_string(),
-        ))
+    test.submit_turn_with_permission_profile("after rollback", PermissionProfile::read_only())
         .await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let requests = responses.requests();
     assert_eq!(requests.len(), 2, "expected two model requests");

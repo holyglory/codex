@@ -231,6 +231,7 @@ fn next_goal_draft(
     }
 }
 
+mod account_profiles;
 mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]
@@ -244,6 +245,8 @@ mod goal_validation;
 mod guardian;
 pub(crate) mod helpers;
 mod history_replay;
+#[path = "tests/local_usage_advanced.rs"]
+mod local_usage_advanced;
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]
 mod misalignment_policy;

@@ -19,6 +19,35 @@ fn response(email: Option<&str>) -> serde_json::Value {
     })
 }
 
+#[test]
+fn debug_output_redacts_token_and_identity_metadata() {
+    let auth = PersonalAccessTokenAuth {
+        access_token: "pat-debug-secret".to_string(),
+        metadata: PersonalAccessTokenMetadata {
+            email: Some("email-debug-secret@example.com".to_string()),
+            chatgpt_user_id: "user-id-debug-secret".to_string(),
+            chatgpt_account_id: "account-id-debug-secret".to_string(),
+            chatgpt_plan_type: "enterprise".to_string(),
+            chatgpt_account_is_fedramp: true,
+        },
+    };
+
+    let debug_output = format!("{auth:?} {:?}", auth.metadata);
+
+    for secret in [
+        "pat-debug-secret",
+        "email-debug-secret@example.com",
+        "user-id-debug-secret",
+        "account-id-debug-secret",
+    ] {
+        assert!(
+            !debug_output.contains(secret),
+            "debug output exposed credential marker {secret}"
+        );
+    }
+    assert!(debug_output.contains("<redacted>"));
+}
+
 #[tokio::test]
 async fn hydrate_sends_bearer_token_and_preserves_metadata() {
     let server = MockServer::start().await;

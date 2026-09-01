@@ -35,6 +35,7 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestBinaryDispatchGuard> = {
 
 #[cfg(not(target_os = "windows"))]
 mod abort_tasks;
+mod account_management;
 mod additional_context;
 mod agent_execution;
 mod agent_websocket;
@@ -52,6 +53,7 @@ mod client_websockets;
 mod cloud_config;
 mod code_mode;
 mod code_mode_elicitation;
+mod code_mode_wait_timer;
 mod codex_delegate;
 mod collaboration_instructions;
 mod compact;
@@ -182,6 +184,9 @@ mod unified_exec_stdin_review_size;
 #[cfg(unix)]
 mod unified_exec_zsh_fork_approvals;
 mod unstable_features_warning;
+#[cfg(unix)]
+mod usage_accounting_recovery;
+mod usage_stats;
 mod user_notification;
 mod user_shell_cmd;
 mod view_image;

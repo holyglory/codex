@@ -356,12 +356,14 @@ fn write_async_user_prompt_submit_hook(home: &Path, gated: bool) -> Result<()> {
     let finished_path = home.join("async_user_prompt_submit_finished");
     let release_path = home.join("async_user_prompt_submit_release");
     let script = format!(
-        r#"import json
+        r#"import atexit
+import json
 from pathlib import Path
 import sys
 import time
 
 prompt = json.load(sys.stdin).get("prompt")
+atexit.register(lambda: Path(r"{finished_path}").write_text(prompt, encoding="utf-8"))
 Path(r"{started_path}").write_text(prompt, encoding="utf-8")
 while {gated} and not Path(r"{release_path}").exists():
     time.sleep(0.01)
@@ -375,7 +377,6 @@ print(json.dumps({{
         "additionalContext": f"async context for {{prompt}}"
     }}
 }}), flush=True)
-Path(r"{finished_path}").write_text(prompt, encoding="utf-8")
 "#,
         started_path = started_path.display(),
         finished_path = finished_path.display(),
@@ -1774,12 +1775,10 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         .await
         .context("timed out waiting for the async hook to start")?;
 
-    fs::write(
-        test.codex_home_path()
-            .join("async_user_prompt_submit_release"),
-        "ready",
-    )
-    .context("release gated async hook")?;
+    let release_path = test
+        .codex_home_path()
+        .join("async_user_prompt_submit_release");
+    fs::write(&release_path, "ready").context("release gated async hook")?;
 
     let finished_path = test
         .codex_home_path()
@@ -1787,9 +1786,15 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
     fs_wait::wait_for_path_exists(finished_path, Duration::from_secs(5))
         .await
         .context("timed out waiting for the async hook to finish")?;
+    codex_core::test_support::wait_for_async_hooks(&test.codex).await;
+    // Each user turn schedules its own hook. Re-arm the gate so turn two observes only the first
+    // hook's buffered result instead of immediately completing and injecting a second result.
+    fs::remove_file(&release_path).context("reset async hook gate before the next turn")?;
 
+    // The delivery barrier proves the result is queued; it must remain silent while the session is
+    // idle and be consumed only at the next turn boundary.
     assert!(
-        timeout(Duration::from_millis(150), test.codex.next_event())
+        timeout(Duration::from_secs(1), test.codex.next_event())
             .await
             .is_err(),
         "an async hook result from the previous turn must not emit warnings or raw response items"

@@ -83,6 +83,10 @@ pub fn with_code_mode_host_program(
     thread_manager.with_code_mode_host_program_for_tests(host_program, config)
 }
 
+pub async fn wait_for_async_hooks(thread: &crate::CodexThread) {
+    thread.session.hooks().wait_for_async_hooks().await;
+}
+
 pub fn thread_manager_with_models_provider(
     auth: CodexAuth,
     provider: ModelProviderInfo,

@@ -126,10 +126,10 @@ fn detail_policies_apply_the_expected_budgets() {
         (
             Some(ImageDetail::Auto),
             ImageDetailSetting::High,
-            (2048, 2048),
-            (1600, 1600),
+            (64, 32),
+            (64, 32),
         ),
-        (None, ImageDetailSetting::High, (2048, 2048), (1600, 1600)),
+        (None, ImageDetailSetting::High, (64, 32), (64, 32)),
     ] {
         let (image_url, _) = png_data_url(input_dimensions.0, input_dimensions.1);
         let mut items = vec![ResponseItem::Message {

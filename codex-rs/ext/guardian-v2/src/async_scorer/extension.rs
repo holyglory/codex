@@ -25,9 +25,6 @@ use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ResponseItem;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
-use codex_extension_api::ThreadLifecycleContributor;
-use codex_extension_api::ThreadOriginator;
-use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolName;
@@ -36,7 +33,6 @@ use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
 use codex_guardian_context::ContextTarget;
 use codex_history::RolloutItem;
-use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
 use codex_protocol::ThreadId;
@@ -60,10 +56,11 @@ use super::metrics::record_classification_risk;
 use super::metrics::record_fast_decision;
 use super::review_evidence::render_review_evidence;
 use super::sampler::LunaSampler;
-use super::sampler::LunaSamplerConfig;
 use super::sampler::LunaSamplerError;
 use super::sampler::LunaSamplingRequest;
-use super::sampler::MODEL;
+
+#[path = "auth_lifecycle.rs"]
+mod auth_lifecycle;
 use super::truncation::ClassificationTruncations;
 use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
@@ -128,6 +125,7 @@ struct GuardianV2ScoreProgress {
 #[derive(Clone)]
 struct GuardianV2Extension {
     auth_manager: Arc<AuthManager>,
+    auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
     event_sink: Arc<dyn ExtensionEventSink>,
     thread_manager: Weak<ThreadManager>,
 }
@@ -598,6 +596,15 @@ impl GuardianV2Extension {
         let rendered_images = guardian_config
             .transcript
             .images(input.conversation_history.review_items(), node_repl_images);
+        let auth_lease = input
+            .turn_store
+            .get::<codex_login::AuthManagerLease>()
+            .unwrap_or_else(|| {
+                Arc::new(codex_login::AuthManagerLease::legacy(Arc::clone(
+                    &self.auth_manager,
+                )))
+            });
+        let uses_turn_auth = self.auth_resolver.is_some();
 
         tokio::spawn(async move {
             let mut truncations = ClassificationTruncations::default();
@@ -705,18 +712,27 @@ impl GuardianV2Extension {
             let mut classification_risk = None;
             let mut classification_finished_at = None;
             let result: Result<ClassificationOutcome, String> = async {
+                let thread_config = thread.config().await;
+                let config = Self::config_for_auth_lease(thread_config.as_ref(), &auth_lease);
+                let auth_manager = Arc::clone(auth_lease.auth_manager());
                 let review_model_messages = if config.guardian_policy_config.is_none() {
                     let review_model_id = review_model_override.as_deref().unwrap_or_else(|| {
                         create_model_provider(
                             config.model_provider.clone(),
-                            Some(manager.auth_manager()),
+                            Some(Arc::clone(&auth_manager)),
                         )
                         .approval_review_preferred_model()
                     });
-                    let review_model = manager
-                        .get_models_manager()
-                        .get_model_info(review_model_id, &config.to_models_manager_config())
-                        .await;
+                    let review_model = if uses_turn_auth {
+                        codex_core::build_models_manager(&config, Arc::clone(&auth_manager))
+                            .get_model_info(review_model_id, &config.to_models_manager_config())
+                            .await
+                    } else {
+                        manager
+                            .get_models_manager()
+                            .get_model_info(review_model_id, &config.to_models_manager_config())
+                            .await
+                    };
                     if review_model.used_fallback_model_metadata && review_model_override.is_none()
                     {
                         parent_model
@@ -917,12 +933,40 @@ pub fn install(
     auth_manager: Arc<AuthManager>,
     thread_manager: Weak<ThreadManager>,
 ) {
+    install_inner(
+        registry,
+        auth_manager,
+        /*auth_resolver*/ None,
+        thread_manager,
+    );
+}
+
+pub fn install_with_auth_resolver(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    auth_resolver: codex_login::SharedProfileAuthRouter,
+    thread_manager: Weak<ThreadManager>,
+) {
+    install_inner(registry, auth_manager, Some(auth_resolver), thread_manager);
+}
+
+fn install_inner(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
+    thread_manager: Weak<ThreadManager>,
+) {
+    let uses_turn_auth = auth_resolver.is_some();
     let extension = Arc::new(GuardianV2Extension {
         auth_manager,
+        auth_resolver,
         event_sink: registry.event_sink(),
         thread_manager,
     });
     registry.thread_lifecycle_contributor(extension.clone());
+    if uses_turn_auth {
+        registry.turn_lifecycle_contributor(extension.clone());
+    }
     registry.approval_review_contributor(extension.clone());
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);

@@ -39,8 +39,12 @@ async fn run_removal_session_end_test(operation: &str) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("persisted answer").await;
     let codex_home = TempDir::new()?;
     let log_path = write_config_and_hook(codex_home.path(), &server.uri())?;
+    // Command hooks execute on the app-server host until they move to exec-server. A remote-only
+    // thread has a foreign cwd that the host process cannot use, so this lifecycle-ordering test
+    // intentionally exercises the supported local command-hook path.
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_auto_env()
         .build_initialized_with_timeout(READ_TIMEOUT)
         .await?;
     let thread_id = start_thread(&mut app_server).await?;
@@ -101,6 +105,7 @@ async fn app_server_shutdown_runs_session_end_for_all_loaded_threads() -> Result
     let log_path = write_config_and_hook(codex_home.path(), &server.uri())?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_auto_env()
         .build_initialized_with_timeout(READ_TIMEOUT)
         .await?;
     let first = start_thread(&mut app_server).await?;

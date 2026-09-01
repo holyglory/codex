@@ -93,3 +93,25 @@ pub fn install<S, I>(
     async_scorer::install(registry, auth_manager, thread_manager.clone());
     sync_reviewer::install(registry, thread_manager, internal_session_spawner);
 }
+
+/// Installs guardian contributors that resolve authentication from each owning turn.
+pub fn install_with_auth_resolver<S, I>(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    agent_spawner: S,
+    internal_session_spawner: I,
+    auth_manager: Arc<AuthManager>,
+    auth_resolver: codex_login::SharedProfileAuthRouter,
+    thread_manager: Weak<ThreadManager>,
+) where
+    S: Send + Sync + 'static,
+    I: Send + Sync + 'static,
+{
+    registry.thread_lifecycle_contributor(Arc::new(GuardianExtension::new(agent_spawner)));
+    async_scorer::install_with_auth_resolver(
+        registry,
+        auth_manager,
+        auth_resolver,
+        thread_manager.clone(),
+    );
+    sync_reviewer::install(registry, thread_manager, internal_session_spawner);
+}

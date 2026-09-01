@@ -53,6 +53,7 @@ pub(crate) struct CustomPromptView {
     textarea: TextArea,
     textarea_state: RefCell<TextAreaState>,
     paste_burst: PasteBurst,
+    allow_empty_submit: bool,
     completion: Option<ViewCompletion>,
     pending_suggestion: Option<PendingTextSuggestion>,
     user_edited: bool,
@@ -80,10 +81,17 @@ impl CustomPromptView {
             textarea,
             textarea_state: RefCell::new(TextAreaState::default()),
             paste_burst: PasteBurst::default(),
+            allow_empty_submit: false,
             completion: None,
             pending_suggestion: None,
             user_edited: false,
         }
+    }
+
+    /// Allow Enter to submit an empty value for prompts where clearing is meaningful.
+    pub(crate) fn allow_empty_submit(mut self) -> Self {
+        self.allow_empty_submit = true;
+        self
     }
 
     /// Apply the same editor and Vim bindings used by the main composer.
@@ -151,7 +159,7 @@ impl CustomPromptView {
                 }
                 if modifiers == KeyModifiers::NONE {
                     let text = self.textarea.text().trim().to_string();
-                    if !text.is_empty() {
+                    if self.allow_empty_submit || !text.is_empty() {
                         (self.on_submit)(text);
                         self.completion = Some(ViewCompletion::Accepted);
                     }

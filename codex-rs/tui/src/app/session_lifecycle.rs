@@ -489,6 +489,8 @@ impl App {
             AppServerTarget::LocalDaemon { .. }
         ));
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
+        chat_widget.set_local_usage_supported(self.chat_widget.local_usage_supported());
+        chat_widget.set_account_profiles_supported(self.chat_widget.account_profiles_supported());
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(
                 thread_id,

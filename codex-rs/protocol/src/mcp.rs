@@ -67,6 +67,8 @@ pub struct McpResourceOrigin {
     pub call_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     pub tool: String,
     pub connector_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

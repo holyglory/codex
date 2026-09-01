@@ -194,6 +194,22 @@ mod tests {
             }],
             quality: Some(ImageQuality::Medium),
             size: Some("1024x1536".to_string()),
+            usage: Some(
+                serde_json::from_value(json!({
+                    "input_tokens": 1474,
+                    "input_tokens_details": {
+                        "image_tokens": 1457,
+                        "text_tokens": 17,
+                    },
+                    "output_tokens": 1372,
+                    "output_tokens_details": {
+                        "image_tokens": 1372,
+                        "text_tokens": 0,
+                    },
+                    "total_tokens": 2846,
+                }))
+                .expect("valid image usage fixture"),
+            ),
         }
     }
 

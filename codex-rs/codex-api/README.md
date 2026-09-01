@@ -35,3 +35,16 @@ The public interface of this crate is intentionally small and uniform:
   - `MemoriesClient::summarize_input(&MemorySummarizeInput, extra_headers)` wraps JSON encoding and retry/telemetry wiring.
 
 All HTTP details (URLs, headers, retry/backoff policies, SSE framing) are encapsulated in `codex-api` and `codex-client`. Callers construct prompts/inputs using protocol types and work with typed streams of `ResponseEvent` or compacted `ResponseItem` values.
+
+## Provider usage observations
+
+Terminal Responses events may include a workspace-internal `ResponseEvent::ProviderUsage` before
+their existing completion or error result. The observation preserves absent, null, non-negative
+`u64`, and invalid count states without changing the legacy signed `TokenUsage` projection. Future
+categories use the versioned bounded safe-key policy in `codex_protocol::provider_usage`.
+
+When a provider supplies a response ID, the observation exposes only a domain-separated SHA-256
+source-event key for replay reconciliation. The raw provider ID is never retained or logged by the
+usage DTO. Image responses expose the same content-free `ProviderUsage`, and tool outputs may make
+it available through `ToolOutput::provider_usage`; prompts, image bytes, and provider response
+content are not part of that metadata.

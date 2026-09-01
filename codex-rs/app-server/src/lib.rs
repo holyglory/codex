@@ -443,6 +443,7 @@ pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
+    pub process_account: Option<String>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -452,6 +453,7 @@ impl Default for AppServerRuntimeOptions {
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
+            process_account: None,
         }
     }
 }
@@ -917,6 +919,7 @@ pub async fn run_main_with_transport_options(
             config_warnings,
             session_source,
             auth_manager,
+            process_account: runtime_options.process_account.clone(),
             installation_id,
             code_mode_session_provider,
             rpc_transport: analytics_rpc_transport(&transport),

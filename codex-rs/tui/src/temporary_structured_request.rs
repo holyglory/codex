@@ -91,6 +91,7 @@ pub(crate) async fn start_temporary_thread(
             "tools.experimental_request_user_input.enabled".to_string(),
             false.into(),
         ),
+        ("tools.local_controls.enabled".to_string(), false.into()),
         ("tools.update_plan.enabled".to_string(), false.into()),
         ("web_search".to_string(), "disabled".into()),
     ]);

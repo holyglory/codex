@@ -87,6 +87,29 @@ impl ToolContributor for ImageGenerationExtension {
         _session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        self.tools_with_auth(thread_store, Arc::clone(&self.auth_manager))
+    }
+
+    fn tools_for_step(
+        &self,
+        _session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        let auth_manager = step_store
+            .get::<codex_login::AuthManagerLease>()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        self.tools_with_auth(thread_store, auth_manager)
+    }
+}
+
+impl ImageGenerationExtension {
+    fn tools_with_auth(
+        &self,
+        thread_store: &ExtensionData,
+        auth_manager: Arc<AuthManager>,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         let Some(config) = thread_store.get::<ImageGenerationExtensionConfig>() else {
             return Vec::new();
         };
@@ -96,7 +119,7 @@ impl ToolContributor for ImageGenerationExtension {
 
         vec![Arc::new(ImageGenerationTool::new(
             CodexImagesBackend::new(
-                create_model_provider(config.provider.clone(), Some(self.auth_manager.clone())),
+                create_model_provider(config.provider.clone(), Some(auth_manager)),
                 thread_store
                     .get::<ThreadOriginator>()
                     .map(|originator| originator.0.clone()),

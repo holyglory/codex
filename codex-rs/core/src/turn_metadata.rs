@@ -444,11 +444,23 @@ impl TurnMetadataState {
         metadata
     }
 
-    fn current_workspaces(&self) -> BTreeMap<String, TurnMetadataWorkspace> {
-        self.enriched_workspaces
+    pub(crate) fn current_workspaces(&self) -> BTreeMap<String, TurnMetadataWorkspace> {
+        if let Some(workspaces) = self
+            .enriched_workspaces
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+        {
+            return workspaces;
+        }
+        self.repo_root
+            .as_ref()
+            .map(|repo_root| {
+                BTreeMap::from([(
+                    repo_root.to_string_lossy().into_owned(),
+                    TurnMetadataWorkspace::default(),
+                )])
+            })
             .unwrap_or_default()
     }
 
