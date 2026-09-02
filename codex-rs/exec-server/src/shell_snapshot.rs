@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
 
+use crate::FileSystemSandboxContext;
 use crate::local_process::shell_environment_policy;
 use crate::process_sandbox::PreparedExecRequest;
 use crate::protocol::ExecEnvPolicy;
@@ -44,6 +45,7 @@ struct CachedShellSnapshot {
     request: ShellSnapshotRequest,
     cwd: PathUri,
     env_policy: Option<ExecEnvPolicy>,
+    sandbox: Option<FileSystemSandboxContext>,
     attempts: usize,
     // Failed captures store the earliest time another attempt may start.
     snapshot: Arc<OnceCell<Result<ShellSnapshot, Instant>>>,
@@ -102,6 +104,7 @@ impl ShellSnapshotCache {
                 &entry.request == request
                     && entry.cwd == params.cwd
                     && entry.env_policy == params.env_policy
+                    && entry.sandbox == params.sandbox
             });
             let cached = position.and_then(|position| {
                 let mut entry = entries.remove(position)?;
@@ -127,6 +130,7 @@ impl ShellSnapshotCache {
                     request: request.clone(),
                     cwd: params.cwd.clone(),
                     env_policy: params.env_policy.clone(),
+                    sandbox: params.sandbox.clone(),
                     attempts: 1,
                     snapshot: Arc::clone(&snapshot),
                 };
@@ -242,8 +246,9 @@ async fn capture_snapshot(
 ) -> Result<ShellSnapshot, JSONRPCErrorError> {
     let script = snapshot_state_and_environment_script(shell_type)
         .ok_or_else(|| invalid_params("unsupported shell snapshot script".to_string()))?;
-    let mut argv = params.argv.clone();
-    argv[2] = script;
+    let shell_start = prepared.command.len() - params.argv.len();
+    let mut argv = prepared.command.clone();
+    argv[shell_start + 2] = script;
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| internal_error("missing shell snapshot command".to_string()))?;
@@ -258,7 +263,7 @@ async fn capture_snapshot(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    if let Some(arg0) = &params.arg0 {
+    if let Some(arg0) = &prepared.arg0 {
         command.arg0(arg0);
     }
     let mut child = command

@@ -8,7 +8,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "0.153.0-alpha.2+multi.4"
+VERSION = "0.153.0-alpha.6+multi.4"
 TARGET = "x86_64-unknown-linux-musl"
 RELEASE_NAME = f"{VERSION}-{TARGET}"
 ARTIFACT_ROOT = ROOT / "dist" / "releases" / VERSION

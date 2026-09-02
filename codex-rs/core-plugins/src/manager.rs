@@ -867,7 +867,7 @@ impl PluginsManager {
             self.codex_home.as_path(),
             Self::remote_global_catalog_active_with_auth(config, auth),
             PluginAuthIdentity::from_auth(auth),
-            self.excluded_bundled_plugin_ids(config),
+            self.excluded_bundled_plugin_ids_with_auth(config, auth),
         );
         self.loaded_plugins_cache
             .lock()
@@ -904,7 +904,7 @@ impl PluginsManager {
             self.codex_home.as_path(),
             remote_global_catalog_active,
             auth_identity,
-            self.excluded_bundled_plugin_ids(config),
+            self.excluded_bundled_plugin_ids_with_auth(config, auth),
         );
         if !force_reload && let Some(plugins) = self.cached_loaded_plugins(&cache_key) {
             cache_outcome.record();
@@ -922,7 +922,7 @@ impl PluginsManager {
             return PluginLoadOutcome::default();
         };
         // Migration may have changed the effective exclusion while this load was queued.
-        cache_key.excluded_plugin_ids = self.excluded_bundled_plugin_ids(config);
+        cache_key.excluded_plugin_ids = self.excluded_bundled_plugin_ids_with_auth(config, auth);
         if !force_reload && let Some(plugins) = self.cached_loaded_plugins(&cache_key) {
             RequestOutcome::HitAfterWait.record();
             return self.resolve_loaded_plugins_for_auth(plugins, auth);
@@ -1068,7 +1068,7 @@ impl PluginsManager {
         load_plugin_hooks_from_layer_stack(
             config_layer_stack,
             self.remote_installed_plugin_configs_with_auth(config, auth),
-            &self.excluded_bundled_plugin_ids(config),
+            &self.excluded_bundled_plugin_ids_with_auth(config, auth),
             &self.store,
             target_curated_marketplace,
             Self::remote_global_catalog_active_with_auth(config, auth),
@@ -1662,20 +1662,6 @@ impl PluginsManager {
                 .recommended_plugins_mode_for_config(&config, auth_job.auth())
                 .await;
         });
-    }
-
-    fn maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
-        self: &Arc<Self>,
-        config: &PluginsConfigInput,
-        auth: Option<CodexAuth>,
-        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
-    ) {
-        let auth_job = self.legacy_auth_job(auth);
-        self.maybe_start_remote_installed_plugins_cache_refresh_after_mutation_with_job(
-            config,
-            auth_job,
-            on_effective_plugins_changed,
-        );
     }
 
     pub fn maybe_start_remote_installed_plugins_cache_refresh_after_mutation_with_auth_lease(
@@ -2627,7 +2613,7 @@ impl PluginsManager {
         plugin_states: &ConfiguredPluginStates,
         auth: Option<&CodexAuth>,
     ) -> Result<ConfiguredMarketplaceListOutcome, MarketplaceError> {
-        let excluded_plugin_ids = self.excluded_bundled_plugin_ids(config);
+        let excluded_plugin_ids = self.excluded_bundled_plugin_ids_with_auth(config, auth);
         let marketplace_roots = self.marketplace_roots_with_auth(
             config,
             additional_roots,

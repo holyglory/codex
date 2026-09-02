@@ -77,13 +77,19 @@ impl PluginsManager {
         &self,
         config: &PluginsConfigInput,
     ) -> BTreeSet<String> {
-        if !config.plugins_enabled || !self.remote_global_catalog_active(config) {
+        let auth = self.current_auth();
+        self.excluded_bundled_plugin_ids_with_auth(config, auth.as_ref())
+    }
+
+    pub(super) fn excluded_bundled_plugin_ids_with_auth(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> BTreeSet<String> {
+        if !config.plugins_enabled || !Self::remote_global_catalog_active_with_auth(config, auth) {
             return BTreeSet::new();
         }
-        let auth = self.auth_manager.auth_cached();
-        let Some(path) =
-            self.bundled_plugin_exclusion_path(&config.chatgpt_base_url, auth.as_ref())
-        else {
+        let Some(path) = self.bundled_plugin_exclusion_path(&config.chatgpt_base_url, auth) else {
             return BTreeSet::new();
         };
         let mut exclusions = read_exclusions(&path).ids;
@@ -130,9 +136,9 @@ impl PluginsManager {
         auth: Option<&CodexAuth>,
     ) -> bool {
         if !config.plugins_enabled
-            || !self.remote_global_catalog_active(config)
+            || !Self::remote_global_catalog_active_with_auth(config, auth)
             || self
-                .excluded_bundled_plugin_ids(config)
+                .excluded_bundled_plugin_ids_with_auth(config, auth)
                 .contains(BUNDLED_SITES_PLUGIN_ID)
         {
             return false;

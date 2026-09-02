@@ -1319,10 +1319,7 @@ async fn turn_metadata_state_git_enrichment_cancellation_is_retryable_and_errors
     tokio::time::timeout(Duration::from_secs(2), state.wait_for_git_enrichment())
         .await
         .expect("cancelled git enrichment should unblock waiters");
-    assert_eq!(
-        serde_json::to_value(state.current_workspaces()).expect("workspace metadata"),
-        serde_json::json!({repo_path.to_string_lossy().as_ref(): {}})
-    );
+    assert!(state.current_workspaces().is_empty());
 
     state.spawn_git_enrichment_task(git_root_discovery);
     let json = wait_for_git_enrichment(&state).await;
@@ -1360,8 +1357,5 @@ async fn turn_metadata_state_git_enrichment_cancellation_is_retryable_and_errors
     )
     .await
     .expect("failed git enrichment should complete");
-    assert_eq!(
-        serde_json::to_value(invalid_state.current_workspaces()).expect("workspace metadata"),
-        serde_json::json!({invalid_repo.path().to_string_lossy().as_ref(): {}})
-    );
+    assert!(invalid_state.current_workspaces().is_empty());
 }

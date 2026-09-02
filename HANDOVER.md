@@ -1,8 +1,8 @@
 # Codex Multi-Account CLI Fork: Engineering Handover
 
-Status: `0.153.0-alpha.2+multi.4` rebased and source-validated, but not packaged or deployed; `0.150.1+multi.2` remains deployed for `holyglory`; `slawa` remains on verified `0.149.1+multi.1`; `holygloryTT` and `axel` unchanged
+Status: `0.153.0-alpha.6+multi.4` rebased and source-validated, but not packaged or deployed; `0.150.1+multi.2` remains deployed for `holyglory`; `slawa` remains on verified `0.149.1+multi.1`; `holygloryTT` and `axel` unchanged
 
-Last updated: 2026-09-01
+Last updated: 2026-09-02
 
 Deployment host: `vr.ae`
 
@@ -10,8 +10,8 @@ Authorized deployment accounts: `slawa` and `holyglory`, one explicit target per
 
 Intended repository location on the server: `/home/CodexMulti`
 
-Pinned upstream baseline: `rust-v0.153.0-alpha.2`
-(`73919571da608749b867134722fe3b42c1c6097f`)
+Pinned upstream baseline: `rust-v0.153.0-alpha.6`
+(`e8b3253fed5aeef7e914441bc3b73b3b0a718b51`)
 
 ## 1. Purpose
 

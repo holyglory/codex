@@ -6,6 +6,7 @@ use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_features::Feature;
 use codex_login::AgentIdentityAuthPolicy;
+use codex_protocol::protocol::has_full_access;
 
 use super::super::sampler::LunaSamplerConfig;
 use super::super::sampler::MODEL;
@@ -19,6 +20,8 @@ struct GuardianSamplerTemplate {
     originator: Option<String>,
     luna_compaction_hash: Option<String>,
     metrics: Option<Arc<dyn ExtensionMetrics>>,
+    computer_use_only: bool,
+    prewarm_allowed: bool,
 }
 
 impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
@@ -74,6 +77,16 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .get_or_init(NodeReplReviewEvidence::default)
                     .enable_image_capture();
             }
+            let computer_use_only =
+                guardian_config.review_scope == GuardianV2ReviewScope::ComputerUseOnly;
+            let prewarm_allowed = !has_full_access(
+                input.config.permissions.approval_policy.value(),
+                &input.config.permissions.effective_permission_profile(),
+                input
+                    .environments
+                    .iter()
+                    .map(|environment| &environment.config),
+            );
             let template = GuardianSamplerTemplate {
                 config: input.config.clone(),
                 session_source: input.session_source.clone(),
@@ -85,6 +98,8 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .map(|originator| originator.0.clone()),
                 luna_compaction_hash,
                 metrics: input.extension_metrics.clone(),
+                computer_use_only,
+                prewarm_allowed,
             };
             input.thread_store.insert(template.clone());
             input.thread_store.insert(guardian_config);
@@ -106,10 +121,14 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                         template.luna_compaction_hash.clone(),
                     )
                 });
-                input.thread_store.insert(GuardianV2Enabled);
-                tokio::spawn(async move {
-                    sampler.prewarm().await;
+                input.thread_store.insert(GuardianV2Enabled {
+                    computer_use_only: template.computer_use_only,
                 });
+                if template.prewarm_allowed {
+                    tokio::spawn(async move {
+                        sampler.prewarm().await;
+                    });
+                }
             }
         })
     }
@@ -154,10 +173,14 @@ impl TurnLifecycleContributor for GuardianV2Extension {
                     luna_compaction_hash,
                 )
             });
-            input.thread_store.insert(GuardianV2Enabled);
-            tokio::spawn(async move {
-                sampler.prewarm().await;
+            input.thread_store.insert(GuardianV2Enabled {
+                computer_use_only: template.computer_use_only,
             });
+            if template.prewarm_allowed {
+                tokio::spawn(async move {
+                    sampler.prewarm().await;
+                });
+            }
         })
     }
 }

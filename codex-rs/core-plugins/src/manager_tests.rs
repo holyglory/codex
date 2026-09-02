@@ -7721,7 +7721,11 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
         manager.ensure_sites_migration_ready(&config, Some(&auth)),
     );
     assert!(first.unwrap().is_some() ^ concurrent.unwrap().is_some());
-    assert!(!manager.remote_installed_plugin_configs()["sites@openai-curated-remote"].enabled);
+    assert!(
+        !manager.remote_installed_plugin_configs_with_auth(&config, Some(&auth))
+            ["sites@openai-curated-remote"]
+            .enabled
+    );
     assert!(
         server
             .received_requests()
@@ -7771,7 +7775,11 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
     );
     assert_eq!(server.received_requests().await.unwrap().len(), requests);
     assert!(!has_bundled_sites(&restarted));
-    assert!(restarted.remote_installed_plugin_configs().is_empty());
+    assert!(
+        restarted
+            .remote_installed_plugin_configs_with_auth(&config, Some(&auth))
+            .is_empty()
+    );
     assert!(
         !loaded_plugin_names(&restarted, &config)
             .await

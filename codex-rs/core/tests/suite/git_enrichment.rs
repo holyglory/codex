@@ -279,10 +279,7 @@ async fn guardian_prewarm_and_review_skip_redundant_git_enrichment() -> Result<(
     .await?;
     for prewarm in [first.body_json(), second.body_json()] {
         assert_eq!(prewarm["generate"].as_bool(), Some(false));
-        assert_eq!(
-            turn_metadata(&prewarm)?["workspaces"],
-            expected_unenriched_workspace(repo.path())
-        );
+        assert!(turn_metadata(&prewarm)?.get("workspaces").is_none());
     }
 
     std::fs::write(repo.path().join("untracked.txt"), "dirty\n")?;
@@ -323,10 +320,7 @@ async fn guardian_prewarm_and_review_skip_redundant_git_enrichment() -> Result<(
         guardian_turn["client_metadata"]["x-openai-subagent"].as_str(),
         Some("guardian")
     );
-    assert_eq!(
-        turn_metadata(&guardian_turn)?["workspaces"],
-        expected_unenriched_workspace(repo.path())
-    );
+    assert!(turn_metadata(&guardian_turn)?.get("workspaces").is_none());
 
     test.codex.shutdown_and_wait().await?;
     server.shutdown().await;
@@ -391,10 +385,7 @@ async fn ephemeral_system_thread_prewarm_skips_and_turn_observes_fresh_state(
     )
     .await?
     .body_json();
-    assert_eq!(
-        turn_metadata(&prewarm)?["workspaces"],
-        expected_unenriched_workspace(repo.path())
-    );
+    assert!(turn_metadata(&prewarm)?.get("workspaces").is_none());
 
     std::fs::write(repo.path().join("untracked.txt"), "dirty\n")?;
     system_thread

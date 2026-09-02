@@ -10,8 +10,8 @@ fn normalizes_cli_versions_without_changing_the_rendered_width() {
             "│ OpenAI Codex (v<VERSION>)        │",
         ),
         (
-            "│ OpenAI Codex (v0.153.0-alpha.2+multi.4)  │",
-            "0.153.0-alpha.2+multi.4",
+            "│ OpenAI Codex (v0.153.0-alpha.6+multi.4)  │",
+            "0.153.0-alpha.6+multi.4",
             "│ OpenAI Codex (v<VERSION>)                │",
         ),
         (

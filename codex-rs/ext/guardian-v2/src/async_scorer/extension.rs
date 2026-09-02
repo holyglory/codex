@@ -30,7 +30,6 @@ use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
-use codex_features::Feature;
 use codex_guardian_context::ContextTarget;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
@@ -41,7 +40,6 @@ use codex_protocol::mcp::is_node_repl_backed_tool;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TruncationPolicy;
-use codex_protocol::protocol::has_full_access;
 use codex_protocol::security_risk::SecurityRiskScore;
 
 use super::action::GuardianAction;
@@ -128,106 +126,6 @@ struct GuardianV2Extension {
     auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
     event_sink: Arc<dyn ExtensionEventSink>,
     thread_manager: Weak<ThreadManager>,
-}
-
-impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
-    fn on_thread_start<'a>(
-        &'a self,
-        input: ThreadStartInput<'a, Config>,
-    ) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move {
-            if !input.config.features.enabled(Feature::GuardianV2)
-                || !input.config.features.enabled(Feature::GuardianApproval)
-            {
-                return;
-            }
-
-            let thread_id = input.thread_store.level_id().to_string();
-            let guardian_config = match GuardianV2Config::resolve(input.config) {
-                Ok(config) => config,
-                Err(error) => {
-                    self.event_sink.emit_warning(ExtensionWarning {
-                        thread_id,
-                        turn_id: None,
-                        message: error,
-                    });
-                    return;
-                }
-            };
-            let luna_compaction_hash = if let Some(thread_manager) = self.thread_manager.upgrade() {
-                thread_manager
-                    .get_models_manager()
-                    .get_model_info(MODEL, &input.config.to_models_manager_config())
-                    .await
-                    .comp_hash
-            } else {
-                None
-            };
-            let sampler_config = LunaSamplerConfig {
-                provider: create_model_provider(
-                    input.config.model_provider.clone(),
-                    Some(Arc::clone(&self.auth_manager)),
-                ),
-                http_client_factory: input.config.http_client_factory(),
-                agent_identity_policy: if input.config.features.enabled(Feature::UseAgentIdentity) {
-                    AgentIdentityAuthPolicy::ChatGptAuth
-                } else {
-                    AgentIdentityAuthPolicy::JwtOnly
-                },
-                session_source: input.session_source.clone(),
-                session_id: input.session_store.level_id().to_string(),
-                thread_id: thread_id.clone(),
-                originator: input
-                    .thread_store
-                    .get::<ThreadOriginator>()
-                    .map(|originator| originator.0.clone()),
-                free_guardian: input.config.free_guardian_enabled(),
-                service_tier: input.config.service_tier.clone(),
-                luna_compaction_hash,
-                metrics: input.extension_metrics.clone(),
-            };
-
-            if guardian_config.transcript.include_images {
-                input
-                    .thread_store
-                    .get_or_init(NodeReplReviewEvidence::default)
-                    .enable_image_capture();
-            }
-            input.thread_store.remove::<LunaSampler>();
-            let sampler = input
-                .thread_store
-                .get_or_init(|| LunaSampler::new(sampler_config));
-            let guardian_v2_enabled = GuardianV2Enabled {
-                computer_use_only: guardian_config.review_scope
-                    == GuardianV2ReviewScope::ComputerUseOnly,
-            };
-            input.thread_store.insert(guardian_config);
-            input.thread_store.insert(GuardianV2ScoreProgress {
-                metrics: input.extension_metrics.clone(),
-                ..Default::default()
-            });
-            input.thread_store.insert(GuardianReviewEvidence::default());
-            input
-                .thread_store
-                .insert(TrustedSkillRoots::from_config(input.config));
-            input.thread_store.insert(guardian_v2_enabled);
-
-            // Keep the sampler available if a later turn leaves Full Access, but do
-            // not open Guardian connections while Full Access is selected.
-            if !has_full_access(
-                input.config.permissions.approval_policy.value(),
-                &input.config.permissions.effective_permission_profile(),
-                input
-                    .environments
-                    .iter()
-                    .map(|environment| &environment.config),
-            ) {
-                tokio::spawn(async move {
-                    sampler.prewarm().await;
-                });
-            }
-        })
-    }
 }
 
 impl SkillInvocationContributor for GuardianV2Extension {
