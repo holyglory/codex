@@ -1,3 +1,4 @@
+use crate::model_context_estimate::ModelContextEstimate;
 use codex_api::ProviderResponseStatus;
 use codex_api::ProviderUsageObservation;
 use codex_protocol::error::CodexErr;
@@ -23,6 +24,7 @@ use codex_usage::ModelRequestId;
 use codex_usage::NewAgent;
 use codex_usage::NewCoverageEvent;
 use codex_usage::NewModelRequest;
+use codex_usage::NewModelRequestContext;
 use codex_usage::NewOperation;
 use codex_usage::NewThread;
 use codex_usage::NewTokenObservation;
@@ -98,6 +100,7 @@ pub(crate) struct ModelAttemptContext<'a> {
     pub(crate) attempt_number: u32,
     pub(crate) retry_of_operation_id: Option<OperationId>,
     pub(crate) retry_slot: Arc<std::sync::Mutex<Option<OperationId>>>,
+    pub(crate) context_estimate: Option<ModelContextEstimate>,
 }
 
 pub(crate) struct UsageRequestChain {
@@ -342,6 +345,20 @@ impl UsageRuntime {
                 })
                 .await,
         )?;
+        if let Some(estimate) = context.context_estimate {
+            self.write_required_for(
+                operation_id,
+                store
+                    .record_model_request_context(&NewModelRequestContext {
+                        model_request_id,
+                        policy_estimated_tokens: estimate.policy_tokens,
+                        conversation_estimated_tokens: estimate.conversation_tokens,
+                        tool_output_estimated_tokens: estimate.tool_output_tokens,
+                        observed_at_ms: started_at_ms,
+                    })
+                    .await,
+            )?;
+        }
         self.write_required_for(
             operation_id,
             store

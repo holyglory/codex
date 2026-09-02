@@ -20,6 +20,8 @@ use crate::types::Phase;
 use crate::types::ProviderKind;
 use crate::types::TAXONOMY_VERSION;
 use crate::types::TokenUnit;
+use crate::types::ToolExecutionGroupId;
+use crate::types::ToolExecutionRole;
 use crate::types::ToolKind;
 use crate::types::ToolName;
 use crate::types::TransportKind;
@@ -61,6 +63,8 @@ macro_rules! uuid_id {
 uuid_id!(FactEventId);
 uuid_id!(ModelRequestId);
 uuid_id!(ToolInvocationId);
+
+pub const MODEL_REQUEST_CONTEXT_ESTIMATOR: &str = "approx_model_visible_v1";
 
 impl FactEventId {
     pub fn from_provider_source_key(key: &[u8; 32]) -> Self {
@@ -159,6 +163,15 @@ pub struct NewModelRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewModelRequestContext {
+    pub model_request_id: ModelRequestId,
+    pub policy_estimated_tokens: u64,
+    pub conversation_estimated_tokens: u64,
+    pub tool_output_estimated_tokens: u64,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewToolInvocation {
     pub id: ToolInvocationId,
     pub operation_id: OperationId,
@@ -168,6 +181,8 @@ pub struct NewToolInvocation {
     pub operation_family: OperationFamily,
     pub observation_timing: ObservationTiming,
     pub covering_model_request_id: Option<ModelRequestId>,
+    pub execution_group_id: Option<ToolExecutionGroupId>,
+    pub execution_role: ToolExecutionRole,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,24 +338,86 @@ impl UsageStore {
         Ok(())
     }
 
+    pub async fn record_model_request_context(
+        &self,
+        fact: &NewModelRequestContext,
+    ) -> Result<(), UsageStoreError> {
+        let policy_estimated_tokens = i64::try_from(fact.policy_estimated_tokens)
+            .map_err(|_| UsageStoreError::TokenCountOutOfRange)?;
+        let conversation_estimated_tokens = i64::try_from(fact.conversation_estimated_tokens)
+            .map_err(|_| UsageStoreError::TokenCountOutOfRange)?;
+        let tool_output_estimated_tokens = i64::try_from(fact.tool_output_estimated_tokens)
+            .map_err(|_| UsageStoreError::TokenCountOutOfRange)?;
+        let model_request_id = fact.model_request_id.as_string();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO model_request_context_sources(
+                model_request_id, policy_estimated_tokens,
+                conversation_estimated_tokens, tool_output_estimated_tokens,
+                estimator, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(model_request_id) DO NOTHING
+            "#,
+        )
+        .bind(&model_request_id)
+        .bind(policy_estimated_tokens)
+        .bind(conversation_estimated_tokens)
+        .bind(tool_output_estimated_tokens)
+        .bind(MODEL_REQUEST_CONTEXT_ESTIMATOR)
+        .bind(fact.observed_at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)?;
+        if result.rows_affected() == 0
+            && !sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM model_request_context_sources
+                    WHERE model_request_id = ?
+                      AND policy_estimated_tokens = ?
+                      AND conversation_estimated_tokens = ?
+                      AND tool_output_estimated_tokens = ?
+                      AND estimator = ? AND observed_at_ms = ?
+                )
+                "#,
+            )
+            .bind(&model_request_id)
+            .bind(policy_estimated_tokens)
+            .bind(conversation_estimated_tokens)
+            .bind(tool_output_estimated_tokens)
+            .bind(MODEL_REQUEST_CONTEXT_ESTIMATOR)
+            .bind(fact.observed_at_ms)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?
+        {
+            return Err(UsageStoreError::FactConflict);
+        }
+        Ok(())
+    }
+
     pub async fn record_tool_invocation(
         &self,
         fact: &NewToolInvocation,
     ) -> Result<(), UsageStoreError> {
         if (fact.operation_kind == OperationKind::HostedTool)
             != fact.covering_model_request_id.is_some()
+            || (fact.execution_role == ToolExecutionRole::Standalone
+                && fact.execution_group_id.is_some())
         {
             return Err(UsageStoreError::InvalidFact);
         }
         let covering_model_request_id = fact
             .covering_model_request_id
             .map(ModelRequestId::as_string);
+        let execution_group_id = fact.execution_group_id.map(ToolExecutionGroupId::as_string);
         let result = sqlx::query(
             r#"
             INSERT INTO tool_invocations(
                 id, operation_id, operation_kind, tool_kind, safe_tool_name,
-                operation_family, observation_timing, covering_model_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
+                operation_family, observation_timing, covering_model_request_id,
+                execution_group_id, execution_role
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
             "#,
         )
         .bind(fact.id.as_string())
@@ -351,12 +428,18 @@ impl UsageStore {
         .bind(fact.operation_family.as_str())
         .bind(fact.observation_timing.as_str())
         .bind(&covering_model_request_id)
+        .bind(&execution_group_id)
+        .bind(fact.execution_role.as_str())
         .execute(&self.pool)
         .await
         .map_err(UsageStoreError::Database)?;
         if result.rows_affected() == 0
             && !self
-                .tool_invocation_matches(fact, covering_model_request_id.as_deref())
+                .tool_invocation_matches(
+                    fact,
+                    covering_model_request_id.as_deref(),
+                    execution_group_id.as_deref(),
+                )
                 .await?
         {
             return Err(UsageStoreError::FactConflict);
@@ -613,6 +696,7 @@ impl UsageStore {
         &self,
         fact: &NewToolInvocation,
         covering_model_request_id: Option<&str>,
+        execution_group_id: Option<&str>,
     ) -> Result<bool, UsageStoreError> {
         let row = sqlx::query_as::<
             _,
@@ -624,11 +708,14 @@ impl UsageStore {
                 String,
                 String,
                 Option<String>,
+                Option<String>,
+                String,
             ),
         >(
             r#"
             SELECT operation_id, operation_kind, tool_kind, safe_tool_name,
-                   operation_family, observation_timing, covering_model_request_id
+                   operation_family, observation_timing, covering_model_request_id,
+                   execution_group_id, execution_role
             FROM tool_invocations WHERE id = ?
             "#,
         )
@@ -645,6 +732,8 @@ impl UsageStore {
                 fact.operation_family.as_str().to_string(),
                 fact.observation_timing.as_str().to_string(),
                 covering_model_request_id.map(str::to_string),
+                execution_group_id.map(str::to_string),
+                fact.execution_role.as_str().to_string(),
             )
         }))
     }

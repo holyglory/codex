@@ -5,6 +5,8 @@ use codex_usage::NewToolApprovalEvent;
 use codex_usage::NewToolInvocation;
 use codex_usage::ObservationTiming;
 use codex_usage::OperationFamily;
+use codex_usage::ToolExecutionGroupId;
+use codex_usage::ToolExecutionRole;
 use codex_usage::ToolInvocationId;
 use codex_usage::ToolKind;
 use codex_usage::ToolName as UsageToolName;
@@ -67,6 +69,8 @@ pub(crate) struct ToolAttemptContext<'a> {
     pub(crate) call_id: &'a str,
     pub(crate) cancellation_token: tokio_util::sync::CancellationToken,
     pub(crate) descriptor: UsageToolDescriptor,
+    pub(crate) execution_group_id: Option<ToolExecutionGroupId>,
+    pub(crate) execution_role: ToolExecutionRole,
     pub(crate) account: AccountAttributionSnapshot,
     pub(crate) repositories: Vec<RepositoryCandidate>,
 }
@@ -261,6 +265,8 @@ impl UsageRuntime {
                     observation_timing: ObservationTiming::new("before_execution")
                         .map_err(|_| self.reject_invalid_metadata())?,
                     covering_model_request_id: None,
+                    execution_group_id: context.execution_group_id,
+                    execution_role: context.execution_role,
                 })
                 .await,
         )?;
@@ -935,6 +941,8 @@ impl UsageAttempt {
                     observation_timing: ObservationTiming::new("observed_after_execution")
                         .map_err(|_| codex_usage::UsageStoreError::InvalidFact)?,
                     covering_model_request_id: Some(self.model_request_id),
+                    execution_group_id: None,
+                    execution_role: ToolExecutionRole::Standalone,
                 })
                 .await?;
             store

@@ -89,7 +89,7 @@ async fn empty_json_summary_preserves_unknowns_and_formulas() {
     let output = render::summary(&summary, /*json_output*/ true, Some("primary")).expect("render");
     let value: serde_json::Value = serde_json::from_str(&output).expect("json");
     assert_eq!(value["schemaVersion"], 1);
-    assert_eq!(value["databaseSchemaVersion"], 4);
+    assert_eq!(value["databaseSchemaVersion"], 5);
     assert_eq!(value["taxonomyVersion"], 1);
     assert_eq!(value["account"], "primary");
     assert_eq!(value["coverage"]["state"], "unobserved");

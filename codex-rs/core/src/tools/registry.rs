@@ -14,6 +14,7 @@ use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -541,6 +542,7 @@ impl ToolRegistry {
         )
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?;
         let usage_repositories = usage_repository_candidates_for_tool(&invocation);
+        let (execution_group_id, execution_role) = usage_tool_execution(&invocation).await;
         let usage_attempt = invocation
             .session
             .services
@@ -553,6 +555,8 @@ impl ToolRegistry {
                 call_id: &invocation.call_id,
                 cancellation_token: invocation.cancellation_token.clone(),
                 descriptor: usage_tool_descriptor(&tool_name, tool.as_deref()),
+                execution_group_id,
+                execution_role,
                 account: usage_account,
                 repositories: usage_repositories,
             })
@@ -960,6 +964,43 @@ fn usage_tool_descriptor(
     } else {
         descriptor("unsupported", "unsupported_tool", "unsupported")
     }
+}
+
+async fn usage_tool_execution(
+    invocation: &ToolInvocation,
+) -> (
+    Option<codex_usage::ToolExecutionGroupId>,
+    codex_usage::ToolExecutionRole,
+) {
+    let role = match &invocation.source {
+        ToolCallSource::CodeMode { .. } => codex_usage::ToolExecutionRole::Nested,
+        ToolCallSource::Direct
+            if invocation.tool_name.is_default_namespace()
+                && matches!(
+                    invocation.tool_name.name.as_str(),
+                    crate::tools::code_mode::PUBLIC_TOOL_NAME
+                        | crate::tools::code_mode::WAIT_TOOL_NAME
+                ) =>
+        {
+            codex_usage::ToolExecutionRole::Wrapper
+        }
+        ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
+            codex_usage::ToolExecutionRole::Standalone
+        }
+    };
+    if role == codex_usage::ToolExecutionRole::Standalone {
+        return (None, role);
+    }
+    let group = invocation.originating_item_id().await.map(|item_id| {
+        let key = format!(
+            "{}\0{}\0{}",
+            invocation.session.thread_id,
+            invocation.turn.sub_id,
+            item_id.as_str()
+        );
+        codex_usage::ToolExecutionGroupId::from_stable_key(key.as_bytes())
+    });
+    (group, role)
 }
 
 fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<RepositoryCandidate> {

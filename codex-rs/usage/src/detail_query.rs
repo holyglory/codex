@@ -268,15 +268,23 @@ impl UsageStore {
                             parent_request.account_auth_mode,
                             turn.account_auth_mode) AS effective_auth_mode,
                    request.client_origin,
+                   context.policy_estimated_tokens,
+                   context.conversation_estimated_tokens,
+                   context.tool_output_estimated_tokens,
+                   context.estimator AS context_estimator,
+                   context.observed_at_ms AS context_observed_at_ms,
                    tool.id AS tool_id, tool.tool_kind, tool.safe_tool_name,
                    tool.operation_family, tool.observation_timing,
-                   tool.covering_model_request_id
+                   tool.covering_model_request_id, tool.execution_group_id,
+                   tool.execution_role
             FROM operations AS operation
             LEFT JOIN operation_events AS terminal
               ON terminal.operation_id = operation.id AND terminal.terminal = 1
             LEFT JOIN model_requests AS request ON request.operation_id = operation.id
             LEFT JOIN model_requests AS parent_request
               ON parent_request.operation_id = operation.parent_operation_id
+            LEFT JOIN model_request_context_sources AS context
+              ON context.model_request_id = request.id
             LEFT JOIN tool_invocations AS tool ON tool.operation_id = operation.id
             LEFT JOIN turns AS turn ON turn.id = operation.turn_id
             WHERE (? IS NULL OR operation.thread_id = ?)
@@ -421,6 +429,26 @@ fn operation_record(
                             .map_err(|_| UsageStoreError::InvalidFact)?
                             .as_str()
                             .to_string(),
+                        context: row
+                            .get::<Option<i64>, _>("policy_estimated_tokens")
+                            .map(|policy_estimated_tokens| {
+                                Ok(crate::UsageModelRequestContextDetail {
+                                    policy_estimated_tokens: policy_estimated_tokens
+                                        .try_into()
+                                        .map_err(|_| UsageStoreError::InvalidFact)?,
+                                    conversation_estimated_tokens: row
+                                        .get::<i64, _>("conversation_estimated_tokens")
+                                        .try_into()
+                                        .map_err(|_| UsageStoreError::InvalidFact)?,
+                                    tool_output_estimated_tokens: row
+                                        .get::<i64, _>("tool_output_estimated_tokens")
+                                        .try_into()
+                                        .map_err(|_| UsageStoreError::InvalidFact)?,
+                                    estimator: row.get("context_estimator"),
+                                    observed_at_ms: row.get("context_observed_at_ms"),
+                                })
+                            })
+                            .transpose()?,
                     })
                 })
                 .transpose()?,
@@ -452,6 +480,19 @@ fn operation_record(
                             .get::<Option<String>, _>("covering_model_request_id")
                             .map(model_request)
                             .transpose()?,
+                        execution_group_id: row
+                            .get::<Option<String>, _>("execution_group_id")
+                            .map(|value| {
+                                crate::ToolExecutionGroupId::from_string(&value)
+                                    .map(crate::ToolExecutionGroupId::as_string)
+                                    .ok_or(UsageStoreError::InvalidFact)
+                            })
+                            .transpose()?,
+                        execution_role: required_enum(
+                            row.get("execution_role"),
+                            crate::ToolExecutionRole::parse,
+                            crate::ToolExecutionRole::as_str,
+                        )?,
                     })
                 })
                 .transpose()?,

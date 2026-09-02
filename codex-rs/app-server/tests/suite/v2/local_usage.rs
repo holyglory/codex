@@ -725,6 +725,8 @@ async fn seed_usage(codex_home: &Path) -> Result<SeededUsage> {
                 operation_family: OperationFamily::new("test")?,
                 observation_timing: ObservationTiming::new("before_dispatch")?,
                 covering_model_request_id: None,
+                execution_group_id: None,
+                execution_role: codex_usage::ToolExecutionRole::Standalone,
             })
             .await?;
         attribute(&store, tool_operation.id, repository_one.clone()).await?;

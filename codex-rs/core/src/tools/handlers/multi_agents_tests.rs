@@ -2983,6 +2983,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         ))
         .await
         .expect("wait_agent should succeed");
+    assert_eq!(
+        output.usage_terminal_outcome(),
+        codex_tools::UsageTerminalOutcome::EXPECTED_EXPIRY
+    );
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
@@ -3216,6 +3220,10 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         .handle(invocation)
         .await
         .expect("wait_agent should succeed");
+    assert_eq!(
+        output.usage_terminal_outcome(),
+        codex_tools::UsageTerminalOutcome::EXPECTED_EXPIRY
+    );
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");

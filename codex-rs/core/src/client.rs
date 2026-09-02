@@ -126,6 +126,9 @@ use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
+use crate::model_context_estimate::ModelContextEstimate;
+use crate::model_context_estimate::model_context_estimate;
+use crate::model_context_estimate::model_context_estimate_parts;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::usage_runtime::ModelAttemptContext;
@@ -771,6 +774,8 @@ impl ModelClient {
             ..
         } = request;
         self.prepare_response_items_for_request(&mut input);
+        let context_estimate =
+            model_context_estimate_parts(&instructions, tools.as_ref(), text.as_ref(), &input);
         let payload = ApiCompactionInput {
             model: &model,
             input: &input,
@@ -828,6 +833,7 @@ impl ModelClient {
                 responses_metadata,
                 usage_chain,
                 usage_auth_mode,
+                context_estimate,
             )
             .await?;
         let result = client
@@ -1416,6 +1422,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         auth_mode: Option<AuthMode>,
         usage_chain: &UsageRequestChain,
+        context_estimate: Option<ModelContextEstimate>,
     ) -> Result<Option<UsageAttempt>> {
         let Some(runtime) = &self.client.usage_runtime else {
             return Ok(None);
@@ -1447,6 +1454,7 @@ impl ModelClientSession {
                 attempt_number: usage_request.attempt_number,
                 retry_of_operation_id: usage_request.retry_of_operation_id,
                 retry_slot: usage_request.retry_slot,
+                context_estimate,
             })
             .await
             .map(Some)
@@ -1461,6 +1469,7 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         usage_chain: &UsageRequestChain,
         auth_mode: Option<AuthMode>,
+        context_estimate: Option<ModelContextEstimate>,
     ) -> Result<Option<UsageAttempt>> {
         let Some(runtime) = &self.usage_runtime else {
             return Ok(None);
@@ -1490,6 +1499,7 @@ impl ModelClient {
                 attempt_number: usage_request.attempt_number,
                 retry_of_operation_id: usage_request.retry_of_operation_id,
                 retry_slot: usage_request.retry_slot,
+                context_estimate,
             })
             .await
             .map(Some)
@@ -1943,6 +1953,7 @@ impl ModelClientSession {
                     responses_metadata,
                     usage_auth_mode,
                     usage_chain,
+                    model_context_estimate(&request),
                 )
                 .await?;
             let stream_result = client.stream_request(request, options).await;
@@ -2197,6 +2208,7 @@ impl ModelClientSession {
                     responses_metadata,
                     usage_auth_mode,
                     usage_chain,
+                    model_context_estimate(&request),
                 )
                 .await?
             };

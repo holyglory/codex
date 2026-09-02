@@ -20,6 +20,7 @@ fn context<'a>(thread_id: &'a str, turn_id: &'a str, model: &'a str) -> ModelAtt
         attempt_number: 1,
         retry_of_operation_id: None,
         retry_slot: Arc::new(StdMutex::new(None)),
+        context_estimate: None,
     }
 }
 

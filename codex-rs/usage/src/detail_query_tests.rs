@@ -219,6 +219,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             operation_family: OperationFamily::new("filesystem").expect("family"),
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
+            execution_group_id: None,
+            execution_role: ToolExecutionRole::Standalone,
         })
         .await
         .expect("tool");
@@ -327,6 +329,16 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
         .await
         .expect("rework request");
     store
+        .record_model_request_context(&NewModelRequestContext {
+            model_request_id: rework_request_id,
+            policy_estimated_tokens: 7,
+            conversation_estimated_tokens: 8,
+            tool_output_estimated_tokens: 9,
+            observed_at_ms: 1_301,
+        })
+        .await
+        .expect("rework request context");
+    store
         .finish_operation(&TerminalOperation {
             operation_id: rework_operation.id,
             status: TerminalStatus::Completed,
@@ -422,6 +434,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
                 operation_family: "filesystem".to_string(),
                 observation_timing: "runtime".to_string(),
                 covering_model_request_id: None,
+                execution_group_id: None,
+                execution_role: "standalone".to_string(),
             }),
         }))
     );
@@ -493,6 +507,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
                 account: Some("primary".to_string()),
                 account_auth_mode: Some("chatgpt".to_string()),
                 client_origin: "root".to_string(),
+                context: None,
             }),
             tool: None,
         }))
@@ -543,6 +558,13 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
                 account: Some("primary".to_string()),
                 account_auth_mode: Some("chatgpt".to_string()),
                 client_origin: "root".to_string(),
+                context: Some(UsageModelRequestContextDetail {
+                    policy_estimated_tokens: 7,
+                    conversation_estimated_tokens: 8,
+                    tool_output_estimated_tokens: 9,
+                    estimator: MODEL_REQUEST_CONTEXT_ESTIMATOR.to_string(),
+                    observed_at_ms: 1_301,
+                }),
             }),
             tool: None,
         }))

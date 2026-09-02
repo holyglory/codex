@@ -100,7 +100,8 @@ impl From<UsageStoreError> for UsageCommandError {
             | UsageStoreError::UnsupportedPlatform
             | UsageStoreError::RepositoryKeyCommittedCleanupUncertain(_)
             | UsageStoreError::RepositoryKeyCommittedSyncUncertain(_)
-            | UsageStoreError::AggregateOverflow => UsageErrorKind::Storage,
+            | UsageStoreError::AggregateOverflow
+            | UsageStoreError::TaskTreeTooLarge => UsageErrorKind::Storage,
         };
         Self::new(kind)
     }

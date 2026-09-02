@@ -36,6 +36,7 @@ fn context<'a>(
         attempt_number: 1,
         retry_of_operation_id,
         retry_slot,
+        context_estimate: None,
     }
 }
 
@@ -58,6 +59,8 @@ fn tool_context<'a>(
             activity_control: false,
             activity_state: ActivityState::ToolActive,
         },
+        execution_group_id: None,
+        execution_role: codex_usage::ToolExecutionRole::Standalone,
         account: AccountAttributionSnapshot::unknown(),
         repositories: Vec::new(),
     }

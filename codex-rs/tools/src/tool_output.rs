@@ -49,6 +49,12 @@ impl UsageTerminalOutcome {
         status: UsageTerminalStatus::TimedOut,
         error_category: Some(UsageTerminalErrorCategory::Timeout),
     };
+
+    /// A bounded wait reached its requested deadline normally; this is not a tool failure.
+    pub const EXPECTED_EXPIRY: Self = Self {
+        status: UsageTerminalStatus::TimedOut,
+        error_category: None,
+    };
 }
 
 /// Model-facing output contract returned by executable tool runtimes.

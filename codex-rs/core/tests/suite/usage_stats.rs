@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
+use codex_features::Feature;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageDetailListQuery;
 use codex_usage::UsageDetailRecord;
@@ -11,6 +12,7 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
@@ -354,5 +356,158 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     assert_eq!(correction["event"]["event"], "classification_corrected");
     assert_eq!(correction["event"]["provenance"], "user_corrected");
     assert!(correction.get("reportingOperationInProgress").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_tree_summary_reports_code_mode_deduplication_and_context_sources() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-tree-1"),
+                ev_custom_tool_call(
+                    "code-mode-wrapper",
+                    "exec",
+                    r#"
+const result = await tools.get_context_remaining({});
+text(JSON.stringify(result));
+"#,
+                ),
+                ev_completed_with_usage(
+                    "resp-tree-1",
+                    /*input_tokens*/ 10,
+                    /*output_tokens*/ 2,
+                ),
+            ]),
+            sse(vec![
+                ev_response_created("resp-tree-2"),
+                ev_function_call(
+                    "read-tree",
+                    "usage_stats",
+                    &json!({
+                        "action": "task_tree_summary",
+                        "root_thread_id": "current",
+                        "include_descendants": true,
+                        "from_at_ms": 0,
+                        "to_at_ms": 4_000_000_000_000_i64
+                    })
+                    .to_string(),
+                ),
+                ev_completed_with_usage(
+                    "resp-tree-2",
+                    /*input_tokens*/ 20,
+                    /*output_tokens*/ 3,
+                ),
+            ]),
+            sse(vec![
+                ev_response_created("resp-tree-3"),
+                ev_assistant_message("msg-tree", "done"),
+                ev_completed("resp-tree-3"),
+            ]),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    let mut builder = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::CodeMode)
+                .expect("code mode feature");
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("token budget feature");
+            config.model_context_window = Some(10_000);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.submit_turn("inspect this task tree").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    let summary = tool_output(&requests[2], "read-tree");
+    assert_eq!(summary["kind"], "taskTreeSummary");
+    assert_eq!(summary["includeDescendants"], true);
+    assert_eq!(summary["counts"]["wrapperToolOperations"], 1);
+    assert_eq!(summary["counts"]["nestedToolOperations"], 1);
+    assert_eq!(summary["counts"]["rawToolOperations"], 3);
+    assert_eq!(summary["counts"]["deduplicatedToolOperations"], 2);
+    assert_eq!(
+        summary["totals"]["providerTotalTokens"]["measuredTokens"],
+        35
+    );
+    assert_eq!(summary["context"]["observedRequests"], 2);
+    let sources = summary["context"]["sources"]
+        .as_array()
+        .context("context source array")?;
+    assert!(sources.iter().any(|source| {
+        source["source"] == "tool_output"
+            && source["estimatedTokens"]
+                .as_u64()
+                .is_some_and(|value| value > 0)
+    }));
+
+    let usage = UsageStore::open(home.path()).await?;
+    let operations = usage
+        .list_details(
+            UsageDetailKind::Operations,
+            &UsageDetailListQuery {
+                page: UsagePageRequest {
+                    cursor: None,
+                    limit: 50,
+                },
+                time_range: None,
+                thread_id: None,
+                repository_id: None,
+                account_profile_ref: None,
+            },
+            codex_usage::redacted_account_profile_label,
+        )
+        .await?;
+    let tool_details = operations
+        .data
+        .iter()
+        .filter_map(|record| match record {
+            UsageDetailRecord::Operation(operation) => operation.tool.as_ref(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let wrapper = tool_details
+        .iter()
+        .find(|tool| tool.execution_role == "wrapper")
+        .context("code mode wrapper usage")?;
+    let nested = tool_details
+        .iter()
+        .find(|tool| tool.execution_role == "nested")
+        .context("nested code mode usage")?;
+    assert_eq!(wrapper.execution_group_id, nested.execution_group_id);
+    assert!(wrapper.execution_group_id.is_some());
+    let model_contexts = operations
+        .data
+        .iter()
+        .filter_map(|record| match record {
+            UsageDetailRecord::Operation(operation) => operation
+                .model_request
+                .as_ref()
+                .and_then(|request| request.context.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(model_contexts.len(), 3);
+    assert!(
+        model_contexts
+            .iter()
+            .all(|context| context.policy_estimated_tokens > 0)
+    );
+    assert!(
+        model_contexts
+            .iter()
+            .any(|context| context.tool_output_estimated_tokens > 0)
+    );
     Ok(())
 }

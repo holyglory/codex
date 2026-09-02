@@ -168,6 +168,12 @@ string_enum!(OperationKind {
     ActivityControl => "activity_control",
 });
 
+string_enum!(ToolExecutionRole {
+    Standalone => "standalone",
+    Wrapper => "wrapper",
+    Nested => "nested",
+});
+
 string_enum!(TerminalStatus {
     Completed => "completed",
     Incomplete => "incomplete",
@@ -316,6 +322,23 @@ impl Default for ActivitySpanId {
 impl Default for OperationId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ToolExecutionGroupId(Uuid);
+
+impl ToolExecutionGroupId {
+    pub fn from_stable_key(value: &[u8]) -> Self {
+        Self(Uuid::new_v5(&Uuid::NAMESPACE_OID, value))
+    }
+
+    pub fn from_string(value: &str) -> Option<Self> {
+        Uuid::parse_str(value).ok().map(Self)
+    }
+
+    pub fn as_string(self) -> String {
+        self.0.to_string()
     }
 }
 

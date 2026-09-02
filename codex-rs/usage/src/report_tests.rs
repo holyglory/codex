@@ -248,6 +248,8 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
         operation_family: OperationFamily::new("filesystem").expect("operation family"),
         observation_timing: ObservationTiming::new("runtime").expect("timing"),
         covering_model_request_id: None,
+        execution_group_id: None,
+        execution_role: ToolExecutionRole::Standalone,
     };
     store
         .record_tool_invocation(&tool_fact)
@@ -421,7 +423,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
     assert!(!thread_two.coverage.has_gaps);
     assert_eq!(all.operation_count, 4);
     assert_eq!(all.tool_count, 1);
-    assert_eq!(all.database_schema_version, 4);
+    assert_eq!(all.database_schema_version, 5);
     assert_eq!(all.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(repository_one_summary.tool_count, 1);
     assert_eq!(all.classifications.len(), 2);
@@ -432,7 +434,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
         .expect("effective correction");
     assert_eq!(correction.provenance, "user_corrected");
     let structured = StructuredUsageSummary::new(&all, Some("primary".to_string()));
-    assert_eq!(structured.database_schema_version, 4);
+    assert_eq!(structured.database_schema_version, 5);
     assert_eq!(structured.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(structured.account.as_deref(), Some("primary"));
     assert_eq!(structured.provider_tokens.len(), all.tokens.len());

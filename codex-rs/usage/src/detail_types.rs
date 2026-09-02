@@ -267,6 +267,17 @@ pub struct UsageModelRequestDetail {
     pub account: Option<String>,
     pub account_auth_mode: Option<String>,
     pub client_origin: String,
+    pub context: Option<UsageModelRequestContextDetail>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageModelRequestContextDetail {
+    pub policy_estimated_tokens: u64,
+    pub conversation_estimated_tokens: u64,
+    pub tool_output_estimated_tokens: u64,
+    pub estimator: String,
+    pub observed_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -278,4 +289,6 @@ pub struct UsageToolDetail {
     pub operation_family: String,
     pub observation_timing: String,
     pub covering_model_request_id: Option<String>,
+    pub execution_group_id: Option<String>,
+    pub execution_role: String,
 }

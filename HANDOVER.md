@@ -1183,6 +1183,30 @@ cannot export files or read the SQLite database directly. Historical
 classification correction stays on `usage_activity` so its existing phase and
 activity enum schema is reused instead of duplicating context.
 
+`usage_stats` also exposes one bounded management aggregate for a recorded task
+tree:
+
+```json
+{
+  "action": "task_tree_summary",
+  "root_thread_id": "current",
+  "include_descendants": true,
+  "from_at_ms": 0,
+  "to_at_ms": 4000000000000
+}
+```
+
+Both time bounds and the descendant choice are required. The result reports
+effective and raw operation counts, provider `total_tokens` and interval-union
+wall time by active agent, expected wait expiry separately from failed waits,
+content-free estimates of model-visible context for policy, conversation, and
+tool-output sources, and first-pass work separately from operations linked through an
+explicit `rework_of` lineage. A wrapper is deduplicated only when its recorded
+execution group contains a nested tool, and a provider token fact is
+deduplicated only through its factual request/tool owner and source event.
+Missing historical context, incomplete intervals, unlinked wrapper/nested
+operations, and absent provider totals remain explicit rather than estimated.
+
 Add a bounded credential-free `account_management` built-in for nonsecret
 routing control. It lists aliases, enabled/authenticated/default state,
 priority, automatic-selection policy/order, and explicit service-limit

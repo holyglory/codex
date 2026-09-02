@@ -35,6 +35,7 @@ pub struct UsageStatsHandler;
 #[serde(rename_all = "snake_case")]
 enum UsageStatsAction {
     Summary,
+    TaskTreeSummary,
     Repositories,
     Tools,
     Activities,
@@ -59,6 +60,8 @@ struct UsageStatsArgs {
     repository: Option<String>,
     account: Option<String>,
     thread_id: Option<String>,
+    root_thread_id: Option<String>,
+    include_descendants: Option<bool>,
     agent_id: Option<String>,
     detail: Option<String>,
     from_at_ms: Option<i64>,
@@ -166,6 +169,7 @@ fn usage_stats_spec() -> ToolSpec {
             JsonSchema::string_enum(
                 vec![
                     json!("summary"),
+                    json!("task_tree_summary"),
                     json!("repositories"),
                     json!("tools"),
                     json!("activities"),
@@ -207,6 +211,18 @@ fn usage_stats_spec() -> ToolSpec {
             )),
         ),
         (
+            "root_thread_id".to_string(),
+            JsonSchema::string(Some(
+                "Root task thread for task_tree_summary; use current for this chat.".to_string(),
+            )),
+        ),
+        (
+            "include_descendants".to_string(),
+            JsonSchema::boolean(Some(
+                "For task_tree_summary, include recorded delegated descendants.".to_string(),
+            )),
+        ),
+        (
             "agent_id".to_string(),
             JsonSchema::string(Some("Agent id for activity filtering.".to_string())),
         ),
@@ -243,7 +259,7 @@ fn usage_stats_spec() -> ToolSpec {
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: TOOL_NAME.to_string(),
-        description: "Read the private, content-free local usage collector. Summary preserves every aggregate dimension. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
+        description: "Read the private, content-free local usage collector. Summary preserves every aggregate dimension; task_tree_summary gives one bounded root/descendant management view. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
             .to_string(),
         strict: false,
         defer_loading: None,

@@ -63,6 +63,8 @@ pub enum UsageStoreError {
     RepositoryKeyCommittedSyncUncertain(#[source] std::io::Error),
     #[error("usage aggregate exceeds the supported numeric range")]
     AggregateOverflow,
+    #[error("usage task tree exceeds the supported query bound")]
+    TaskTreeTooLarge,
 }
 
 impl UsageStoreError {

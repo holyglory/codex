@@ -297,7 +297,7 @@ impl ToolOutput for WaitAgentResult {
 
     fn usage_terminal_outcome(&self) -> codex_tools::UsageTerminalOutcome {
         if self.timed_out {
-            codex_tools::UsageTerminalOutcome::TIMED_OUT
+            codex_tools::UsageTerminalOutcome::EXPECTED_EXPIRY
         } else {
             codex_tools::UsageTerminalOutcome::COMPLETED
         }

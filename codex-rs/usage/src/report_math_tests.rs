@@ -194,6 +194,8 @@ async fn unions_clip_overlaps_sum_agents_and_keep_missing_lifecycle_unknown() {
             operation_family: OperationFamily::new("filesystem").expect("family"),
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
+            execution_group_id: None,
+            execution_role: ToolExecutionRole::Standalone,
         })
         .await
         .expect("tool");
@@ -267,6 +269,8 @@ async fn unions_clip_overlaps_sum_agents_and_keep_missing_lifecycle_unknown() {
             operation_family: OperationFamily::new("other").expect("family"),
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
+            execution_group_id: None,
+            execution_role: ToolExecutionRole::Standalone,
         })
         .await
         .expect("incomplete tool");
@@ -413,6 +417,8 @@ async fn nested_wait_spans_remain_in_wall_math_but_not_agent_active_time() {
             operation_family: OperationFamily::new("coordination").expect("family"),
             observation_timing: ObservationTiming::new("before_execution").expect("timing"),
             covering_model_request_id: None,
+            execution_group_id: None,
+            execution_role: ToolExecutionRole::Standalone,
         })
         .await
         .expect("wait tool");

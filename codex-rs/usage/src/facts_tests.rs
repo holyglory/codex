@@ -71,6 +71,29 @@ async fn token_combinations_local_provider_usage_and_hosted_covering_are_enforce
         .record_model_request(&model)
         .await
         .expect("model request");
+    let context = NewModelRequestContext {
+        model_request_id: model.id,
+        policy_estimated_tokens: 10,
+        conversation_estimated_tokens: 20,
+        tool_output_estimated_tokens: 30,
+        observed_at_ms: 2,
+    };
+    store
+        .record_model_request_context(&context)
+        .await
+        .expect("model context");
+    store
+        .record_model_request_context(&context)
+        .await
+        .expect("model context replay");
+    let mut conflicting_context = context;
+    conflicting_context.conversation_estimated_tokens += 1;
+    assert!(matches!(
+        store
+            .record_model_request_context(&conflicting_context)
+            .await,
+        Err(UsageStoreError::FactConflict)
+    ));
     let mut conflicting_account = model.clone();
     conflicting_account.account = AccountAttributionSnapshot::new(
         Some(AccountProfileRef::new("acct_other").expect("account")),
@@ -114,11 +137,26 @@ async fn token_combinations_local_provider_usage_and_hosted_covering_are_enforce
         operation_family: OperationFamily::new("other").expect("family"),
         observation_timing: ObservationTiming::new("runtime").expect("timing"),
         covering_model_request_id: None,
+        execution_group_id: None,
+        execution_role: ToolExecutionRole::Standalone,
     };
     store
         .record_tool_invocation(&local_tool)
         .await
         .expect("local tool");
+    let mut invalid_group = local_tool.clone();
+    invalid_group.id = ToolInvocationId::new();
+    invalid_group.execution_group_id = Some(ToolExecutionGroupId::from_stable_key(b"group"));
+    assert!(matches!(
+        store.record_tool_invocation(&invalid_group).await,
+        Err(UsageStoreError::InvalidFact)
+    ));
+    let mut conflicting_role = local_tool.clone();
+    conflicting_role.execution_role = ToolExecutionRole::Nested;
+    assert!(matches!(
+        store.record_tool_invocation(&conflicting_role).await,
+        Err(UsageStoreError::FactConflict)
+    ));
     store
         .record_token_observation(&observation(TokenObservationSource::ToolInvocation(
             local_tool.id,
@@ -161,6 +199,8 @@ async fn token_combinations_local_provider_usage_and_hosted_covering_are_enforce
         operation_family: OperationFamily::new("network").expect("family"),
         observation_timing: ObservationTiming::new("observed_after_execution").expect("timing"),
         covering_model_request_id: Some(model.id),
+        execution_group_id: None,
+        execution_role: ToolExecutionRole::Standalone,
     };
     store
         .record_tool_invocation(&hosted_tool)

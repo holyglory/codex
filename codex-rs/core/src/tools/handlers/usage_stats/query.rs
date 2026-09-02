@@ -41,6 +41,9 @@ pub(super) async fn execute(
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
     let mut value = match args.action {
         UsageStatsAction::Summary => summary(store, context, &args, time_range).await,
+        UsageStatsAction::TaskTreeSummary => {
+            task_tree_summary(store, context, &args, time_range).await
+        }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,
         UsageStatsAction::Tools => query_lists::tools(store, context, &args, time_range).await,
         UsageStatsAction::Activities => {
@@ -57,6 +60,42 @@ pub(super) async fn execute(
         );
     }
     Ok(value)
+}
+
+async fn task_tree_summary(
+    store: &UsageStore,
+    context: &UsageStatsContext,
+    args: &UsageStatsArgs,
+    time_range: Option<UtcTimeRange>,
+) -> Result<Value, FunctionCallError> {
+    let root_thread_id = match args
+        .root_thread_id
+        .as_deref()
+        .ok_or_else(|| tool_error("root_thread_id is required"))?
+    {
+        "current" => context.thread_id.clone(),
+        value => ThreadId::new(value).map_err(|_| tool_error("root_thread_id is invalid"))?,
+    };
+    let include_descendants = args
+        .include_descendants
+        .ok_or_else(|| tool_error("include_descendants is required"))?;
+    let time_range = time_range
+        .ok_or_else(|| tool_error("from_at_ms and to_at_ms are required for task_tree_summary"))?;
+    let summary = store
+        .task_tree_summary(codex_usage::TaskTreeSummaryQuery {
+            root_thread_id,
+            include_descendants,
+            time_range,
+        })
+        .await
+        .map_err(|error| match error {
+            codex_usage::UsageStoreError::TaskTreeTooLarge => {
+                tool_error("task tree exceeds the safe summary bound")
+            }
+            _ => storage_error(),
+        })?
+        .ok_or_else(|| tool_error("root_thread_id was not found"))?;
+    serde_json::to_value(summary).map_err(|_| storage_error())
 }
 
 async fn summary(
@@ -322,6 +361,8 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
     let invalid = match args.action {
         UsageStatsAction::Summary => {
             args.thread_id.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
                 || args.limit.is_some()
@@ -330,11 +371,28 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || (args.repository.is_some()
                     && !matches!(args.scope, Some(UsageStatsScope::Repository)))
         }
+        UsageStatsAction::TaskTreeSummary => {
+            args.scope.is_some()
+                || args.repository.is_some()
+                || args.account.is_some()
+                || args.thread_id.is_some()
+                || args.agent_id.is_some()
+                || args.detail.is_some()
+                || args.limit.is_some()
+                || args.cursor_sort_value.is_some()
+                || args.cursor_id.is_some()
+                || args.root_thread_id.is_none()
+                || args.include_descendants.is_none()
+                || args.from_at_ms.is_none()
+                || args.to_at_ms.is_none()
+        }
         UsageStatsAction::Repositories => {
             args.scope.is_some()
                 || args.repository.is_some()
                 || args.account.is_some()
                 || args.thread_id.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
                 || args.from_at_ms.is_some()
@@ -344,15 +402,24 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
             args.scope.is_some()
                 || args.account.is_some()
                 || args.agent_id.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
                 || args.detail.is_some()
         }
         UsageStatsAction::Activities => {
             args.scope.is_some()
                 || args.repository.is_some()
                 || args.account.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
                 || args.detail.is_some()
         }
-        UsageStatsAction::Details => args.scope.is_some() || args.agent_id.is_some(),
+        UsageStatsAction::Details => {
+            args.scope.is_some()
+                || args.agent_id.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
+        }
     };
     if invalid {
         Err(tool_error(

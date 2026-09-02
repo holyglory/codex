@@ -166,7 +166,7 @@ async fn operation_lifecycle_is_idempotent_and_doctor_reports_completion() {
     assert_eq!(
         DoctorReport {
             integrity: "ok".to_string(),
-            migration_count: 4,
+            migration_count: 5,
             incomplete_operations: 0,
         },
         store.doctor().await.expect("doctor")
@@ -586,7 +586,7 @@ async fn populated_v3_database_migrates_without_losing_account_attribution() {
     let store = UsageStore::open(temp.path())
         .await
         .expect("migrate v3 store");
-    assert_eq!(store.doctor().await.expect("doctor").migration_count, 4);
+    assert_eq!(store.doctor().await.expect("doctor").migration_count, 5);
     assert_eq!(
         (
             sqlx::query_as::<_, (String, String, Option<String>)>(
