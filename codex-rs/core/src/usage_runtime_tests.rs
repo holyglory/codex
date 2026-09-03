@@ -115,8 +115,7 @@ async fn provider_usage_is_deduplicated_and_reported_content_free() {
             "turn-one",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("attempt");
+        .await;
     let usage = ProviderUsage::from_json_value(&serde_json::json!({
         "input_tokens": 10,
         "total_tokens": 10
@@ -168,10 +167,7 @@ async fn provider_tokens_use_the_hashed_repository_bucket() {
         Some(origin.to_string()),
         "repository",
     )];
-    let attempt = runtime
-        .begin_model_attempt(model)
-        .await
-        .expect("model attempt");
+    let attempt = runtime.begin_model_attempt(model).await;
     let usage = ProviderUsage::from_json_value(&serde_json::json!({
         "input_tokens": 4,
         "output_tokens": 2,
@@ -232,10 +228,7 @@ async fn multi_repository_tokens_are_not_duplicated_into_each_repository() {
             )
         })
         .collect();
-    let attempt = runtime
-        .begin_model_attempt(model)
-        .await
-        .expect("model attempt");
+    let attempt = runtime.begin_model_attempt(model).await;
     attempt
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -285,7 +278,6 @@ async fn delegated_attempts_inherit_parent_activity_until_the_child_overrides_it
             Arc::clone(&retry_slot),
         ))
         .await
-        .expect("seed parent thread")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
     runtime
@@ -304,8 +296,7 @@ async fn delegated_attempts_inherit_parent_activity_until_the_child_overrides_it
             "child-turn",
             Arc::clone(&retry_slot),
         ))
-        .await
-        .expect("child attempt");
+        .await;
     child
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -323,7 +314,6 @@ async fn delegated_attempts_inherit_parent_activity_until_the_child_overrides_it
             Arc::clone(&retry_slot),
         ))
         .await
-        .expect("classified parent continuation without tokens")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
     runtime
@@ -342,8 +332,7 @@ async fn delegated_attempts_inherit_parent_activity_until_the_child_overrides_it
             "child-next-turn",
             Arc::clone(&retry_slot),
         ))
-        .await
-        .expect("child override attempt");
+        .await;
     child_override
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -361,8 +350,7 @@ async fn delegated_attempts_inherit_parent_activity_until_the_child_overrides_it
             "child-after-end",
             retry_slot,
         ))
-        .await
-        .expect("child activity ended");
+        .await;
     child_after_end
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -403,8 +391,7 @@ async fn delegated_model_tool_and_continuation_start_without_parent_usage_facts(
             turn_id,
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("child attempt without parent usage");
+        .await;
 
     child
         .finish(TerminalStatus::Completed, /*error*/ None)
@@ -413,10 +400,7 @@ async fn delegated_model_tool_and_continuation_start_without_parent_usage_facts(
     let mut tool_context = tool_context(child_thread_id, turn_id, "delegated-tool");
     tool_context.parent_thread_id = Some(parent_thread_id);
     tool_context.delegated = true;
-    let tool = runtime
-        .begin_tool_attempt(tool_context)
-        .await
-        .expect("delegated tool attempt without parent usage");
+    let tool = runtime.begin_tool_attempt(tool_context).await;
     tool.finish(TerminalStatus::Completed, /*error*/ None).await;
 
     let continuation = runtime
@@ -426,8 +410,7 @@ async fn delegated_model_tool_and_continuation_start_without_parent_usage_facts(
             turn_id,
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("delegated continuation without parent usage");
+        .await;
     continuation
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
@@ -458,8 +441,7 @@ async fn failed_and_incomplete_attempts_link_the_next_retry() {
             "retry-turn",
             Arc::clone(&retry_slot),
         ))
-        .await
-        .expect("failed attempt");
+        .await;
     let failed_id = failed.operation_id;
     failed.finish_provider(ProviderResponseStatus::Failed).await;
 
@@ -470,10 +452,7 @@ async fn failed_and_incomplete_attempts_link_the_next_retry() {
         Arc::clone(&retry_slot),
     );
     assert_eq!(retry_context.retry_of_operation_id, Some(failed_id));
-    let incomplete = runtime
-        .begin_model_attempt(retry_context)
-        .await
-        .expect("incomplete attempt");
+    let incomplete = runtime.begin_model_attempt(retry_context).await;
     let incomplete_id = incomplete.operation_id;
     incomplete
         .finish_provider(ProviderResponseStatus::Incomplete)
@@ -489,7 +468,6 @@ async fn failed_and_incomplete_attempts_link_the_next_retry() {
     runtime
         .begin_model_attempt(final_context)
         .await
-        .expect("completed attempt")
         .finish_provider(ProviderResponseStatus::Completed)
         .await;
     assert_eq!(*retry_slot.lock().expect("retry slot"), None);
@@ -513,8 +491,6 @@ async fn concurrent_attempts_replay_shared_lifecycle_facts() {
         Arc::new(StdMutex::new(None)),
     ));
     let (first, second) = tokio::join!(first, second);
-    let first = first.expect("first attempt");
-    let second = second.expect("second attempt");
     tokio::join!(
         first.finish(TerminalStatus::Completed, /*error*/ None),
         second.finish(TerminalStatus::Completed, /*error*/ None),
@@ -550,7 +526,6 @@ async fn tools_continue_when_a_stable_turn_changes_account_snapshots() {
     runtime
         .begin_model_attempt(model)
         .await
-        .expect("model attempt")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
 
@@ -563,7 +538,6 @@ async fn tools_continue_when_a_stable_turn_changes_account_snapshots() {
     runtime
         .begin_tool_attempt(tool)
         .await
-        .expect("tool account continuity")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
 
@@ -579,7 +553,6 @@ async fn tools_continue_when_a_stable_turn_changes_account_snapshots() {
     runtime
         .begin_tool_attempt(conflicting)
         .await
-        .expect("tool after account failover")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
 
@@ -607,7 +580,6 @@ async fn resumed_runtime_reuses_immutable_lifecycle_timestamps() {
             Arc::new(StdMutex::new(None)),
         ))
         .await
-        .expect("first process attempt")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
 
@@ -620,7 +592,6 @@ async fn resumed_runtime_reuses_immutable_lifecycle_timestamps() {
             Arc::new(StdMutex::new(None)),
         ))
         .await
-        .expect("resumed process attempt")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
     assert_eq!(
@@ -651,13 +622,11 @@ async fn local_tool_records_provider_tokens_approval_and_timeout() {
             Arc::new(StdMutex::new(None)),
         ))
         .await
-        .expect("model attempt")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
     let tool = runtime
         .begin_tool_attempt(tool_context(thread_id, turn_id, "tool-call"))
-        .await
-        .expect("tool attempt");
+        .await;
     let approval_wait = runtime
         .begin_active_tool_wait(
             thread_id,
@@ -734,8 +703,7 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             turn_id,
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("same-turn classified model");
+        .await;
     same_turn
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -753,8 +721,7 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             next_turn_id,
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("next-turn classified model");
+        .await;
     next_turn
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -769,7 +736,6 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
     runtime
         .begin_tool_attempt(tool_context(thread_id, next_turn_id, "classified-tool"))
         .await
-        .expect("classified tool")
         .finish(TerminalStatus::Completed, /*error*/ None)
         .await;
     runtime.end_activity(thread_id).await;
@@ -780,8 +746,7 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             "activity-after-end",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("unclassified model");
+        .await;
     unknown
         .record_provider_usage_parts(
             /*source_event_key*/ None,
@@ -871,8 +836,7 @@ async fn explicit_rework_links_the_next_model_only() {
             turn_id,
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("first model");
+        .await;
     let first_id = first.operation_id;
     first
         .finish(TerminalStatus::Completed, /*error*/ None)
@@ -893,8 +857,7 @@ async fn explicit_rework_links_the_next_model_only() {
             "rework-next-turn",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("rework model");
+        .await;
     let rework_id = rework.operation_id;
     rework
         .finish(TerminalStatus::Completed, /*error*/ None)
@@ -916,8 +879,7 @@ async fn explicit_rework_links_the_next_model_only() {
             "rework-later-turn",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("continuation model");
+        .await;
     let continuation_id = continuation.operation_id;
     continuation
         .finish(TerminalStatus::Completed, /*error*/ None)
@@ -961,8 +923,7 @@ async fn usage_activity_boundary_is_overhead_when_pure_and_mixed_otherwise() {
             "boundary-turn",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("pure boundary");
+        .await;
     pure.observe_response_item(&function_call("usage_activity", "usage-call"))
         .await;
     pure.finish(TerminalStatus::Completed, /*error*/ None).await;
@@ -973,8 +934,7 @@ async fn usage_activity_boundary_is_overhead_when_pure_and_mixed_otherwise() {
             "boundary-turn",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("mixed boundary");
+        .await;
     mixed
         .observe_response_item(&function_call("usage_activity", "usage-call-2"))
         .await;
@@ -1017,8 +977,7 @@ async fn hosted_tool_observation_is_linked_once_without_fake_prestart() {
             "hosted-turn",
             Arc::new(StdMutex::new(None)),
         ))
-        .await
-        .expect("model attempt");
+        .await;
     let item = ResponseItem::WebSearchCall {
         id: Some(codex_protocol::ResponseItemId::from_server(
             "ws-stable".to_string(),
@@ -1058,12 +1017,12 @@ fn function_call(name: &str, call_id: &str) -> ResponseItem {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn unavailable_store_returns_only_the_safe_blocking_error() {
+async fn unavailable_store_buffers_attempt_without_blocking() {
     let home = tempfile::tempdir().expect("tempdir");
     let codex_home = home.path().join("not-a-directory");
     std::fs::write(&codex_home, b"fixture").expect("home fixture");
     let runtime = UsageRuntime::new(codex_home);
-    let result = runtime
+    let attempt = runtime
         .begin_model_attempt(context(
             "77777777-7777-7777-8777-777777777777",
             /*parent_thread_id*/ None,
@@ -1071,19 +1030,16 @@ async fn unavailable_store_returns_only_the_safe_blocking_error() {
             Arc::new(StdMutex::new(None)),
         ))
         .await;
-    let error = match result {
-        Ok(_) => panic!("unavailable store must block"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        error.to_string(),
-        format!("Fatal error: {SAFE_UNAVAILABLE}")
-    );
+    assert!(!attempt.durable);
+    attempt
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    assert_eq!(runtime.pending_usage.lock().await.len(), 1);
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn corrupt_database_blocks_requests_without_replacing_it() {
+async fn corrupt_database_buffers_requests_without_replacing_it() {
     let home = tempfile::tempdir().expect("tempdir");
     let usage_dir = home.path().join("usage");
     std::fs::create_dir_all(&usage_dir).expect("usage dir");
@@ -1092,7 +1048,7 @@ async fn corrupt_database_blocks_requests_without_replacing_it() {
     std::fs::write(&database_path, corrupt).expect("corrupt fixture");
     let runtime = UsageRuntime::new(home.path().to_path_buf());
     let retry_slot = Arc::new(StdMutex::new(None));
-    let result = runtime
+    let first = runtime
         .begin_model_attempt(context(
             "44444444-4444-7444-8444-444444444444",
             /*parent_thread_id*/ None,
@@ -1100,25 +1056,23 @@ async fn corrupt_database_blocks_requests_without_replacing_it() {
             Arc::clone(&retry_slot),
         ))
         .await;
-    let error = match result {
-        Ok(_) => panic!("corrupt database must block"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        error.to_string(),
-        format!("Fatal error: {SAFE_UNAVAILABLE}")
-    );
-    assert!(
-        runtime
-            .begin_model_attempt(context(
-                "44444444-4444-7444-8444-444444444444",
-                /*parent_thread_id*/ None,
-                "blocked-turn",
-                retry_slot,
-            ))
-            .await
-            .is_err()
-    );
+    assert!(!first.durable);
+    first
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    let second = runtime
+        .begin_model_attempt(context(
+            "44444444-4444-7444-8444-444444444444",
+            /*parent_thread_id*/ None,
+            "later-turn",
+            retry_slot,
+        ))
+        .await;
+    assert!(!second.durable);
+    second
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    assert_eq!(runtime.pending_usage.lock().await.len(), 2);
     assert_eq!(
         std::fs::read(database_path).expect("database bytes"),
         corrupt

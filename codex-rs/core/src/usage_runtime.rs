@@ -48,6 +48,7 @@ use codex_usage::UsageStore;
 use codex_usage::UsageStoreError;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,7 +64,7 @@ use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tokio::sync::Semaphore;
 
-const SAFE_UNAVAILABLE: &str = "usage accounting is unavailable; model operation was not started";
+const SAFE_UNAVAILABLE: &str = "usage accounting is unavailable";
 
 pub(crate) struct UsageRuntime {
     codex_home: PathBuf,
@@ -75,6 +76,8 @@ pub(crate) struct UsageRuntime {
     fault_recovery_allowed: AtomicBool,
     faulted_operations: std::sync::Mutex<HashSet<OperationId>>,
     recovery_gate: Semaphore,
+    pending_usage: Mutex<VecDeque<buffer::PendingUsageRecord>>,
+    pending_flush_gate: Semaphore,
     entity_times: Mutex<HashMap<String, i64>>,
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
@@ -163,6 +166,8 @@ pub(crate) struct UsageAttempt {
     hosted_seen: std::sync::Mutex<HashSet<String>>,
     repository_ids: Vec<codex_usage::RepositoryId>,
     repository_bucket: RepositoryBucket,
+    pending: Arc<buffer::PendingModelAttempt>,
+    durable: bool,
 }
 
 impl UsageRuntime {
@@ -177,6 +182,8 @@ impl UsageRuntime {
             fault_recovery_allowed: AtomicBool::new(true),
             faulted_operations: std::sync::Mutex::new(HashSet::new()),
             recovery_gate: Semaphore::new(1),
+            pending_usage: Mutex::new(VecDeque::new()),
+            pending_flush_gate: Semaphore::new(1),
             entity_times: Mutex::new(HashMap::new()),
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
@@ -216,28 +223,24 @@ impl UsageRuntime {
         let client_origin =
             ClientOrigin::new(context.client_origin).map_err(|_| self.reject_invalid_metadata())?;
         let account = context.account.clone();
-        let created_at_ms = self
+        let proposed_thread_at_ms = self
             .write_required(store.thread_created_at(&thread_id).await)?
             .unwrap_or(
                 self.entity_created_at(&format!("thread:{}", context.thread_id))
                     .await,
             );
-        let created_at_ms = self
-            .ensure_thread(
-                &store,
-                NewThread {
-                    id: thread_id.clone(),
-                    parent_thread_id: parent_thread_id.clone(),
-                    source_kind: ThreadSourceKind::new(if context.delegated {
-                        "delegated"
-                    } else {
-                        "root"
-                    })
-                    .map_err(|_| unavailable())?,
-                    created_at_ms,
-                },
-            )
-            .await?;
+        let thread_fact = NewThread {
+            id: thread_id.clone(),
+            parent_thread_id: parent_thread_id.clone(),
+            source_kind: ThreadSourceKind::new(if context.delegated {
+                "delegated"
+            } else {
+                "root"
+            })
+            .map_err(|_| unavailable())?,
+            created_at_ms: proposed_thread_at_ms,
+        };
+        let created_at_ms = self.ensure_thread(&store, thread_fact.clone()).await?;
         let parent_agent_id = match parent_thread_id.as_ref() {
             Some(parent_thread_id) => {
                 let parent_agent_id =
@@ -250,40 +253,37 @@ impl UsageRuntime {
         let agent_created_at_ms = self
             .write_required(store.agent_created_at(&agent_id).await)?
             .unwrap_or(created_at_ms);
-        self.ensure_agent(
-            &store,
-            NewAgent {
-                id: agent_id.clone(),
-                thread_id: thread_id.clone(),
-                parent_agent_id,
-                role_kind: AgentRoleKind::new(if context.delegated {
-                    "delegated"
-                } else {
-                    "root"
-                })
-                .map_err(|_| unavailable())?,
-                created_at_ms: agent_created_at_ms,
-            },
-        )
-        .await?;
-        if let Some(turn_id) = &turn_id {
+        let agent_fact = NewAgent {
+            id: agent_id.clone(),
+            thread_id: thread_id.clone(),
+            parent_agent_id,
+            role_kind: AgentRoleKind::new(if context.delegated {
+                "delegated"
+            } else {
+                "root"
+            })
+            .map_err(|_| unavailable())?,
+            created_at_ms: agent_created_at_ms,
+        };
+        self.ensure_agent(&store, agent_fact.clone()).await?;
+        let turn_fact = if let Some(turn_id) = &turn_id {
             let turn_created_at_ms = self
                 .write_required(store.turn_created_at(turn_id).await)?
                 .unwrap_or(
                     self.entity_created_at(&format!("turn:{}", turn_id.as_str()))
                         .await,
                 );
-            self.ensure_turn(
-                &store,
-                NewTurn {
-                    id: turn_id.clone(),
-                    thread_id: thread_id.clone(),
-                    account: account.clone(),
-                    created_at_ms: turn_created_at_ms,
-                },
-            )
-            .await?;
-        }
+            let turn_fact = NewTurn {
+                id: turn_id.clone(),
+                thread_id: thread_id.clone(),
+                account: account.clone(),
+                created_at_ms: turn_created_at_ms,
+            };
+            self.ensure_turn(&store, turn_fact.clone()).await?;
+            Some(turn_fact)
+        } else {
+            None
+        };
 
         let operation_id = OperationId::new();
         let started_at_ms = now_ms();
@@ -301,27 +301,23 @@ impl UsageRuntime {
                 parent_thread_id.as_ref().map(ThreadId::as_str),
             )
             .await;
-        self.write_required_for(
-            operation_id,
-            store
-                .begin_operation(&NewOperation {
-                    id: operation_id,
-                    process_id: self.process_id,
-                    thread_id: Some(thread_id.clone()),
-                    turn_id: turn_id.clone(),
-                    agent_id: Some(agent_id.clone()),
-                    parent_operation_id: None,
-                    retry_of_operation_id: context.retry_of_operation_id,
-                    rework_of_operation_id,
-                    kind: OperationKind::ModelRequest,
-                    started_at_ms,
-                    phase,
-                    activity,
-                    activity_state: ActivityState::ModelActive,
-                    attribution_provenance,
-                })
-                .await,
-        )?;
+        let operation = NewOperation {
+            id: operation_id,
+            process_id: self.process_id,
+            thread_id: Some(thread_id.clone()),
+            turn_id: turn_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            parent_operation_id: None,
+            retry_of_operation_id: context.retry_of_operation_id,
+            rework_of_operation_id,
+            kind: OperationKind::ModelRequest,
+            started_at_ms,
+            phase,
+            activity,
+            activity_state: ActivityState::ModelActive,
+            attribution_provenance,
+        };
+        self.write_required_for(operation_id, store.begin_operation(&operation).await)?;
         self.record_repository_resolution(
             &store,
             operation_id,
@@ -330,51 +326,57 @@ impl UsageRuntime {
         )
         .await?;
         let model_request_id = ModelRequestId::new();
+        let model_request = NewModelRequest {
+            id: model_request_id,
+            operation_id,
+            provider_kind: context.provider.clone(),
+            model,
+            transport_kind,
+            attempt_number: context.attempt_number,
+            account,
+            client_origin,
+        };
         self.write_required_for(
             operation_id,
-            store
-                .record_model_request(&NewModelRequest {
-                    id: model_request_id,
-                    operation_id,
-                    provider_kind: context.provider.clone(),
-                    model,
-                    transport_kind,
-                    attempt_number: context.attempt_number,
-                    account,
-                    client_origin,
-                })
-                .await,
+            store.record_model_request(&model_request).await,
         )?;
-        if let Some(estimate) = context.context_estimate {
+        let model_context = context
+            .context_estimate
+            .map(|estimate| NewModelRequestContext {
+                model_request_id,
+                policy_estimated_tokens: estimate.policy_tokens,
+                conversation_estimated_tokens: estimate.conversation_tokens,
+                tool_output_estimated_tokens: estimate.tool_output_tokens,
+                observed_at_ms: started_at_ms,
+            });
+        if let Some(model_context) = &model_context {
             self.write_required_for(
                 operation_id,
-                store
-                    .record_model_request_context(&NewModelRequestContext {
-                        model_request_id,
-                        policy_estimated_tokens: estimate.policy_tokens,
-                        conversation_estimated_tokens: estimate.conversation_tokens,
-                        tool_output_estimated_tokens: estimate.tool_output_tokens,
-                        observed_at_ms: started_at_ms,
-                    })
-                    .await,
+                store.record_model_request_context(model_context).await,
             )?;
         }
-        self.write_required_for(
-            operation_id,
-            store
-                .record_coverage(&NewCoverageEvent {
-                    event_id: FactEventId::new(),
-                    operation_id: Some(operation_id),
-                    scope_kind: CoverageScopeKind::new("model_attempt")
-                        .map_err(|_| unavailable())?,
-                    state: CoverageState::CaptureStarted,
-                    reason_code: None,
-                    occurred_at_ms: started_at_ms,
-                })
-                .await,
-        )?;
+        let capture_started = NewCoverageEvent {
+            event_id: FactEventId::new(),
+            operation_id: Some(operation_id),
+            scope_kind: CoverageScopeKind::new("model_attempt").map_err(|_| unavailable())?,
+            state: CoverageState::CaptureStarted,
+            reason_code: None,
+            occurred_at_ms: started_at_ms,
+        };
+        self.write_required_for(operation_id, store.record_coverage(&capture_started).await)?;
         self.note_latest_model_operation(context.thread_id, operation_id)
             .await;
+        let mut buffered_thread = thread_fact;
+        buffered_thread.created_at_ms = created_at_ms;
+        let pending = buffer::PendingModelAttempt::new(
+            buffered_thread,
+            turn_fact,
+            agent_fact,
+            operation,
+            model_request,
+            model_context,
+            capture_started,
+        );
         Ok(UsageAttempt {
             runtime: Arc::clone(self),
             operation_id,
@@ -396,6 +398,8 @@ impl UsageRuntime {
             hosted_seen: std::sync::Mutex::new(HashSet::new()),
             repository_ids: repository_resolution.ids,
             repository_bucket: repository_resolution.bucket,
+            pending,
+            durable: true,
         })
     }
 
@@ -507,8 +511,13 @@ impl UsageRuntime {
         operation_id: Option<OperationId>,
         error: UsageStoreError,
     ) {
-        tracing::warn!(stage, error = %error, "usage accounting write failed");
-        self.latch_fault_with_operation(operation_id, error.recovery_may_succeed());
+        tracing::warn!(
+            stage,
+            error = %error,
+            retry_likely = error.recovery_may_succeed(),
+            "usage accounting write failed; work will continue"
+        );
+        self.latch_fault_with_operation(operation_id, /*recovery_allowed*/ true);
     }
 
     fn latch_operation_fault(&self, operation_id: OperationId) {
@@ -597,49 +606,37 @@ impl UsageAttempt {
         let source_event_id = source_event_key
             .map(FactEventId::from_provider_source_key)
             .unwrap_or(self.fallback_source_event_id);
-        let coverage = if usage.categories_complete() {
-            CoverageState::Complete
-        } else {
+        if !usage.categories_complete() {
             self.partial_provider_usage.store(true, Ordering::Release);
-            CoverageState::Partial
-        };
+        }
+        let observed_at_ms = *self.provider_observed_at_ms.get_or_init(now_ms);
+        let observations = self.pending.record_provider_usage(
+            source_event_id,
+            self.model_request_id,
+            usage,
+            self.repository_bucket.clone(),
+            observed_at_ms,
+        );
+        if !self.durable {
+            return;
+        }
         let Some(store) = self.runtime.store.get() else {
             self.runtime.latch_operation_fault(self.operation_id);
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
             return;
         };
-        for (path, count) in provider_counts(usage) {
-            let (token_count, state) = match count {
-                ProviderTokenCount::Absent => continue,
-                ProviderTokenCount::Value(count) => (Some(count), coverage),
-                ProviderTokenCount::Null => (None, CoverageState::Unknown),
-                ProviderTokenCount::Invalid => (None, CoverageState::Partial),
-            };
-            if let Err(error) = store
-                .record_token_observation(&NewTokenObservation {
-                    id: FactEventId::new(),
-                    source_event_id,
-                    source: TokenObservationSource::ModelRequest(self.model_request_id),
-                    category_path: match TokenCategoryPath::new(path) {
-                        Ok(path) => path,
-                        Err(_) => {
-                            self.runtime.latch_operation_fault(self.operation_id);
-                            return;
-                        }
-                    },
-                    token_count,
-                    unit: TokenUnit::Tokens,
-                    measurement_provenance: MeasurementProvenance::ProviderReported,
-                    coverage_state: state,
-                    repository_bucket: self.repository_bucket.clone(),
-                    observed_at_ms: *self.provider_observed_at_ms.get_or_init(now_ms),
-                })
-                .await
-            {
+        for observation in &observations {
+            if let Err(error) = store.record_token_observation(observation).await {
                 self.runtime.latch_write_failure(
                     "model_token_observation",
                     Some(self.operation_id),
                     error,
                 );
+                self.runtime
+                    .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                    .await;
                 return;
             }
         }
@@ -662,119 +659,81 @@ impl UsageAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
-        let Some(store) = self.runtime.store.get() else {
-            self.runtime.latch_operation_fault(self.operation_id);
-            return;
-        };
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        if let Err(error) = store
-            .finish_operation(&TerminalOperation {
-                operation_id: self.operation_id,
-                status,
-                occurred_at_ms: now_ms(),
-                duration_ns,
-                error_category: error,
-            })
-            .await
-        {
-            self.runtime.latch_write_failure(
-                "model_operation_terminal",
-                Some(self.operation_id),
-                error,
-            );
+        let Some(finish) = self.pending.finish(
+            status,
+            error,
+            duration_ns,
+            self.saw_provider_usage.load(Ordering::Acquire),
+            self.saw_usage_activity.load(Ordering::Acquire),
+            self.saw_mixed_activity_output.load(Ordering::Acquire),
+        ) else {
             return;
-        }
-        if self.saw_usage_activity.load(Ordering::Acquire) {
-            let activity = if self.saw_mixed_activity_output.load(Ordering::Acquire) {
-                Activity::Mixed
-            } else {
-                Activity::AccountingOverhead
-            };
-            if let Err(error) = store
-                .record_classification(&codex_usage::NewClassificationEvent {
-                    event_id: FactEventId::new(),
-                    operation_id: self.operation_id,
-                    phase: Phase::Unattributed,
-                    activity,
-                    activity_state: ActivityState::ModelActive,
-                    provenance: AttributionProvenance::DeterministicClassification,
-                    supersedes_event_id: None,
-                    occurred_at_ms: now_ms(),
-                })
-                .await
-            {
-                self.runtime.latch_write_failure(
-                    "model_activity_classification",
-                    Some(self.operation_id),
-                    error,
-                );
-            }
-            if let Err(error) = store
-                .record_coverage(&NewCoverageEvent {
-                    event_id: FactEventId::new(),
-                    operation_id: Some(self.operation_id),
-                    scope_kind: match CoverageScopeKind::new("usage_activity_schema_marginal") {
-                        Ok(scope) => scope,
-                        Err(_) => {
-                            self.runtime.latch_operation_fault(self.operation_id);
-                            return;
-                        }
-                    },
-                    state: CoverageState::Unknown,
-                    reason_code: None,
-                    occurred_at_ms: now_ms(),
-                })
-                .await
-            {
-                self.runtime.latch_write_failure(
-                    "model_activity_coverage",
-                    Some(self.operation_id),
-                    error,
-                );
-            }
-        }
-        let coverage_state = match status {
-            TerminalStatus::Completed if !self.saw_provider_usage.load(Ordering::Acquire) => {
-                CoverageState::Unknown
-            }
-            // Account and repository attribution are intentionally unknown until the router and
-            // repository stage are wired, so D1 cannot claim complete attempt coverage.
-            TerminalStatus::Completed => CoverageState::Partial,
-            TerminalStatus::Incomplete
-            | TerminalStatus::Failed
-            | TerminalStatus::Denied
-            | TerminalStatus::TimedOut
-            | TerminalStatus::Cancelled
-            | TerminalStatus::Interrupted => CoverageState::Partial,
         };
-        if let Err(error) = store
-            .record_coverage(&NewCoverageEvent {
-                event_id: FactEventId::new(),
-                operation_id: Some(self.operation_id),
-                scope_kind: match CoverageScopeKind::new("model_attempt") {
-                    Ok(scope) => scope,
-                    Err(_) => {
-                        self.runtime.latch_operation_fault(self.operation_id);
-                        return;
-                    }
-                },
-                state: coverage_state,
-                reason_code: None,
-                occurred_at_ms: now_ms(),
-            })
-            .await
-        {
-            self.runtime.latch_write_failure(
-                "model_attempt_coverage",
-                Some(self.operation_id),
-                error,
-            );
-        }
         if !matches!(status, TerminalStatus::Completed) {
             *self
                 .retry_slot
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(self.operation_id);
+        }
+        if !self.durable {
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
+            self.runtime.flush_pending_usage().await;
+            return;
+        }
+        let Some(store) = self.runtime.store.get() else {
+            self.runtime.latch_operation_fault(self.operation_id);
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
+            return;
+        };
+        if let Err(error) = store.finish_operation(&finish.terminal).await {
+            self.runtime.latch_write_failure(
+                "model_operation_terminal",
+                Some(self.operation_id),
+                error,
+            );
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
+            return;
+        }
+        if let Some(classification) = &finish.classification
+            && let Err(error) = store.record_classification(classification).await
+        {
+            self.runtime.latch_write_failure(
+                "model_activity_classification",
+                Some(self.operation_id),
+                error,
+            );
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
+        }
+        if let Some(marginal_coverage) = &finish.marginal_coverage
+            && let Err(error) = store.record_coverage(marginal_coverage).await
+        {
+            self.runtime.latch_write_failure(
+                "model_activity_coverage",
+                Some(self.operation_id),
+                error,
+            );
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
+        }
+        if let Err(error) = store.record_coverage(&finish.attempt_coverage).await {
+            self.runtime.latch_write_failure(
+                "model_attempt_coverage",
+                Some(self.operation_id),
+                error,
+            );
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
         }
     }
 }
@@ -849,11 +808,18 @@ fn unavailable() -> CodexErr {
 pub(crate) fn usage_account_snapshot(
     profile_ref: Option<&str>,
     auth_mode: Option<codex_protocol::auth::AuthMode>,
-) -> Result<AccountAttributionSnapshot, CodexErr> {
-    let profile_ref = profile_ref
-        .map(AccountProfileRef::new)
-        .transpose()
-        .map_err(|_| unavailable())?;
+) -> AccountAttributionSnapshot {
+    let profile_ref =
+        profile_ref.and_then(|profile_ref| match AccountProfileRef::new(profile_ref) {
+            Ok(profile_ref) => Some(profile_ref),
+            Err(_) => {
+                tracing::warn!(
+                    stage = "account_attribution",
+                    "usage accounting metadata was skipped; work will continue"
+                );
+                None
+            }
+        });
     let auth_mode = auth_mode.map(|mode| match mode {
         codex_protocol::auth::AuthMode::ApiKey => AccountAuthMode::ApiKey,
         codex_protocol::auth::AuthMode::Chatgpt => AccountAuthMode::Chatgpt,
@@ -864,13 +830,15 @@ pub(crate) fn usage_account_snapshot(
         codex_protocol::auth::AuthMode::BedrockApiKey => AccountAuthMode::BedrockApiKey,
         codex_protocol::auth::AuthMode::BedrockAccessKeys => AccountAuthMode::BedrockAccessKeys,
     });
-    Ok(AccountAttributionSnapshot::new(profile_ref, auth_mode))
+    AccountAttributionSnapshot::new(profile_ref, auth_mode)
 }
 
 #[cfg(test)]
 #[path = "usage_runtime_tests.rs"]
 mod tests;
 
+#[path = "usage_runtime_buffer.rs"]
+mod buffer;
 #[path = "usage_runtime_recovery.rs"]
 mod recovery;
 #[path = "usage_runtime_repository.rs"]
