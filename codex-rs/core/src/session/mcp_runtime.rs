@@ -11,22 +11,24 @@ use codex_config::McpServerDisabledReason;
 use codex_config::McpServerTransportConfig;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::McpEnvironmentAuthority;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::McpServerSource;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::protocol::EnvironmentConfigState;
 use std::collections::HashSet;
 
 pub(super) struct McpDesiredState {
     pub(super) config: Arc<Config>,
     pub(super) auth: Option<CodexAuth>,
+    pub(super) auth_manager: Arc<AuthManager>,
     pub(super) submit_id: String,
     pub(super) originator: String,
     pub(super) session_source: SessionSource,
     pub(super) environments: TurnEnvironmentSnapshot,
     pub(super) local_process_cwd: PathBuf,
-    pub(super) disabled_plugin_ids: Vec<String>,
 }
 
 impl Session {
@@ -34,6 +36,7 @@ impl Session {
         &self,
         current: &SessionConfiguration,
         next: &SessionConfiguration,
+        updates: &SessionSettingsUpdate,
     ) -> bool {
         current.cwd() != next.cwd()
             || current.step_settings.approval_policy.value()
@@ -41,6 +44,9 @@ impl Session {
             || current.step_settings.approvals_reviewer != next.step_settings.approvals_reviewer
             || current.permission_profile() != next.permission_profile()
             || current.windows_sandbox_level != next.windows_sandbox_level
+            || updates.environments.as_ref().is_some_and(|environments| {
+                environments.environments != self.services.turn_environments.selections()
+            })
     }
 
     /// Waits on this session's refreshed server before tool execution is admitted.
@@ -55,38 +61,36 @@ impl Session {
     /// Captures this session's current MCP client and catalog for one tool call.
     pub(crate) async fn prepare_mcp_call(
         self: &Arc<Self>,
+        call_id: &str,
         server: &str,
         tool: &str,
     ) -> Option<PreparedMcpCall> {
-        self.refresh_mcp_if_dirty().await;
-        self.services
-            .mcp_runtime
-            .current_binding_for_call(server)
-            .await?
-            .prepare_call(server, tool)
+        let auth_lease = self.current_mcp_auth_manager_lease().await;
+        let binding = self.mcp_binding_for_auth_lease(&auth_lease, server).await?;
+        let prepared_call = binding.prepare_call(server, tool)?;
+        if server == codex_mcp::CODEX_APPS_MCP_SERVER_NAME {
+            self.services
+                .mcp_runtime
+                .bind_resource_origin_call(call_id, binding, auth_lease);
+        }
+        Some(prepared_call)
     }
 
     pub(super) async fn latest_mcp_desired_state(
         &self,
         auth: Option<CodexAuth>,
-        environments: TurnEnvironmentSnapshot,
+        auth_manager: Arc<AuthManager>,
     ) -> McpDesiredState {
-        let (session_configuration, disabled_plugin_ids) = {
+        let session_configuration = {
             let state = self.state.lock().await;
-            (
-                state.session_configuration.clone(),
-                state.active_disabled_plugin_ids.clone(),
-            )
+            state.session_configuration.clone()
         };
+        let environments = self.services.turn_environments.snapshot().await;
         let cwd = environments
             .primary()
             .and_then(|environment| environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let config = self.build_per_turn_config(
-            &session_configuration,
-            cwd,
-            environments.primary_workspace_roots(),
-        );
+        let config = self.build_per_turn_config(&session_configuration, cwd);
         let local_process_cwd = environments
             .local_environment_cwd()
             .unwrap_or_else(|| session_configuration.cwd().clone())
@@ -95,12 +99,12 @@ impl Session {
         McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager,
             submit_id: self.next_internal_sub_id(),
-            originator: session_configuration.originator,
-            session_source: session_configuration.session_source,
+            originator: session_configuration.originator.clone(),
+            session_source: session_configuration.session_source.clone(),
             environments,
             local_process_cwd,
-            disabled_plugin_ids,
         }
     }
 
@@ -108,17 +112,14 @@ impl Session {
         self: &Arc<Self>,
         session_configuration: &SessionConfiguration,
         auth: Option<CodexAuth>,
+        auth_manager: Arc<AuthManager>,
         mcp_projection: McpRuntimeProjection,
         resolved_environments: &TurnEnvironmentSnapshot,
         mcp_runtime_cwd: PathBuf,
     ) -> anyhow::Result<()> {
         let cwd = AbsolutePathBuf::from_absolute_path(mcp_runtime_cwd)
             .unwrap_or_else(|_| session_configuration.cwd().clone());
-        let config = self.build_per_turn_config(
-            session_configuration,
-            cwd,
-            resolved_environments.primary_workspace_roots(),
-        );
+        let config = self.build_per_turn_config(session_configuration, cwd);
         let local_process_cwd = resolved_environments
             .local_environment_cwd()
             .unwrap_or_else(|| session_configuration.cwd().clone())
@@ -126,12 +127,12 @@ impl Session {
         let desired = McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager,
             submit_id: INITIAL_SUBMIT_ID.to_owned(),
             originator: session_configuration.originator.clone(),
             session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             local_process_cwd,
-            disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
         };
         self.publish_mcp_runtime(
             &desired,
@@ -151,12 +152,13 @@ impl Session {
     /// Adds effective executor-owned configuration from this exact thread snapshot.
     pub(super) fn project_selected_environment_mcp_servers<'a>(
         &'a self,
+        session_source: &'a SessionSource,
         config: &'a Config,
         environments: &'a TurnEnvironmentSnapshot,
         mut projection: McpRuntimeProjection,
     ) -> BoxFuture<'a, McpRuntimeProjection> {
         Box::pin(async move {
-            if self.isolation == codex_extension_api::SessionIsolation::Isolated {
+            if crate::guardian::is_basic_session_source(session_source) {
                 return projection;
             }
 
@@ -268,11 +270,35 @@ impl Session {
             }
 
             if let Some(catalog) = catalog {
-                let selections = environments.all_selections();
-                let environment_scope = McpEnvironmentScope::Selected(&selections);
+                let selections = self.services.turn_environments.selections();
                 projection.config.mcp_server_catalog =
                     catalog.build_with_environment_authority(|environment_id| {
-                        environment_scope.authority_for(environment_id)
+                        let Some(selection) = selections
+                            .iter()
+                            .find(|selection| selection.environment_id == environment_id)
+                        else {
+                            return if environment_id
+                                == codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
+                            {
+                                McpEnvironmentAuthority::Unrestricted
+                            } else {
+                                McpEnvironmentAuthority::SelectedPluginsOnly
+                            };
+                        };
+                        match &selection.config {
+                            EnvironmentConfigState::FromThread => {
+                                McpEnvironmentAuthority::Unrestricted
+                            }
+                            EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
+                                McpEnvironmentAuthority::Unavailable
+                            }
+                            EnvironmentConfigState::Ready(config) => config
+                                .mcp_policy
+                                .as_ref()
+                                .map_or(McpEnvironmentAuthority::Unrestricted, |policy| {
+                                    McpEnvironmentAuthority::Restricted(policy)
+                                }),
+                        }
                     });
             }
             projection
@@ -289,6 +315,7 @@ impl Session {
     ) {
         let mcp_projection = self
             .project_selected_environment_mcp_servers(
+                &desired.session_source,
                 &desired.config,
                 &desired.environments,
                 mcp_projection,
@@ -351,8 +378,16 @@ impl Session {
             desired.local_process_cwd.clone(),
         )
         .with_selected_environments(
-            desired.environments.all_selections().into(),
-            desired.environments.ready_environment_handles(),
+            desired
+                .environments
+                .turn_environments()
+                .map(|environment| {
+                    (
+                        environment.selection.environment_id.clone(),
+                        Arc::clone(&environment.environment),
+                    )
+                })
+                .collect(),
         );
         McpRuntimeInput {
             startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
@@ -373,7 +408,7 @@ impl Session {
             codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
-            auth_manager: Some(Arc::clone(&self.services.auth_manager)),
+            auth_manager: Some(Arc::clone(&desired.auth_manager)),
             elicitation_reviewer,
             elicitation_lifecycle: Some(self.mcp_elicitation_lifecycle()),
         }
