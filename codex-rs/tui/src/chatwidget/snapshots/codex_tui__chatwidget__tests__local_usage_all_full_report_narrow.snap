@@ -1,0 +1,23 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+expression: "render_bottom_popup(&chat, 38)"
+---
+  All local statistics
+
+› 1. Report
+     usageSummary v1 · database
+     schema 3 · taxonomy 1
+  2. Scope
+     all repositories (all)
+  3. Account
+     primary
+  4. Time range
+     10 to 20 ms UTC
+  5. Coverage
+     complete · gaps: no
+      Coverage events:
+  6. capture_started
+     2
+      Token observations:
+
+  enter select · esc back
