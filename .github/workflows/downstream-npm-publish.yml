@@ -1,0 +1,120 @@
+name: downstream-npm-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful downstream-candidate workflow run ID
+        required: true
+        type: string
+      tag:
+        description: Immutable annotated npm-v<version> tag at the candidate commit
+        required: true
+        type: string
+      stage_to_npm:
+        description: Stage all seven packages on npm after environment approval
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    name: Validate immutable candidate identity
+    runs-on: ubuntu-24.04
+    outputs:
+      npm_version: ${{ steps.identity.outputs.npm_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+      - name: Match the annotated tag, candidate run, and package version
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" != "tag" ]]; then
+            echo "Publication requires an annotated immutable release tag." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          source_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
+          print(manifest["workspace"]["package"]["version"])
+          PY
+          )"
+          npm_version="${source_version/+multi./-multi.}"
+          if [[ "$RELEASE_TAG" != "npm-v${npm_version}" ]]; then
+            echo "Tag ${RELEASE_TAG} must equal npm-v${npm_version}." >&2
+            exit 1
+          fi
+          candidate_commit="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" \
+            --jq .head_sha)"
+          if [[ "$candidate_commit" != "$tag_commit" ]]; then
+            echo "Candidate run ${CANDIDATE_RUN_ID} tested ${candidate_commit}, not ${tag_commit}." >&2
+            exit 1
+          fi
+          echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
+
+  stage-npm:
+    name: Stage npm packages for manual approval
+    if: inputs.stage_to_npm
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: "@holyglory"
+          package-manager-cache: false
+      - name: Install npm with staged publishing support
+        run: npm install --global npm@11.19.1
+      - name: Download the verified npm candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+          name: npm-candidate-${{ needs.validate.outputs.npm_version }}
+          path: dist/npm
+      - name: Stage platform payloads before the root launcher
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.npm_version }}
+        run: |
+          set -euo pipefail
+          for platform in \
+            linux-x64 linux-arm64 \
+            darwin-x64 darwin-arm64 \
+            win32-x64 win32-arm64
+          do
+            npm stage publish \
+              "dist/npm/codex-npm-${platform}-${VERSION}.tgz" \
+              --access public \
+              --provenance \
+              --tag "$platform"
+          done
+          npm stage publish \
+            "dist/npm/codex-npm-${VERSION}.tgz" \
+            --access public \
+            --provenance \
+            --tag latest

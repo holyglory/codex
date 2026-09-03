@@ -1,0 +1,120 @@
+name: downstream-upstream-watch
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: downstream-upstream-watch
+  cancel-in-progress: true
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+
+jobs:
+  probe:
+    name: Stable release and upstream/main compatibility probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      baseline_tag: ${{ steps.tags.outputs.baseline_tag }}
+      latest_stable_tag: ${{ steps.tags.outputs.latest_stable_tag }}
+      newer_stable: ${{ steps.tags.outputs.newer_stable }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch current upstream refs without moving downstream branches
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/openai/codex.git
+          git fetch --force --tags upstream main
+      - name: Find the newest stable Rust tag
+        id: tags
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          baseline_match = re.search(
+              r"^- Release tag: `(rust-v[0-9]+\.[0-9]+\.[0-9]+)`$",
+              Path("UPSTREAM.md").read_text(),
+              re.MULTILINE,
+          )
+          if baseline_match is None:
+              raise SystemExit("UPSTREAM.md has no stable release tag")
+          baseline = baseline_match.group(1)
+          stable_pattern = re.compile(r"^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$")
+          versions = []
+          for tag in subprocess.check_output(["git", "tag", "--list"], text=True).splitlines():
+              match = stable_pattern.fullmatch(tag)
+              if match:
+                  versions.append((tuple(map(int, match.groups())), tag))
+          if not versions:
+              raise SystemExit("upstream advertised no stable Rust release tags")
+          latest = max(versions)[1]
+          newer = max(versions)[0] > tuple(
+              map(int, stable_pattern.fullmatch(baseline).groups())
+          )
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a") as stream:
+              stream.write(f"baseline_tag={baseline}\n")
+              stream.write(f"latest_stable_tag={latest}\n")
+              stream.write(f"newer_stable={'true' if newer else 'false'}\n")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a") as stream:
+              stream.write(f"Baseline: `{baseline}`  \nNewest stable: `{latest}`\n")
+              if newer:
+                  stream.write("\nA newer stable release is ready for review.\n")
+          PY
+      - name: Report a newer stable release
+        if: steps.tags.outputs.newer_stable == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.tags.outputs.latest_stable_tag }}
+          BASELINE: ${{ steps.tags.outputs.baseline_tag }}
+        run: |
+          title="Upstream stable available: ${LATEST}"
+          if gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "An open update report already exists for ${LATEST}."
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --body "The maintained baseline is ${BASELINE}; upstream now advertises ${LATEST}. Review and explicitly approve the stable rebase before moving main. The scheduled upstream/main compatibility probe in this workflow does not change any downstream branch."
+          fi
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Rebase the downstream patch stack ephemerally onto upstream/main
+        shell: bash
+        env:
+          BASELINE_TAG: ${{ steps.tags.outputs.baseline_tag }}
+        run: |
+          set -euo pipefail
+          baseline_commit="$(git rev-parse "${BASELINE_TAG}^{commit}")"
+          if ! git rebase --onto refs/remotes/upstream/main "$baseline_commit" "$GITHUB_SHA"; then
+            {
+              echo
+              echo "## upstream/main rebase conflicts"
+              git diff --name-only --diff-filter=U | sed 's/^/- `/' | sed 's/$/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git rebase --abort
+            exit 1
+          fi
+      - name: Compile the ephemeral compatibility result
+        working-directory: codex-rs
+        run: cargo check --locked --bin codex --bin codex-app-server

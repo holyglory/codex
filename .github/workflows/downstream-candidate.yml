@@ -1,0 +1,389 @@
+name: downstream-candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  identity:
+    name: Validate candidate identity
+    runs-on: ubuntu-24.04
+    outputs:
+      source_version: ${{ steps.version.outputs.source_version }}
+      npm_version: ${{ steps.version.outputs.npm_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Validate downstream versions
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
+          print(manifest["workspace"]["package"]["version"])
+          PY
+          )"
+          npm_version="${source_version/+multi./-multi.}"
+          if [[ "$source_version" != *+multi.* || "$npm_version" == *+* ]]; then
+            echo "Expected a Rust +multi revision that maps safely to npm: $source_version" >&2
+            exit 1
+          fi
+          echo "source_version=$source_version" >> "$GITHUB_OUTPUT"
+          echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
+          printf 'Candidate `%s` / npm `%s` at `%s`\n' \
+            "$source_version" "$npm_version" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  rust-validation:
+    name: Complete Rust validation
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Check formatting
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - name: Run complete Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Run complete Rust suite
+        run: just test
+      - name: Regenerate schemas
+        run: |
+          just write-config-schema
+          just write-app-server-schema
+          just write-app-server-schema --experimental
+      - name: Verify generated files and Cargo lock
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
+          git diff --exit-code
+      - name: Verify downstream packaging helpers
+        working-directory: ${{ github.workspace }}
+        run: python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+
+  bazel-validation:
+    name: Complete Bazel validation
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: downstream-candidate-bazel
+      - name: Check Bazel lock and V8 checksums
+        shell: bash
+        run: |
+          python3 .github/scripts/rusty_v8_bazel.py check-module-bazel
+          ./scripts/check-module-bazel-lock.sh
+      - name: Test the complete Bazel graph
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            -- \
+            test \
+            --keep_going \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings \
+            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
+            -- \
+            //... \
+            -//third_party/v8:all \
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+      - name: Verify release-only Bazel targets
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          mapfile -t bazel_targets < <(bash ./scripts/list-bazel-release-targets.sh)
+          ./.github/scripts/run-bazel-ci.sh \
+            -- \
+            build \
+            --compilation_mode=fastbuild \
+            --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no \
+            --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no \
+            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
+            -- \
+            "${bazel_targets[@]}"
+
+  native:
+    name: Build ${{ matrix.target }}
+    needs: [identity, rust-validation, bazel-validation]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils pkg-config libcap-dev zstd
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - name: Configure MSVC linker
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Build and hash bundled bwrap
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --target "$TARGET" --release --bin bwrap
+          bwrap_path="target/${TARGET}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
+      - name: Build product binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          args=(
+            cargo build --locked --target "$TARGET" --release
+            --bin codex
+            --bin codex-app-server
+            --bin codex-code-mode-host
+          )
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+            args+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          "${args[@]}"
+      - name: Archive symbols and strip product binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
+            --target "$TARGET" \
+            --artifact-name "$TARGET" \
+            --release-dir "target/${TARGET}/release" \
+            --archive-dir "native-dist/${TARGET}" \
+            --binaries "codex codex-app-server codex-code-mode-host"
+      - name: Build canonical package archives
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.identity.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          release_dir="${GITHUB_WORKSPACE}/codex-rs/target/${TARGET}/release"
+          dist_dir="${GITHUB_WORKSPACE}/codex-rs/native-dist/${TARGET}"
+          suffix=""
+          [[ "$RUNNER_OS" == "Windows" ]] && suffix=".exe"
+          resources=(
+            --code-mode-host-bin "${release_dir}/codex-code-mode-host${suffix}"
+          )
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            resources+=(--bwrap-bin "${release_dir}/bwrap")
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            resources+=(
+              --codex-command-runner-bin "${release_dir}/codex-command-runner.exe"
+              --codex-windows-sandbox-setup-bin "${release_dir}/codex-windows-sandbox-setup.exe"
+            )
+          fi
+          mkdir -p "$dist_dir"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target "$TARGET" \
+            --variant codex \
+            --package-version "$VERSION" \
+            --entrypoint-bin "${release_dir}/codex${suffix}" \
+            "${resources[@]}" \
+            --archive-output "${dist_dir}/codex-package-${TARGET}.tar.gz" \
+            --archive-output "${dist_dir}/codex-package-${TARGET}.tar.zst"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target "$TARGET" \
+            --variant codex-app-server \
+            --package-version "$VERSION" \
+            --entrypoint-bin "${release_dir}/codex-app-server${suffix}" \
+            "${resources[@]}" \
+            --archive-output "${dist_dir}/codex-app-server-package-${TARGET}.tar.gz" \
+            --archive-output "${dist_dir}/codex-app-server-package-${TARGET}.tar.zst"
+      - name: Write checksums
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          dist = Path("native-dist") / os.environ["TARGET"]
+          lines = []
+          for path in sorted(dist.iterdir()):
+              if path.is_file() and path.name != "SHA256SUMS":
+                  lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          (dist / "SHA256SUMS").write_text("".join(lines))
+          PY
+      - name: Attest candidate artifacts
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: codex-rs/native-dist/${{ matrix.target }}/*
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.target }}
+          path: codex-rs/native-dist/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+  npm:
+    name: Build and verify seven npm tarballs
+    needs: [identity, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: "@holyglory"
+      - name: Download native package archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: native-artifacts
+          pattern: "*-*-*"
+      - name: Build npm tarballs
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: |
+          ./scripts/stage_npm_packages.py \
+            --release-version "$VERSION" \
+            --workflow-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --artifacts-dir native-artifacts \
+            --output-dir dist/npm \
+            --package codex
+      - name: Verify exact npm package set
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: |
+          python3 scripts/verify_npm_release.py --version "$VERSION" --dist-dir dist/npm
+          cd dist/npm
+          sha256sum *.tgz > SHA256SUMS
+      - name: Attest npm candidate tarballs
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: dist/npm/*
+      - name: Upload npm candidate tarballs
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: npm-candidate-${{ needs.identity.outputs.npm_version }}
+          path: dist/npm/*
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-result:
+    name: Candidate checks passed
+    if: always()
+    needs: [identity, rust-validation, bazel-validation, native, npm]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every candidate job
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          results = {
+              name: job["result"] for name, job in json.loads(os.environ["NEEDS_JSON"]).items()
+          }
+          failures = {name: result for name, result in results.items() if result != "success"}
+          if failures:
+              raise SystemExit(f"Candidate jobs did not all pass: {failures}")
+          print("Every candidate validation and packaging job passed.")
+          PY
