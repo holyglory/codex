@@ -9,6 +9,7 @@ use codex_app_server_protocol::McpServerEventStreamStartParams;
 use codex_app_server_protocol::ServerNotification;
 use codex_core::CodexThread;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpEventStream;
 use codex_protocol::ThreadId;
@@ -59,6 +60,11 @@ impl McpEventStreams {
             .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
         let subscription_id = params.subscription_id.clone();
         let (ready_tx, ready_rx) = oneshot::channel();
+        let auth_lease = processor
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
         {
             let mut tasks = self.tasks.lock().await;
             tasks.retain(|_, task| !task.task.is_finished());
@@ -78,7 +84,7 @@ impl McpEventStreams {
             }
             let task = tokio::spawn(async move {
                 let mut auth_changes =
-                    McpEventStreamAuthChanges::new(Arc::clone(&processor.auth_manager));
+                    McpEventStreamAuthChanges::new(Arc::clone(auth_lease.auth_manager()));
                 let opened = tokio::select! {
                     () = auth_changes.changed() => Err(internal_error(
                         "MCP event subscription authentication changed during startup",
@@ -96,7 +102,8 @@ impl McpEventStreams {
                         }
                         let (_, thread) = processor.load_thread(&params.thread_id).await?;
                         let stream = thread
-                            .start_mcp_event_stream(
+                            .start_mcp_event_stream_for_operation(
+                                &auth_lease,
                                 &params.name,
                                 params.arguments.clone(),
                                 params.meta.clone(),
@@ -117,6 +124,7 @@ impl McpEventStreams {
                             processor.outgoing.as_ref(),
                             thread,
                             stream,
+                            auth_lease,
                             auth_changes,
                             ready_tx,
                         )
@@ -180,12 +188,16 @@ impl McpEventStreams {
     }
 }
 
+// Keep the upstream event-loop inputs explicit while retaining the operation-scoped auth lease
+// for reconnects; bundling unrelated values would obscure their separate lifetimes.
+#[allow(clippy::too_many_arguments)]
 async fn forward_events(
     connection_id: ConnectionId,
     params: &McpServerEventStreamStartParams,
     outgoing: &OutgoingMessageSender,
     thread: Arc<CodexThread>,
     mut stream: McpEventStream,
+    auth_lease: AuthManagerLease,
     mut auth_changes: McpEventStreamAuthChanges,
     ready: oneshot::Sender<Result<(), JSONRPCErrorError>>,
 ) {
@@ -227,7 +239,8 @@ async fn forward_events(
                             )
                             .await;
                             let mut stream = thread
-                                .start_mcp_event_stream(
+                                .start_mcp_event_stream_for_operation(
+                                    &auth_lease,
                                     &params.name,
                                     params.arguments.clone(),
                                     params.meta.clone(),
