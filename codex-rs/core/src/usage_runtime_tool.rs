@@ -38,16 +38,18 @@ pub(crate) enum UsageActivityRelation {
 pub(crate) struct MissingReworkTarget;
 
 #[derive(Clone)]
-struct ActiveToolOperation {
-    operation_id: OperationId,
+pub(super) struct ActiveToolOperation {
+    pub(super) operation_id: OperationId,
+    pub(super) pending: Arc<buffer::PendingToolAttempt>,
+    pub(super) durable: bool,
 }
 
 #[derive(Default)]
 pub(super) struct ToolRuntimeState {
     activities: Mutex<HashMap<String, ActivityDeclaration>>,
     latest_models: Mutex<HashMap<String, OperationId>>,
-    active_tools: Mutex<HashMap<String, ToolInvocationId>>,
-    active_operations: Mutex<HashMap<String, ActiveToolOperation>>,
+    pub(super) active_tools: Mutex<HashMap<String, ToolInvocationId>>,
+    pub(super) active_operations: Mutex<HashMap<String, ActiveToolOperation>>,
     approval_terminals: Mutex<HashMap<String, TerminalStatus>>,
     retries: Mutex<HashMap<String, OperationId>>,
 }
@@ -76,15 +78,16 @@ pub(crate) struct ToolAttemptContext<'a> {
 }
 
 pub(crate) struct UsageToolAttempt {
-    runtime: Arc<UsageRuntime>,
-    operation_id: OperationId,
-    tool_invocation_id: ToolInvocationId,
-    key: String,
-    source_event_id: FactEventId,
-    started: Instant,
-    finished: AtomicBool,
-    cancellation_token: tokio_util::sync::CancellationToken,
-    repository_bucket: RepositoryBucket,
+    pub(super) runtime: Arc<UsageRuntime>,
+    pub(super) operation_id: OperationId,
+    pub(super) key: String,
+    pub(super) source_event_id: FactEventId,
+    pub(super) started: Instant,
+    pub(super) finished: AtomicBool,
+    pub(super) cancellation_token: tokio_util::sync::CancellationToken,
+    pub(super) repository_bucket: RepositoryBucket,
+    pub(super) pending: Arc<buffer::PendingToolAttempt>,
+    pub(super) durable: bool,
 }
 
 pub(crate) struct UsageWaitSpan {
@@ -132,22 +135,18 @@ impl UsageRuntime {
                 self.entity_created_at(&format!("thread:{}", context.thread_id))
                     .await,
             );
-        let thread_created_at = self
-            .ensure_thread(
-                &store,
-                NewThread {
-                    id: thread_id.clone(),
-                    parent_thread_id: parent_thread_id.clone(),
-                    source_kind: ThreadSourceKind::new(if context.delegated {
-                        "delegated"
-                    } else {
-                        "root"
-                    })
-                    .map_err(|_| unavailable())?,
-                    created_at_ms: proposed_thread_at,
-                },
-            )
-            .await?;
+        let thread_fact = NewThread {
+            id: thread_id.clone(),
+            parent_thread_id: parent_thread_id.clone(),
+            source_kind: ThreadSourceKind::new(if context.delegated {
+                "delegated"
+            } else {
+                "root"
+            })
+            .map_err(|_| unavailable())?,
+            created_at_ms: proposed_thread_at,
+        };
+        let thread_created_at = self.ensure_thread(&store, thread_fact.clone()).await?;
         let parent_agent_id = match parent_thread_id.as_ref() {
             Some(parent_thread_id) => {
                 let parent_agent_id =
@@ -160,40 +159,37 @@ impl UsageRuntime {
         let agent_created_at = self
             .write_required(store.agent_created_at(&agent_id).await)?
             .unwrap_or(thread_created_at);
-        self.ensure_agent(
-            &store,
-            NewAgent {
-                id: agent_id.clone(),
-                thread_id: thread_id.clone(),
-                parent_agent_id,
-                role_kind: AgentRoleKind::new(if context.delegated {
-                    "delegated"
-                } else {
-                    "root"
-                })
-                .map_err(|_| unavailable())?,
-                created_at_ms: agent_created_at,
-            },
-        )
-        .await?;
-        if let Some(turn_id) = &turn_id {
+        let agent_fact = NewAgent {
+            id: agent_id.clone(),
+            thread_id: thread_id.clone(),
+            parent_agent_id,
+            role_kind: AgentRoleKind::new(if context.delegated {
+                "delegated"
+            } else {
+                "root"
+            })
+            .map_err(|_| unavailable())?,
+            created_at_ms: agent_created_at,
+        };
+        self.ensure_agent(&store, agent_fact.clone()).await?;
+        let turn_fact = if let Some(turn_id) = &turn_id {
             let turn_created_at = self
                 .write_required(store.turn_created_at(turn_id).await)?
                 .unwrap_or(
                     self.entity_created_at(&format!("turn:{}", turn_id.as_str()))
                         .await,
                 );
-            self.ensure_turn(
-                &store,
-                NewTurn {
-                    id: turn_id.clone(),
-                    thread_id: thread_id.clone(),
-                    account: context.account.clone(),
-                    created_at_ms: turn_created_at,
-                },
-            )
-            .await?;
-        }
+            let turn_fact = NewTurn {
+                id: turn_id.clone(),
+                thread_id: thread_id.clone(),
+                account: context.account.clone(),
+                created_at_ms: turn_created_at,
+            };
+            self.ensure_turn(&store, turn_fact.clone()).await?;
+            Some(turn_fact)
+        } else {
+            None
+        };
         let key = operation_key(context.thread_id, context.turn_id, context.call_id);
         let (phase, activity, provenance) = if context.descriptor.activity_control {
             (
@@ -228,47 +224,42 @@ impl UsageRuntime {
         } else {
             OperationKind::LocalTool
         };
+        let operation = NewOperation {
+            id: operation_id,
+            process_id: self.process_id,
+            thread_id: Some(thread_id.clone()),
+            turn_id: turn_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            parent_operation_id,
+            retry_of_operation_id,
+            rework_of_operation_id: None,
+            kind: operation_kind,
+            started_at_ms,
+            phase,
+            activity,
+            activity_state: context.descriptor.activity_state,
+            attribution_provenance: provenance,
+        };
+        self.write_required_for(operation_id, store.begin_operation(&operation).await)?;
+        let tool_invocation = NewToolInvocation {
+            id: tool_invocation_id,
+            operation_id,
+            operation_kind,
+            tool_kind: ToolKind::new(context.descriptor.kind)
+                .map_err(|_| self.reject_invalid_metadata())?,
+            safe_tool_name: UsageToolName::new(context.descriptor.safe_name)
+                .map_err(|_| self.reject_invalid_metadata())?,
+            operation_family: OperationFamily::new(context.descriptor.family)
+                .map_err(|_| self.reject_invalid_metadata())?,
+            observation_timing: ObservationTiming::new("before_execution")
+                .map_err(|_| self.reject_invalid_metadata())?,
+            covering_model_request_id: None,
+            execution_group_id: context.execution_group_id,
+            execution_role: context.execution_role,
+        };
         self.write_required_for(
             operation_id,
-            store
-                .begin_operation(&NewOperation {
-                    id: operation_id,
-                    process_id: self.process_id,
-                    thread_id: Some(thread_id),
-                    turn_id,
-                    agent_id: Some(agent_id),
-                    parent_operation_id,
-                    retry_of_operation_id,
-                    rework_of_operation_id: None,
-                    kind: operation_kind,
-                    started_at_ms,
-                    phase,
-                    activity,
-                    activity_state: context.descriptor.activity_state,
-                    attribution_provenance: provenance,
-                })
-                .await,
-        )?;
-        self.write_required_for(
-            operation_id,
-            store
-                .record_tool_invocation(&NewToolInvocation {
-                    id: tool_invocation_id,
-                    operation_id,
-                    operation_kind,
-                    tool_kind: ToolKind::new(context.descriptor.kind)
-                        .map_err(|_| self.reject_invalid_metadata())?,
-                    safe_tool_name: UsageToolName::new(context.descriptor.safe_name)
-                        .map_err(|_| self.reject_invalid_metadata())?,
-                    operation_family: OperationFamily::new(context.descriptor.family)
-                        .map_err(|_| self.reject_invalid_metadata())?,
-                    observation_timing: ObservationTiming::new("before_execution")
-                        .map_err(|_| self.reject_invalid_metadata())?,
-                    covering_model_request_id: None,
-                    execution_group_id: context.execution_group_id,
-                    execution_role: context.execution_role,
-                })
-                .await,
+            store.record_tool_invocation(&tool_invocation).await,
         )?;
         self.record_repository_resolution(
             &store,
@@ -277,40 +268,50 @@ impl UsageRuntime {
             started_at_ms,
         )
         .await?;
-        self.write_required_for(
-            operation_id,
-            store
-                .record_coverage(&NewCoverageEvent {
-                    event_id: FactEventId::new(),
-                    operation_id: Some(operation_id),
-                    scope_kind: CoverageScopeKind::new("tool_attempt")
-                        .map_err(|_| self.reject_invalid_metadata())?,
-                    state: CoverageState::CaptureStarted,
-                    reason_code: None,
-                    occurred_at_ms: started_at_ms,
-                })
-                .await,
-        )?;
+        let capture_started = NewCoverageEvent {
+            event_id: FactEventId::new(),
+            operation_id: Some(operation_id),
+            scope_kind: CoverageScopeKind::new("tool_attempt")
+                .map_err(|_| self.reject_invalid_metadata())?,
+            state: CoverageState::CaptureStarted,
+            reason_code: None,
+            occurred_at_ms: started_at_ms,
+        };
+        self.write_required_for(operation_id, store.record_coverage(&capture_started).await)?;
+        let mut buffered_thread = thread_fact;
+        buffered_thread.created_at_ms = thread_created_at;
+        let pending = buffer::PendingToolAttempt::new(
+            buffered_thread,
+            turn_fact,
+            agent_fact,
+            operation,
+            tool_invocation,
+            capture_started,
+        );
         self.tool_state
             .active_tools
             .lock()
             .await
             .insert(key.clone(), tool_invocation_id);
-        self.tool_state
-            .active_operations
-            .lock()
-            .await
-            .insert(key.clone(), ActiveToolOperation { operation_id });
+        self.tool_state.active_operations.lock().await.insert(
+            key.clone(),
+            ActiveToolOperation {
+                operation_id,
+                pending: Arc::clone(&pending),
+                durable: true,
+            },
+        );
         Ok(UsageToolAttempt {
             runtime: Arc::clone(self),
             operation_id,
-            tool_invocation_id,
             key,
             source_event_id: FactEventId::new(),
             started: Instant::now(),
             finished: AtomicBool::new(false),
             cancellation_token: context.cancellation_token.clone(),
             repository_bucket: repository_resolution.bucket,
+            pending,
+            durable: true,
         })
     }
 
@@ -327,28 +328,39 @@ impl UsageRuntime {
         else {
             return;
         };
-        let operation_id = self
+        let active = self
             .tool_state
             .active_operations
             .lock()
             .await
             .get(&key)
-            .map(|active| active.operation_id);
-        let Some(store) = self.store.get() else {
-            self.latch_fault_with_operation(operation_id, /*recovery_allowed*/ true);
-            return;
+            .cloned();
+        let event = NewToolApprovalEvent {
+            event_id: FactEventId::new(),
+            tool_invocation_id,
+            outcome,
+            provenance,
+            occurred_at_ms: now_ms(),
         };
-        if let Err(error) = store
-            .record_tool_approval(&NewToolApprovalEvent {
-                event_id: FactEventId::new(),
-                tool_invocation_id,
-                outcome,
-                provenance,
-                occurred_at_ms: now_ms(),
-            })
-            .await
-        {
-            self.latch_write_failure("tool_approval", operation_id, error);
+        if let Some(active) = &active {
+            active.pending.record_approval(event.clone());
+            if active.durable {
+                if let Some(store) = self.store.get() {
+                    if let Err(error) = store.record_tool_approval(&event).await {
+                        self.latch_write_failure("tool_approval", Some(active.operation_id), error);
+                        self.enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(
+                            &active.pending,
+                        )))
+                        .await;
+                    }
+                } else {
+                    self.latch_operation_fault(active.operation_id);
+                    self.enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(
+                        &active.pending,
+                    )))
+                    .await;
+                }
+            }
         }
         let terminal = match outcome {
             ApprovalOutcome::Denied => Some(TerminalStatus::Denied),
@@ -383,19 +395,40 @@ impl UsageRuntime {
         else {
             return Ok(None);
         };
-        let store = self.store().await?;
+        if !active.durable {
+            tracing::warn!(
+                stage = "tool_wait_span",
+                "usage accounting detail was deferred; work will continue"
+            );
+            return Ok(None);
+        }
+        let store = match self.store().await {
+            Ok(store) => store,
+            Err(_) => {
+                self.enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(
+                    &active.pending,
+                )))
+                .await;
+                return Ok(None);
+            }
+        };
         let id = codex_usage::ActivitySpanId::new();
-        self.write_required_for(
-            active.operation_id,
-            store
-                .begin_activity_span(&codex_usage::NewActivitySpan {
-                    id,
-                    operation_id: active.operation_id,
-                    activity_state: state,
-                    started_at_ms: now_ms(),
-                })
-                .await,
-        )?;
+        if let Err(error) = store
+            .begin_activity_span(&codex_usage::NewActivitySpan {
+                id,
+                operation_id: active.operation_id,
+                activity_state: state,
+                started_at_ms: now_ms(),
+            })
+            .await
+        {
+            self.latch_write_failure("tool_wait_span", Some(active.operation_id), error);
+            self.enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(
+                &active.pending,
+            )))
+            .await;
+            return Ok(None);
+        }
         Ok(Some(UsageWaitSpan {
             runtime: Arc::clone(self),
             id,
@@ -564,47 +597,32 @@ fn promote_staged_activity(declaration: &mut ActivityDeclaration) {
 
 impl UsageToolAttempt {
     pub(crate) async fn record_provider_usage(&self, usage: &ProviderUsage) {
+        let observations = self.pending.record_provider_usage(
+            self.source_event_id,
+            usage,
+            self.repository_bucket.clone(),
+            now_ms(),
+        );
+        if !self.durable {
+            return;
+        }
         let Some(store) = self.runtime.store.get() else {
             self.runtime.latch_operation_fault(self.operation_id);
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(&self.pending)))
+                .await;
             return;
         };
-        let coverage = if usage.categories_complete() {
-            CoverageState::Complete
-        } else {
-            CoverageState::Partial
-        };
-        let observed_at_ms = now_ms();
-        for (path, count) in provider_counts(usage) {
-            let (token_count, state) = match count {
-                ProviderTokenCount::Absent => continue,
-                ProviderTokenCount::Value(count) => (Some(count), coverage),
-                ProviderTokenCount::Null => (None, CoverageState::Unknown),
-                ProviderTokenCount::Invalid => (None, CoverageState::Partial),
-            };
-            let Ok(category_path) = TokenCategoryPath::new(path) else {
-                self.runtime.latch_operation_fault(self.operation_id);
-                return;
-            };
-            if let Err(error) = store
-                .record_token_observation(&NewTokenObservation {
-                    id: FactEventId::new(),
-                    source_event_id: self.source_event_id,
-                    source: TokenObservationSource::ToolInvocation(self.tool_invocation_id),
-                    category_path,
-                    token_count,
-                    unit: TokenUnit::Tokens,
-                    measurement_provenance: MeasurementProvenance::ProviderReported,
-                    coverage_state: state,
-                    repository_bucket: self.repository_bucket.clone(),
-                    observed_at_ms,
-                })
-                .await
-            {
+        for observation in &observations {
+            if let Err(error) = store.record_token_observation(observation).await {
                 self.runtime.latch_write_failure(
                     "tool_token_observation",
                     Some(self.operation_id),
                     error,
                 );
+                self.runtime
+                    .enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(&self.pending)))
+                    .await;
                 return;
             }
         }
@@ -614,13 +632,51 @@ impl UsageToolAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
+        let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let Some(finish) = self.pending.finish(status, error, duration_ns) else {
+            return;
+        };
+        if !self.durable {
+            self.runtime
+                .tool_state
+                .active_tools
+                .lock()
+                .await
+                .remove(&self.key);
+            self.runtime
+                .tool_state
+                .active_operations
+                .lock()
+                .await
+                .remove(&self.key);
+            self.runtime
+                .tool_state
+                .approval_terminals
+                .lock()
+                .await
+                .remove(&self.key);
+            if !matches!(status, TerminalStatus::Completed) {
+                self.runtime
+                    .tool_state
+                    .retries
+                    .lock()
+                    .await
+                    .insert(self.key.clone(), self.operation_id);
+            }
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Tool(Arc::clone(&self.pending)))
+                .await;
+            self.runtime.flush_pending_usage().await;
+            return;
+        }
         self.runtime
             .finish_tool(
                 self.operation_id,
                 self.key.clone(),
                 status,
-                error,
-                u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                Arc::clone(&self.pending),
+                finish.terminal,
+                finish.attempt_coverage,
             )
             .await;
     }
@@ -683,22 +739,53 @@ impl Drop for UsageToolAttempt {
         let key = self.key.clone();
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let cancelled = self.cancellation_token.is_cancelled();
+        let status = if cancelled {
+            TerminalStatus::Cancelled
+        } else {
+            TerminalStatus::Interrupted
+        };
+        let Some(finish) = self.pending.finish(
+            status,
+            Some(if cancelled {
+                ErrorCategory::Cancelled
+            } else {
+                ErrorCategory::Tool
+            }),
+            duration_ns,
+        ) else {
+            return;
+        };
+        let pending = Arc::clone(&self.pending);
+        let durable = self.durable;
         drop(handle.spawn(async move {
+            if !durable {
+                runtime.tool_state.active_tools.lock().await.remove(&key);
+                runtime
+                    .tool_state
+                    .active_operations
+                    .lock()
+                    .await
+                    .remove(&key);
+                runtime
+                    .tool_state
+                    .approval_terminals
+                    .lock()
+                    .await
+                    .remove(&key);
+                runtime
+                    .enqueue_pending(buffer::PendingUsageRecord::Tool(pending))
+                    .await;
+                runtime.flush_pending_usage().await;
+                return;
+            }
             runtime
                 .finish_tool(
                     operation_id,
                     key,
-                    if cancelled {
-                        TerminalStatus::Cancelled
-                    } else {
-                        TerminalStatus::Interrupted
-                    },
-                    Some(if cancelled {
-                        ErrorCategory::Cancelled
-                    } else {
-                        ErrorCategory::Tool
-                    }),
-                    duration_ns,
+                    status,
+                    pending,
+                    finish.terminal,
+                    finish.attempt_coverage,
                 )
                 .await;
         }));
@@ -793,60 +880,45 @@ impl UsageRuntime {
         operation_id: OperationId,
         key: String,
         status: TerminalStatus,
-        error: Option<ErrorCategory>,
-        duration_ns: u64,
+        pending: Arc<buffer::PendingToolAttempt>,
+        terminal: TerminalOperation,
+        attempt_coverage: NewCoverageEvent,
     ) {
         self.tool_state.active_tools.lock().await.remove(&key);
         self.tool_state.active_operations.lock().await.remove(&key);
         self.tool_state.approval_terminals.lock().await.remove(&key);
-        let Some(store) = self.store.get() else {
-            self.latch_operation_fault(operation_id);
-            return;
-        };
-        if let Err(error) = store
-            .finish_operation(&TerminalOperation {
-                operation_id,
-                status,
-                occurred_at_ms: now_ms(),
-                duration_ns,
-                error_category: error,
-            })
-            .await
-        {
-            self.latch_write_failure("tool_operation_terminal", Some(operation_id), error);
-            return;
-        }
-        if let Err(error) = store
-            .record_coverage(&NewCoverageEvent {
-                event_id: FactEventId::new(),
-                operation_id: Some(operation_id),
-                scope_kind: match CoverageScopeKind::new("tool_attempt") {
-                    Ok(scope) => scope,
-                    Err(_) => {
-                        self.latch_operation_fault(operation_id);
-                        return;
-                    }
-                },
-                state: CoverageState::Partial,
-                reason_code: None,
-                occurred_at_ms: now_ms(),
-            })
-            .await
-        {
-            self.latch_write_failure("tool_attempt_coverage", Some(operation_id), error);
-        }
         if !matches!(status, TerminalStatus::Completed) {
             self.tool_state
                 .retries
                 .lock()
                 .await
-                .insert(key, operation_id);
+                .insert(key.clone(), operation_id);
+        }
+        let Some(store) = self.store.get() else {
+            self.latch_operation_fault(operation_id);
+            self.enqueue_pending(buffer::PendingUsageRecord::Tool(pending))
+                .await;
+            return;
+        };
+        if let Err(error) = store.finish_operation(&terminal).await {
+            self.latch_write_failure("tool_operation_terminal", Some(operation_id), error);
+            self.enqueue_pending(buffer::PendingUsageRecord::Tool(pending))
+                .await;
+            return;
+        }
+        if let Err(error) = store.record_coverage(&attempt_coverage).await {
+            self.latch_write_failure("tool_attempt_coverage", Some(operation_id), error);
+            self.enqueue_pending(buffer::PendingUsageRecord::Tool(pending))
+                .await;
         }
     }
 }
 
 impl UsageAttempt {
     pub(super) async fn record_hosted_tool(&self, item: &ResponseItem) {
+        if !self.durable {
+            return;
+        }
         let (item_id, status, descriptor, activity) = match item {
             ResponseItem::WebSearchCall { id, status, .. } => (
                 id.as_ref().map(codex_protocol::ResponseItemId::as_str),
@@ -890,6 +962,9 @@ impl UsageAttempt {
         let operation_id = stable_operation_id("hosted-operation", &dedupe_key);
         let Some(store) = self.runtime.store.get() else {
             self.runtime.latch_operation_fault(operation_id);
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
             return;
         };
         let tool_invocation_id = stable_tool_id("hosted-tool", &dedupe_key);
@@ -971,6 +1046,9 @@ impl UsageAttempt {
         if let Err(error) = writes {
             self.runtime
                 .latch_write_failure("hosted_tool_observation", Some(operation_id), error);
+            self.runtime
+                .enqueue_pending(buffer::PendingUsageRecord::Model(Arc::clone(&self.pending)))
+                .await;
         }
     }
 }
@@ -1002,7 +1080,7 @@ pub(super) fn activity_key(thread_id: &str, turn_id: Option<&str>) -> String {
     stable_key("activity", &[thread_id, turn_id.unwrap_or("")])
 }
 
-fn operation_key(thread_id: &str, turn_id: Option<&str>, call_id: &str) -> String {
+pub(super) fn operation_key(thread_id: &str, turn_id: Option<&str>, call_id: &str) -> String {
     stable_key("tool", &[thread_id, turn_id.unwrap_or(""), call_id])
 }
 
