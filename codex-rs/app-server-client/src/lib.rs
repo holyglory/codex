@@ -40,6 +40,8 @@ use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::LocalUsageAccountingCapability;
+use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -196,6 +198,8 @@ pub struct InProcessClientStartArgs {
     pub session_source: SessionSource,
     /// Whether auth loading should honor the `CODEX_API_KEY` environment variable.
     pub enable_codex_api_key_env: bool,
+    /// Optional local account profile pin owned by this embedded server process.
+    pub process_account: Option<String>,
     /// Client name reported during initialize.
     pub client_name: String,
     /// Client version reported during initialize.
@@ -252,6 +256,7 @@ impl InProcessClientStartArgs {
             config_warnings: self.config_warnings,
             session_source: self.session_source,
             enable_codex_api_key_env: self.enable_codex_api_key_env,
+            process_account: self.process_account,
             initialize,
             channel_capacity: self.channel_capacity,
         }
@@ -301,6 +306,53 @@ pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::UnboundedReceiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
+    server_capabilities: AppServerCapabilities,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AppServerCapabilities {
+    multi_account: Option<MultiAccountCapability>,
+    local_usage_accounting: Option<LocalUsageAccountingCapability>,
+}
+
+impl AppServerCapabilities {
+    pub(crate) fn advertised_v1() -> Self {
+        Self {
+            multi_account: Some(MultiAccountCapability {
+                version: 2,
+                supports_managed_login: true,
+                supports_auto_selection: true,
+            }),
+            local_usage_accounting: Some(LocalUsageAccountingCapability { version: 2 }),
+        }
+    }
+
+    pub(crate) fn from_advertised(
+        multi_account: Option<MultiAccountCapability>,
+        local_usage_accounting: Option<LocalUsageAccountingCapability>,
+    ) -> Self {
+        Self {
+            multi_account: multi_account.filter(|capability| capability.version == 2),
+            local_usage_accounting: local_usage_accounting
+                .filter(|capability| capability.version == 2),
+        }
+    }
+
+    pub fn multi_account(&self) -> Option<&MultiAccountCapability> {
+        self.multi_account.as_ref()
+    }
+
+    pub fn local_usage_accounting(&self) -> Option<&LocalUsageAccountingCapability> {
+        self.local_usage_accounting.as_ref()
+    }
+
+    pub fn supports_multi_account(&self) -> bool {
+        self.multi_account.is_some()
+    }
+
+    pub fn supports_local_usage_accounting(&self) -> bool {
+        self.local_usage_accounting.is_some()
+    }
 }
 
 #[derive(Clone)]
@@ -423,7 +475,12 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         })
+    }
+
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        &self.server_capabilities
     }
 
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
@@ -584,6 +641,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: _server_capabilities,
         } = self;
         let mut worker_handle = worker_handle;
         // Stop forwarding caller-facing events before asking the worker to shut down.
@@ -677,6 +735,13 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        match self {
+            Self::InProcess(client) => client.server_capabilities(),
+            Self::Remote(client) => client.server_capabilities(),
+        }
+    }
+
     pub fn codex_home(&self, local_codex_home: &AbsolutePathBuf) -> Option<AppServerPath> {
         match self {
             Self::InProcess(_) => Some(AppServerPath::from_app_server(
@@ -859,6 +924,7 @@ mod tests {
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: false,
+            process_account: None,
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
@@ -931,6 +997,46 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
+        expect_remote_initialize_with_metadata(
+            websocket,
+            serde_json::json!({
+                "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+                "codexHome": "/server/.codex",
+            }),
+        )
+        .await;
+    }
+
+    async fn expect_remote_initialize_capabilities<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        multi_account_version: Option<u32>,
+        local_usage_version: Option<u32>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut metadata = serde_json::json!({
+            "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+            "codexHome": "/server/.codex",
+        });
+        if let Some(version) = multi_account_version {
+            metadata["multiAccount"] = serde_json::json!({
+                "version": version,
+                "supportsManagedLogin": true,
+                "supportsAutoSelection": true,
+            });
+        }
+        if let Some(version) = local_usage_version {
+            metadata["localUsageAccounting"] = serde_json::json!({"version": version});
+        }
+        expect_remote_initialize_with_metadata(websocket, metadata).await;
+    }
+
+    async fn expect_remote_initialize_with_metadata<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        metadata: serde_json::Value,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let JSONRPCMessage::Request(request) = read_websocket_message(websocket).await else {
             panic!("expected initialize request");
         };
@@ -939,10 +1045,7 @@ mod tests {
             websocket,
             JSONRPCMessage::Response(JSONRPCResponse {
                 id: request.id,
-                result: serde_json::json!({
-                    "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
-                    "codexHome": "/server/.codex",
-                }),
+                result: metadata,
             }),
         )
         .await;
@@ -1253,6 +1356,37 @@ mod tests {
         );
 
         client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_capabilities_handle_stock_enhanced_reconnect_and_unknown_versions() {
+        for (multi_version, usage_version, expected_multi, expected_usage) in [
+            (None, None, false, false),
+            (Some(2), Some(2), true, true),
+            (Some(1), Some(1), false, false),
+            (Some(99), Some(99), false, false),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                expect_remote_initialize_capabilities(&mut websocket, multi_version, usage_version)
+                    .await;
+                websocket.close(None).await.expect("close should succeed");
+            })
+            .await;
+            let client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+                .await
+                .expect("remote client should connect");
+            assert_eq!(
+                client.server_capabilities().supports_multi_account(),
+                expected_multi
+            );
+            assert_eq!(
+                client
+                    .server_capabilities()
+                    .supports_local_usage_accounting(),
+                expected_usage
+            );
+            client.shutdown().await.expect("shutdown should complete");
+        }
     }
 
     #[tokio::test]
@@ -1932,6 +2066,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         };
 
         let event = timeout(Duration::from_secs(2), client.next_event())
@@ -1976,6 +2111,7 @@ mod tests {
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,
             enable_codex_api_key_env: false,
+            process_account: None,
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
@@ -2009,6 +2145,12 @@ mod tests {
     #[tokio::test]
     async fn shutdown_completes_promptly_without_retained_managers() {
         let client = start_test_client(SessionSource::Cli).await;
+        assert!(client.server_capabilities().supports_multi_account());
+        assert!(
+            client
+                .server_capabilities()
+                .supports_local_usage_accounting()
+        );
 
         timeout(Duration::from_secs(1), client.shutdown())
             .await
@@ -2038,6 +2180,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         };
 
         client.shutdown().await.expect("shutdown should complete");

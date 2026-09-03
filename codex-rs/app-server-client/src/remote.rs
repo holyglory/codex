@@ -17,6 +17,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::time::Duration;
 
+use crate::AppServerCapabilities;
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
@@ -32,6 +33,8 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::LocalUsageAccountingCapability;
+use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -41,6 +44,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -154,6 +158,7 @@ pub struct RemoteAppServerClient {
     pending_events: VecDeque<AppServerEvent>,
     server_version: Option<String>,
     codex_home: Option<String>,
+    server_capabilities: AppServerCapabilities,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -192,6 +197,10 @@ impl RemoteAppServerClient {
         self.codex_home.as_deref()
     }
 
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        &self.server_capabilities
+    }
+
     async fn connect_with_stream<S>(
         channel_capacity: usize,
         endpoint: String,
@@ -202,7 +211,8 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
-        let (pending_events, server_version, codex_home) = initialize_remote_connection(
+        let (pending_events, server_version, codex_home, server_capabilities) =
+            initialize_remote_connection(
             &mut stream,
             &endpoint,
             initialize_params,
@@ -480,6 +490,7 @@ impl RemoteAppServerClient {
             pending_events: pending_events.into(),
             server_version,
             codex_home,
+            server_capabilities,
             worker_handle,
         })
     }
@@ -606,6 +617,7 @@ impl RemoteAppServerClient {
             pending_events: _pending_events,
             server_version: _server_version,
             codex_home: _codex_home,
+            server_capabilities: _server_capabilities,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -795,12 +807,26 @@ fn remote_websocket_config() -> WebSocketConfig {
         .max_message_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
 }
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeCapabilityFields {
+    #[serde(default)]
+    multi_account: Option<MultiAccountCapability>,
+    #[serde(default)]
+    local_usage_accounting: Option<LocalUsageAccountingCapability>,
+}
+
 async fn initialize_remote_connection<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
-) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
+) -> IoResult<(
+    Vec<AppServerEvent>,
+    Option<String>,
+    Option<String>,
+    AppServerCapabilities,
+)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -808,6 +834,7 @@ where
     let mut pending_events = Vec::new();
     let mut server_version = None;
     let mut codex_home = None;
+    let mut server_capabilities = AppServerCapabilities::default();
     write_jsonrpc_message(
         stream,
         JSONRPCMessage::Request(jsonrpc_request_from_client_request(
@@ -831,6 +858,14 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
+                            let advertised = serde_json::from_value::<InitializeCapabilityFields>(
+                                response.result.clone(),
+                            )
+                            .unwrap_or_default();
+                            server_capabilities = AppServerCapabilities::from_advertised(
+                                advertised.multi_account,
+                                advertised.local_usage_accounting,
+                            );
                             server_version = response
                                 .result
                                 .get("userAgent")
@@ -937,7 +972,12 @@ where
     )
     .await?;
 
-    Ok((pending_events, server_version, codex_home))
+    Ok((
+        pending_events,
+        server_version,
+        codex_home,
+        server_capabilities,
+    ))
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
@@ -1029,6 +1069,7 @@ mod tests {
             pending_events: VecDeque::new(),
             server_version: None,
             codex_home: None,
+            server_capabilities: AppServerCapabilities::default(),
             worker_handle,
         };
 
