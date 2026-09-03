@@ -6,6 +6,7 @@ use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
 use codex_api::ImageQuality;
+use codex_api::ImageResponse;
 use codex_api::ImageUrl;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::LOCAL_FS;
@@ -29,12 +30,12 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
+use codex_protocol::provider_usage::ProviderUsage;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
@@ -159,7 +160,6 @@ impl ImageGenerationTool {
                     failure: None,
                     saved_path: None,
                     imagegen_request_id: None,
-                    generation_id: None,
                 },
                 EventMsg::ImageGenerationBegin(ImageGenerationBeginEvent {
                     call_id: call.call_id.clone(),
@@ -177,26 +177,18 @@ impl ImageGenerationTool {
             )
         })
         .and_then(|(response, imagegen_request_id)| {
-            let transparent_background = match response.background {
-                Some(ImageBackground::Transparent) => Some(true),
-                Some(ImageBackground::Opaque) => Some(false),
-                Some(ImageBackground::Auto) | None => None,
-            };
-            response
-                .data
-                .into_iter()
-                .next()
-                .map(|data| {
+            first_generated_image(response).map(
+                |(result, transparent_background, provider_usage)| {
                     (
-                        data.b64_json,
+                        result,
                         transparent_background,
+                        provider_usage,
                         imagegen_request_id,
-                        data.generation_id,
                     )
-                })
-                .ok_or_else(|| ("image generation returned no image data".to_string(), None))
+                },
+            )
         });
-        let (result, transparent_background, imagegen_request_id, generation_id) = match result {
+        let (result, transparent_background, provider_usage, imagegen_request_id) = match result {
             Ok(result) => result,
             Err((message, failure)) => {
                 let item = ImageGenerationItem {
@@ -208,7 +200,6 @@ impl ImageGenerationTool {
                     failure,
                     saved_path: None,
                     imagegen_request_id: None,
-                    generation_id: None,
                 };
                 let legacy_event = legacy_end_event(&item);
                 call.turn_item_emitter
@@ -234,7 +225,6 @@ impl ImageGenerationTool {
             failure: None,
             saved_path: saved_path.clone(),
             imagegen_request_id,
-            generation_id,
         };
         let legacy_event = legacy_end_event(&item);
         call.turn_item_emitter
@@ -247,8 +237,29 @@ impl ImageGenerationTool {
         Ok(Box::new(GeneratedImageOutput {
             result,
             output_hint,
+            provider_usage,
         }))
     }
+}
+
+type GeneratedImageResult = (String, Option<bool>, Option<ProviderUsage>);
+type GeneratedImageError = (String, Option<ImageGenerationFailure>);
+
+fn first_generated_image(
+    response: ImageResponse,
+) -> Result<GeneratedImageResult, GeneratedImageError> {
+    let transparent_background = match response.background {
+        Some(ImageBackground::Transparent) => Some(true),
+        Some(ImageBackground::Opaque) => Some(false),
+        Some(ImageBackground::Auto) | None => None,
+    };
+    let provider_usage = response.usage;
+    response
+        .data
+        .into_iter()
+        .next()
+        .map(|data| (data.b64_json, transparent_background, provider_usage))
+        .ok_or_else(|| ("image generation returned no image data".to_string(), None))
 }
 
 fn usage_limit_failure(error: &CodexErr) -> Option<ImageGenerationFailure> {
@@ -459,7 +470,14 @@ async fn request_for_call_args(
             }
             // Pathless images have no stable reference, so this bounded window may include newer
             // unrelated images. This remains best-effort until the harness provides stable refs.
-            recent_images(history, count)?
+            let images = recent_images(history, count);
+            if images.len() != count {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "requested the last {count} conversation images, but only {} were available",
+                    images.len()
+                )));
+            }
+            images
         }
         (false, Some(_)) => {
             return Err(FunctionCallError::RespondToModel(
@@ -481,19 +499,14 @@ async fn request_for_call_args(
     }))
 }
 
-fn recent_images(
-    history: &[ResponseItem],
-    count: usize,
-) -> Result<Vec<ImageUrl>, FunctionCallError> {
+fn recent_images(history: &[ResponseItem], count: usize) -> Vec<ImageUrl> {
     let mut images = Vec::with_capacity(count);
     'history: for item in history.iter().rev() {
         let mut image_urls = Vec::new();
         match item {
             ResponseItem::Message { content, .. } => {
                 image_urls.extend(content.iter().rev().filter_map(|item| match item {
-                    ContentItem::InputImage { image, .. } => {
-                        Some(inline_image_url(image).map(str::to_owned))
-                    }
+                    ContentItem::InputImage { image_url, .. } => Some(image_url.clone()),
                     ContentItem::InputText { .. }
                     | ContentItem::InputAudio { .. }
                     | ContentItem::OutputText { .. } => None,
@@ -501,12 +514,10 @@ fn recent_images(
             }
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {
-                image_urls.extend(
-                    output_images(output).map(|image| inline_image_url(image).map(str::to_owned)),
-                );
+                image_urls.extend(output_image_urls(output));
             }
             ResponseItem::ImageGenerationCall { result, .. } if !result.is_empty() => {
-                image_urls.push(Some(format!("data:image/png;base64,{result}")));
+                image_urls.push(format!("data:image/png;base64,{result}"));
             }
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Reasoning { .. }
@@ -525,53 +536,29 @@ fn recent_images(
             | ResponseItem::Other => {}
         }
         for image_url in image_urls {
-            images.push(image_url.map(|image_url| ImageUrl { image_url }));
+            images.push(ImageUrl { image_url });
             if images.len() == count {
                 break 'history;
             }
         }
     }
-    if images.len() != count {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "requested the last {count} conversation images, but only {} were available",
-            images.len()
-        )));
-    }
-    let mut inline_images = Vec::with_capacity(count);
-    for image in images {
-        let Some(image) = image else {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "requested the last {count} conversation images, but that window includes a \
-                 file-backed image that cannot be used for editing"
-            )));
-        };
-        inline_images.push(image);
-    }
-    inline_images.reverse();
-    Ok(inline_images)
+    images.reverse();
+    images
 }
 
-/// Extracts image references from a tool output in newest-first order.
-fn output_images(output: &FunctionCallOutputPayload) -> impl Iterator<Item = &ImageReference> + '_ {
+/// Extracts image URLs from a tool output in newest-first order.
+fn output_image_urls(output: &FunctionCallOutputPayload) -> impl Iterator<Item = String> + '_ {
     output
         .content_items()
         .into_iter()
         .flatten()
         .rev()
         .filter_map(|item| match item {
-            FunctionCallOutputContentItem::InputImage { image, .. } => Some(image),
+            FunctionCallOutputContentItem::InputImage { image_url, .. } => Some(image_url.clone()),
             FunctionCallOutputContentItem::InputText { .. }
             | FunctionCallOutputContentItem::InputAudio { .. }
             | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
         })
-}
-
-fn inline_image_url(image: &ImageReference) -> Option<&str> {
-    match image {
-        ImageReference::Inline { image_url } => Some(image_url),
-        // TODO(kc) Image generation and the Images API only accept inline image URLs.
-        ImageReference::File { .. } => None,
-    }
 }
 
 async fn image_url(
@@ -645,6 +632,7 @@ fn imagegen_tool_spec() -> ToolSpec {
 struct GeneratedImageOutput {
     result: String,
     output_hint: Option<String>,
+    provider_usage: Option<ProviderUsage>,
 }
 
 impl ToolOutput for GeneratedImageOutput {
@@ -656,6 +644,10 @@ impl ToolOutput for GeneratedImageOutput {
     /// Reports a completed images request as successful tool execution.
     fn success_for_logging(&self) -> bool {
         true
+    }
+
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        self.provider_usage.as_ref()
     }
 
     /// Returns the object consumed by the code-mode `generatedImage()` helper.
@@ -676,9 +668,7 @@ impl ToolOutput for GeneratedImageOutput {
     /// Returns generated bytes and persisted-artifact context for model follow-up.
     fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
         let mut content = vec![FunctionCallOutputContentItem::InputImage {
-            image: ImageReference::Inline {
-                image_url: format!("data:image/png;base64,{}", self.result),
-            },
+            image_url: format!("data:image/png;base64,{}", self.result),
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }];
         if let Some(output_hint) = &self.output_hint {
