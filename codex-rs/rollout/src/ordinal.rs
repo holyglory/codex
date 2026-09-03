@@ -14,6 +14,11 @@ use crate::RolloutLine;
 use crate::reverse_jsonl_scanner::ReverseJsonlScanner;
 use crate::reverse_jsonl_scanner::ScanOutcome;
 
+#[derive(serde::Deserialize)]
+struct RolloutOrdinalEnvelope {
+    ordinal: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RolloutOrdinalState {
     Legacy,
@@ -67,9 +72,22 @@ pub(crate) fn ordinal_state_for_rollout(
 
     let mut scanner = ReverseJsonlScanner::new(file)?;
     let record = loop {
-        match scanner.scan_next::<RolloutLine>()? {
+        match scanner.scan_next::<RolloutOrdinalEnvelope>()? {
             Some(ScanOutcome::Parsed(record)) => break record,
-            Some(ScanOutcome::Rejected(_)) => continue,
+            Some(ScanOutcome::Rejected(error))
+                if matches!(
+                    error.classify(),
+                    serde_json::error::Category::Eof | serde_json::error::Category::Syntax
+                ) =>
+            {
+                continue;
+            }
+            Some(ScanOutcome::Rejected(error)) => {
+                return Err(io::Error::other(format!(
+                    "final paginated rollout record at {} does not expose a usable ordinal: {error}",
+                    path.display()
+                )));
+            }
             None => {
                 return Err(io::Error::other(format!(
                     "rollout at {} contains no valid records",
