@@ -201,6 +201,7 @@ def codex_rust_crate(
         integration_compile_data_extra = [],
         integration_test_args = [],
         unit_test_args = [],
+        unit_test_threads = 0,
         binary_test_target_compatible_with = [],
         integration_test_timeout = None,
         test_data_extra = [],
@@ -245,6 +246,7 @@ def codex_rust_crate(
         integration_compile_data_extra: Extra compile_data for integration tests.
         integration_test_args: Optional args for integration test binaries.
         unit_test_args: Optional args for the unit test binary.
+        unit_test_threads: Optional Rust test thread limit for sharded unit tests.
         binary_test_target_compatible_with: Platform constraints for binary unit tests.
         integration_test_timeout: Optional Bazel timeout for integration test
             targets generated from `tests/*.rs`.
@@ -377,6 +379,7 @@ def codex_rust_crate(
             name = unit_test_name,
             env = test_env,
             test_bin = ":" + unit_test_binary,
+            test_threads = unit_test_threads,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             tags = test_tags,
             **unit_test_kwargs
@@ -443,6 +446,7 @@ def codex_rust_crate(
             name = binary_unit_test_name,
             env = test_env,
             test_bin = ":" + binary_unit_test_binary,
+            test_threads = unit_test_threads,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             target_compatible_with = binary_test_target_compatible_with,
             tags = test_tags,
