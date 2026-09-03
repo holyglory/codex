@@ -77,6 +77,7 @@ use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntime;
@@ -217,6 +218,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod account_failover;
 mod code_mode_warning;
 pub(crate) mod context_window;
 mod environment;
@@ -313,6 +315,7 @@ use crate::tools::sandboxing::ApprovalStore;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::usage_runtime::UsageRuntime;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
@@ -418,6 +421,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) user_instructions: LoadedUserInstructions,
     pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) profile_auth_router: Option<SharedProfileAuthRouter>,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
@@ -451,6 +455,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
     pub(crate) reserved_thread_id: Option<ThreadId>,
     pub(crate) analytics_events_client: Option<AnalyticsEventsClient>,
+    pub(crate) usage_runtime: Arc<UsageRuntime>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
@@ -522,6 +527,7 @@ impl Session {
             user_instructions,
             installation_id,
             auth_manager,
+            profile_auth_router,
             models_manager,
             git_root_discovery,
             environment_manager,
@@ -551,6 +557,7 @@ impl Session {
             client_mcp_extensions,
             reserved_thread_id,
             analytics_events_client,
+            usage_runtime,
             thread_store,
             attestation_provider,
             external_time_provider,
@@ -779,6 +786,7 @@ impl Session {
             user_instructions,
             installation_id,
             auth_manager.clone(),
+            profile_auth_router,
             models_manager.clone(),
             git_root_discovery,
             model_info,
@@ -800,6 +808,7 @@ impl Session {
             environment_manager,
             inherited_environments,
             analytics_events_client,
+            usage_runtime,
             thread_store,
             parent_rollout_thread_trace,
             attestation_provider,
@@ -1865,6 +1874,29 @@ impl Session {
     }
 
     pub(crate) async fn refresh_runtime_config(&self, next_config: Config) {
+        self.refresh_runtime_config_inner(
+            next_config,
+            /*schedule_mcp_prewarm*/ true,
+            /*refresh_hooks*/ true,
+        )
+        .await;
+    }
+
+    pub(crate) async fn refresh_runtime_config_without_mcp_prewarm(&self, next_config: Config) {
+        self.refresh_runtime_config_inner(
+            next_config,
+            /*schedule_mcp_prewarm*/ false,
+            /*refresh_hooks*/ false,
+        )
+        .await;
+    }
+
+    async fn refresh_runtime_config_inner(
+        &self,
+        next_config: Config,
+        schedule_mcp_prewarm: bool,
+        refresh_hooks: bool,
+    ) {
         // Refresh only the user layer from the incoming snapshot. Preserve thread-local
         // layers such as request/session overrides that were present when this session
         // was created.
@@ -1905,8 +1937,12 @@ impl Session {
             (previous_config, new_config, config)
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        self.schedule_mcp_prewarm();
-        self.refresh_hooks(config).await;
+        if schedule_mcp_prewarm {
+            self.schedule_mcp_prewarm();
+        }
+        if refresh_hooks {
+            self.refresh_hooks(config).await;
+        }
     }
 
     pub(crate) async fn refresh_hooks(&self, config: Arc<Config>) {
@@ -1915,6 +1951,7 @@ impl Session {
             config.as_ref(),
             self.services.plugins_manager.as_ref(),
             environments.single_local_environment(),
+            HookPluginAuth::Legacy,
         )
         .await;
 
@@ -1930,7 +1967,49 @@ impl Session {
         }
     }
 
+    pub(crate) async fn refresh_hooks_for_turn(
+        &self,
+        config: &Config,
+        environment: Option<&TurnEnvironment>,
+        auth: Option<&CodexAuth>,
+    ) {
+        let hooks_config = build_hooks_config(
+            config,
+            self.services.plugins_manager.as_ref(),
+            environment,
+            HookPluginAuth::Captured(auth),
+        )
+        .await;
+        let hooks = self.hooks().reconfigured(hooks_config);
+        self.services.hooks.store(Arc::new(hooks));
+    }
+
+    pub(crate) async fn refresh_hooks_with_auth_lease(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
+        let config = self.get_config().await;
+        let environments = self.services.turn_environments.snapshot().await;
+        let auth = auth_lease.auth_manager().auth().await;
+        self.refresh_hooks_for_turn(
+            config.as_ref(),
+            environments.single_local_environment(),
+            auth.as_ref(),
+        )
+        .await;
+    }
+
     pub(crate) async fn refresh_mcp_config(&self, next_config: Config) {
+        self.refresh_mcp_config_inner(next_config, /*schedule_mcp_prewarm*/ true)
+            .await;
+    }
+
+    pub(crate) async fn refresh_mcp_config_without_prewarm(&self, next_config: Config) {
+        self.refresh_mcp_config_inner(next_config, /*schedule_mcp_prewarm*/ false)
+            .await;
+    }
+
+    async fn refresh_mcp_config_inner(&self, next_config: Config, schedule_mcp_prewarm: bool) {
         let mut state = self.state.lock().await;
         let mut config = (*state.session_configuration.original_config_do_not_use).clone();
         config.config_layer_stack = next_config
@@ -1956,7 +2035,9 @@ impl Session {
         state.session_configuration.original_config_do_not_use = Arc::new(config);
         self.mark_mcp_runtime_dirty();
         drop(state);
-        self.schedule_mcp_prewarm();
+        if schedule_mcp_prewarm {
+            self.schedule_mcp_prewarm();
+        }
     }
 
     fn emit_config_changed_contributors(
@@ -2069,6 +2150,22 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.send_event_with_persistence(turn_context, msg, /*persist*/ true)
+            .await;
+    }
+
+    /// Sends an event that the caller already persisted to rollout storage.
+    pub(crate) async fn send_persisted_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.send_event_with_persistence(turn_context, msg, /*persist*/ false)
+            .await;
+    }
+
+    async fn send_event_with_persistence(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        persist: bool,
+    ) {
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -2110,7 +2207,7 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
+        self.send_event_raw_with_persistence(event, persist).await;
         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
@@ -3558,6 +3655,12 @@ impl Session {
             .await?;
         let extension_data = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
         extension_data.insert(selected_capability_roots.clone());
+        if let Some(auth_lease) = turn_context
+            .extension_data
+            .get::<codex_login::AuthManagerLease>()
+        {
+            extension_data.insert(auth_lease.as_ref().clone());
+        }
         if let Some(discovery) = &executor_capability_discovery {
             extension_data.insert(discovery.as_ref().clone());
             if !discovery.sandbox_contexts().is_empty() {
@@ -3922,17 +4025,20 @@ impl Session {
             developer_sections
                 .push(DeveloperInstructions::new(developer_instructions).render_fragment());
         }
+        let auth = turn_context.plugin_auth().await;
         let loaded_plugins = self
             .services
             .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
+            .plugins_for_config_with_auth(
+                &turn_context.config.plugins_config_input(),
+                auth.as_ref(),
+            )
             .await;
         let recommended_plugin_candidates = if turn_context
             .config
             .features
             .plugin_recommendations_enabled()
         {
-            let auth = self.services.auth_manager.auth().await;
             let plugins_config = turn_context.config.plugins_config_input();
             self.services
                 .plugins_manager
@@ -4001,16 +4107,15 @@ impl Session {
                 && let Some(mcp_result) = self
                     .services
                     .mcp_runtime
-                    .latest_call_tool(
+                    .call_hook_tool(
                         "notes",
                         "thread_hint",
                         /*environment_id*/ None,
                         /*arguments*/ None,
                         Some(serde_json::json!({
-                            "threadId": self.thread_id().to_string(),
+                           "threadId": self.thread_id().to_string(),
                         })),
                         /*requested_timeout*/ None,
-                        /*wait_for_server*/ true,
                     )
                     .await
                     .ok()
@@ -4454,11 +4559,29 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
-        self.record_rate_limits_info(new_rate_limits).await;
+        self.record_rate_limits_info(turn_context, new_rate_limits)
+            .await;
         self.send_token_count_event(turn_context).await;
     }
 
-    pub(crate) async fn record_rate_limits_info(&self, new_rate_limits: RateLimitSnapshot) {
+    pub(crate) async fn record_rate_limits_info(
+        &self,
+        turn_context: &TurnContext,
+        new_rate_limits: RateLimitSnapshot,
+    ) {
+        if let (Some(router), Some(lease)) = (
+            self.services.profile_auth_router.as_ref(),
+            turn_context.account_lease.as_ref(),
+        ) && router
+            .observe_rate_limits(
+                lease.account_id().clone(),
+                Utc::now().timestamp(),
+                vec![new_rate_limits.clone()],
+            )
+            .is_err()
+        {
+            warn!("ignoring invalid account rate-limit observation");
+        }
         {
             let mut state = self.state.lock().await;
             state.set_rate_limits(new_rate_limits);
@@ -4662,6 +4785,7 @@ async fn build_hooks_config(
     config: &Config,
     plugins_manager: &PluginsManager,
     environment: Option<&TurnEnvironment>,
+    auth: HookPluginAuth<'_>,
 ) -> HooksConfig {
     let (hook_shell_program, hook_shell_argv) = environment
         .and_then(|environment| environment.shell.as_ref())
@@ -4673,7 +4797,14 @@ async fn build_hooks_config(
         })
         .unwrap_or_default();
     let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
+    let plugin_outcome = match auth {
+        HookPluginAuth::Legacy => plugins_manager.plugins_for_config(&plugins_input).await,
+        HookPluginAuth::Captured(auth) => {
+            plugins_manager
+                .plugins_for_config_with_auth(&plugins_input, auth)
+                .await
+        }
+    };
     let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();
     let plugin_hook_load_warnings = plugin_outcome.effective_plugin_hook_warnings();
     HooksConfig {
@@ -4686,6 +4817,12 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
+}
+
+#[derive(Clone, Copy)]
+enum HookPluginAuth<'a> {
+    Legacy,
+    Captured(Option<&'a CodexAuth>),
 }
 
 #[cfg(test)]

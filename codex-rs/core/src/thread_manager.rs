@@ -18,6 +18,7 @@ use crate::session::resolve_multi_agent_version;
 use crate::session::session::Session;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
+use crate::usage_runtime::UsageRuntime;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
 use codex_analytics::AnalyticsEventsClient;
@@ -39,6 +40,8 @@ use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::RouterExternalAuthState;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use codex_login::default_client::originator;
 use codex_model_provider::create_model_provider;
@@ -345,6 +348,7 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
     auth_manager: Arc<AuthManager>,
+    profile_auth_router: Option<SharedProfileAuthRouter>,
     models_manager: SharedModelsManager,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
@@ -362,6 +366,7 @@ pub(crate) struct ThreadManagerState {
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
+    usage_runtime: Arc<UsageRuntime>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -468,6 +473,11 @@ impl ThreadManager {
             } else {
                 Arc::new(DisabledCodeModeSessionProvider)
             };
+        let profile_auth_router = SharedProfileAuthRouter::new_with_external_auth(
+            config.auth_config(),
+            RouterExternalAuthState::default(),
+            Arc::clone(&auth_manager),
+        );
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
@@ -488,9 +498,11 @@ impl ThreadManager {
                 attestation_provider,
                 external_time_provider,
                 auth_manager,
+                profile_auth_router: Some(profile_auth_router),
                 session_source,
                 installation_id,
                 analytics_events_client,
+                usage_runtime: UsageRuntime::new(codex_home.to_path_buf()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -519,6 +531,15 @@ impl ThreadManager {
             unreachable!("code-mode session provider must be set before thread manager is shared");
         };
         state.code_mode_session_provider = provider;
+        self
+    }
+
+    /// Adds optional profile routing for turn-boundary authentication leases.
+    pub fn with_profile_auth_router(mut self, router: SharedProfileAuthRouter) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("profile auth router must be set before thread manager is shared");
+        };
+        state.profile_auth_router = Some(router);
         self
     }
 
@@ -621,7 +642,7 @@ impl ThreadManager {
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
-                    .models_manager(codex_home, /*config_model_catalog*/ None),
+                    .models_manager(codex_home.clone(), /*config_model_catalog*/ None),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -638,9 +659,11 @@ impl ThreadManager {
                 attestation_provider: None,
                 external_time_provider: None,
                 auth_manager,
+                profile_auth_router: None,
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
+                usage_runtime: UsageRuntime::new(codex_home),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -709,6 +732,45 @@ impl ThreadManager {
         }
     }
 
+    /// Marks every loaded MCP runtime dirty without reconnecting under ambient auth.
+    pub async fn mark_mcp_runtimes_dirty_without_prewarm(&self) {
+        self.invalidate_starting_mcp_runtimes();
+        let threads = self
+            .state
+            .threads
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.session.mark_mcp_runtime_dirty_without_prewarm();
+        }
+    }
+
+    /// Refreshes every loaded MCP runtime under one captured operation authority.
+    pub async fn invalidate_mcp_runtimes_with_auth_lease(
+        &self,
+        auth_lease: codex_login::AuthManagerLease,
+    ) {
+        self.invalidate_starting_mcp_runtimes();
+        let threads = self
+            .state
+            .threads
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.session.mark_mcp_runtime_dirty_without_prewarm();
+            thread
+                .session
+                .refresh_mcp_if_dirty_with_auth_lease(&auth_lease)
+                .await;
+        }
+    }
+
     /// Rebuilds loaded hook runtimes without reloading their session configurations.
     pub async fn refresh_hook_runtimes(&self) {
         let threads = self
@@ -722,6 +784,27 @@ impl ThreadManager {
         for thread in threads {
             let config = thread.session.get_config().await;
             thread.session.refresh_hooks(config).await;
+        }
+    }
+
+    /// Rebuilds loaded hook runtimes under one captured operation authority.
+    pub async fn refresh_hook_runtimes_with_auth_lease(
+        &self,
+        auth_lease: codex_login::AuthManagerLease,
+    ) {
+        let threads = self
+            .state
+            .threads
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread
+                .session
+                .refresh_hooks_with_auth_lease(&auth_lease)
+                .await;
         }
     }
 
@@ -1986,6 +2069,7 @@ impl ThreadManagerState {
             user_instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
+            profile_auth_router: self.profile_auth_router.clone(),
             models_manager: Arc::clone(&self.models_manager),
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),
@@ -2015,6 +2099,7 @@ impl ThreadManagerState {
             client_mcp_extensions,
             reserved_thread_id,
             analytics_events_client: self.analytics_events_client.clone(),
+            usage_runtime: Arc::clone(&self.usage_runtime),
             thread_store: Arc::clone(&self.thread_store),
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),

@@ -8,6 +8,7 @@ use crate::session::SessionSettingsUpdate;
 use crate::session::new_submission_id;
 use crate::session::session::Session;
 use crate::session::step_settings::StepSettingsUpdate;
+use anyhow::Context as _;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_exec_server::SelectedCapabilityRootsStatus;
@@ -239,6 +240,19 @@ impl CodexThread {
     /// Returns extension-owned data attached to this thread runtime.
     pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
         &self.session.services.thread_extension_data
+    }
+
+    /// Returns the immutable authentication lease captured for one currently active turn.
+    pub async fn auth_manager_lease_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Option<codex_login::AuthManagerLease> {
+        let turn = self.session.turn_context_for_sub_id(turn_id).await?;
+        let auth_manager = turn.auth_manager.as_ref()?;
+        Some(turn.account_lease.clone().map_or_else(
+            || codex_login::AuthManagerLease::legacy(Arc::clone(auth_manager)),
+            codex_login::AuthManagerLease::profile,
+        ))
     }
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
@@ -809,6 +823,30 @@ impl CodexThread {
         (Arc::new(mcp_config), runtime_context)
     }
 
+    /// Captures MCP config and environment bindings under one operation authority.
+    pub async fn current_mcp_config_and_runtime_context_for_operation(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) -> (Arc<codex_mcp::McpConfig>, codex_mcp::McpRuntimeContext) {
+        let config = self.session.get_config().await;
+        let (mcp_config, runtime_context) = self
+            .session
+            .runtime_mcp_config_and_context_with_auth_lease(&config, auth_lease)
+            .await;
+        (Arc::new(mcp_config), runtime_context)
+    }
+
+    /// Resolves caller-supplied MCP config under one operation authority.
+    pub async fn runtime_mcp_config_and_context_for_operation(
+        &self,
+        config: &crate::config::Config,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) -> (codex_mcp::McpConfig, codex_mcp::McpRuntimeContext) {
+        self.session
+            .runtime_mcp_config_and_context_with_auth_lease(config, auth_lease)
+            .await
+    }
+
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.session.multi_agent_version()
     }
@@ -840,9 +878,33 @@ impl CodexThread {
         self.session.refresh_runtime_config(next_config).await;
     }
 
+    /// Refreshes layer-backed config while leaving hooks and MCP dirty for exact-authority refresh.
+    pub async fn refresh_runtime_config_without_mcp_prewarm(
+        &self,
+        next_config: crate::config::Config,
+    ) {
+        self.session
+            .refresh_runtime_config_without_mcp_prewarm(next_config)
+            .await;
+    }
+
     /// Refresh MCP configuration and managed requirements without reloading unrelated settings.
     pub async fn refresh_mcp_config(&self, next_config: crate::config::Config) {
         self.session.refresh_mcp_config(next_config).await;
+    }
+
+    /// Applies MCP config and publishes it under one captured operation authority.
+    pub async fn refresh_mcp_config_with_auth_lease(
+        &self,
+        next_config: crate::config::Config,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
+        self.session
+            .refresh_mcp_config_without_prewarm(next_config)
+            .await;
+        self.session
+            .refresh_mcp_if_dirty_with_auth_lease(auth_lease)
+            .await;
     }
 
     pub async fn environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
@@ -877,13 +939,24 @@ impl CodexThread {
         server: &str,
         params: ReadResourceRequestParams,
     ) -> anyhow::Result<serde_json::Value> {
-        self.session.refresh_mcp_if_dirty().await;
-        let result = self
+        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
+        self.read_mcp_resource_for_operation(&auth_lease, server, params)
+            .await
+    }
+
+    /// Reads an MCP resource under one explicit operation-scoped authentication lease.
+    pub async fn read_mcp_resource_for_operation(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+        server: &str,
+        params: ReadResourceRequestParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        let binding = self
             .session
-            .services
-            .mcp_runtime
-            .latest_read_resource(server, params)
-            .await?;
+            .mcp_binding_for_auth_lease(auth_lease, server)
+            .await
+            .with_context(|| format!("unknown MCP server '{server}'"))?;
+        let result = binding.read_resource(server, params).await?;
 
         Ok(serde_json::to_value(result)?)
     }
@@ -894,12 +967,48 @@ impl CodexThread {
         call_id: &str,
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
-        self.session.refresh_mcp_if_dirty().await;
+        if let Some(result) = self
+            .session
+            .services
+            .mcp_runtime
+            .read_resource_for_call_with_bound_authority(self.session.thread_id, call_id, uri)
+            .await?
+        {
+            return Ok(serde_json::to_value(result)?);
+        }
+
+        let account_id = self
+            .session
+            .services
+            .mcp_runtime
+            .resource_origin_account_id(call_id)?;
+        let auth_lease = match account_id {
+            Some(account_id) => {
+                self.session
+                    .services
+                    .profile_auth_router
+                    .as_ref()
+                    .context("originating account profile router is unavailable")?
+                    .lease_for_account_id(&account_id)
+                    .await?
+            }
+            None => match &self.session.services.profile_auth_router {
+                Some(router) => router.legacy_lease_if_profiles_unconfigured().await?,
+                None => codex_login::AuthManagerLease::legacy(Arc::clone(
+                    &self.session.services.auth_manager,
+                )),
+            },
+        };
+        let binding = self
+            .session
+            .mcp_binding_for_auth_lease(&auth_lease, codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+            .await
+            .context("codex_apps MCP server is unavailable")?;
         let result = self
             .session
             .services
             .mcp_runtime
-            .read_resource_for_call(self.session.thread_id, call_id, uri)
+            .read_resource_for_call_with_binding(&binding, self.session.thread_id, call_id, uri)
             .await?;
 
         Ok(serde_json::to_value(result)?)
@@ -911,6 +1020,18 @@ impl CodexThread {
         arguments: serde_json::Value,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<codex_mcp::McpEventStream> {
+        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
+        self.start_mcp_event_stream_for_operation(&auth_lease, name, arguments, meta)
+            .await
+    }
+
+    pub async fn start_mcp_event_stream_for_operation(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+        name: &str,
+        arguments: serde_json::Value,
+        meta: Option<serde_json::Value>,
+    ) -> anyhow::Result<codex_mcp::McpEventStream> {
         let meta = match meta.as_ref() {
             Some(serde_json::Value::Object(meta)) => Some(meta),
             Some(other) => {
@@ -918,10 +1039,15 @@ impl CodexThread {
             }
             None => None,
         };
-        let _ = self.session.services.auth_manager.auth().await;
-        self.session.refresh_mcp_if_dirty().await;
-        codex_mcp::McpResourceClient::new(Arc::clone(&self.session.services.mcp_runtime))
-            .open_event_stream(name, &arguments, meta)
+        let binding = self
+            .session
+            .mcp_binding_for_auth_lease(auth_lease, codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+            .await
+            .context("codex_apps MCP server is unavailable")?;
+        self.session
+            .services
+            .mcp_runtime
+            .open_event_stream_with_binding(binding.as_ref(), name, &arguments, meta)
             .await
     }
 
@@ -932,11 +1058,27 @@ impl CodexThread {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.session.refresh_mcp_if_dirty().await;
-        self.session
-            .services
-            .mcp_runtime
-            .latest_call_tool(
+        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
+        self.call_mcp_tool_for_operation(&auth_lease, server, tool, arguments, meta)
+            .await
+    }
+
+    /// Calls an MCP tool under one explicit operation-scoped authentication lease.
+    pub async fn call_mcp_tool_for_operation(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+        server: &str,
+        tool: &str,
+        arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
+    ) -> anyhow::Result<CallToolResult> {
+        let binding = self
+            .session
+            .mcp_binding_for_auth_lease(auth_lease, server)
+            .await
+            .with_context(|| format!("unknown MCP server '{server}'"))?;
+        binding
+            .call_tool(
                 server, tool, /*environment_id*/ None, arguments, meta,
                 /*requested_timeout*/ None, /*wait_for_server*/ true,
             )
