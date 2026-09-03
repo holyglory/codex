@@ -138,7 +138,7 @@ fn manager_snapshot_metrics_collects_without_shutdown() -> Result<()> {
     let expected = BTreeMap::from([
         (
             "app.version".to_string(),
-            env!("CARGO_PKG_VERSION").to_string(),
+            codex_otel::metrics_app_version().to_string(),
         ),
         (
             "auth_mode".to_string(),
@@ -201,7 +201,7 @@ fn manager_turn_cost_records_microusd_metric() -> Result<()> {
         BTreeMap::from([
             (
                 "app.version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
+                codex_otel::metrics_app_version().to_string(),
             ),
             (
                 "auth_mode".to_string(),
