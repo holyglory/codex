@@ -116,6 +116,13 @@ fn effective_workspace_intersection_preserves_network_metadata_and_temp() {
     let requested = PermissionProfile::from_runtime_permissions(&requested_policy, Restricted);
     let result = intersection(&authority, &requested, &project);
     let policy = result.file_system_sandbox_policy();
+    // A configured TMPDIR may contain this fixture. Check workspace narrowing
+    // independently from the common temporary-directory grant below.
+    let mut non_temp_policy = policy.clone();
+    let tmpdir_path = FileSystemPath::Special { value: Tmpdir };
+    non_temp_policy
+        .entries
+        .retain(|entry| entry.path != tmpdir_path);
 
     // Keep :tmpdir independent of the workspace fixtures, which themselves live
     // under the host's temporary directory.
@@ -130,9 +137,14 @@ fn effective_workspace_intersection_preserves_network_metadata_and_temp() {
         temporary_directories: Some(&temporary_directories),
     };
     assert_eq!(
-        [&root, &project, &scratch_root]
-            .map(|path| policy.resolve_access(&PathUri::from_abs_path(path), &context)),
-        [Read, Write, Write]
+        [&root, &project]
+            .map(|path| {
+                non_temp_policy.resolve_access_for_local_path_with_cwd(
+                    path.as_path(),
+                    root.as_path(),
+                )
+            }),
+        [Read, Write]
     );
     assert_eq!(result.network_sandbox_policy(), Restricted);
     assert!(policy.entries.contains(&special(Tmpdir, Write)));
