@@ -25,18 +25,13 @@ use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ResponseItem;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
-use codex_extension_api::ThreadLifecycleContributor;
-use codex_extension_api::ThreadOriginator;
-use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
-use codex_features::Feature;
 use codex_guardian_context::ContextTarget;
 use codex_history::RolloutItem;
-use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
 use codex_protocol::ThreadId;
@@ -46,7 +41,6 @@ use codex_protocol::mcp::is_node_repl_backed_tool;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TruncationPolicy;
-use codex_protocol::protocol::has_full_access;
 use codex_protocol::security_risk::SecurityRiskScore;
 
 use super::action::GuardianAction;
@@ -61,10 +55,11 @@ use super::metrics::record_classification_risk;
 use super::metrics::record_fast_decision;
 use super::review_evidence::render_review_evidence;
 use super::sampler::LunaSampler;
-use super::sampler::LunaSamplerConfig;
 use super::sampler::LunaSamplerError;
 use super::sampler::LunaSamplingRequest;
-use super::sampler::MODEL;
+
+#[path = "auth_lifecycle.rs"]
+mod auth_lifecycle;
 use super::truncation::ClassificationTruncations;
 use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
@@ -129,110 +124,9 @@ struct GuardianV2ScoreProgress {
 #[derive(Clone)]
 struct GuardianV2Extension {
     auth_manager: Arc<AuthManager>,
+    auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
     event_sink: Arc<dyn ExtensionEventSink>,
     thread_manager: Weak<ThreadManager>,
-}
-
-impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
-    fn on_thread_start<'a>(
-        &'a self,
-        input: ThreadStartInput<'a, Config>,
-    ) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move {
-            if !input.config.features.enabled(Feature::GuardianV2)
-                || !input.config.features.enabled(Feature::GuardianApproval)
-            {
-                return;
-            }
-
-            let thread_id = input.thread_store.level_id().to_string();
-            let guardian_config = match GuardianV2Config::resolve(input.config) {
-                Ok(config) => config,
-                Err(error) => {
-                    self.event_sink.emit_warning(ExtensionWarning {
-                        thread_id,
-                        turn_id: None,
-                        message: error,
-                    });
-                    return;
-                }
-            };
-            let luna_compaction_hash = if let Some(thread_manager) = self.thread_manager.upgrade() {
-                thread_manager
-                    .get_models_manager()
-                    .get_model_info(MODEL, &input.config.to_models_manager_config())
-                    .await
-                    .comp_hash
-            } else {
-                None
-            };
-            let sampler_config = LunaSamplerConfig {
-                provider: create_model_provider(
-                    input.config.model_provider.clone(),
-                    Some(Arc::clone(&self.auth_manager)),
-                ),
-                http_client_factory: input.config.http_client_factory(),
-                agent_identity_policy: if input.config.features.enabled(Feature::UseAgentIdentity) {
-                    AgentIdentityAuthPolicy::ChatGptAuth
-                } else {
-                    AgentIdentityAuthPolicy::JwtOnly
-                },
-                session_source: input.session_source.clone(),
-                session_id: input.session_store.level_id().to_string(),
-                thread_id: thread_id.clone(),
-                originator: input
-                    .thread_store
-                    .get::<ThreadOriginator>()
-                    .map(|originator| originator.0.clone()),
-                free_guardian: input.config.free_guardian_enabled(),
-                service_tier: input.config.service_tier.clone(),
-                luna_compaction_hash,
-                metrics: input.extension_metrics.clone(),
-            };
-
-            if guardian_config.transcript.include_images {
-                input
-                    .thread_store
-                    .get_or_init(NodeReplReviewEvidence::default)
-                    .enable_image_capture();
-            }
-            input.thread_store.remove::<LunaSampler>();
-            let sampler = input
-                .thread_store
-                .get_or_init(|| LunaSampler::new(sampler_config));
-            let guardian_v2_enabled = GuardianV2Enabled {
-                computer_use_only: guardian_config.review_scope
-                    == GuardianV2ReviewScope::ComputerUseOnly,
-            };
-            input.thread_store.insert(guardian_config);
-            input.thread_store.insert(GuardianV2ScoreProgress {
-                metrics: input.extension_metrics.clone(),
-                ..Default::default()
-            });
-            input.thread_store.insert(GuardianReviewEvidence::default());
-            input
-                .thread_store
-                .insert(TrustedSkillRoots::from_config(input.config));
-            input.thread_store.insert(guardian_v2_enabled);
-
-            // Keep the sampler available for later automatic review, but do not
-            // prewarm while User approval mode or Full Access is selected.
-            if input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
-                && !has_full_access(
-                    input.config.permissions.approval_policy.value(),
-                    &input.config.permissions.effective_permission_profile(),
-                    input
-                        .environments
-                        .iter()
-                        .map(|environment| &environment.config),
-                )
-            {
-                tokio::spawn(async move {
-                    sampler.prewarm().await;
-                });
-            }
-        })
-    }
 }
 
 impl SkillInvocationContributor for GuardianV2Extension {
@@ -602,6 +496,15 @@ impl GuardianV2Extension {
         let rendered_images = guardian_config
             .transcript
             .images(input.conversation_history.review_items(), node_repl_images);
+        let auth_lease = input
+            .turn_store
+            .get::<codex_login::AuthManagerLease>()
+            .unwrap_or_else(|| {
+                Arc::new(codex_login::AuthManagerLease::legacy(Arc::clone(
+                    &self.auth_manager,
+                )))
+            });
+        let uses_turn_auth = self.auth_resolver.is_some();
 
         tokio::spawn(async move {
             let mut truncations = ClassificationTruncations::default();
@@ -709,18 +612,27 @@ impl GuardianV2Extension {
             let mut classification_risk = None;
             let mut classification_finished_at = None;
             let result: Result<ClassificationOutcome, String> = async {
+                let thread_config = thread.config().await;
+                let config = Self::config_for_auth_lease(thread_config.as_ref(), &auth_lease);
+                let auth_manager = Arc::clone(auth_lease.auth_manager());
                 let review_model_messages = if config.guardian_policy_config.is_none() {
                     let review_model_id = review_model_override.as_deref().unwrap_or_else(|| {
                         create_model_provider(
                             config.model_provider.clone(),
-                            Some(manager.auth_manager()),
+                            Some(Arc::clone(&auth_manager)),
                         )
                         .approval_review_preferred_model()
                     });
-                    let review_model = manager
-                        .get_models_manager()
-                        .get_model_info(review_model_id, &config.to_models_manager_config())
-                        .await;
+                    let review_model = if uses_turn_auth {
+                        codex_core::build_models_manager(&config, Arc::clone(&auth_manager))
+                            .get_model_info(review_model_id, &config.to_models_manager_config())
+                            .await
+                    } else {
+                        manager
+                            .get_models_manager()
+                            .get_model_info(review_model_id, &config.to_models_manager_config())
+                            .await
+                    };
                     if review_model.used_fallback_model_metadata && review_model_override.is_none()
                     {
                         parent_model
@@ -921,12 +833,40 @@ pub fn install(
     auth_manager: Arc<AuthManager>,
     thread_manager: Weak<ThreadManager>,
 ) {
+    install_inner(
+        registry,
+        auth_manager,
+        /*auth_resolver*/ None,
+        thread_manager,
+    );
+}
+
+pub fn install_with_auth_resolver(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    auth_resolver: codex_login::SharedProfileAuthRouter,
+    thread_manager: Weak<ThreadManager>,
+) {
+    install_inner(registry, auth_manager, Some(auth_resolver), thread_manager);
+}
+
+fn install_inner(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
+    thread_manager: Weak<ThreadManager>,
+) {
+    let uses_turn_auth = auth_resolver.is_some();
     let extension = Arc::new(GuardianV2Extension {
         auth_manager,
+        auth_resolver,
         event_sink: registry.event_sink(),
         thread_manager,
     });
     registry.thread_lifecycle_contributor(extension.clone());
+    if uses_turn_auth {
+        registry.turn_lifecycle_contributor(extension.clone());
+    }
     registry.approval_review_contributor(extension.clone());
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);
