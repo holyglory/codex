@@ -151,6 +151,7 @@ single_version_override(
     patch_strip = 1,
     patches = [
         "//patches:rules_rs_build_script_deps_annotation.patch",
+        "//patches:rules_rs_ubuntu_zlib_snapshot.patch",
         "//patches:rules_rs_windows_msvc_linker.patch",
     ],
     version = "0.0.96",
