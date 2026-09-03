@@ -79,14 +79,15 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             }
             let computer_use_only =
                 guardian_config.review_scope == GuardianV2ReviewScope::ComputerUseOnly;
-            let prewarm_allowed = !has_full_access(
-                input.config.permissions.approval_policy.value(),
-                &input.config.permissions.effective_permission_profile(),
-                input
-                    .environments
-                    .iter()
-                    .map(|environment| &environment.config),
-            );
+            let prewarm_allowed = input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
+                && !has_full_access(
+                    input.config.permissions.approval_policy.value(),
+                    &input.config.permissions.effective_permission_profile(),
+                    input
+                        .environments
+                        .iter()
+                        .map(|environment| &environment.config),
+                );
             let template = GuardianSamplerTemplate {
                 config: input.config.clone(),
                 session_source: input.session_source.clone(),
