@@ -899,7 +899,7 @@ client_request_definitions! {
     },
     AppsList => "app/list" {
         params: v2::AppsListParams,
-        serialization: None,
+        serialization: global_shared_read("account-profiles"),
         response: v2::AppsListResponse,
     },
     AppsInstalled => "app/installed" {
@@ -1196,6 +1196,134 @@ client_request_definitions! {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: global("config"),
         response: v2::WindowsSandboxReadinessResponse,
+    },
+
+    #[experimental("accountProfile/list")]
+    AccountProfileList => "accountProfile/list" {
+        params: v2::AccountProfileListParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileListResponse,
+    },
+    #[experimental("accountProfile/read")]
+    AccountProfileRead => "accountProfile/read" {
+        params: v2::AccountProfileReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileReadResponse,
+    },
+    #[experimental("accountProfile/activate")]
+    AccountProfileActivate => "accountProfile/activate" {
+        params: v2::AccountProfileActivateParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileActivateResponse,
+    },
+    #[experimental("accountProfile/update")]
+    AccountProfileUpdate => "accountProfile/update" {
+        params: v2::AccountProfileUpdateParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileUpdateResponse,
+    },
+    #[experimental("accountProfile/remove")]
+    AccountProfileRemove => "accountProfile/remove" {
+        params: v2::AccountProfileRemoveParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileRemoveResponse,
+    },
+    #[experimental("accountProfileLogin/start")]
+    AccountProfileLoginStart => "accountProfileLogin/start" {
+        params: v2::AccountProfileLoginStartParams,
+        serialization: global("account-profile-auth"),
+        response: v2::AccountProfileLoginStartResponse,
+    },
+    #[experimental("accountProfileLogin/cancel")]
+    AccountProfileLoginCancel => "accountProfileLogin/cancel" {
+        params: v2::AccountProfileLoginCancelParams,
+        serialization: global("account-profile-auth"),
+        response: v2::AccountProfileLoginCancelResponse,
+    },
+    #[experimental("accountProfileRateLimit/read")]
+    AccountProfileRateLimitRead => "accountProfileRateLimit/read" {
+        params: v2::AccountProfileRateLimitReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileRateLimitReadResponse,
+    },
+    #[experimental("accountAutoSelection/read")]
+    AccountAutoSelectionRead => "accountAutoSelection/read" {
+        params: v2::AccountAutoSelectionReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountAutoSelectionReadResponse,
+    },
+    #[experimental("accountAutoSelection/write")]
+    AccountAutoSelectionWrite => "accountAutoSelection/write" {
+        params: v2::AccountAutoSelectionWriteParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountAutoSelectionWriteResponse,
+    },
+
+    #[experimental("localUsage/summary")]
+    LocalUsageSummary => "localUsage/summary" {
+        params: v2::LocalUsageSummaryParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageSummaryResponse,
+    },
+    #[experimental("localUsageThread/read")]
+    LocalUsageThreadRead => "localUsageThread/read" {
+        params: v2::LocalUsageThreadReadParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageThreadReadResponse,
+    },
+    #[experimental("localUsageRepository/list")]
+    LocalUsageRepositoryList => "localUsageRepository/list" {
+        params: v2::LocalUsageRepositoryListParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageRepositoryListResponse,
+    },
+    #[experimental("localUsageRepository/read")]
+    LocalUsageRepositoryRead => "localUsageRepository/read" {
+        params: v2::LocalUsageRepositoryReadParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageRepositoryReadResponse,
+    },
+    #[experimental("localUsageRepository/update")]
+    LocalUsageRepositoryUpdate => "localUsageRepository/update" {
+        params: v2::LocalUsageRepositoryUpdateParams,
+        serialization: global("local-usage"),
+        response: v2::LocalUsageRepositoryUpdateResponse,
+    },
+    #[experimental("localUsageRepository/merge")]
+    LocalUsageRepositoryMerge => "localUsageRepository/merge" {
+        params: v2::LocalUsageRepositoryMergeParams,
+        serialization: global("local-usage"),
+        response: v2::LocalUsageRepositoryMergeResponse,
+    },
+    #[experimental("localUsageTool/list")]
+    LocalUsageToolList => "localUsageTool/list" {
+        params: v2::LocalUsageToolListParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageToolListResponse,
+    },
+    #[experimental("localUsageActivity/list")]
+    LocalUsageActivityList => "localUsageActivity/list" {
+        params: v2::LocalUsageActivityListParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageActivityListResponse,
+    },
+    #[experimental("localUsageEvent/list")]
+    LocalUsageEventList => "localUsageEvent/list" {
+        params: v2::LocalUsageEventListParams,
+        serialization: global_shared_read("local-usage"),
+        response: v2::LocalUsageEventListResponse,
+    },
+    #[experimental("localUsageClassification/correct")]
+    LocalUsageClassificationCorrect => "localUsageClassification/correct" {
+        params: v2::LocalUsageClassificationCorrectParams,
+        serialization: global("local-usage"),
+        response: v2::LocalUsageClassificationCorrectResponse,
+    },
+    #[experimental("localUsageExport/create")]
+    LocalUsageExportCreate => "localUsageExport/create" {
+        params: v2::LocalUsageExportCreateParams,
+        serialization: global("local-usage"),
+        response: v2::LocalUsageExportCreateResponse,
     },
 
     LoginAccount => "account/login/start" {
@@ -1905,6 +2033,10 @@ server_notification_definitions! {
     McpServerEventStream => "mcpServer/event/stream/notification" (v2::McpServerEventStreamNotification),
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
+    #[experimental("accountProfile/activeChanged")]
+    AccountProfileActiveChanged => "accountProfile/activeChanged" (v2::AccountProfileActiveChangedNotification),
+    #[experimental("localUsage/updated")]
+    LocalUsageUpdated => "localUsage/updated" (v2::LocalUsageUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),
     RemoteControlStatusChanged => "remoteControl/status/changed" (v2::RemoteControlStatusChangedNotification),
     ExternalAgentConfigImportProgress => "externalAgentConfig/import/progress" (v2::ExternalAgentConfigImportProgressNotification),
@@ -3633,6 +3765,12 @@ mod tests {
                 }
             }),
             serde_json::to_value(&request)?,
+        );
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::GlobalSharedRead(
+                "account-profiles"
+            ))
         );
         Ok(())
     }
