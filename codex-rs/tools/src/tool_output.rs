@@ -2,11 +2,60 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::provider_usage::ProviderUsage;
 use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
+
+/// Content-free terminal status exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalStatus {
+    Completed,
+    Failed,
+    Denied,
+    TimedOut,
+    Cancelled,
+}
+
+/// Content-free terminal error category exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalErrorCategory {
+    Tool,
+    Timeout,
+    Cancelled,
+    Provider,
+}
+
+/// Typed terminal outcome for a tool execution, with no payload or error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsageTerminalOutcome {
+    pub status: UsageTerminalStatus,
+    pub error_category: Option<UsageTerminalErrorCategory>,
+}
+
+impl UsageTerminalOutcome {
+    pub const COMPLETED: Self = Self {
+        status: UsageTerminalStatus::Completed,
+        error_category: None,
+    };
+
+    pub const FAILED: Self = Self {
+        status: UsageTerminalStatus::Failed,
+        error_category: Some(UsageTerminalErrorCategory::Tool),
+    };
+
+    pub const TIMED_OUT: Self = Self {
+        status: UsageTerminalStatus::TimedOut,
+        error_category: Some(UsageTerminalErrorCategory::Timeout),
+    };
+
+    /// A bounded wait reached its requested deadline normally; this is not a tool failure.
+    pub const EXPECTED_EXPIRY: Self = Self {
+        status: UsageTerminalStatus::TimedOut,
+        error_category: None,
+    };
+}
 
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
@@ -18,9 +67,19 @@ pub trait ToolOutput: Send {
 
     fn success_for_logging(&self) -> bool;
 
-    /// Finalizes output using the same completed handler duration reported in tool-call logs.
-    /// Called before recording model-visible history; implementations must not measure time here.
-    fn set_handler_duration_ms(&mut self, _handler_duration_ms: u64) {}
+    /// Returns a content-free accounting outcome without inspecting model-facing output.
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        if self.success_for_logging() {
+            UsageTerminalOutcome::COMPLETED
+        } else {
+            UsageTerminalOutcome::FAILED
+        }
+    }
+
+    /// Content-free provider usage returned by a nested tool-owned provider request, if any.
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        None
+    }
 
     /// Whether this output contains external context that should disable memory generation when
     /// `memories.disable_on_external_context` is enabled.
@@ -61,8 +120,8 @@ pub trait ToolOutput: Send {
         response_input_to_code_mode_result(self.to_response_item("", payload))
     }
 
-    /// Borrows original host-only metadata for recording, not for model output or logging.
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+    /// Reports configured source capture only after acceptance; `None` means no capture attempt.
+    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
         None
     }
 }
@@ -79,8 +138,12 @@ where
         (**self).success_for_logging()
     }
 
-    fn set_handler_duration_ms(&mut self, handler_duration_ms: u64) {
-        (**self).set_handler_duration_ms(handler_duration_ms);
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        (**self).usage_terminal_outcome()
+    }
+
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        (**self).provider_usage()
     }
 
     fn contains_external_context(&self) -> bool {
@@ -111,8 +174,8 @@ where
         (**self).code_mode_result(payload)
     }
 
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
-        (**self).tool_result_metadata()
+    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
+        (**self).tool_result_sources()
     }
 }
 
@@ -228,9 +291,9 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue 
                     | codex_protocol::models::ContentItem::OutputText { text } => {
                         FunctionCallOutputContentItem::InputText { text }
                     }
-                    codex_protocol::models::ContentItem::InputImage { image, detail } => {
+                    codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
                         FunctionCallOutputContentItem::InputImage {
-                            image,
+                            image_url,
                             detail: detail.or(Some(DEFAULT_IMAGE_DETAIL)),
                         }
                     }
@@ -263,14 +326,11 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
                 FunctionCallOutputContentItem::InputText { text } if !text.trim().is_empty() => {
                     Some(text.clone())
                 }
-                FunctionCallOutputContentItem::InputImage {
-                    image: ImageReference::Inline { image_url },
-                    ..
-                } if !image_url.trim().is_empty() => Some(image_url.clone()),
-                FunctionCallOutputContentItem::InputImage {
-                    image: ImageReference::File { file_id },
-                    ..
-                } if !file_id.trim().is_empty() => Some(file_id.clone()),
+                FunctionCallOutputContentItem::InputImage { image_url, .. }
+                    if !image_url.trim().is_empty() =>
+                {
+                    Some(image_url.clone())
+                }
                 FunctionCallOutputContentItem::InputAudio { audio_url }
                     if !audio_url.trim().is_empty() =>
                 {
@@ -285,7 +345,3 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
             .join("\n"),
     )
 }
-
-#[cfg(test)]
-#[path = "tool_output_tests.rs"]
-mod tests;
