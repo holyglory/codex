@@ -271,6 +271,7 @@ async fn build_test_processor(
             &auth_manager,
         ))),
         auth_manager,
+        process_account: None,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         code_mode_session_provider: None,
         rpc_transport: AppServerRpcTransport::Stdio,
