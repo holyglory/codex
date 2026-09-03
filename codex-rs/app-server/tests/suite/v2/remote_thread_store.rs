@@ -484,6 +484,7 @@ async fn start_in_process_client(
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
@@ -552,10 +553,12 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
         "non-local thread persistence should not create sqlite artifacts: {sqlite_artifacts:?}"
     );
     let mut entries = codex_home_entries(codex_home)?;
-    // Host startup may leave sandbox migration markers, and Bazel test runs may
-    // initialize shell snapshot storage. Neither is thread persistence.
+    // Host startup may leave sandbox migration markers, Bazel test runs may initialize shell
+    // snapshot storage, and required usage accounting may lazily create a separate database. None
+    // is thread persistence.
     entries.remove(".sandbox_migration");
     entries.remove("shell_snapshots");
+    entries.remove("usage");
     assert_eq!(
         entries,
         BTreeSet::from([
