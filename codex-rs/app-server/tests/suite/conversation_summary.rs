@@ -168,6 +168,7 @@ async fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> 
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
