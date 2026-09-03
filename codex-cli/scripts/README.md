@@ -1,11 +1,11 @@
 # npm releases
 
 Use the staging helper in the repo root to generate npm tarballs for a release. For
-example, to stage the downstream CLI package for version `0.6.0+multi.1`:
+example, to stage the downstream CLI package for version `0.6.0-multi.1`:
 
 ```bash
 ./scripts/stage_npm_packages.py \
-  --release-version 0.6.0+multi.1 \
+  --release-version 0.6.0-multi.1 \
   --package codex
 ```
 
@@ -27,3 +27,8 @@ publisher, dispatch the same workflow from an immutable `npm-v<version>` tag
 with `stage_to_npm` enabled. It submits platform payloads first and the root
 `latest` wrapper last. A maintainer must still approve the staged versions
 through npm with 2FA.
+
+Rust release versions retain truthful build metadata such as
+`0.153.0-alpha.6+multi.4`. npm strips SemVer build metadata, so the workflow
+publishes the collision-safe equivalent `0.153.0-alpha.6-multi.4` and requires
+the tag `npm-v0.153.0-alpha.6-multi.4`.

@@ -47,6 +47,10 @@ token as steady-state release infrastructure.
   provenance is expected once trusted publishing is active; the first
   interactive bootstrap release is explicitly distinguishable from later
   OIDC releases.
+- Rust binaries retain the truthful `+multi.N` build metadata. Because npm 11
+  strips SemVer build metadata during publication, npm package versions encode
+  the same downstream revision as `-multi.N`; the release verifier rejects a
+  `+` npm version before submission.
 
 ## Verification
 

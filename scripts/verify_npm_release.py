@@ -48,6 +48,12 @@ def read_tarball(path: Path) -> tuple[dict, set[str]]:
 
 
 def verify_release(dist_dir: Path, version: str) -> None:
+    if "+" in version:
+        raise RuntimeError(
+            "npm release version contains build metadata that npm would strip: "
+            f"{version}"
+        )
+
     paths = tarball_paths(dist_dir, version)
     root, root_members = read_tarball(paths["root"])
     expected_dependencies = {

@@ -230,6 +230,12 @@ def prepare_staging_dir(staging_dir: Path | None) -> tuple[Path, bool]:
 
 
 def stage_sources(staging_dir: Path, version: str, package: str) -> None:
+    if "+" in version:
+        raise RuntimeError(
+            "npm strips SemVer build metadata; encode the downstream revision "
+            "in the prerelease portion instead"
+        )
+
     package_json: dict
     package_json_path: Path | None = None
 

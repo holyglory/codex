@@ -938,6 +938,8 @@ wrapper; bootstrap the first package through the operator's interactive npm
 session, then configure `downstream-npm-release.yml` as the sole stage-only OIDC
 trusted publisher. npm publication never authorizes a VPS deployment or the
 inclusion of credentials and per-user runtime data in an artifact.
+The Rust version `0.153.0-alpha.6+multi.4` maps to the npm-safe version
+`0.153.0-alpha.6-multi.4` because npm strips SemVer build metadata.
 
 The `holyglory` deployment `be8103fc-42a4-4665-b3d8-1d0ae960456c`
 preserves `0.147.0` as its exact binary rollback release. Its first-run legacy
