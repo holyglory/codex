@@ -46,6 +46,16 @@ impl AccountRequestProcessor {
         &self,
         params: ConsumeAccountRateLimitResetCreditParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .consume_account_rate_limit_reset_credit_response(params)
+            .await
+    }
+
+    async fn consume_account_rate_limit_reset_credit_response(
+        &self,
+        params: ConsumeAccountRateLimitResetCreditParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         if params.idempotency_key.is_empty() {
             return Err(invalid_request("idempotencyKey must not be empty"));
         }
