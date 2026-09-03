@@ -1889,6 +1889,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                             codex_home: codex_home.path().abs(),
                             platform_family: "test-family".to_string(),
                             platform_os: "test-os".to_string(),
+                            multi_account: None,
+                            local_usage_accounting: None,
                         },
                     ),
                 ),
@@ -1909,6 +1911,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                     "codexHome": codex_home.path(),
                     "platformFamily": "test-family",
                     "platformOs": "test-os",
+                    "multiAccount": null,
+                    "localUsageAccounting": null,
                 }
             }
         })
@@ -2221,7 +2225,7 @@ async fn remote_control_waits_for_account_id_before_enrolling() {
     .expect("auth with account id should save");
     auth_manager.reload().await;
 
-    let enroll_request = timeout(Duration::from_millis(100), accept_http_request(&listener))
+    let enroll_request = timeout(Duration::from_millis(750), accept_http_request(&listener))
         .await
         .expect("auth change should wake remote control before the retry delay");
     assert_eq!(
