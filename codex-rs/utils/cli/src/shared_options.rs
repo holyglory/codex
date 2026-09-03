@@ -35,6 +35,10 @@ pub struct SharedCliOptions {
     #[arg(long = "profile", short = 'p')]
     pub config_profile_v2: Option<ProfileV2Name>,
 
+    /// Pin this process to one local account profile by alias or stable ID.
+    #[arg(long = "account", value_name = "ALIAS_OR_ID")]
+    pub account: Option<String>,
+
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.
     #[arg(long = "sandbox", short = 's')]
@@ -98,6 +102,7 @@ impl SharedCliOptions {
             oss,
             oss_provider,
             config_profile_v2,
+            account,
             sandbox_mode,
             auto_review,
             dangerously_bypass_approvals_and_sandbox,
@@ -111,6 +116,7 @@ impl SharedCliOptions {
             oss: root_oss,
             oss_provider: root_oss_provider,
             config_profile_v2: root_config_profile_v2,
+            account: root_account,
             sandbox_mode: root_sandbox_mode,
             auto_review: root_auto_review,
             dangerously_bypass_approvals_and_sandbox: root_dangerously_bypass_approvals_and_sandbox,
@@ -130,6 +136,9 @@ impl SharedCliOptions {
         }
         if config_profile_v2.is_none() {
             config_profile_v2.clone_from(root_config_profile_v2);
+        }
+        if account.is_none() {
+            account.clone_from(root_account);
         }
         if !self_selected_sandbox_mode {
             *sandbox_mode = *root_sandbox_mode;
@@ -165,6 +174,7 @@ impl SharedCliOptions {
             oss,
             oss_provider,
             config_profile_v2,
+            account,
             sandbox_mode,
             auto_review,
             dangerously_bypass_approvals_and_sandbox,
@@ -184,6 +194,9 @@ impl SharedCliOptions {
         }
         if let Some(config_profile_v2) = config_profile_v2 {
             self.config_profile_v2 = Some(config_profile_v2);
+        }
+        if let Some(account) = account {
+            self.account = Some(account);
         }
         if subcommand_selected_sandbox_mode {
             self.sandbox_mode = sandbox_mode;
