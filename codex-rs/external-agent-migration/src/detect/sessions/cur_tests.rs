@@ -201,6 +201,60 @@ fn resolves_cur_project_names_with_common_separators() {
 }
 
 #[test]
+fn resolves_cur_project_with_disjoint_punctuated_components() {
+    let root = TempDir::new().expect("tempdir");
+    let project = root.path().join("cache-root").join("my-project");
+    fs::create_dir_all(&project).expect("project root");
+
+    assert_eq!(
+        decode_cur_project_path_from_root("cache-root-my-project", root.path()),
+        Some(project)
+    );
+}
+
+#[test]
+fn preserves_deep_direct_project_path_resolution() {
+    let root = TempDir::new().expect("tempdir");
+    let project = ["Users", "fixture", "Documents", "GitHub", "org", "repo"]
+        .iter()
+        .fold(root.path().to_path_buf(), |path, component| {
+            path.join(component)
+        });
+    fs::create_dir_all(&project).expect("project root");
+
+    assert_eq!(
+        decode_cur_project_path_from_root("Users-fixture-Documents-GitHub-org-repo", root.path()),
+        Some(project)
+    );
+}
+
+#[test]
+fn rejects_ambiguous_cur_project_with_disjoint_punctuated_components() {
+    let root = TempDir::new().expect("tempdir");
+    let first = root.path().join("cache-root").join("my-project");
+    let second = root.path().join("cache.root").join("my_project");
+    fs::create_dir_all(&first).expect("first project");
+    fs::create_dir_all(&second).expect("second project");
+
+    assert_eq!(
+        decode_cur_project_path_from_root("cache-root-my-project", root.path()),
+        None
+    );
+}
+
+#[test]
+fn rejects_disjoint_punctuated_prefix_without_a_complete_project() {
+    let root = TempDir::new().expect("tempdir");
+    fs::create_dir_all(root.path().join("cache-root").join("my"))
+        .expect("partial project hierarchy");
+
+    assert_eq!(
+        decode_cur_project_path_from_root("cache-root-my-project", root.path()),
+        None
+    );
+}
+
+#[test]
 fn rejects_ambiguous_cur_project_without_a_direct_match() {
     let root = TempDir::new().expect("tempdir");
     for project_name in ["my-project", "my project", "my+project"] {
