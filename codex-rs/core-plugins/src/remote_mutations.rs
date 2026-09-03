@@ -6,6 +6,7 @@ use super::EffectivePluginsChangedCallback;
 use super::PluginInstallOutcome;
 use super::PluginsConfigInput;
 use super::PluginsManager;
+use crate::auth_scope::AuthenticatedPluginJob;
 use crate::marketplace::MarketplacePluginAuthPolicy;
 use crate::remote;
 use crate::remote::RemoteInstalledPluginBundleSyncError;
@@ -17,6 +18,7 @@ use crate::remote_bundle::RemotePluginBundleInstallError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
@@ -89,7 +91,41 @@ impl PluginsManager {
         request: RemotePluginInstallRequest,
         on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
     ) -> Result<RemotePluginInstallOutcome, RemotePluginOperationError> {
+        self.install_remote_plugin_with_job(
+            config,
+            self.legacy_auth_job(auth.cloned()),
+            request,
+            on_effective_plugins_changed,
+        )
+        .await
+    }
+
+    pub async fn install_remote_plugin_with_auth_lease(
+        self: &Arc<Self>,
+        config: &PluginsConfigInput,
+        auth_lease: AuthManagerLease,
+        auth: Option<CodexAuth>,
+        request: RemotePluginInstallRequest,
+        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
+    ) -> Result<RemotePluginInstallOutcome, RemotePluginOperationError> {
+        self.install_remote_plugin_with_job(
+            config,
+            AuthenticatedPluginJob::new(auth_lease, auth),
+            request,
+            on_effective_plugins_changed,
+        )
+        .await
+    }
+
+    async fn install_remote_plugin_with_job(
+        self: &Arc<Self>,
+        config: &PluginsConfigInput,
+        auth_job: AuthenticatedPluginJob,
+        request: RemotePluginInstallRequest,
+        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
+    ) -> Result<RemotePluginInstallOutcome, RemotePluginOperationError> {
         use RemotePluginOperationErrorKind as Error;
+        let auth = auth_job.auth();
         let unresolved = |kind| RemotePluginOperationError {
             plugin_id: None,
             kind: Box::new(kind),
@@ -191,9 +227,9 @@ impl PluginsManager {
                 source,
             })
         })?;
-        self.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
+        self.maybe_start_remote_installed_plugins_cache_refresh_after_mutation_with_job(
             config,
-            auth.cloned(),
+            auth_job,
             on_effective_plugins_changed,
         );
         Ok(RemotePluginInstallOutcome {
@@ -220,7 +256,41 @@ impl PluginsManager {
         remote_plugin_id: &str,
         on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
     ) -> Result<RemotePluginUninstallOutcome, RemotePluginOperationError> {
+        self.uninstall_remote_plugin_with_job(
+            config,
+            self.legacy_auth_job(auth.cloned()),
+            remote_plugin_id,
+            on_effective_plugins_changed,
+        )
+        .await
+    }
+
+    pub async fn uninstall_remote_plugin_with_auth_lease(
+        self: &Arc<Self>,
+        config: &PluginsConfigInput,
+        auth_lease: AuthManagerLease,
+        auth: Option<CodexAuth>,
+        remote_plugin_id: &str,
+        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
+    ) -> Result<RemotePluginUninstallOutcome, RemotePluginOperationError> {
+        self.uninstall_remote_plugin_with_job(
+            config,
+            AuthenticatedPluginJob::new(auth_lease, auth),
+            remote_plugin_id,
+            on_effective_plugins_changed,
+        )
+        .await
+    }
+
+    async fn uninstall_remote_plugin_with_job(
+        self: &Arc<Self>,
+        config: &PluginsConfigInput,
+        auth_job: AuthenticatedPluginJob,
+        remote_plugin_id: &str,
+        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
+    ) -> Result<RemotePluginUninstallOutcome, RemotePluginOperationError> {
         use RemotePluginOperationErrorKind as Error;
+        let auth = auth_job.auth();
         let unresolved = |kind| RemotePluginOperationError {
             plugin_id: None,
             kind: Box::new(kind),
@@ -283,10 +353,11 @@ impl PluginsManager {
                     }));
                 }
             };
-        let effective_plugins_changed = self.clear_remote_installed_plugins_cache();
-        self.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
+        let effective_plugins_changed =
+            self.clear_remote_installed_plugins_cache_with_auth(config, auth);
+        self.maybe_start_remote_installed_plugins_cache_refresh_after_mutation_with_job(
             config,
-            auth.cloned(),
+            auth_job,
             on_effective_plugins_changed,
         );
         Ok(RemotePluginUninstallOutcome {
