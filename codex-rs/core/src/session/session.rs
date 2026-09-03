@@ -17,6 +17,7 @@ use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
@@ -569,9 +570,12 @@ async fn warm_plugins_and_skills_for_session_init(
     skills_service: Arc<HostSkillsService>,
     turn_environments: &TurnEnvironmentSnapshot,
     extensions: &codex_extension_api::ExtensionRegistry<Config>,
+    auth: Option<&CodexAuth>,
 ) -> Vec<SkillError> {
     let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
+    let plugin_outcome = plugins_manager
+        .plugins_for_config_with_auth(&plugins_input, auth)
+        .await;
     if config.features.enabled(Feature::SkipHostSkillDiscovery)
         && !extensions.requires_host_skill_discovery()
     {
@@ -580,7 +584,8 @@ async fn warm_plugins_and_skills_for_session_init(
 
     let fs = turn_environments.primary_filesystem();
     let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-    let plugin_skill_snapshots = plugins_manager.plugin_skill_snapshots_for_config(&plugins_input);
+    let plugin_skill_snapshots =
+        plugins_manager.plugin_skill_snapshots_for_config_with_auth(&plugins_input, auth);
     let skills_input = skills_load_input_from_config(config.as_ref(), effective_skill_roots)
         .with_plugin_skill_snapshots(plugin_skill_snapshots);
     skills_service
@@ -643,6 +648,7 @@ impl Session {
         user_instructions: Option<codex_extension_api::Instructions>,
         installation_id: String,
         auth_manager: Arc<AuthManager>,
+        profile_auth_router: Option<SharedProfileAuthRouter>,
         models_manager: SharedModelsManager,
         git_root_discovery: Arc<GitRootDiscovery>,
         model_info: ModelInfo,
@@ -664,6 +670,7 @@ impl Session {
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         analytics_events_client: Option<AnalyticsEventsClient>,
+        usage_runtime: Arc<crate::usage_runtime::UsageRuntime>,
         thread_store: Arc<dyn ThreadStore>,
         parent_rollout_thread_trace: ThreadTraceContext,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
@@ -946,8 +953,19 @@ impl Session {
             session_init.ephemeral = config.ephemeral,
         ));
 
-        let mut mcp_auth_changes = auth_manager.auth_change_receiver();
-        let auth_manager_clone = Arc::clone(&auth_manager);
+        let startup_auth_lease = match &profile_auth_router {
+            Some(router) => router.lease_for_operation().await.ok(),
+            None => Some(codex_login::AuthManagerLease::legacy(Arc::clone(
+                &auth_manager,
+            ))),
+        };
+        let startup_auth_manager = startup_auth_lease
+            .as_ref()
+            .map(|auth_lease| Arc::clone(auth_lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&auth_manager));
+        let mut mcp_auth_changes = startup_auth_manager.auth_change_receiver();
+        let auth_manager_clone = Arc::clone(&startup_auth_manager);
+        let startup_auth_available = startup_auth_lease.is_some();
         let plugins_manager_for_prewarm = Arc::clone(&plugins_manager);
         let config_for_mcp = Arc::clone(&config);
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
@@ -961,7 +979,11 @@ impl Session {
             .map(|cwd| cwd.to_path_buf())
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let auth_and_mcp_fut = async move {
-            let auth = auth_manager_clone.auth().await;
+            let auth = if startup_auth_available {
+                auth_manager_clone.auth().await
+            } else {
+                None
+            };
             if config_for_mcp.features.plugin_recommendations_enabled() {
                 let plugins_config = config_for_mcp.plugins_config_input();
                 let auth_for_prewarm = auth.clone();
@@ -985,6 +1007,7 @@ impl Session {
                         session_source: &mcp_session_source,
                         originator: &mcp_originator,
                         environments: McpEnvironmentScope::Initial(environment_selections),
+                        auth: auth.as_ref(),
                     },
                     /*ready_selected_capability_roots*/ &[],
                     /*executor_capability_discovery*/ None,
@@ -1228,6 +1251,7 @@ impl Session {
                 Arc::clone(&skills_service),
                 &resolved_environments,
                 extensions.as_ref(),
+                auth.as_ref(),
             )
             .instrument(info_span!(
                 "session_init.plugin_skill_warmup",
@@ -1327,6 +1351,7 @@ impl Session {
                 &config,
                 plugins_manager.as_ref(),
                 resolved_environments.single_local_environment(),
+                HookPluginAuth::Captured(auth.as_ref()),
             )
             .await;
             let (hooks, async_hook_results) = Hooks::new(
@@ -1413,6 +1438,7 @@ impl Session {
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 exec_policy,
                 auth_manager: Arc::clone(&auth_manager),
+                profile_auth_router,
                 openai_file_upload_client_pool: RouteAwareClientPool::new_without_request_logging(
                     config.http_client_factory(),
                     ClientRouteClass::Api,
@@ -1467,6 +1493,7 @@ impl Session {
                     attestation_provider,
                     config.http_client_factory(),
                 )
+                .with_usage_runtime(Arc::clone(&usage_runtime), &config.model_provider_id)
                 .with_free_guardian_enabled(config.free_guardian_enabled())
                 .with_session_context(
                     crate::guardian::prompt_cache_key_override_for_review_session(
@@ -1475,6 +1502,7 @@ impl Session {
                     ),
                     tx_event.clone(),
                 ),
+                usage_runtime,
                 executed_tool_calls: executed_tool_calls.clone(),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(
                     Arc::clone(&code_mode_session_provider),
@@ -1562,7 +1590,11 @@ impl Session {
             if startup_auth_changed {
                 mcp_auth_changes.mark_unchanged();
             }
-            let latest_auth = sess.services.auth_manager.auth().await;
+            let latest_auth = if startup_auth_lease.is_some() {
+                startup_auth_manager.auth().await
+            } else {
+                None
+            };
             let mcp_projection = if startup_auth_changed
                 || mcp_auth_changes.has_changed().unwrap_or(false)
             {
@@ -1578,6 +1610,7 @@ impl Session {
                             environments: McpEnvironmentScope::Live(
                                 &sess.services.turn_environments,
                             ),
+                            auth: latest_auth.as_ref(),
                         },
                         /*ready_selected_capability_roots*/ &[],
                         /*executor_capability_discovery*/ None,
@@ -1589,12 +1622,15 @@ impl Session {
             sess.install_initial_mcp_runtime(
                 &session_configuration,
                 latest_auth,
+                Arc::clone(&startup_auth_manager),
                 mcp_projection,
                 &resolved_environments,
                 mcp_runtime_cwd,
             )
             .await?;
-            sess.start_mcp_prewarm_worker(mcp_prewarm_rx, mcp_auth_changes);
+            let idle_auth_lease = startup_auth_lease
+                .filter(|auth_lease| !auth_lease.is_profile_scoped());
+            sess.start_mcp_prewarm_worker(mcp_prewarm_rx, mcp_auth_changes, idle_auth_lease);
             sess.schedule_startup_prewarm(sess.get_prompt_base_instructions().await.text)
                 .await;
             let session_start_source = match &initial_history {
