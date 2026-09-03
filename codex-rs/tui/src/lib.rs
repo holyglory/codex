@@ -553,14 +553,24 @@ pub(crate) async fn start_app_server_for_picker(
 pub(crate) async fn start_embedded_app_server_for_picker(
     config: &Config,
 ) -> color_eyre::Result<AppServerSession> {
-    let state_db = init_state_db_for_app_server_target(config, &AppServerTarget::Embedded).await?;
-    start_app_server_for_picker(
-        config,
-        &AppServerTarget::Embedded,
+    let target = AppServerTarget::Embedded;
+    let state_db = init_state_db_for_app_server_target(config, &target).await?;
+    let app_server = start_app_server(
+        &target,
+        Arg0DispatchPaths::default(),
+        config.clone(),
+        Vec::new(),
+        LoaderOverrides::without_managed_config_for_tests(),
+        /*strict_config*/ false,
+        CloudConfigBundleLoader::default(),
+        codex_feedback::CodexFeedback::new(),
+        /*log_db*/ None,
         state_db,
         Arc::new(EnvironmentManager::default_for_tests()),
+        /*process_account*/ None,
     )
-    .await
+    .await?;
+    Ok(AppServerSession::new(app_server, target.thread_params_mode()).with_startup_config(config))
 }
 
 #[allow(clippy::too_many_arguments)]

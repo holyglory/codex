@@ -6,6 +6,7 @@ use crate::exec_cell::ExecCall;
 use crate::exec_cell::ExecCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
+use crate::legacy_core::config::LoaderOverrides;
 use crate::line_truncation::line_width;
 use crate::render::highlight::MAX_HIGHLIGHT_LINE_BYTES;
 use crate::session_state::ThreadSessionState;
@@ -57,12 +58,17 @@ fn normalize_cli_version(rendered: String) -> String {
 }
 
 async fn test_config() -> Config {
-    let codex_home = std::env::temp_dir();
-    ConfigBuilder::default()
-        .codex_home(codex_home.clone())
+    let codex_home = tempfile::tempdir().expect("temporary Codex home");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .build()
         .await
-        .expect("config")
+        .expect("config");
+    config.mcp_servers.set(Default::default()).expect(
+        "history cell tests should start without MCP servers from project configuration",
+    );
+    config
 }
 
 fn test_cwd() -> PathBuf {
