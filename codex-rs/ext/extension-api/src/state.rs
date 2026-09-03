@@ -65,6 +65,17 @@ impl ExtensionData {
         }
     }
 
+    /// Forks the current attachments into an independently mutable scope with the same host ID.
+    ///
+    /// Existing values remain shared by `Arc`, while later insertions and removals affect only the
+    /// returned scope. Hosts use this when one logical object needs a new immutable runtime view.
+    pub fn fork(&self) -> Self {
+        Self {
+            level_id: self.level_id.clone(),
+            entries: Mutex::new(self.entries().clone()),
+        }
+    }
+
     /// Returns the host identity for the scope this data is attached to.
     pub fn level_id(&self) -> &str {
         &self.level_id
