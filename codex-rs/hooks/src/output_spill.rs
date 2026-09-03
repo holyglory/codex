@@ -8,7 +8,7 @@ use tokio::fs;
 use tracing::warn;
 use uuid::Uuid;
 
-const HOOK_OUTPUTS_DIR: &str = "hook_outputs";
+const HOOK_OUTPUT_DIR_PREFIX: &str = "codex-hook-output";
 pub(crate) const DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT: usize = 2_500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,17 +43,17 @@ pub(crate) struct HookOutputSpiller {
 
 impl HookOutputSpiller {
     pub(crate) fn new(thread_id: ThreadId) -> Self {
+        let directory = format!("{HOOK_OUTPUT_DIR_PREFIX}-{thread_id}-{}", Uuid::new_v4());
         Self {
             output_dir: AbsolutePathBuf::resolve_path_against_base(std::env::temp_dir(), "/")
-                .join(HOOK_OUTPUTS_DIR)
-                .join(thread_id.to_string()),
+                .join(directory),
         }
     }
 
     /// Keeps hook text within the model-visible hook-output budget.
     ///
     /// Oversized text is written in full under the OS temp directory at
-    /// `<temp_dir>/hook_outputs/<thread_id>/`
+    /// a private random directory under `<temp_dir>`
     /// and replaced with the same head/tail preview style used for other truncated
     /// output, plus a path back to the preserved full text.
     pub(crate) async fn maybe_spill_text(&self, text: String) -> String {
@@ -72,12 +72,10 @@ impl HookOutputSpiller {
         }
 
         let path = self.output_dir.join(format!("{}.txt", Uuid::new_v4()));
-        if let Some(parent) = path.parent()
-            && let Err(err) = fs::create_dir_all(parent.as_ref()).await
-        {
+        if let Err(err) = codex_private_storage::ensure_private_directory(&self.output_dir) {
             warn!(
                 "failed to create hook output directory {}: {err}",
-                parent.display()
+                self.output_dir.display()
             );
             return formatted_truncate_text(&text, TruncationPolicy::Tokens(token_limit));
         }

@@ -19,6 +19,7 @@ use codex_utils_pty::JobObject;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::Span;
@@ -52,11 +53,30 @@ pub(crate) struct CommandHookRuntime {
     result_sender: Sender<HookCompletedEvent>,
     state: Arc<Mutex<CommandHookRuntimeState>>,
     output_spiller: HookOutputSpiller,
+    pending_async_hooks: watch::Sender<usize>,
 }
 
 struct CommandHookRuntimeState {
     concurrency_limit: Arc<Semaphore>,
     tasks: JoinSet<()>,
+}
+
+struct PendingAsyncHook {
+    pending: watch::Sender<usize>,
+}
+
+impl PendingAsyncHook {
+    fn new(pending: watch::Sender<usize>) -> Self {
+        pending.send_modify(|count| *count = count.saturating_add(1));
+        Self { pending }
+    }
+}
+
+impl Drop for PendingAsyncHook {
+    fn drop(&mut self) {
+        self.pending
+            .send_modify(|count| *count = count.saturating_sub(1));
+    }
 }
 
 impl Default for CommandHookRuntimeState {
@@ -75,12 +95,14 @@ impl CommandHookRuntime {
         thread_id: ThreadId,
         result_sender: Sender<HookCompletedEvent>,
     ) -> Self {
+        let (pending_async_hooks, _pending_async_hooks_rx) = watch::channel(0);
         Self {
             shell,
             environment,
             result_sender,
             state: Arc::new(Mutex::new(CommandHookRuntimeState::default())),
             output_spiller: HookOutputSpiller::new(thread_id),
+            pending_async_hooks,
         }
     }
 
@@ -97,6 +119,7 @@ impl CommandHookRuntime {
             result_sender: self.result_sender.clone(),
             state: Arc::clone(&self.state),
             output_spiller: self.output_spiller.clone(),
+            pending_async_hooks: self.pending_async_hooks.clone(),
         }
     }
 
@@ -118,7 +141,9 @@ impl CommandHookRuntime {
 
         let result_sender = self.result_sender.clone();
         let runtime = self.clone();
+        let pending_async_hook = PendingAsyncHook::new(self.pending_async_hooks.clone());
         self.schedule_async_task(async move {
+            let _pending_async_hook = pending_async_hook;
             let result = match &handler.kind {
                 ConfiguredHandlerKind::Command { command, env, .. } => {
                     run_command(&runtime, &handler, command, env, &input_json, &cwd).await
@@ -158,6 +183,18 @@ impl CommandHookRuntime {
             hook_result.run.entries = entries;
             let _ = result_sender.try_send(hook_result);
         });
+    }
+
+    pub(crate) async fn wait_for_async_hooks(&self) {
+        let mut pending = self.pending_async_hooks.subscribe();
+        loop {
+            if *pending.borrow_and_update() == 0 {
+                return;
+            }
+            if pending.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     pub(crate) fn schedule_async_task(&self, task: impl Future<Output = ()> + Send + 'static) {
