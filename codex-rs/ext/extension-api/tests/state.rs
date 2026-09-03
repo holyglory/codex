@@ -128,6 +128,24 @@ fn stores_are_isolated_and_preserve_level_id() {
 }
 
 #[test]
+fn fork_shares_existing_values_and_isolates_later_mutations() {
+    let original = ExtensionData::new("turn-1");
+    original.insert(/*value*/ 41_u64);
+    let fork = original.fork();
+
+    let original_value = original.get::<u64>().expect("original value");
+    let forked_value = fork.get::<u64>().expect("forked value");
+    assert!(Arc::ptr_eq(&original_value, &forked_value));
+    assert_eq!(fork.level_id(), original.level_id());
+
+    fork.insert(/*value*/ 42_u64);
+    original.insert("original only".to_string());
+    assert_eq!(original.get::<u64>().as_deref(), Some(&41));
+    assert_eq!(fork.get::<u64>().as_deref(), Some(&42));
+    assert_eq!(fork.get::<String>(), None);
+}
+
+#[test]
 fn store_remains_usable_after_panicking_initializer() {
     let data = ExtensionData::new("turn-1");
 
