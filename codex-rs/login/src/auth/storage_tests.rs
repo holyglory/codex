@@ -9,6 +9,7 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::io::Read;
 use tempfile::tempdir;
 
 use codex_keyring_store::tests::MockKeyringStore;
@@ -63,6 +64,146 @@ async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
         .context("failed to read auth file after save")?;
     assert_eq!(auth_dot_json, same_auth_dot_json);
     Ok(())
+}
+
+#[test]
+fn file_storage_save_atomically_replaces_existing_auth() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+    let original_auth = auth_with_prefix("original");
+    let replacement_auth = auth_with_prefix("replacement");
+    storage.save(&original_auth)?;
+
+    let auth_file = get_auth_file(codex_home.path());
+    let mut original_file = File::open(&auth_file)?;
+    storage.save(&replacement_auth)?;
+
+    let mut original_contents = String::new();
+    original_file.read_to_string(&mut original_contents)?;
+    assert_eq!(
+        serde_json::from_str::<AuthDotJson>(&original_contents)?,
+        original_auth,
+        "an open handle should retain the complete pre-replacement credential record"
+    );
+    assert_eq!(storage.load()?, Some(replacement_auth));
+    assert_eq!(
+        std::fs::read_dir(codex_home.path())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>(),
+        vec![std::ffi::OsString::from("auth.json")],
+        "a successful replacement should leave no temporary credential file"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn file_storage_save_sets_private_file_permissions() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let codex_home = tempdir()?;
+    let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+    storage.save(&auth_with_prefix("private"))?;
+
+    let mode = std::fs::metadata(get_auth_file(codex_home.path()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    Ok(())
+}
+
+#[test]
+fn credential_lock_serializes_independent_storage_instances() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let codex_home = tempdir()?;
+    let first = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    );
+    let second = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    );
+    let guard = first.acquire_lock()?;
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        started_tx.send(()).expect("signal writer start");
+        let result = second.save(&auth_with_prefix("concurrent"));
+        finished_tx.send(result).expect("signal writer completion");
+    });
+    started_rx.recv().expect("writer should start");
+    assert!(
+        finished_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "a second storage instance must wait for the shared credential lock"
+    );
+
+    drop(guard);
+    finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("writer should finish after lock release")?;
+    writer.join().expect("writer should not panic");
+    Ok(())
+}
+
+#[test]
+fn auth_debug_output_redacts_all_credential_material() {
+    let mut auth = auth_with_prefix("auth-debug-secret");
+    auth.personal_access_token = Some("personal-access-debug-secret".to_string());
+    auth.agent_identity = Some(AgentIdentityStorage::Record(AgentIdentityAuthRecord {
+        agent_runtime_id: "agent-runtime-debug-secret".to_string(),
+        agent_private_key: "agent-private-key-debug-secret".to_string(),
+        account_id: "agent-account-debug-secret".to_string(),
+        chatgpt_user_id: "agent-user-debug-secret".to_string(),
+        email: Some("agent-email-debug-secret@example.com".to_string()),
+        plan_type: AccountPlanType::Pro,
+        chatgpt_account_is_fedramp: false,
+        task_id: Some("agent-task-debug-secret".to_string()),
+    }));
+    auth.bedrock_api_key = Some(BedrockApiKeyAuth {
+        api_key: "bedrock-api-key-debug-secret".to_string(),
+        region: "us-test-1".to_string(),
+    });
+
+    let debug_output = format!(
+        "{auth:?} {:?} {:?} {:?} {:?} {:?}",
+        auth.tokens,
+        auth.tokens.as_ref().map(|tokens| &tokens.id_token),
+        auth.agent_identity,
+        auth.agent_identity
+            .as_ref()
+            .and_then(AgentIdentityStorage::as_record),
+        auth.bedrock_api_key
+    );
+
+    for secret in [
+        "auth-debug-secret-api-key",
+        "auth-debug-secret-access",
+        "auth-debug-secret-refresh",
+        "auth-debug-secret-account-id",
+        "personal-access-debug-secret",
+        "agent-runtime-debug-secret",
+        "agent-private-key-debug-secret",
+        "agent-account-debug-secret",
+        "agent-user-debug-secret",
+        "agent-email-debug-secret@example.com",
+        "agent-task-debug-secret",
+        "bedrock-api-key-debug-secret",
+    ] {
+        assert!(
+            !debug_output.contains(secret),
+            "debug output exposed credential marker {secret}"
+        );
+    }
+    assert!(debug_output.contains("<redacted>"));
 }
 
 #[tokio::test]
