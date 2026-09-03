@@ -1,0 +1,22 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+expression: "render_bottom_popup(&chat, 72)"
+---
+  All local statistics
+
+      Classifications (provenance first):
+  18. implementation/coding
+      provenance agent_declared · count 5
+  19. Repository participation
+      operations 5 · tools 3 · additive no · participation only
+  20. Formula · wall time
+      wall formula
+  21. Formula · tokens
+      token formula
+  22. Formula · concurrency
+      concurrency formula
+  23. Formula · repository
+      repository formula
+› 24. Close
+
+  enter select · esc back
