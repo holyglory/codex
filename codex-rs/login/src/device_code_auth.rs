@@ -222,11 +222,14 @@ pub async fn complete_device_code_login(
     crate::server::persist_tokens_async(
         &opts.codex_home,
         /*api_key*/ None,
-        tokens.id_token,
-        tokens.access_token,
-        tokens.refresh_token,
+        crate::server::ExchangedTokens {
+            id_token: tokens.id_token,
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+        },
         opts.cli_auth_credentials_store_mode,
         opts.auth_keyring_backend_kind,
+        opts.profile_auth_storage.clone(),
     )
     .await
 }
