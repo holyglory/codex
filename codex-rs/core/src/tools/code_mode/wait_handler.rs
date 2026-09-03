@@ -67,6 +67,7 @@ impl CodeModeWaitHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let originating_item_id = invocation.originating_item_id().await;
         let ToolInvocation {
             session,
             turn,
@@ -96,6 +97,10 @@ impl CodeModeWaitHandler {
                 let started_at = std::time::Instant::now();
                 telemetry.cell_id = Some(args.cell_id.clone());
                 let cell_id = codex_code_mode::CellId::new(args.cell_id);
+                exec.session
+                    .services
+                    .code_mode_service
+                    .mark_cell_ready_for_dispatch(&cell_id, originating_item_id);
                 let wait_response = if args.terminate {
                     exec.session
                         .services
