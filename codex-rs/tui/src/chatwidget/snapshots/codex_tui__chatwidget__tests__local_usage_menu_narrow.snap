@@ -1,0 +1,22 @@
+---
+source: tui/src/chatwidget/tests/usage.rs
+expression: "render_bottom_popup(&chat, 36)"
+---
+  Usage
+
+› 1. Current chat statistics
+     View local token, tool, and
+     activity accounting.
+  2. All local statistics
+     View full collector coverage,
+     provenance, tokens, tools,
+     and time.
+  3. Repository statistics
+     Choose a repository report.
+  4. Show usage
+     View recent account token
+     usage.
+  5. Redeem usage limit reset
+     Check reset availability.
+
+  enter confirm · esc back
