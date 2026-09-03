@@ -1,0 +1,20 @@
+[package]
+name = "codex-account-selection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+codex-account-registry = { workspace = true }
+codex-protocol = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true
