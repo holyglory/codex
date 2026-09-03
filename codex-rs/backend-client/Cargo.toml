@@ -28,5 +28,5 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 wiremock = { workspace = true }
