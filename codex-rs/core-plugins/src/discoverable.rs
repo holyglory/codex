@@ -79,17 +79,20 @@ impl PluginsManager {
         let use_remote_global_catalog =
             input.plugins.remote_plugin_enabled && auth.is_some_and(CodexAuth::uses_codex_backend);
         let marketplaces = self
-            .list_marketplaces_for_config(
+            .list_marketplaces_for_config_with_auth(
                 &input.plugins,
                 &[],
                 /*include_openai_curated*/ !use_remote_global_catalog,
+                auth,
             )
             .context("failed to list plugin marketplaces for tool suggestions")?
             .marketplaces;
         let remote_installed_marketplaces = if use_remote_global_catalog {
-            self.build_remote_installed_plugin_marketplaces_from_cache(&[
-                REMOTE_GLOBAL_MARKETPLACE_NAME,
-            ])
+            self.build_remote_installed_plugin_marketplaces_from_cache_with_auth(
+                &input.plugins,
+                &[REMOTE_GLOBAL_MARKETPLACE_NAME],
+                auth,
+            )
         } else {
             None
         };
@@ -112,10 +115,11 @@ impl PluginsManager {
 
                 let plugin_id = plugin.id.clone();
                 match self
-                    .tool_suggest_metadata_for_marketplace_plugin(
+                    .tool_suggest_metadata_for_marketplace_plugin_with_auth(
                         &marketplace_name,
                         &plugin,
                         &skill_config_rules,
+                        auth,
                     )
                     .await
                 {
@@ -142,7 +146,7 @@ impl PluginsManager {
         }
         if let Some(remote_installed_marketplaces) = remote_installed_marketplaces.as_ref() {
             let mut installed_app_connector_ids = self
-                .plugins_for_config(&input.plugins)
+                .plugins_for_config_with_auth(&input.plugins, auth)
                 .await
                 .capability_summaries()
                 .iter()
