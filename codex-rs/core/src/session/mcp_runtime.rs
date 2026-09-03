@@ -23,6 +23,7 @@ use std::collections::HashSet;
 pub(super) struct McpDesiredState {
     pub(super) config: Arc<Config>,
     pub(super) auth: Option<CodexAuth>,
+    pub(super) auth_manager: Arc<AuthManager>,
     pub(super) submit_id: String,
     pub(super) originator: String,
     pub(super) session_source: SessionSource,
@@ -60,20 +61,25 @@ impl Session {
     /// Captures this session's current MCP client and catalog for one tool call.
     pub(crate) async fn prepare_mcp_call(
         self: &Arc<Self>,
+        call_id: &str,
         server: &str,
         tool: &str,
     ) -> Option<PreparedMcpCall> {
-        self.refresh_mcp_if_dirty().await;
-        self.services
-            .mcp_runtime
-            .current_binding_for_call(server)
-            .await?
-            .prepare_call(server, tool)
+        let auth_lease = self.current_mcp_auth_manager_lease().await;
+        let binding = self.mcp_binding_for_auth_lease(&auth_lease, server).await?;
+        let prepared_call = binding.prepare_call(server, tool)?;
+        if server == codex_mcp::CODEX_APPS_MCP_SERVER_NAME {
+            self.services
+                .mcp_runtime
+                .bind_resource_origin_call(call_id, binding, auth_lease);
+        }
+        Some(prepared_call)
     }
 
     pub(super) async fn latest_mcp_desired_state(
         &self,
         auth: Option<CodexAuth>,
+        auth_manager: Arc<AuthManager>,
     ) -> McpDesiredState {
         let session_configuration = {
             let state = self.state.lock().await;
@@ -93,6 +99,7 @@ impl Session {
         McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager,
             submit_id: self.next_internal_sub_id(),
             originator: session_configuration.originator.clone(),
             session_source: session_configuration.session_source.clone(),
@@ -105,6 +112,7 @@ impl Session {
         self: &Arc<Self>,
         session_configuration: &SessionConfiguration,
         auth: Option<CodexAuth>,
+        auth_manager: Arc<AuthManager>,
         mcp_projection: McpRuntimeProjection,
         resolved_environments: &TurnEnvironmentSnapshot,
         mcp_runtime_cwd: PathBuf,
@@ -119,6 +127,7 @@ impl Session {
         let desired = McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager,
             submit_id: INITIAL_SUBMIT_ID.to_owned(),
             originator: session_configuration.originator.clone(),
             session_source: session_configuration.session_source.clone(),
@@ -399,7 +408,7 @@ impl Session {
             codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
-            auth_manager: Some(Arc::clone(&self.services.auth_manager)),
+            auth_manager: Some(Arc::clone(&desired.auth_manager)),
             elicitation_reviewer,
             elicitation_lifecycle: Some(self.mcp_elicitation_lifecycle()),
         }

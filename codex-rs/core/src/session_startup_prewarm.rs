@@ -12,15 +12,18 @@ use tracing::trace_span;
 use tracing::warn;
 
 use crate::client::ModelClientSession;
+use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::guardian::routes_approval_to_guardian;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::session::Session;
+use crate::session::session::SessionConfiguration;
 use crate::session::turn::build_prompt;
 use codex_features::Feature;
 use codex_otel::STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC;
 use codex_otel::STARTUP_PREWARM_DURATION_METRIC;
 use codex_otel::SessionTelemetry;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 
@@ -210,12 +213,19 @@ impl Session {
         let session_telemetry = self.services.session_telemetry.clone();
         let websocket_connect_timeout = self.provider().await.websocket_connect_timeout();
         let started_at = Instant::now();
+        // Freeze startup metadata before the spawned prewarm can race a first-turn settings update.
+        let startup_configuration = self.default_turn_configuration().await;
+        let startup_environments = self.services.turn_environments.snapshot().await;
         let startup_prewarm_session = Arc::clone(self);
         let startup_prewarm = tokio::spawn(
             async move {
-                let result =
-                    schedule_startup_prewarm_inner(startup_prewarm_session, base_instructions)
-                        .await;
+                let result = schedule_startup_prewarm_inner(
+                    startup_prewarm_session,
+                    base_instructions,
+                    startup_configuration,
+                    startup_environments,
+                )
+                .await;
                 let status = if result.is_ok() { "ready" } else { "failed" };
                 session_telemetry.record_startup_phase(
                     "startup_prewarm_total",
@@ -262,29 +272,27 @@ impl Session {
 async fn schedule_startup_prewarm_inner(
     session: Arc<Session>,
     base_instructions: String,
+    startup_configuration: SessionConfiguration,
+    startup_environments: TurnEnvironmentSnapshot,
 ) -> CodexResult<ModelClientSession> {
     let prewarm_started_at = Instant::now();
     let startup_turn_context = session
-        .new_startup_prewarm_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())
+        .new_startup_prewarm_turn_from_configuration(
+            INITIAL_SUBMIT_ID.to_owned(),
+            startup_configuration,
+            startup_environments,
+        )
         .await;
+    if startup_turn_context.profile_auth_error.is_some() {
+        return Err(CodexErr::Fatal(
+            "account profile authentication is unavailable".to_string(),
+        ));
+    }
     startup_turn_context.session_telemetry.record_startup_phase(
         "startup_prewarm_create_turn_context",
         prewarm_started_at.elapsed(),
         /*status*/ None,
     );
-    if routes_approval_to_guardian(&startup_turn_context) {
-        let guardian_session = Arc::clone(&session);
-        let guardian_parent_turn = Arc::clone(&startup_turn_context);
-        drop(tokio::spawn(async move {
-            if let Err(err) = guardian_session
-                .guardian_review_session
-                .initialize(Arc::clone(&guardian_session), guardian_parent_turn)
-                .await
-            {
-                warn!("failed to initialize guardian review session: {err:#}");
-            }
-        }));
-    }
     let startup_cancellation_token = CancellationToken::new();
     let built_tools_started_at = Instant::now();
     // Startup prewarm runs before run_turn and needs its own tool-building snapshot.
@@ -316,7 +324,20 @@ async fn schedule_startup_prewarm_inner(
     let responses_metadata = session
         .responses_metadata(&startup_turn_context, CodexResponsesRequestKind::Prewarm)
         .await;
-    let mut client_session = session.services.model_client.new_session();
+    let mut model_client = match &startup_turn_context.auth_manager {
+        Some(auth_manager) => session
+            .services
+            .model_client
+            .for_auth_manager(Arc::clone(auth_manager)),
+        None => session.services.model_client.clone(),
+    };
+    if let Some(lease) = &startup_turn_context.account_lease
+        && let Ok(account_profile_ref) =
+            codex_usage::AccountProfileRef::new(lease.account_id().as_str())
+    {
+        model_client = model_client.with_account_profile_ref(account_profile_ref);
+    }
+    let mut client_session = model_client.new_session();
     let websocket_warmup_started_at = Instant::now();
     client_session
         .prewarm_websocket(
@@ -334,5 +355,18 @@ async fn schedule_startup_prewarm_inner(
         websocket_warmup_started_at.elapsed(),
         /*status*/ None,
     );
+    if routes_approval_to_guardian(&startup_turn_context) {
+        let guardian_session = Arc::clone(&session);
+        let guardian_parent_turn = Arc::clone(&startup_turn_context);
+        drop(tokio::spawn(async move {
+            if let Err(err) = guardian_session
+                .guardian_review_session
+                .initialize(Arc::clone(&guardian_session), guardian_parent_turn)
+                .await
+            {
+                warn!("failed to initialize guardian review session: {err:#}");
+            }
+        }));
+    }
     Ok(client_session)
 }

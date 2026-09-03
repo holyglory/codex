@@ -92,6 +92,7 @@ pub(crate) async fn run_codex_thread_interactive(
         user_instructions,
         installation_id: parent_session.installation_id.clone(),
         auth_manager,
+        profile_auth_router: parent_session.services.profile_auth_router.clone(),
         models_manager,
         git_root_discovery: Arc::clone(&parent_session.services.git_root_discovery),
         environment_manager: parent_session
@@ -128,6 +129,7 @@ pub(crate) async fn run_codex_thread_interactive(
         client_mcp_extensions: parent_session.services.client_mcp_extensions.clone(),
         reserved_thread_id: None,
         analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
+        usage_runtime: Arc::clone(&parent_session.services.usage_runtime),
         thread_store: Arc::clone(&parent_session.services.thread_store),
         attestation_provider: parent_session.services.attestation_provider.clone(),
         external_time_provider: Some(Arc::clone(&parent_session.services.time_provider)),

@@ -11,10 +11,15 @@ impl Session {
         self.schedule_mcp_prewarm();
     }
 
+    pub(crate) fn mark_mcp_runtime_dirty_without_prewarm(&self) {
+        self.mark_mcp_runtime_dirty();
+    }
+
     pub(super) fn start_mcp_prewarm_worker(
         self: &Arc<Self>,
         requests: async_channel::Receiver<()>,
         mut auth_changes: tokio::sync::watch::Receiver<u64>,
+        idle_auth_lease: Option<codex_login::AuthManagerLease>,
     ) {
         let session = Arc::downgrade(self);
         let shutdown = self.mcp_prewarm_shutdown.clone();
@@ -42,10 +47,13 @@ impl Session {
                 if auth_changed {
                     session.mark_mcp_runtime_dirty();
                 }
+                let Some(auth_lease) = idle_auth_lease.as_ref() else {
+                    continue;
+                };
                 tokio::select! {
                     biased;
                     _ = shutdown.cancelled() => break,
-                    _ = session.refresh_mcp_if_dirty() => {},
+                    _ = session.refresh_mcp_if_dirty_with_auth_lease(auth_lease) => {},
                 }
             }
         });
