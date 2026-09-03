@@ -54,7 +54,7 @@ fn bedrock_api_key_debug_redacts_secret() {
     );
     assert_eq!(
         format!("{:?}", CodexAuth::BedrockApiKey(auth)),
-        r#"BedrockApiKey(BedrockApiKeyAuth { api_key: "<redacted>", region: "us-east-1" })"#
+        "CodexAuth { mode: BedrockApiKey, .. }"
     );
 }
 
