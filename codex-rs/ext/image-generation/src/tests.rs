@@ -2,6 +2,7 @@ use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
 use codex_api::ImageQuality;
+use codex_api::ImageResponse;
 use codex_api::ImageUrl;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolPayload;
@@ -14,6 +15,8 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::provider_usage::ProviderTokenCount;
+use codex_protocol::provider_usage::ProviderUsage;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -21,6 +24,7 @@ use pretty_assertions::assert_eq;
 use super::GeneratedImageOutput;
 use super::ImageRequest;
 use super::ImagegenArgs;
+use super::first_generated_image;
 use super::imagegen_tool_spec;
 use super::request_for_call_args;
 use crate::IMAGE_GEN_NAMESPACE;
@@ -250,6 +254,7 @@ fn generated_output_returns_image_input_and_output_hint() {
     let output = GeneratedImageOutput {
         result: RESULT.to_string(),
         output_hint: Some(output_hint.clone()),
+        provider_usage: None,
     };
 
     let ResponseInputItem::FunctionCallOutput {
@@ -279,6 +284,7 @@ fn generated_output_returns_generated_image_helper_input_in_code_mode() {
     let output = GeneratedImageOutput {
         result: RESULT.to_string(),
         output_hint: Some("generated image save hint".to_string()),
+        provider_usage: None,
     };
 
     assert_eq!(
@@ -296,6 +302,7 @@ fn generated_output_omits_oversized_output_hint() {
     let output = GeneratedImageOutput {
         result: RESULT.to_string(),
         output_hint: image_generation_output_hint("/tmp", long_path),
+        provider_usage: None,
     };
 
     let ResponseInputItem::FunctionCallOutput {
@@ -314,6 +321,37 @@ fn generated_output_omits_oversized_output_hint() {
             image_url: format!("data:image/png;base64,{RESULT}"),
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }]
+    );
+}
+
+#[test]
+fn generated_output_exposes_content_free_provider_usage() {
+    let provider_usage: ProviderUsage = serde_json::from_value(serde_json::json!({
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "total_tokens": 6
+    }))
+    .expect("valid provider usage");
+    let (result, _transparent_background, provider_usage) = first_generated_image(ImageResponse {
+        created: 1,
+        data: vec![codex_api::ImageData {
+            b64_json: RESULT.to_string(),
+        }],
+        background: Some(ImageBackground::Opaque),
+        quality: None,
+        size: None,
+        usage: Some(provider_usage),
+    })
+    .expect("image response should retain usage");
+    let output = GeneratedImageOutput {
+        result,
+        output_hint: None,
+        provider_usage,
+    };
+
+    assert_eq!(
+        output.provider_usage().map(ProviderUsage::total_tokens),
+        Some(ProviderTokenCount::Value(6))
     );
 }
 
