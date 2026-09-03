@@ -219,17 +219,21 @@ impl ShellSnapshotCache {
         let shell_start = prepared.command.len() - params.argv.len();
         // Automatic startup files run before the restoration script and could
         // reintroduce environment variables that the snapshot already filtered.
-        let (shell_flag, startup) = match shell_type {
-            ShellType::Bash => ("-pc", "set +o privileged\n"),
-            ShellType::Zsh => ("-fc", "setopt RCS\n"),
-            ShellType::Sh => ("-c", ""),
+        let (shell_flags, startup): (&[&str], &str) = match shell_type {
+            ShellType::Bash => (&["--norc", "-pc"], "set +o privileged\n"),
+            ShellType::Zsh => (&["-fc"], "setopt RCS\n"),
+            ShellType::Sh => (&["-c"], ""),
             ShellType::PowerShell | ShellType::Cmd => unreachable!(),
         };
-        prepared.command[shell_start + 1] = shell_flag.to_string();
-        prepared.command[shell_start + 2] = format!(
+        let restored_command = format!(
             "{startup}if ! eval \"unset {state_variables}\n{state_expansion}\" >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
             params.argv[2]
         );
+        prepared.command.truncate(shell_start + 1);
+        prepared
+            .command
+            .extend(shell_flags.iter().map(|flag| (*flag).to_string()));
+        prepared.command.push(restored_command);
 
         Ok(())
     }
