@@ -132,16 +132,6 @@ impl McpProcess {
         .await?;
 
         let initialized = self.read_jsonrpc_message().await?;
-        let os_info = os_info::get();
-        let build_version = env!("CARGO_PKG_VERSION");
-        let originator = codex_login::default_client::originator().value;
-        let user_agent = format!(
-            "{originator}/{build_version} ({} {}; {}) {} (elicitation test; 0.0.0)",
-            os_info.os_type(),
-            os_info.version(),
-            os_info.architecture().unwrap_or("unknown"),
-            user_agent()
-        );
         let JsonRpcMessage::Response(JsonRpcResponse {
             jsonrpc,
             id,
@@ -150,6 +140,21 @@ impl McpProcess {
         else {
             anyhow::bail!("expected initialize response message, got: {initialized:?}")
         };
+        let build_version = result
+            .pointer("/serverInfo/version")
+            .and_then(serde_json::Value::as_str)
+            .filter(|version| !version.is_empty())
+            .context("initialize response should include a non-empty server version")?
+            .to_string();
+        let os_info = os_info::get();
+        let originator = codex_login::default_client::originator().value;
+        let user_agent = format!(
+            "{originator}/{build_version} ({} {}; {}) {} (elicitation test; 0.0.0)",
+            os_info.os_type(),
+            os_info.version(),
+            os_info.architecture().unwrap_or("unknown"),
+            user_agent()
+        );
         assert_eq!(jsonrpc, JsonRpcVersion2_0);
         assert_eq!(id, RequestId::Number(request_id));
         assert_eq!(
@@ -163,7 +168,7 @@ impl McpProcess {
                 "serverInfo": {
                     "name": "codex-mcp-server",
                     "title": "Codex",
-                    "version": "0.0.0",
+                    "version": build_version,
                     "user_agent": user_agent
                 },
                 "protocolVersion": ProtocolVersion::V_2025_03_26
