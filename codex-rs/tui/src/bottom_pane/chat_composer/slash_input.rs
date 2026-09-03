@@ -214,6 +214,7 @@ impl ChatComposer {
             connectors_enabled: self.connectors_enabled,
             plugins_command_enabled: self.plugins_command_enabled,
             token_activity_command_enabled: self.token_activity_command_enabled,
+            account_command_enabled: self.account_command_enabled,
             service_tier_commands_enabled: self.service_tier_commands_enabled,
             goal_command_enabled: self.goal_command_enabled,
             voice_command_enabled: self.voice_command_enabled,

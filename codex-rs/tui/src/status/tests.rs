@@ -185,16 +185,35 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
         .collect()
 }
 
+fn normalize_cli_version(rendered: String) -> String {
+    crate::test_support::normalize_cli_version_to(rendered, "0.0.0")
+}
+
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
         .map(|line| {
-            if let Some((prefix, value)) = line.split_once("Directory:") {
-                let padding = &value[..value.len() - value.trim_start().len()];
-                format!("{prefix}Directory:{padding}[[workspace]]")
+            let line = if let (Some(frame_width), Some(dir_pos), Some(pipe_idx)) =
+                (frame_width, line.find("Directory: "), line.rfind('│'))
+            {
+                let prefix = &line[..dir_pos + "Directory: ".len()];
+                let suffix = &line[pipe_idx..];
+                let replacement = "[[workspace]]";
+                let content_width = frame_width.saturating_sub(
+                    UnicodeWidthStr::width(prefix) + UnicodeWidthStr::width(suffix),
+                );
+                let mut rebuilt = prefix.to_string();
+                rebuilt.push_str(replacement);
+                let replacement_width = UnicodeWidthStr::width(replacement);
+                if content_width > replacement_width {
+                    rebuilt.push_str(&" ".repeat(content_width - replacement_width));
+                }
+                rebuilt.push_str(suffix);
+                rebuilt
             } else {
                 line
-            }
+            };
+            normalize_cli_version(line)
         })
         .collect()
 }
