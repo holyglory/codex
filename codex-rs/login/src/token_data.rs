@@ -5,9 +5,10 @@ use codex_protocol::auth::PlanType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::fmt;
 use thiserror::Error;
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct TokenData {
     /// Flat info parsed from the JWT in auth.json.
     #[serde(
@@ -24,8 +25,23 @@ pub struct TokenData {
     pub account_id: Option<String>,
 }
 
+impl fmt::Debug for TokenData {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TokenData")
+            .field("id_token", &"<redacted>")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field(
+                "account_id",
+                &self.account_id.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 /// Flat subset of useful claims in id_token from auth.json.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct IdTokenInfo {
     pub email: Option<String>,
     /// The ChatGPT subscription plan type
@@ -39,6 +55,29 @@ pub struct IdTokenInfo {
     /// Whether the selected ChatGPT workspace must route through the FedRAMP edge.
     pub chatgpt_account_is_fedramp: bool,
     pub raw_jwt: String,
+}
+
+impl fmt::Debug for IdTokenInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IdTokenInfo")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("chatgpt_plan_type", &self.chatgpt_plan_type)
+            .field(
+                "chatgpt_user_id",
+                &self.chatgpt_user_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "chatgpt_account_id",
+                &self.chatgpt_account_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "chatgpt_account_is_fedramp",
+                &self.chatgpt_account_is_fedramp,
+            )
+            .field("raw_jwt", &"<redacted>")
+            .finish()
+    }
 }
 
 impl IdTokenInfo {

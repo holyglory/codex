@@ -12,13 +12,29 @@ const PROD_AUTHAPI_BASE_URL: &str = "https://auth.openai.com/api/accounts";
 const CODEX_AUTHAPI_BASE_URL_ENV_VAR: &str = "CODEX_AUTHAPI_BASE_URL";
 const WHOAMI_PATH: &str = "/v1/user-auth-credential/whoami";
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 struct PersonalAccessTokenMetadata {
     email: Option<String>,
     chatgpt_user_id: String,
     chatgpt_account_id: String,
     chatgpt_plan_type: String,
     chatgpt_account_is_fedramp: bool,
+}
+
+impl fmt::Debug for PersonalAccessTokenMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersonalAccessTokenMetadata")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("chatgpt_user_id", &"<redacted>")
+            .field("chatgpt_account_id", &"<redacted>")
+            .field("chatgpt_plan_type", &self.chatgpt_plan_type)
+            .field(
+                "chatgpt_account_is_fedramp",
+                &self.chatgpt_account_is_fedramp,
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -31,7 +47,7 @@ impl fmt::Debug for PersonalAccessTokenAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PersonalAccessTokenAuth")
             .field("access_token", &"<redacted>")
-            .field("metadata", &self.metadata)
+            .field("metadata", &"<redacted>")
             .finish()
     }
 }
