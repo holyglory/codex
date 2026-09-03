@@ -486,7 +486,7 @@ fn extension_metrics_preserve_session_metadata_tags() {
         BTreeMap::from([
             (
                 "app.version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
+                codex_otel::metrics_app_version().to_string(),
             ),
             (
                 "auth_mode".to_string(),
@@ -6340,6 +6340,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
+        /*profile_auth_router*/ None,
         models_manager,
         Arc::default(),
         model_info,
@@ -6361,6 +6362,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         environment_manager,
         /*inherited_environments*/ None,
         /*analytics_events_client*/ None,
+        crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         Arc::new(codex_thread_store::LocalThreadStore::new(
             codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
             /*state_db*/ None,
@@ -6541,6 +6543,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.chatgpt_base_url.trim_end_matches('/').to_string(),
             config.analytics_enabled,
         ),
+        profile_auth_router: None,
         hooks: arc_swap::ArcSwap::from_pointee(hooks),
         rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         user_shell: Arc::new(default_user_shell()),
@@ -6602,6 +6605,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
+        usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
@@ -6669,6 +6673,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         thread_id,
         SessionId::from(thread_id),
         Some(Arc::clone(&auth_manager)),
+        /*account_lease*/ None,
         &session_telemetry,
         session_configuration.provider.clone(),
         &session_configuration,
@@ -6798,6 +6803,7 @@ async fn make_session_with_config_and_rx(
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
+        /*profile_auth_router*/ None,
         models_manager,
         Arc::default(),
         model_info,
@@ -6819,6 +6825,7 @@ async fn make_session_with_config_and_rx(
         environment_manager,
         /*inherited_environments*/ None,
         /*analytics_events_client*/ None,
+        crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         Arc::new(codex_thread_store::LocalThreadStore::new(
             codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
             /*state_db*/ None,
@@ -6925,6 +6932,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
+        /*profile_auth_router*/ None,
         models_manager,
         Arc::default(),
         model_info,
@@ -6946,6 +6954,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         environment_manager,
         /*inherited_environments*/ None,
         /*analytics_events_client*/ None,
+        crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         Arc::new(codex_thread_store::LocalThreadStore::new(
             codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
             Some(
@@ -8848,6 +8857,7 @@ where
             config.chatgpt_base_url.trim_end_matches('/').to_string(),
             config.analytics_enabled,
         ),
+        profile_auth_router: None,
         hooks: arc_swap::ArcSwap::from_pointee(hooks),
         rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         user_shell: Arc::new(default_user_shell()),
@@ -8909,6 +8919,7 @@ where
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
+        usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
@@ -8976,6 +8987,7 @@ where
         thread_id,
         SessionId::from(thread_id),
         Some(Arc::clone(&auth_manager)),
+        /*account_lease*/ None,
         &session_telemetry,
         session_configuration.provider.clone(),
         &session_configuration,
@@ -9440,8 +9452,14 @@ async fn mcp_policy_changes_schedule_runtime_refresh() {
 
 #[tokio::test]
 async fn mcp_refresh_detects_shared_auth_manager_changes() {
-    let (session, _turn_context) = make_session_and_context().await;
-    let session = Arc::new(session);
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        codex_home.path(),
+        |_| {},
+    )
+    .await;
 
     assert_eq!(
         session.services.plugins_manager.auth_mode(),
