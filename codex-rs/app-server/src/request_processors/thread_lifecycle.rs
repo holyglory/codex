@@ -314,10 +314,16 @@ pub(super) async fn ensure_listener_task_running(
                     };
 
                     if let Some(worker) = &turn_cost_worker {
+                        let auth_lease = if matches!(&event.msg, EventMsg::TurnStarted(_)) {
+                            conversation.auth_manager_lease_for_turn(&event.id).await
+                        } else {
+                            None
+                        };
                         worker.observe_event(
                             conversation_id,
                             config.as_ref(),
                             &event,
+                            auth_lease,
                             || conversation.session_telemetry(),
                         );
                     }
