@@ -18,6 +18,7 @@ async-channel = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 codex-config = { workspace = true }
 codex-plugin = { workspace = true }
+codex-private-storage = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
