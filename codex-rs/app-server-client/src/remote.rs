@@ -213,12 +213,12 @@ impl RemoteAppServerClient {
         let mut stream = stream;
         let (pending_events, server_version, codex_home, server_capabilities) =
             initialize_remote_connection(
-            &mut stream,
-            &endpoint,
-            initialize_params,
-            INITIALIZE_TIMEOUT,
-        )
-        .await?;
+                &mut stream,
+                &endpoint,
+                initialize_params,
+                INITIALIZE_TIMEOUT,
+            )
+            .await?;
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::unbounded_channel::<AppServerEvent>();

@@ -65,9 +65,10 @@ async fn test_config() -> Config {
         .build()
         .await
         .expect("config");
-    config.mcp_servers.set(Default::default()).expect(
-        "history cell tests should start without MCP servers from project configuration",
-    );
+    config
+        .mcp_servers
+        .set(Default::default())
+        .expect("history cell tests should start without MCP servers from project configuration");
     config
 }
 
