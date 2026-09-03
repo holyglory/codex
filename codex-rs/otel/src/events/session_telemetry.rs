@@ -460,7 +460,7 @@ impl SessionTelemetry {
             originator: self.metadata.originator.as_str(),
             service_name: self.metadata.service_name.as_deref(),
             model: self.metadata.model.as_str(),
-            app_version: self.metadata.app_version,
+            app_version: crate::metrics::metrics_app_version(),
         }
         .into_tags()
     }
@@ -1275,6 +1275,7 @@ impl SessionTelemetry {
                 SessionTelemetry::responses_item_type(item)
             }
             ResponseEvent::Completed { .. } => "completed".into(),
+            ResponseEvent::ProviderUsage(_) => "provider_usage".into(),
             ResponseEvent::OutputTextDelta(_) => "text_delta".into(),
             ResponseEvent::ToolCallInputDelta { .. } => "tool_input_delta".into(),
             ResponseEvent::ReasoningSummaryDelta { .. } => "reasoning_summary_delta".into(),

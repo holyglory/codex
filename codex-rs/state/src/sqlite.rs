@@ -117,6 +117,40 @@ pub struct SqliteConfig {
     sqlite_home: AbsolutePathBuf,
 }
 
+/// Reviewed SQLite connection policies shared by Codex-owned databases.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlitePoolProfile {
+    /// Rebuildable/runtime state with normal synchronization and incremental vacuum.
+    Runtime,
+    /// Required append-only event storage with full synchronization and foreign keys.
+    DurableEvents,
+}
+
+/// Open a Codex-owned SQLite pool through the centralized constructor policy.
+pub async fn open_sqlite_pool(
+    path: &Path,
+    profile: SqlitePoolProfile,
+) -> Result<SqlitePool, Error> {
+    let mut options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .log_statements(LevelFilter::Off);
+    options = match profile {
+        SqlitePoolProfile::Runtime => options
+            .synchronous(SqliteSynchronous::Normal)
+            .auto_vacuum(SqliteAutoVacuum::Incremental),
+        SqlitePoolProfile::DurableEvents => options
+            .synchronous(SqliteSynchronous::Full)
+            .foreign_keys(true),
+    };
+    SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+}
+
 impl SqliteConfig {
     pub fn from_sqlite_home(sqlite_home: AbsolutePathBuf) -> Self {
         Self { sqlite_home }
@@ -276,18 +310,7 @@ impl SqliteConfig {
 
     /// Open a writable Codex SQLite database, creating it if necessary.
     pub async fn open_read_write_pool(&self, path: &Path) -> Result<SqlitePool, Error> {
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
-            .busy_timeout(Duration::from_secs(5))
-            .log_statements(LevelFilter::Off);
-        SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
+        open_sqlite_pool(path, SqlitePoolProfile::Runtime).await
     }
 
     /// Open an existing Codex SQLite database without creating or modifying it.
