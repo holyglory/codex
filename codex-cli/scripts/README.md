@@ -20,15 +20,19 @@ Direct `build_npm_package.py` invocations are still useful for package-specific
 debugging, but native packages expect `--vendor-src` to point at a prehydrated
 `vendor/` tree. Release packaging should use `scripts/stage_npm_packages.py`.
 
-The downstream release workflow is `.github/workflows/downstream-npm-release.yml`.
-An artifact-only run builds and verifies all six native payloads plus the root
-wrapper without contacting npm. Once the package has a stage-only trusted
-publisher, dispatch the same workflow from an immutable `npm-v<version>` tag
-with `stage_to_npm` enabled. It submits platform payloads first and the root
-`latest` wrapper last. A maintainer must still approve the staged versions
-through npm with 2FA.
+`.github/workflows/downstream-candidate.yml` builds and verifies all six native
+payloads plus the root wrapper without npm authority. It uploads the seven
+tarballs as candidate artifacts only.
+
+Publication is isolated in `.github/workflows/downstream-npm-publish.yml`. It
+accepts only an annotated `npm-v<version>` tag at the exact commit tested by the
+selected candidate run. Its `stage_to_npm` input defaults to false, and the
+stage job additionally requires approval through the protected `npm` GitHub
+environment before OIDC credentials are issued. It submits platform payloads
+first and the root `latest` wrapper last; staged versions still require the npm
+approval step before becoming public.
 
 Rust release versions retain truthful build metadata such as
-`0.153.0-alpha.6+multi.4`. npm strips SemVer build metadata, so the workflow
-publishes the collision-safe equivalent `0.153.0-alpha.6-multi.4` and requires
-the tag `npm-v0.153.0-alpha.6-multi.4`.
+`0.153.0+multi.1`. npm strips SemVer build metadata, so the workflow uses the
+collision-safe equivalent `0.153.0-multi.1` and requires the annotated tag
+`npm-v0.153.0-multi.1` for any future publication run.

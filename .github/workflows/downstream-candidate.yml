@@ -210,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --target "$TARGET" --release --bin bwrap
-          bwrap_path="target/${TARGET}/release/bwrap"
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
           strip --strip-debug --strip-unneeded "$bwrap_path"
           digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
@@ -239,7 +239,7 @@ jobs:
           bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
             --target "$TARGET" \
             --artifact-name "$TARGET" \
-            --release-dir "target/${TARGET}/release" \
+            --release-dir "${CARGO_TARGET_DIR}/${TARGET}/release" \
             --archive-dir "native-dist/${TARGET}" \
             --binaries "codex codex-app-server codex-code-mode-host"
       - name: Build canonical package archives
@@ -249,7 +249,7 @@ jobs:
           VERSION: ${{ needs.identity.outputs.source_version }}
         run: |
           set -euo pipefail
-          release_dir="${GITHUB_WORKSPACE}/codex-rs/target/${TARGET}/release"
+          release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
           dist_dir="${GITHUB_WORKSPACE}/codex-rs/native-dist/${TARGET}"
           suffix=""
           [[ "$RUNNER_OS" == "Windows" ]] && suffix=".exe"
