@@ -627,6 +627,7 @@ pub(crate) struct ChatComposer {
     connectors_enabled: bool,
     plugins_command_enabled: bool,
     token_activity_command_enabled: bool,
+    account_command_enabled: bool,
     service_tier_commands_enabled: bool,
     service_tier_commands: Vec<ServiceTierCommand>,
     mentions_v2_enabled: bool,
@@ -799,6 +800,7 @@ impl ChatComposer {
             connectors_enabled: false,
             plugins_command_enabled: false,
             token_activity_command_enabled: false,
+            account_command_enabled: false,
             service_tier_commands_enabled: false,
             service_tier_commands: Vec::new(),
             mentions_v2_enabled: false,
@@ -949,6 +951,10 @@ impl ChatComposer {
 
     pub fn set_token_activity_command_enabled(&mut self, enabled: bool) {
         self.token_activity_command_enabled = enabled;
+    }
+
+    pub fn set_account_command_enabled(&mut self, enabled: bool) {
+        self.account_command_enabled = enabled;
     }
 
     pub fn set_mentions_v2_enabled(&mut self, enabled: bool) {
