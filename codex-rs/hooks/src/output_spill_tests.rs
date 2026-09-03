@@ -9,17 +9,22 @@ fn hook_output_spiller_is_scoped_to_its_thread() {
     let spiller = HookOutputSpiller::new(thread_id);
 
     assert_eq!(
-        spiller.output_dir,
-        AbsolutePathBuf::resolve_path_against_base(std::env::temp_dir(), "/")
-            .join(HOOK_OUTPUTS_DIR)
-            .join(thread_id.to_string())
+        spiller.output_dir.parent(),
+        Some(AbsolutePathBuf::resolve_path_against_base(
+            std::env::temp_dir(),
+            "/"
+        ))
     );
+    assert!(spiller.output_dir.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .starts_with(&format!("{HOOK_OUTPUT_DIR_PREFIX}-{thread_id}-"))
+    }));
 }
 
 #[tokio::test]
 async fn small_hook_output_remains_inline() -> Result<()> {
     let dir = tempdir()?;
-    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUTS_DIR);
+    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUT_DIR_PREFIX);
     let spiller = HookOutputSpiller {
         output_dir: output_dir.clone(),
     };
@@ -35,12 +40,14 @@ async fn small_hook_output_remains_inline() -> Result<()> {
 async fn large_hook_output_spills_to_file() -> Result<()> {
     let dir = tempdir()?;
     let text = "hook output ".repeat(1_000);
-    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUTS_DIR);
+    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUT_DIR_PREFIX);
     let spiller = HookOutputSpiller { output_dir };
 
     let output = spiller.maybe_spill_text(text.clone()).await;
 
     assert!(output.contains("tokens truncated"));
+    codex_private_storage::verify_private_directory(&spiller.output_dir)
+        .expect("private spill directory");
     let path = output
         .lines()
         .find_map(|line| line.strip_prefix("Full hook output saved to: "))
@@ -55,7 +62,7 @@ async fn additional_contexts_apply_limits_individually() -> Result<()> {
     let limited_text = "limited hook output ".repeat(1_000);
     let unlimited_text = "unlimited hook output ".repeat(5_000);
     assert!(approx_token_count(&unlimited_text) > 10_000);
-    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUTS_DIR);
+    let output_dir = AbsolutePathBuf::from_absolute_path(dir.path())?.join(HOOK_OUTPUT_DIR_PREFIX);
     let spiller = HookOutputSpiller { output_dir };
     let output = spiller
         .maybe_spill_additional_contexts(vec![
