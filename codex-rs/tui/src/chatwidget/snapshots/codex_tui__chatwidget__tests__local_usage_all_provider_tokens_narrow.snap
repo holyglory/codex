@@ -1,0 +1,25 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+expression: "render_bottom_popup(&chat, 38)"
+---
+  All local statistics
+
+  4. Time range
+     10 to 20 ms UTC
+  5. Coverage
+     complete · gaps: no
+      Coverage events:
+  6. capture_started
+     2
+      Token observations:
+  7. complete
+     1
+      Provider tokens (provenance
+      first):
+› 8. input_tokens
+     provenance provider_reported ·
+     repository CodexMulti ·
+     measured 120 · exact 120 ·
+     unknown 0 · observations 1
+
+  enter select · esc back
