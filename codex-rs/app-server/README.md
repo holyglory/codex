@@ -2568,8 +2568,12 @@ List methods use opaque keyset
 cursors, accept limits from 1 through 100, and tool/activity/event lists accept an inclusive
 `fromAt` and exclusive `toAt` in Unix seconds. Repository aliases, repository merges, and
 classification corrections append facts and emit `localUsage/updated` only after the mutation
-succeeds. Database corruption or migration failure returns a content-free JSON-RPC error and does
-not recreate or reset the store.
+succeeds. Database corruption or migration failure returns a content-free JSON-RPC error from
+local-usage query, export, and mutation methods and does not recreate or reset the store. It never
+fails or cancels a model request, tool invocation, or turn. Capture failures are logged without
+conversation content, and completed model/tool records are retained in a bounded process-memory
+retry queue. A later operation retries the private store; if the process exits or the queue reaches
+capacity first, the content-free log records the collection gap and reports do not invent usage.
 
 `localUsageExport/create` requires the caller to provide an absolute `outputPath` with a private,
 existing parent directory and an extension matching `json`, `jsonl`, or `csv`. Export creation is

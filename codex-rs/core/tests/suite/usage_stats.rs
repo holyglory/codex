@@ -25,7 +25,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::Instant;
 
 fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
     let content = request
@@ -49,6 +51,75 @@ fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> V
             }
         }
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_accounting_outage_does_not_stop_turn_and_replays_after_recovery() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("outage-response"),
+                ev_assistant_message("outage-message", "continued during outage"),
+                ev_completed_with_usage(
+                    "outage-response",
+                    /*input_tokens*/ 4,
+                    /*output_tokens*/ 3,
+                ),
+            ]),
+            sse(vec![
+                ev_response_created("recovery-response"),
+                ev_assistant_message("recovery-message", "continued after recovery"),
+                ev_completed_with_usage(
+                    "recovery-response",
+                    /*input_tokens*/ 6,
+                    /*output_tokens*/ 5,
+                ),
+            ]),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    std::fs::write(home.path().join("usage"), b"blocks the usage directory")?;
+    let test = test_codex()
+        .with_home(Arc::clone(&home))
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn("continue despite accounting outage")
+        .await?;
+    std::fs::remove_file(home.path().join("usage"))?;
+    test.submit_turn("continue after accounting recovery")
+        .await?;
+
+    assert_eq!(response_mock.requests().len(), 2);
+    let usage = UsageStore::open(home.path()).await?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let summary = loop {
+        let summary = usage.usage_summary(UsageSummaryScope::All).await?;
+        if summary.model_request_count == 2 || Instant::now() >= deadline {
+            break summary;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(summary.model_request_count, 2);
+    assert_eq!(
+        summary
+            .tokens
+            .iter()
+            .filter(|tokens| tokens.category_path == "total_tokens")
+            .fold((0_i64, 0_u64), |(measured, observations), tokens| {
+                (
+                    measured + tokens.measured_tokens,
+                    observations + tokens.observation_count,
+                )
+            }),
+        (18, 2)
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
