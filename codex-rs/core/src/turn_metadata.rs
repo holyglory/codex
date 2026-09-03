@@ -444,7 +444,7 @@ impl TurnMetadataState {
         metadata
     }
 
-    fn current_workspaces(&self) -> BTreeMap<String, TurnMetadataWorkspace> {
+    pub(crate) fn current_workspaces(&self) -> BTreeMap<String, TurnMetadataWorkspace> {
         self.enriched_workspaces
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

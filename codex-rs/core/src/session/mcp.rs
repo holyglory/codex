@@ -97,6 +97,17 @@ impl Session {
         &self,
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
+        let auth_lease = self.current_mcp_auth_manager_lease().await;
+        self.runtime_mcp_config_and_context_with_auth_lease(config, &auth_lease)
+            .await
+    }
+
+    pub(crate) async fn runtime_mcp_config_and_context_with_auth_lease(
+        &self,
+        config: &Config,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) -> (McpConfig, McpRuntimeContext) {
+        let auth = auth_lease.auth_manager().auth().await;
         let originator = self.originator().await;
         let (session_source, host_fallback_cwd) = {
             let state = self.state.lock().await;
@@ -129,6 +140,7 @@ impl Session {
                     session_source: &session_source,
                     originator: &originator,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
+                    auth: auth.as_ref(),
                 },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
@@ -175,10 +187,41 @@ impl Session {
     /// Publishes changed MCP state, waiting for any refresh already in progress.
     #[tracing::instrument(name = "mcp.runtime.refresh_if_dirty", skip_all)]
     pub(crate) async fn refresh_mcp_if_dirty(self: &Arc<Self>) {
+        let auth_lease = self.current_mcp_auth_manager_lease().await;
+        self.refresh_mcp_if_dirty_with_auth_lease(&auth_lease).await;
+    }
+
+    pub(crate) async fn refresh_mcp_if_dirty_with_auth_lease(
+        self: &Arc<Self>,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
         let Ok(_refresh) = self.mcp_refresh.acquire().await else {
             error!("MCP runtime refresh semaphore closed");
             return;
         };
+        self.refresh_mcp_if_dirty_holding_gate(auth_lease).await;
+    }
+
+    pub(crate) async fn mcp_binding_for_auth_lease(
+        self: &Arc<Self>,
+        auth_lease: &codex_login::AuthManagerLease,
+        server: &str,
+    ) -> Option<Arc<codex_mcp::McpBinding>> {
+        let Ok(_refresh) = self.mcp_refresh.acquire().await else {
+            error!("MCP runtime refresh semaphore closed");
+            return None;
+        };
+        self.refresh_mcp_if_dirty_holding_gate(auth_lease).await;
+        self.services
+            .mcp_runtime
+            .current_binding_for_call(server)
+            .await
+    }
+
+    async fn refresh_mcp_if_dirty_holding_gate(
+        self: &Arc<Self>,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
         loop {
             let environments = self.services.turn_environments.snapshot().await;
             let ready_environments = environments
@@ -198,7 +241,8 @@ impl Session {
             {
                 self.mark_mcp_runtime_dirty();
             }
-            let auth = self.services.auth_manager.auth_cached();
+            let auth_manager = auth_lease.auth_manager();
+            let auth = auth_manager.auth_cached();
             if !self
                 .services
                 .mcp_runtime
@@ -214,8 +258,10 @@ impl Session {
                 refresh: &self.mcp_refresh,
                 published: false,
             };
-            let auth = self.services.auth_manager.auth().await;
-            let desired = self.latest_mcp_desired_state(auth).await;
+            let auth = auth_manager.auth().await;
+            let desired = self
+                .latest_mcp_desired_state(auth, Arc::clone(auth_manager))
+                .await;
             let selected_capability_roots = self
                 .resolve_selected_capability_roots_for_step(&desired.environments)
                 .await;
@@ -239,6 +285,7 @@ impl Session {
                         session_source: &desired.session_source,
                         originator: &desired.originator,
                         environments: McpEnvironmentScope::Live(&self.services.turn_environments),
+                        auth: desired.auth.as_ref(),
                     },
                     &ready_selected_capability_roots,
                     executor_capability_discovery.as_deref(),
@@ -265,8 +312,12 @@ impl Session {
             .acquire()
             .await
             .map_err(|_| anyhow::anyhow!("MCP runtime refresh semaphore closed"))?;
-        let auth = self.services.auth_manager.auth().await;
-        let desired = self.latest_mcp_desired_state(auth).await;
+        let auth_lease = self.current_mcp_auth_manager_lease().await;
+        let auth_manager = auth_lease.auth_manager();
+        let auth = auth_manager.auth().await;
+        let desired = self
+            .latest_mcp_desired_state(auth, Arc::clone(auth_manager))
+            .await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&desired.environments)
             .await;
@@ -290,6 +341,7 @@ impl Session {
                     session_source: &desired.session_source,
                     originator: &desired.originator,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
+                    auth: desired.auth.as_ref(),
                 },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
@@ -320,6 +372,7 @@ impl Session {
     }
 
     pub(super) fn mark_mcp_runtime_dirty(&self) {
+        self.services.mcp_runtime.clear_hook_binding();
         self.mcp_refresh.invalidate();
     }
 
@@ -368,10 +421,17 @@ impl Session {
             .current_binding_with_required_servers(&required_servers)
             .await
         {
+            self.services
+                .mcp_runtime
+                .set_hook_binding(Arc::clone(&binding));
             return binding;
         }
         let config = Arc::new(self.runtime_mcp_config(&turn_context.config).await);
-        Arc::new(codex_mcp::McpBinding::empty(config))
+        let binding = Arc::new(codex_mcp::McpBinding::empty(config));
+        self.services
+            .mcp_runtime
+            .set_hook_binding(Arc::clone(&binding));
+        binding
     }
 
     #[tracing::instrument(
@@ -651,7 +711,12 @@ impl Session {
             error!("MCP runtime refresh semaphore closed");
             return;
         };
-        let auth = self.services.auth_manager.auth().await;
+        let auth_manager = turn_context
+            .auth_manager
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+        let auth = auth_manager.auth().await;
         {
             let mut state = self.state.lock().await;
             let mut config = (*state.session_configuration.original_config_do_not_use).clone();
@@ -681,12 +746,13 @@ impl Session {
                     session_source: &turn_context.session_source,
                     originator: &turn_context.originator,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
+                    auth: auth.as_ref(),
                 },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
             .await;
-        let mut desired = self.latest_mcp_desired_state(auth).await;
+        let mut desired = self.latest_mcp_desired_state(auth, auth_manager).await;
         desired.config = Arc::new(refresh_config.clone());
         self.publish_mcp_runtime(
             &desired,
@@ -708,6 +774,25 @@ impl Session {
 
     pub(crate) fn cancel_mcp_startup(&self) {
         self.services.mcp_runtime.cancel_startup();
+    }
+
+    pub(crate) async fn current_mcp_auth_manager_lease(&self) -> codex_login::AuthManagerLease {
+        let turn_context = self
+            .active_turn_context_and_cancellation_token()
+            .await
+            .map(|(turn_context, _)| turn_context);
+        if let Some(account_lease) = turn_context
+            .as_ref()
+            .and_then(|turn_context| turn_context.account_lease.clone())
+        {
+            return codex_login::AuthManagerLease::profile(account_lease);
+        }
+        turn_context
+            .and_then(|turn_context| turn_context.auth_manager.clone())
+            .map_or_else(
+                || codex_login::AuthManagerLease::legacy(Arc::clone(&self.services.auth_manager)),
+                codex_login::AuthManagerLease::legacy,
+            )
     }
 }
 
