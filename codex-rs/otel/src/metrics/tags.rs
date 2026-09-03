@@ -25,6 +25,13 @@ const KNOWN_ORIGINATOR_TAG_VALUES: &[&str] = &[
     "codex-app-server-sdk",
 ];
 
+/// Returns the low-cardinality release version accepted by metric tag validators.
+pub fn metrics_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+        .split_once('+')
+        .map_or(env!("CARGO_PKG_VERSION"), |(version, _)| version)
+}
+
 /// Return a known low-cardinality originator tag value, or `other`.
 pub fn bounded_originator_tag_value(originator: &str) -> &'static str {
     let sanitized = sanitize_metric_tag_value(originator);
