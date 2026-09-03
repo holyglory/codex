@@ -6,6 +6,7 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Duration;
 use chrono::Utc;
+use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::GetAccountParams;
@@ -18,7 +19,10 @@ use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Feature;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::ProfileAuthStorage;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_login::load_auth_dot_json;
 use codex_protocol::account::PlanType as AccountPlanType;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -419,7 +423,9 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
                 "code": "refresh_token_reused"
             }
         })))
-        .expect(2)
+        // Startup refreshes through the cloud-config and runtime managers race
+        // with the lazily migrated profile manager used by this request.
+        .expect(2..=3)
         .mount(&server)
         .await;
 
@@ -482,7 +488,9 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
                 "code": "refresh_token_reused"
             }
         })))
-        .expect(2)
+        // Startup refreshes through the cloud-config and runtime managers race
+        // with the lazily migrated profile manager used by this request.
+        .expect(2..=3)
         .mount(&server)
         .await;
 
@@ -528,6 +536,24 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             .last_refresh(Some(Utc::now())),
         AuthCredentialsStoreMode::File,
     )?;
+    let recovered_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?
+    .expect("recovered auth fixture should be readable");
+    let registry = RegistryStore::new(codex_home.path()).read()?;
+    let active_account_id = registry
+        .default_account_id
+        .expect("legacy auth should have migrated to an active profile");
+    ProfileAuthStorage::new(
+        codex_home.path(),
+        active_account_id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?
+    .save(&recovered_auth)?;
+    std::fs::remove_file(codex_home.path().join("auth.json"))?;
 
     let recovered_request_id = mcp
         .send_get_auth_status_request(GetAuthStatusParams {

@@ -1,4 +1,7 @@
 mod account;
+mod account_auto_selection;
+#[cfg(unix)]
+mod account_profile;
 mod account_thread_usage;
 mod analytics;
 mod app_installed;
@@ -47,6 +50,8 @@ mod hooks_list;
 mod host_skills;
 mod imagegen_extension;
 mod initialize;
+#[cfg(unix)]
+mod local_usage;
 mod luna_reserve;
 mod marketplace_add;
 mod marketplace_remove;
