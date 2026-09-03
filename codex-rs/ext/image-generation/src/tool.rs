@@ -6,6 +6,7 @@ use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
 use codex_api::ImageQuality;
+use codex_api::ImageResponse;
 use codex_api::ImageUrl;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::LOCAL_FS;
@@ -34,6 +35,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
+use codex_protocol::provider_usage::ProviderUsage;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
@@ -175,19 +177,18 @@ impl ImageGenerationTool {
             )
         })
         .and_then(|(response, imagegen_request_id)| {
-            let transparent_background = match response.background {
-                Some(ImageBackground::Transparent) => Some(true),
-                Some(ImageBackground::Opaque) => Some(false),
-                Some(ImageBackground::Auto) | None => None,
-            };
-            response
-                .data
-                .into_iter()
-                .next()
-                .map(|data| (data.b64_json, transparent_background, imagegen_request_id))
-                .ok_or_else(|| ("image generation returned no image data".to_string(), None))
+            first_generated_image(response).map(
+                |(result, transparent_background, provider_usage)| {
+                    (
+                        result,
+                        transparent_background,
+                        provider_usage,
+                        imagegen_request_id,
+                    )
+                },
+            )
         });
-        let (result, transparent_background, imagegen_request_id) = match result {
+        let (result, transparent_background, provider_usage, imagegen_request_id) = match result {
             Ok(result) => result,
             Err((message, failure)) => {
                 let item = ImageGenerationItem {
@@ -236,8 +237,29 @@ impl ImageGenerationTool {
         Ok(Box::new(GeneratedImageOutput {
             result,
             output_hint,
+            provider_usage,
         }))
     }
+}
+
+type GeneratedImageResult = (String, Option<bool>, Option<ProviderUsage>);
+type GeneratedImageError = (String, Option<ImageGenerationFailure>);
+
+fn first_generated_image(
+    response: ImageResponse,
+) -> Result<GeneratedImageResult, GeneratedImageError> {
+    let transparent_background = match response.background {
+        Some(ImageBackground::Transparent) => Some(true),
+        Some(ImageBackground::Opaque) => Some(false),
+        Some(ImageBackground::Auto) | None => None,
+    };
+    let provider_usage = response.usage;
+    response
+        .data
+        .into_iter()
+        .next()
+        .map(|data| (data.b64_json, transparent_background, provider_usage))
+        .ok_or_else(|| ("image generation returned no image data".to_string(), None))
 }
 
 fn usage_limit_failure(error: &CodexErr) -> Option<ImageGenerationFailure> {
@@ -609,6 +631,7 @@ fn imagegen_tool_spec() -> ToolSpec {
 struct GeneratedImageOutput {
     result: String,
     output_hint: Option<String>,
+    provider_usage: Option<ProviderUsage>,
 }
 
 impl ToolOutput for GeneratedImageOutput {
@@ -620,6 +643,10 @@ impl ToolOutput for GeneratedImageOutput {
     /// Reports a completed images request as successful tool execution.
     fn success_for_logging(&self) -> bool {
         true
+    }
+
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        self.provider_usage.as_ref()
     }
 
     /// Returns the object consumed by the code-mode `generatedImage()` helper.
