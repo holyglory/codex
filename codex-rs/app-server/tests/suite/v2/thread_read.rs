@@ -864,6 +864,7 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli.into(),
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
@@ -934,6 +935,7 @@ async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_pa
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli.into(),
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
@@ -1042,6 +1044,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli.into(),
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
