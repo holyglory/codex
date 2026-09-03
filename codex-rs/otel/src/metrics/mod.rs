@@ -22,6 +22,7 @@ use std::sync::RwLock;
 pub use tags::ORIGINATOR_TAG;
 pub use tags::SessionMetricTagValues;
 pub use tags::bounded_originator_tag_value;
+pub use tags::metrics_app_version;
 
 static GLOBAL_METRICS: OnceLock<MetricsClient> = OnceLock::new();
 static GLOBAL_STATSIG_METRICS_SETTINGS: OnceLock<StatsigMetricsSettings> = OnceLock::new();
