@@ -135,6 +135,7 @@ mod turn_settings_update;
 mod turn_start;
 mod turn_start_zsh_fork;
 mod turn_steer;
+mod usage_accounting;
 mod view_image;
 mod web_search;
 mod windows_sandbox_setup;
