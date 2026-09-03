@@ -14,6 +14,7 @@ pub(crate) use config::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
 pub(crate) use config::GuardianV2Config;
 pub use extension::StrictReviewReason;
 pub(crate) use extension::install;
+pub(crate) use extension::install_with_auth_resolver;
 pub(crate) use transcript::MAX_TOOL_ENTRY_TOKENS;
 pub(crate) use transcript::RenderedContext;
 pub(crate) use transcript::RenderedImages;
