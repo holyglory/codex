@@ -209,14 +209,16 @@ impl App {
     }
 
     pub(super) fn open_url_in_browser(&mut self, url: String) {
-        if let Err(err) = webbrowser::open(&url) {
+        if webbrowser::open(&url).is_err() {
             self.chat_widget
-                .add_error_message(format!("Failed to open browser for {url}: {err}"));
+                .add_error_message("Failed to open browser.".to_string());
             return;
         }
 
-        self.chat_widget
-            .add_info_message(format!("Opened {url} in your browser."), /*hint*/ None);
+        self.chat_widget.add_info_message(
+            "Opened link in your browser.".to_string(),
+            /*hint*/ None,
+        );
     }
 
     pub(super) fn open_desktop_thread(&mut self, thread_id: ThreadId) {

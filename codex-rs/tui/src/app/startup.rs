@@ -456,6 +456,8 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
+        chat_widget.set_local_usage_supported(app_server.supports_local_usage_accounting());
+        chat_widget.set_account_profiles_supported(app_server.supports_multi_account());
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
         chat_widget.set_agents_navigation_enabled(matches!(

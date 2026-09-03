@@ -8,14 +8,54 @@ use super::plugin_mentions::fetch_plugin_mentions;
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_info::app_info_from_api;
+use crate::chatwidget::AccountLoginChoice;
+use crate::chatwidget::AccountProfilesError;
+use crate::chatwidget::AccountProfilesListData;
+use crate::chatwidget::AccountProfilesRequest;
+use crate::chatwidget::AccountProfilesResponse;
+use crate::chatwidget::LocalUsageQuery;
+use crate::chatwidget::LocalUsageResponse;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::config_update::format_config_error;
+use codex_app_server_protocol::AccountAutoSelectionPolicy;
+use codex_app_server_protocol::AccountAutoSelectionReadParams;
+use codex_app_server_protocol::AccountAutoSelectionReadResponse;
+use codex_app_server_protocol::AccountAutoSelectionWriteParams;
+use codex_app_server_protocol::AccountAutoSelectionWriteResponse;
+use codex_app_server_protocol::AccountProfileActivateParams;
+use codex_app_server_protocol::AccountProfileActivateResponse;
+use codex_app_server_protocol::AccountProfileListParams;
+use codex_app_server_protocol::AccountProfileListResponse;
+use codex_app_server_protocol::AccountProfileLoginCancelParams;
+use codex_app_server_protocol::AccountProfileLoginCancelResponse;
+use codex_app_server_protocol::AccountProfileLoginMethod;
+use codex_app_server_protocol::AccountProfileLoginStartParams;
+use codex_app_server_protocol::AccountProfileLoginStartResponse;
+use codex_app_server_protocol::AccountProfileRateLimitReadParams;
+use codex_app_server_protocol::AccountProfileRateLimitReadResponse;
+use codex_app_server_protocol::AccountProfileRemoveParams;
+use codex_app_server_protocol::AccountProfileRemoveResponse;
+use codex_app_server_protocol::AccountProfileUpdateResponse;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::GetAccountTokenUsageParams;
 use codex_app_server_protocol::GetAccountTokenUsageResponse;
+use codex_app_server_protocol::LocalUsageActivityListParams;
+use codex_app_server_protocol::LocalUsageActivityListResponse;
+use codex_app_server_protocol::LocalUsageEventListParams;
+use codex_app_server_protocol::LocalUsageEventListResponse;
+use codex_app_server_protocol::LocalUsageRepositoryListParams;
+use codex_app_server_protocol::LocalUsageRepositoryListResponse;
+use codex_app_server_protocol::LocalUsageRepositoryReadParams;
+use codex_app_server_protocol::LocalUsageRepositoryReadResponse;
+use codex_app_server_protocol::LocalUsageSummaryParams;
+use codex_app_server_protocol::LocalUsageSummaryResponse;
+use codex_app_server_protocol::LocalUsageThreadReadParams;
+use codex_app_server_protocol::LocalUsageThreadReadResponse;
+use codex_app_server_protocol::LocalUsageToolListParams;
+use codex_app_server_protocol::LocalUsageToolListResponse;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveParams;
@@ -33,6 +73,10 @@ const TOKEN_ACTIVITY_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const THREAD_USAGE_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 65);
+const LOCAL_USAGE_FETCH_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(/*secs*/ 15);
+const ACCOUNT_PROFILE_FETCH_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(/*secs*/ 30);
 const RATE_LIMIT_RESET_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const WORKSPACE_HEADLINE_FETCH_TIMEOUT: std::time::Duration =
@@ -137,6 +181,58 @@ impl App {
             .map_err(|_| "account/usage/read timed out in TUI".to_string())
             .and_then(|result| result.map_err(|err| err.to_string()));
             app_event_tx.send(AppEvent::TokenActivityLoaded { request_id, result });
+        });
+    }
+
+    pub(super) fn refresh_local_usage(
+        &mut self,
+        app_server: &AppServerSession,
+        request_id: u64,
+        query: LocalUsageQuery,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                LOCAL_USAGE_FETCH_TIMEOUT,
+                fetch_local_usage(request_handle, query.clone()),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or_else(|| "Local usage statistics are unavailable.".to_string());
+            app_event_tx.send(AppEvent::LocalUsageLoaded {
+                request_id,
+                query,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn refresh_account_profiles(
+        &mut self,
+        app_server: &AppServerSession,
+        request_id: u64,
+        request: AccountProfilesRequest,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                ACCOUNT_PROFILE_FETCH_TIMEOUT,
+                fetch_account_profiles(request_handle, request.clone()),
+            )
+            .await
+            {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(error)) => Err(classify_account_profiles_error(&format!("{error:#}"))),
+                Err(_) => Err(AccountProfilesError::Unavailable),
+            };
+            app_event_tx.send(AppEvent::AccountProfilesLoaded {
+                request_id,
+                request,
+                result,
+            });
         });
     }
 
@@ -762,6 +858,23 @@ impl App {
     }
 }
 
+fn classify_account_profiles_error(error: &str) -> AccountProfilesError {
+    let error = error.to_ascii_lowercase();
+    if error.contains("account alias is already in use") {
+        AccountProfilesError::AliasInUse
+    } else if error.contains("account alias is invalid") {
+        AccountProfilesError::AliasInvalid
+    } else if error.contains("account note is invalid")
+        || error.contains("note and clearnote cannot be used together")
+    {
+        AccountProfilesError::NoteInvalid
+    } else if error.contains("account priority is invalid") {
+        AccountProfilesError::PriorityInvalid
+    } else {
+        AccountProfilesError::Unavailable
+    }
+}
+
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
     detail: McpServerStatusDetail,
@@ -840,6 +953,261 @@ async fn fetch_thread_usage(
         .thread_usage
         .map(ThreadUsageOutcome::Available)
         .unwrap_or(ThreadUsageOutcome::Disabled))
+}
+
+async fn fetch_local_usage(
+    request_handle: AppServerRequestHandle,
+    query: LocalUsageQuery,
+) -> Result<LocalUsageResponse> {
+    let request_id = RequestId::String(format!("local-usage-{}", Uuid::new_v4()));
+    match query {
+        LocalUsageQuery::All => request_handle
+            .request_typed::<LocalUsageSummaryResponse>(ClientRequest::LocalUsageSummary {
+                request_id,
+                params: LocalUsageSummaryParams {
+                    repository_key: None,
+                    thread_id: None,
+                    account_id: None,
+                    from_at: None,
+                    to_at: None,
+                },
+            })
+            .await
+            .map(LocalUsageResponse::Summary)
+            .wrap_err("local usage summary request failed"),
+        LocalUsageQuery::Chat { thread_id } => request_handle
+            .request_typed::<LocalUsageThreadReadResponse>(ClientRequest::LocalUsageThreadRead {
+                request_id,
+                params: LocalUsageThreadReadParams { thread_id },
+            })
+            .await
+            .map(LocalUsageResponse::Chat)
+            .wrap_err("local usage chat request failed"),
+        LocalUsageQuery::Repositories { cursor } => request_handle
+            .request_typed::<LocalUsageRepositoryListResponse>(
+                ClientRequest::LocalUsageRepositoryList {
+                    request_id,
+                    params: LocalUsageRepositoryListParams {
+                        cursor,
+                        limit: Some(50),
+                    },
+                },
+            )
+            .await
+            .map(LocalUsageResponse::Repositories)
+            .wrap_err("local usage repository list failed"),
+        LocalUsageQuery::Repository { repository_key } => request_handle
+            .request_typed::<LocalUsageRepositoryReadResponse>(
+                ClientRequest::LocalUsageRepositoryRead {
+                    request_id,
+                    params: LocalUsageRepositoryReadParams { repository_key },
+                },
+            )
+            .await
+            .map(LocalUsageResponse::Repository)
+            .wrap_err("local usage repository read failed"),
+        LocalUsageQuery::Tools { thread_id, cursor } => request_handle
+            .request_typed::<LocalUsageToolListResponse>(ClientRequest::LocalUsageToolList {
+                request_id,
+                params: LocalUsageToolListParams {
+                    cursor,
+                    limit: Some(50),
+                    thread_id: Some(thread_id),
+                    repository_key: None,
+                    from_at: None,
+                    to_at: None,
+                },
+            })
+            .await
+            .map(LocalUsageResponse::Tools)
+            .wrap_err("local usage tool list failed"),
+        LocalUsageQuery::Activities { thread_id, cursor } => request_handle
+            .request_typed::<LocalUsageActivityListResponse>(
+                ClientRequest::LocalUsageActivityList {
+                    request_id,
+                    params: LocalUsageActivityListParams {
+                        cursor,
+                        limit: Some(50),
+                        thread_id: Some(thread_id),
+                        agent_id: None,
+                        from_at: None,
+                        to_at: None,
+                    },
+                },
+            )
+            .await
+            .map(LocalUsageResponse::Activities)
+            .wrap_err("local usage activity list failed"),
+        LocalUsageQuery::Events { thread_id, cursor } => request_handle
+            .request_typed::<LocalUsageEventListResponse>(ClientRequest::LocalUsageEventList {
+                request_id,
+                params: LocalUsageEventListParams {
+                    cursor,
+                    limit: Some(50),
+                    thread_id: Some(thread_id),
+                    repository_key: None,
+                    kind: None,
+                    from_at: None,
+                    to_at: None,
+                },
+            })
+            .await
+            .map(LocalUsageResponse::Events)
+            .wrap_err("local usage event list failed"),
+    }
+}
+
+async fn fetch_account_profiles(
+    request_handle: AppServerRequestHandle,
+    request: AccountProfilesRequest,
+) -> Result<AccountProfilesResponse> {
+    let request_id = RequestId::String(format!("account-profile-{}", Uuid::new_v4()));
+    match request {
+        AccountProfilesRequest::List { cursor, .. } => {
+            let response: AccountProfileListResponse = request_handle
+                .request_typed(ClientRequest::AccountProfileList {
+                    request_id,
+                    params: AccountProfileListParams {
+                        cursor,
+                        limit: Some(50),
+                    },
+                })
+                .await
+                .wrap_err("account profile list failed")?;
+            let mut limits = std::collections::BTreeMap::new();
+            for profile in &response.data {
+                let limit_request_id =
+                    RequestId::String(format!("account-profile-limits-{}", Uuid::new_v4()));
+                let result = request_handle
+                    .request_typed::<AccountProfileRateLimitReadResponse>(
+                        ClientRequest::AccountProfileRateLimitRead {
+                            request_id: limit_request_id,
+                            params: AccountProfileRateLimitReadParams {
+                                account_id: profile.id.clone(),
+                                limit_id: None,
+                            },
+                        },
+                    )
+                    .await
+                    .ok();
+                limits.insert(profile.id.clone(), result);
+            }
+            let auto_request_id =
+                RequestId::String(format!("account-auto-selection-{}", Uuid::new_v4()));
+            let auto_selection = request_handle
+                .request_typed::<AccountAutoSelectionReadResponse>(
+                    ClientRequest::AccountAutoSelectionRead {
+                        request_id: auto_request_id,
+                        params: AccountAutoSelectionReadParams {},
+                    },
+                )
+                .await
+                .ok()
+                .map(|response| response.auto_selection);
+            Ok(AccountProfilesResponse::List(AccountProfilesListData {
+                profiles: response.data,
+                next_cursor: response.next_cursor,
+                limits,
+                auto_selection,
+            }))
+        }
+        AccountProfilesRequest::Activate { account_id } => request_handle
+            .request_typed::<AccountProfileActivateResponse>(
+                ClientRequest::AccountProfileActivate {
+                    request_id,
+                    params: AccountProfileActivateParams { account_id },
+                },
+            )
+            .await
+            .map(AccountProfilesResponse::Activated)
+            .wrap_err("account profile activation failed"),
+        AccountProfilesRequest::Update(params) => request_handle
+            .request_typed::<AccountProfileUpdateResponse>(ClientRequest::AccountProfileUpdate {
+                request_id,
+                params,
+            })
+            .await
+            .map(AccountProfilesResponse::Updated)
+            .wrap_err("account profile update failed"),
+        AccountProfilesRequest::Remove { account_id } => request_handle
+            .request_typed::<AccountProfileRemoveResponse>(ClientRequest::AccountProfileRemove {
+                request_id,
+                params: AccountProfileRemoveParams { account_id },
+            })
+            .await
+            .map(AccountProfilesResponse::Removed)
+            .wrap_err("account profile removal failed"),
+        AccountProfilesRequest::Limits { account_id } => request_handle
+            .request_typed::<AccountProfileRateLimitReadResponse>(
+                ClientRequest::AccountProfileRateLimitRead {
+                    request_id,
+                    params: AccountProfileRateLimitReadParams {
+                        account_id,
+                        limit_id: None,
+                    },
+                },
+            )
+            .await
+            .map(AccountProfilesResponse::Limits)
+            .wrap_err("account profile limits failed"),
+        AccountProfilesRequest::AutoRead => request_handle
+            .request_typed::<AccountAutoSelectionReadResponse>(
+                ClientRequest::AccountAutoSelectionRead {
+                    request_id,
+                    params: AccountAutoSelectionReadParams {},
+                },
+            )
+            .await
+            .map(AccountProfilesResponse::AutoRead)
+            .wrap_err("automatic account selection read failed"),
+        AccountProfilesRequest::AutoWrite { enabled } => request_handle
+            .request_typed::<AccountAutoSelectionWriteResponse>(
+                ClientRequest::AccountAutoSelectionWrite {
+                    request_id,
+                    params: AccountAutoSelectionWriteParams {
+                        enabled,
+                        policy: AccountAutoSelectionPolicy::Priority,
+                    },
+                },
+            )
+            .await
+            .map(AccountProfilesResponse::AutoWrite)
+            .wrap_err("automatic account selection update failed"),
+        AccountProfilesRequest::LoginStart { alias, choice } => {
+            let login = match choice {
+                AccountLoginChoice::Browser => AccountProfileLoginMethod::Chatgpt {
+                    codex_streamlined_login: false,
+                    use_hosted_login_success_page: true,
+                    app_brand: None,
+                },
+                AccountLoginChoice::Device => AccountProfileLoginMethod::ChatgptDeviceCode,
+            };
+            request_handle
+                .request_typed::<AccountProfileLoginStartResponse>(
+                    ClientRequest::AccountProfileLoginStart {
+                        request_id,
+                        params: AccountProfileLoginStartParams {
+                            alias: Some(alias),
+                            activate: false,
+                            login,
+                        },
+                    },
+                )
+                .await
+                .map(AccountProfilesResponse::LoginStarted)
+                .wrap_err("account profile login start failed")
+        }
+        AccountProfilesRequest::LoginCancel { login_id } => request_handle
+            .request_typed::<AccountProfileLoginCancelResponse>(
+                ClientRequest::AccountProfileLoginCancel {
+                    request_id,
+                    params: AccountProfileLoginCancelParams { login_id },
+                },
+            )
+            .await
+            .map(|_| AccountProfilesResponse::LoginCancelled)
+            .wrap_err("account profile login cancel failed"),
+    }
 }
 
 pub(super) async fn consume_rate_limit_reset_credit_request(
@@ -1687,5 +2055,25 @@ mod tests {
         assert_eq!(params.tags, None);
         assert_eq!(params.include_logs, false);
         assert_eq!(params.extra_log_files, None);
+    }
+
+    #[test]
+    fn account_profile_errors_are_reduced_to_content_free_editor_categories() {
+        assert_eq!(
+            classify_account_profiles_error("rpc failed: account alias is already in use"),
+            AccountProfilesError::AliasInUse
+        );
+        assert_eq!(
+            classify_account_profiles_error("rpc failed: account alias is invalid"),
+            AccountProfilesError::AliasInvalid
+        );
+        assert_eq!(
+            classify_account_profiles_error("rpc failed: account note is invalid"),
+            AccountProfilesError::NoteInvalid
+        );
+        assert_eq!(
+            classify_account_profiles_error("private backend detail"),
+            AccountProfilesError::Unavailable
+        );
     }
 }
