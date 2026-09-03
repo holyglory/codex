@@ -1282,6 +1282,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         codex_thread_store::LocalThreadStoreConfig::from_config(&config),
         /*state_db*/ None,
     ));
+    let usage_runtime = crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf());
 
     let (session, io) = Session::spawn(SessionSpawnArgs {
         config,
@@ -1289,6 +1290,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         user_instructions: Default::default(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
+        profile_auth_router: None,
         models_manager,
         git_root_discovery: Arc::default(),
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
@@ -1320,6 +1322,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         client_mcp_extensions: ClientMcpExtensions::default(),
         reserved_thread_id: None,
         analytics_events_client: None,
+        usage_runtime,
         thread_store,
         attestation_provider: None,
         external_time_provider: None,

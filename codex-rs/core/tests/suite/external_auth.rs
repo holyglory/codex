@@ -317,7 +317,7 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
     let mut builder = test_codex()
         .with_model("openai.gpt-5.5")
         .with_config(move |config| {
-            config.model_provider_id = provider.name.clone();
+            config.model_provider_id = "amazon-bedrock".to_string();
             config.model_provider = provider;
         });
     let test = builder.build_with_auto_env(&server).await?;

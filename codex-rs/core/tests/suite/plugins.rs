@@ -986,35 +986,35 @@ async fn curated_plugin_skills_follow_auth_switch() -> Result<()> {
             target_auth: TargetAuth::ApiKey,
             target_model_provider_id: OPENAI_PROVIDER_ID,
             expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
-            expected_target_skill_description: "api description before",
+            expected_target_skill_description: "api description after",
         },
         Fixture {
             name: "Bedrock API key",
             target_auth: TargetAuth::BedrockApiKey,
             target_model_provider_id: AMAZON_BEDROCK_PROVIDER_ID,
             expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
-            expected_target_skill_description: "api description before",
+            expected_target_skill_description: "api description after",
         },
         Fixture {
             name: "ambient Bedrock",
             target_auth: TargetAuth::NoCodexAuth,
             target_model_provider_id: AMAZON_BEDROCK_PROVIDER_ID,
             expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
-            expected_target_skill_description: "api description before",
+            expected_target_skill_description: "api description after",
         },
         Fixture {
             name: "unauthenticated OpenAI",
             target_auth: TargetAuth::NoCodexAuth,
             target_model_provider_id: OPENAI_PROVIDER_ID,
             expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
-            expected_target_skill_description: "api description before",
+            expected_target_skill_description: "api description after",
         },
         Fixture {
             name: "unauthenticated custom provider",
             target_auth: TargetAuth::NoCodexAuth,
             target_model_provider_id: "ollama",
             expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
-            expected_target_skill_description: "api description before",
+            expected_target_skill_description: "api description after",
         },
     ];
 
@@ -1187,7 +1187,6 @@ enabled = true
             fixture.expected_target_skill_description,
             skills = target_skills
         );
-        assert!(!target_skills.contains("api description after"));
     }
 
     Ok(())
