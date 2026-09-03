@@ -17,12 +17,9 @@ use super::ExecContext;
 use super::WAIT_TOOL_NAME;
 use super::handle_runtime_response;
 use super::telemetry::CodeModeToolCallGuard;
-use super::telemetry::trace_id;
 use super::wait_spec::create_wait_tool;
 
-pub struct CodeModeWaitHandler {
-    spec: ToolSpec,
-}
+pub struct CodeModeWaitHandler;
 
 #[derive(Debug, Deserialize)]
 struct ExecWaitArgs {
@@ -54,7 +51,7 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        self.spec.clone()
+        create_wait_tool()
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -66,38 +63,14 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
 }
 
 impl CodeModeWaitHandler {
-    pub(crate) fn new(
-        description_override: Option<&str>,
-        parameters_override: Option<&str>,
-    ) -> Self {
-        Self {
-            spec: create_wait_tool(description_override, parameters_override),
-        }
-    }
-
-    // Default to interrupted if this future is dropped; telemetry::CodeModeToolCallGuard::finish
-    // overwrites this handler's captured span on explicit success or failure, including early errors.
-    #[tracing::instrument(
-        name = "code_mode.handler.wait",
-        level = "info",
-        skip_all,
-        fields(
-            conversation.id = %invocation.session.thread_id,
-            turn_id = invocation.turn.sub_id.as_str(),
-            call_id = trace_id(&invocation.call_id),
-            cell.id = tracing::field::Empty,
-            outcome = "interrupted",
-        )
-    )]
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let handler_span = tracing::Span::current();
+        let originating_item_id = invocation.originating_item_id().await;
         let ToolInvocation {
             session,
             turn,
-            step_context,
             call_id,
             tool_name,
             payload,
@@ -110,7 +83,6 @@ impl CodeModeWaitHandler {
             turn.turn_metadata_state.clone(),
             call_id.clone(),
             WAIT_TOOL_NAME,
-            handler_span,
         );
         let result = match payload {
             ToolPayload::Function { arguments }
@@ -124,6 +96,10 @@ impl CodeModeWaitHandler {
                 let started_at = std::time::Instant::now();
                 telemetry.cell_id = Some(args.cell_id.clone());
                 let cell_id = codex_code_mode::CellId::new(args.cell_id);
+                exec.session
+                    .services
+                    .code_mode_service
+                    .mark_cell_ready_for_dispatch(&cell_id, originating_item_id);
                 let wait_response = if args.terminate {
                     exec.session
                         .services
@@ -153,12 +129,12 @@ impl CodeModeWaitHandler {
                         | codex_code_mode::RuntimeResponse::Terminated { cell_id, .. }
                         | codex_code_mode::RuntimeResponse::Result { cell_id, .. } => cell_id,
                     };
-                    tracing::Span::current().record("cell.id", trace_id(runtime_cell_id.as_str()));
                     telemetry.cell_id = Some(runtime_cell_id.to_string());
-                    exec.session
-                        .services
-                        .executed_tool_calls
-                        .register_cell(runtime_cell_id, &call_id);
+                    if let Some(executed_tool_calls) =
+                        exec.session.services.executed_tool_calls.as_ref()
+                    {
+                        executed_tool_calls.register_cell(runtime_cell_id, &call_id);
+                    }
                     if !matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) {
                         exec.session
                             .services
@@ -191,13 +167,10 @@ impl CodeModeWaitHandler {
                 let wall_time = wait_response
                     .code_mode_host_duration()
                     .unwrap_or_else(|| started_at.elapsed());
-                Ok(boxed_tool_output(handle_runtime_response(
-                    &step_context.settings.model_info,
-                    wait_response.into(),
-                    args.max_tokens,
-                    wall_time,
-                    exec.turn.config.code_mode.experimental_show_cell_overhead,
-                )))
+                handle_runtime_response(&exec, wait_response.into(), args.max_tokens, wall_time)
+                    .await
+                    .map_err(FunctionCallError::RespondToModel)
+                    .map(boxed_tool_output)
             }
             _ => Err(FunctionCallError::RespondToModel(format!(
                 "{WAIT_TOOL_NAME} expects JSON arguments"

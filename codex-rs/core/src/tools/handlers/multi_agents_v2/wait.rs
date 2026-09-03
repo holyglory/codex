@@ -168,6 +168,14 @@ impl ToolOutput for WaitAgentResult {
         true
     }
 
+    fn usage_terminal_outcome(&self) -> codex_tools::UsageTerminalOutcome {
+        if self.timed_out {
+            codex_tools::UsageTerminalOutcome::EXPECTED_EXPIRY
+        } else {
+            codex_tools::UsageTerminalOutcome::COMPLETED
+        }
+    }
+
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
     }
