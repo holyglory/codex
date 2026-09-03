@@ -36,6 +36,7 @@ impl AppsRequestProcessor {
         &self,
         params: AppsInstalledParams,
     ) -> Result<AppsInstalledResponse, JSONRPCErrorError> {
+        let auth_lease = self.operation_auth_lease().await?;
         let started_at = Instant::now();
         let force_refresh = params.force_refresh;
         let mut retained_previous_snapshot = false;
@@ -50,7 +51,7 @@ impl AppsRequestProcessor {
             let config = self
                 .load_apps_config(params.thread_id.as_deref())
                 .await?;
-            let auth = self.auth_manager.auth().await;
+            let auth = auth_lease.auth_manager().auth().await;
             let runtime_enabled = config
                 .features
                 .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend));
@@ -81,7 +82,7 @@ impl AppsRequestProcessor {
                     let cancellation_token = CancellationToken::new();
                     let codex_apps_auth_manager =
                         host_owned_codex_apps_enabled(&mcp_config, auth.as_ref())
-                            .then(|| Arc::clone(&self.auth_manager));
+                            .then(|| Arc::clone(auth_lease.auth_manager()));
                     let runtime = McpRuntime::new(McpRuntimeInput {
                         startup_policy: McpStartupPolicy::Eager,
                         config: Arc::clone(&mcp_config),
