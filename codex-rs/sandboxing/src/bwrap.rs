@@ -5,6 +5,7 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ChildStderr;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -35,7 +36,9 @@ const USER_NAMESPACE_FAILURES: [&str; 4] = [
 ];
 const SYSTEM_BWRAP_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const SYSTEM_BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES: u64 = 64 * 1024;
+const SYSTEM_BWRAP_PROBE_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(5);
+const SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES: usize = 64 * 1024;
+const SYSTEM_BWRAP_PROBE_DRAIN_LIMIT_BYTES: usize = 256 * 1024;
 
 pub fn system_bwrap_warning(permission_profile: &PermissionProfile) -> Option<String> {
     if !should_warn_about_system_bwrap(permission_profile) {
@@ -72,7 +75,9 @@ fn system_bwrap_warning_for_path(system_bwrap_path: Option<&Path>) -> Option<Str
 }
 
 fn system_bwrap_has_user_namespace_access(system_bwrap_path: &Path, timeout: Duration) -> bool {
-    let mut child = match Command::new(system_bwrap_path)
+    let deadline = Instant::now() + timeout;
+    let mut command = Command::new(system_bwrap_path);
+    command
         .args([
             "--unshare-user",
             "--unshare-net",
@@ -82,39 +87,39 @@ fn system_bwrap_has_user_namespace_access(system_bwrap_path: &Path, timeout: Dur
             "/bin/true",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return true,
+        .stderr(Stdio::piped());
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline => {
+                thread::sleep(SYSTEM_BWRAP_PROBE_SPAWN_RETRY_INTERVAL);
+            }
+            Err(_) => return true,
+        }
     };
+    let Some(mut stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return true;
+    };
+    let fd = stderr.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return true;
+    }
 
-    let deadline = Instant::now() + timeout;
+    let mut stderr_bytes = Vec::new();
     loop {
+        read_available_probe_stderr(&mut stderr, &mut stderr_bytes);
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stderr = child.stderr.take().map_or_else(Vec::new, |stderr| {
-                    let fd = stderr.as_raw_fd();
-                    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                    if flags < 0
-                        || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-                    {
-                        return Vec::new();
-                    }
-
-                    let mut bytes = Vec::new();
-                    let mut stderr = stderr.take(SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES);
-                    if let Err(err) = stderr.read_to_end(&mut bytes)
-                        && err.kind() != ErrorKind::WouldBlock
-                    {
-                        return bytes;
-                    }
-                    bytes
-                });
+                read_available_probe_stderr(&mut stderr, &mut stderr_bytes);
                 let output = Output {
                     status,
                     stdout: Vec::new(),
-                    stderr,
+                    stderr: stderr_bytes,
                 };
                 return output.status.success() || !is_user_namespace_failure(&output);
             }
@@ -126,11 +131,31 @@ fn system_bwrap_has_user_namespace_access(system_bwrap_path: &Path, timeout: Dur
                 }
                 thread::sleep(SYSTEM_BWRAP_PROBE_POLL_INTERVAL);
             }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return true;
             }
+        }
+    }
+}
+
+fn read_available_probe_stderr(stderr: &mut ChildStderr, bytes: &mut Vec<u8>) {
+    let mut buffer = [0; 4096];
+    let mut drained = 0;
+    while drained < SYSTEM_BWRAP_PROBE_DRAIN_LIMIT_BYTES {
+        match stderr.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                drained += read;
+                let retained = SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES
+                    .saturating_sub(bytes.len())
+                    .min(read);
+                bytes.extend_from_slice(&buffer[..retained]);
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
         }
     }
 }
