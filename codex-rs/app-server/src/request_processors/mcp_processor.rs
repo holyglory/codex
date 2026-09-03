@@ -1,6 +1,7 @@
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_core::McpManager;
+use codex_login::SharedProfileAuthRouter;
 use codex_mcp::McpServerSource;
 use codex_mcp::ReadResourceRequestParams;
 use codex_mcp::resolve_oauth_callback;
@@ -11,7 +12,7 @@ const MCP_TOOL_THREAD_ID_META_KEY: &str = "threadId";
 
 #[derive(Clone)]
 pub(crate) struct McpRequestProcessor {
-    pub(super) auth_manager: Arc<AuthManager>,
+    pub(super) profile_auth_router: SharedProfileAuthRouter,
     thread_manager: Arc<ThreadManager>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
@@ -20,14 +21,14 @@ pub(crate) struct McpRequestProcessor {
 
 impl McpRequestProcessor {
     pub(crate) fn new(
-        auth_manager: Arc<AuthManager>,
+        profile_auth_router: SharedProfileAuthRouter,
         thread_manager: Arc<ThreadManager>,
         thread_state_manager: ThreadStateManager,
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
     ) -> Self {
         Self {
-            auth_manager,
+            profile_auth_router,
             thread_manager,
             outgoing,
             config_manager,
@@ -87,9 +88,18 @@ impl McpRequestProcessor {
         &self,
         _params: Option<()>,
     ) -> Result<McpServerRefreshResponse, JSONRPCErrorError> {
-        crate::mcp_refresh::reload_mcp_config(&self.thread_manager, &self.config_manager)
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
             .await
-            .map_err(|err| internal_error(format!("failed to refresh MCP servers: {err}")))?;
+            .map_err(super::account_profile_processor::router_error)?;
+        crate::mcp_refresh::reload_mcp_config_with_auth_lease(
+            &self.thread_manager,
+            &self.config_manager,
+            &auth_lease,
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to refresh MCP servers: {err}")))?;
         Ok(McpServerRefreshResponse {})
     }
 
@@ -136,12 +146,18 @@ impl McpRequestProcessor {
             McpServerOauthClientRegistration::Dcr => McpOAuthClientRegistration::Dcr,
         };
 
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let auth = auth_lease.auth_manager().auth().await;
         let (mcp_config, runtime_context) = match thread_id.as_deref() {
             Some(thread_id) => {
                 let (_, thread) = self.load_thread(thread_id).await?;
-                let (config, runtime_context) =
-                    thread.current_mcp_config_and_runtime_context().await;
+                let (config, runtime_context) = thread
+                    .current_mcp_config_and_runtime_context_for_operation(&auth_lease)
+                    .await;
                 ((*config).clone(), runtime_context)
             }
             None => {
@@ -149,7 +165,7 @@ impl McpRequestProcessor {
                 let mcp_config = self
                     .thread_manager
                     .mcp_manager()
-                    .runtime_config(&config)
+                    .runtime_config_with_auth(&config, auth.as_ref())
                     .await;
                 let runtime_context = McpRuntimeContext::new(
                     self.thread_manager.environment_manager(),
@@ -243,7 +259,9 @@ impl McpRequestProcessor {
                 Err(err) => (false, Some(err.to_string())),
             };
             if success {
-                thread_manager.invalidate_mcp_runtimes().await;
+                thread_manager
+                    .invalidate_mcp_runtimes_with_auth_lease(auth_lease)
+                    .await;
             }
 
             let notification = ServerNotification::McpServerOauthLoginCompleted(
@@ -282,20 +300,31 @@ impl McpRequestProcessor {
             None => (self.load_latest_config(/*fallback_cwd*/ None).await?, None),
         };
         let mcp_manager = self.thread_manager.mcp_manager();
-        let auth = self.auth_manager.auth().await;
         let environment_manager = self.thread_manager.environment_manager();
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let auth = auth_lease.auth_manager().auth().await;
 
         tokio::spawn(async move {
+            let _auth_lease = auth_lease;
             let (mcp_config, runtime_context) = match thread.as_ref() {
-                Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
+                Some(thread) => {
+                    thread
+                        .runtime_mcp_config_and_context_for_operation(&config, &_auth_lease)
+                        .await
+                }
                 None => {
-                    let mcp_config = mcp_manager.runtime_config(&config).await;
+                    let mcp_config = mcp_manager
+                        .runtime_config_with_auth(&config, auth.as_ref())
+                        .await;
                     let runtime_context =
                         McpRuntimeContext::new(environment_manager, config.cwd.to_path_buf());
                     (mcp_config, runtime_context)
                 }
             };
-
             let result = Self::list_mcp_server_status_response(
                 request.request_id.to_string(),
                 params,
@@ -445,6 +474,11 @@ impl McpRequestProcessor {
 
         if let Some(thread_id) = thread_id {
             let (_, thread) = self.load_thread(&thread_id).await?;
+            let auth_lease = self
+                .profile_auth_router
+                .lease_for_operation()
+                .await
+                .map_err(super::account_profile_processor::router_error)?;
             let request_id = request_id.clone();
 
             tokio::spawn(async move {
@@ -456,7 +490,11 @@ impl McpRequestProcessor {
                             .read_mcp_resource_for_call(call_id, &resource_params.uri)
                             .await
                     }
-                    None => thread.read_mcp_resource(&server, resource_params).await,
+                    None => {
+                        thread
+                            .read_mcp_resource_for_operation(&auth_lease, &server, resource_params)
+                            .await
+                    }
                 };
                 Self::send_mcp_resource_read_response(outgoing, request_id, result, origin_call_id)
                     .await;
@@ -473,7 +511,12 @@ impl McpRequestProcessor {
         let mcp_config = mcp_manager.runtime_config(&config).await;
         let codex_apps_tools_cache = mcp_manager.codex_apps_tools_cache();
         let tool_catalog_cache = mcp_manager.tool_catalog_cache();
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let auth = auth_lease.auth_manager().auth().await;
         let environment_manager = self.thread_manager.environment_manager();
         // This threadless resource-read path has no turn cwd or turn-selected
         // environment. Use config cwd only as the local stdio fallback; named
@@ -483,6 +526,7 @@ impl McpRequestProcessor {
         let request_id = request_id.clone();
 
         tokio::spawn(async move {
+            let _auth_lease = auth_lease;
             let result = read_mcp_resource_without_thread(
                 &mcp_config,
                 auth.as_ref(),
@@ -533,12 +577,23 @@ impl McpRequestProcessor {
         let thread_id = params.thread_id.clone();
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
         let meta = with_mcp_tool_call_thread_id_meta(params.meta, &thread_id);
         let request_id = request_id.clone();
 
         tokio::spawn(async move {
             let result = thread
-                .call_mcp_tool(&params.server, &params.tool, params.arguments, meta)
+                .call_mcp_tool_for_operation(
+                    &auth_lease,
+                    &params.server,
+                    &params.tool,
+                    params.arguments,
+                    meta,
+                )
                 .await
                 .map(McpServerToolCallResponse::from)
                 .map_err(mcp_operation_error);

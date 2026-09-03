@@ -10,6 +10,8 @@ use codex_core_plugins::remote::RemotePluginMaterialization;
 use codex_core_plugins::remote::RemotePluginScope;
 use codex_core_plugins::remote::RemotePluginShareDiscoverability;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
+use codex_login::CodexAuth;
 use serde_json::json;
 use tracing::warn;
 
@@ -19,55 +21,114 @@ use crate::request_serialization::RequestSerializationAccess;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
 
-/// Refresh plugin consumers and trust hooks from newly materialized Workspace + Listed bundles.
-pub(crate) fn effective_plugins_changed_callback(
-    auth_manager: Arc<AuthManager>,
+#[derive(Clone)]
+pub(crate) struct EffectivePluginChangeHandler {
     thread_manager: Arc<ThreadManager>,
     config_manager: ConfigManager,
     config_processor: ConfigRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
-) -> Arc<dyn Fn(EffectivePluginsChange) + Send + Sync> {
-    Arc::new(move |change| {
-        thread_manager.plugins_manager().clear_cache();
-        thread_manager.skills_service().clear_cache();
+}
 
-        let refresh_thread_manager = Arc::clone(&thread_manager);
-        tokio::spawn(async move {
-            refresh_thread_manager.invalidate_mcp_runtimes().await;
-            refresh_thread_manager.refresh_hook_runtimes().await;
-        });
-
-        if change.materialized_remote_plugins.is_empty() {
-            return;
+impl EffectivePluginChangeHandler {
+    pub(crate) fn new(
+        thread_manager: Arc<ThreadManager>,
+        config_manager: ConfigManager,
+        config_processor: ConfigRequestProcessor,
+        request_serialization_queues: RequestSerializationQueues,
+    ) -> Self {
+        Self {
+            thread_manager,
+            config_manager,
+            config_processor,
+            request_serialization_queues,
         }
+    }
 
-        let trust_auth_manager = Arc::clone(&auth_manager);
-        let trust_thread_manager = Arc::clone(&thread_manager);
-        let trust_config_manager = config_manager.clone();
-        let trust_config_processor = config_processor.clone();
-        let trust_request_serialization_queues = request_serialization_queues.clone();
-        tokio::spawn(async move {
-            trust_request_serialization_queues
-                .enqueue_background(
-                    RequestSerializationQueueKey::Global("config"),
-                    RequestSerializationAccess::Exclusive,
-                    async move {
-                        if let Err(err) = trust_materialized_plugin_hooks(
-                            change.materialized_remote_plugins,
-                            &trust_auth_manager,
-                            &trust_thread_manager,
-                            &trust_config_manager,
-                            &trust_config_processor,
-                        )
-                        .await
-                        {
-                            warn!(error = %err, "failed to trust materialized plugin hooks");
-                        }
-                    },
-                )
-                .await;
-        });
-    })
+    /// Refreshes plugin consumers and trusts hooks under the profile that originated the work.
+    pub(crate) fn callback(
+        &self,
+        auth_lease: AuthManagerLease,
+        auth: Option<CodexAuth>,
+    ) -> Arc<dyn Fn(EffectivePluginsChange) + Send + Sync> {
+        let thread_manager = Arc::clone(&self.thread_manager);
+        let config_manager = self.config_manager.clone();
+        let config_processor = self.config_processor.clone();
+        let request_serialization_queues = self.request_serialization_queues.clone();
+        let originating_account_id = auth.as_ref().and_then(CodexAuth::get_account_id);
+        let originating_auth = auth;
+        Arc::new(move |change| {
+            thread_manager.plugins_manager().clear_cache();
+            thread_manager.skills_service().clear_cache();
+
+            let trust_auth_lease = auth_lease.clone();
+            let trust_originating_account_id = originating_account_id.clone();
+            let trust_originating_auth = originating_auth.clone();
+            let trust_thread_manager = Arc::clone(&thread_manager);
+            let trust_config_manager = config_manager.clone();
+            let trust_config_processor = config_processor.clone();
+            let trust_request_serialization_queues = request_serialization_queues.clone();
+            tokio::spawn(async move {
+                trust_request_serialization_queues
+                    .enqueue_background(
+                        RequestSerializationQueueKey::Global("config"),
+                        RequestSerializationAccess::Exclusive,
+                        async move {
+                            if !change.materialized_remote_plugins.is_empty()
+                                && let Err(err) = trust_materialized_plugin_hooks(
+                                    change.materialized_remote_plugins,
+                                    trust_originating_account_id,
+                                    trust_originating_auth.as_ref(),
+                                    trust_auth_lease.auth_manager(),
+                                    &trust_thread_manager,
+                                    &trust_config_manager,
+                                    &trust_config_processor,
+                                )
+                                .await
+                            {
+                                warn!(error = %err, "failed to trust materialized plugin hooks");
+                            }
+                            reload_plugin_runtime_configs_without_mcp_prewarm(
+                                &trust_thread_manager,
+                                &trust_config_manager,
+                            )
+                            .await;
+                            trust_thread_manager
+                                .refresh_hook_runtimes_with_auth_lease(trust_auth_lease.clone())
+                                .await;
+                            trust_thread_manager
+                                .invalidate_mcp_runtimes_with_auth_lease(trust_auth_lease)
+                                .await;
+                        },
+                    )
+                    .await;
+            });
+        })
+    }
+}
+
+pub(crate) async fn reload_plugin_runtime_configs_without_mcp_prewarm(
+    thread_manager: &ThreadManager,
+    config_manager: &ConfigManager,
+) {
+    for thread_id in thread_manager.list_thread_ids().await {
+        let Ok(thread) = thread_manager.get_thread(thread_id).await else {
+            continue;
+        };
+        let current_config = thread.config().await;
+        match config_manager
+            .load_latest_config_for_thread(current_config.as_ref())
+            .await
+        {
+            Ok(config) => {
+                thread
+                    .refresh_runtime_config_without_mcp_prewarm(config)
+                    .await;
+            }
+            Err(err) => {
+                warn!(%thread_id, %err, "failed to reload plugin runtime config");
+            }
+        }
+    }
 }
 
 fn workspace_listed_plugin_ids(
@@ -96,15 +157,14 @@ fn hook_trusted_hash_edit(hook_key: &str, current_hash: &str) -> ConfigEdit {
 
 pub(crate) async fn trust_materialized_plugin_hooks(
     materializations: Vec<RemotePluginMaterialization>,
+    originating_account_id: Option<String>,
+    auth: Option<&CodexAuth>,
     auth_manager: &AuthManager,
     thread_manager: &ThreadManager,
     config_manager: &ConfigManager,
     config_processor: &ConfigRequestProcessor,
 ) -> Result<(), String> {
-    let Some(current_account_id) = auth_manager
-        .auth_cached()
-        .and_then(|auth| auth.get_account_id())
-    else {
+    let Some(current_account_id) = originating_account_id else {
         return Ok(());
     };
     let plugin_ids = workspace_listed_plugin_ids(materializations, &current_account_id);
@@ -117,7 +177,7 @@ pub(crate) async fn trust_materialized_plugin_hooks(
         .map_err(|err| format!("failed to reload config: {err}"))?;
     let plugin_outcome = thread_manager
         .plugins_manager()
-        .plugins_for_config(&config.plugins_config_input())
+        .plugins_for_config_with_auth(&config.plugins_config_input(), auth)
         .await;
     let hooks = codex_hooks::list_hooks(codex_hooks::HooksConfig {
         feature_enabled: true,
@@ -160,7 +220,7 @@ pub(crate) async fn trust_materialized_plugin_hooks(
         edits,
         file_path: None,
         expected_version: None,
-        reload_user_config: true,
+        reload_user_config: false,
     };
     config_processor
         .batch_write(params)

@@ -1,6 +1,8 @@
 use super::*;
 use crate::app_info::app_info_to_api;
 use codex_connectors::AppToolPolicyEvaluator;
+use codex_login::AuthManagerLease;
+use codex_login::SharedProfileAuthRouter;
 
 mod installed;
 mod read;
@@ -8,7 +10,7 @@ mod read;
 pub(super) use read::APP_READ_MAX_IDS;
 
 pub(crate) struct AppsRequestProcessor {
-    auth_manager: Arc<AuthManager>,
+    profile_auth_router: SharedProfileAuthRouter,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
@@ -18,7 +20,7 @@ pub(crate) struct AppsRequestProcessor {
 
 impl AppsRequestProcessor {
     pub(crate) fn new(
-        auth_manager: Arc<AuthManager>,
+        profile_auth_router: SharedProfileAuthRouter,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
@@ -26,7 +28,7 @@ impl AppsRequestProcessor {
     ) -> Self {
         let shutdown_drop_guard = shutdown_token.clone().drop_guard();
         Self {
-            auth_manager,
+            profile_auth_router,
             thread_manager,
             outgoing,
             config_manager,
@@ -70,7 +72,8 @@ impl AppsRequestProcessor {
                 .set_enabled(Feature::Apps, thread.enabled(Feature::Apps));
         }
 
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         if !config
             .features
             .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
@@ -88,22 +91,26 @@ impl AppsRequestProcessor {
         let environment_manager = self.thread_manager.environment_manager();
         let mcp_manager = self.thread_manager.mcp_manager();
         let plugins_manager = self.thread_manager.plugins_manager();
+        let auth_manager = Arc::clone(auth_lease.auth_manager());
+        let profile_auth_router = self.profile_auth_router.clone();
         let shutdown_token = self.shutdown_token.child_token();
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = shutdown_token.cancelled() => {}
-                _ = Self::apps_list_task(
-                    outgoing,
-                    request,
-                    params,
-                    config,
-                    environment_manager,
-                    mcp_manager,
-                    plugins_manager,
-                    installed_start,
-                ) => {}
-            }
-        });
+        tokio::select! {
+            _ = shutdown_token.cancelled() => {}
+            _ = Self::apps_list_task(
+                outgoing,
+                request,
+                params,
+                config,
+                environment_manager,
+                mcp_manager,
+                plugins_manager,
+                auth_manager,
+                auth,
+                auth_lease,
+                profile_auth_router,
+                installed_start,
+            ) => {}
+        }
         Ok(None)
     }
 
@@ -120,6 +127,10 @@ impl AppsRequestProcessor {
         environment_manager: Arc<EnvironmentManager>,
         mcp_manager: Arc<McpManager>,
         plugins_manager: Arc<PluginsManager>,
+        auth_manager: Arc<AuthManager>,
+        auth: Option<CodexAuth>,
+        auth_lease: AuthManagerLease,
+        profile_auth_router: SharedProfileAuthRouter,
         installed_start: Instant,
     ) {
         let reload = params.force_refetch;
@@ -128,6 +139,8 @@ impl AppsRequestProcessor {
         let retry_environment_manager = Arc::clone(&environment_manager);
         let retry_mcp_manager = Arc::clone(&mcp_manager);
         let retry_plugins_manager = Arc::clone(&plugins_manager);
+        let retry_auth_manager = Arc::clone(&auth_manager);
+        let retry_auth = auth.clone();
         let result = Self::apps_list_response(
             &outgoing,
             params,
@@ -135,6 +148,10 @@ impl AppsRequestProcessor {
             environment_manager,
             mcp_manager,
             plugins_manager,
+            auth_manager,
+            auth,
+            &profile_auth_router,
+            auth_lease.account_id(),
         )
         .await;
         if result.is_ok() {
@@ -147,7 +164,10 @@ impl AppsRequestProcessor {
             .send_result(request_id, result.map(|(response, _)| response))
             .await;
 
-        if should_retry && !retry_params.force_refetch {
+        if should_retry
+            && !retry_params.force_refetch
+            && app_list_authority_is_current(&profile_auth_router, auth_lease.account_id()).await
+        {
             let mut retry_params = retry_params;
             retry_params.force_refetch = true;
             if let Err(err) = Self::apps_list_response(
@@ -157,6 +177,10 @@ impl AppsRequestProcessor {
                 retry_environment_manager,
                 retry_mcp_manager,
                 retry_plugins_manager,
+                retry_auth_manager,
+                retry_auth,
+                &profile_auth_router,
+                auth_lease.account_id(),
             )
             .await
             {
@@ -165,6 +189,7 @@ impl AppsRequestProcessor {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apps_list_response(
         outgoing: &Arc<OutgoingMessageSender>,
         params: AppsListParams,
@@ -172,6 +197,10 @@ impl AppsRequestProcessor {
         environment_manager: Arc<EnvironmentManager>,
         mcp_manager: Arc<McpManager>,
         plugins_manager: Arc<PluginsManager>,
+        auth_manager: Arc<AuthManager>,
+        auth: Option<CodexAuth>,
+        profile_auth_router: &SharedProfileAuthRouter,
+        originating_account_id: Option<&codex_account_registry::AccountId>,
     ) -> Result<(AppsListResponse, bool), JSONRPCErrorError> {
         let AppsListParams {
             cursor,
@@ -188,46 +217,63 @@ impl AppsRequestProcessor {
         };
 
         let loaded_plugins = plugins_manager
-            .plugins_for_config(&config.plugins_config_input())
+            .plugins_for_config_with_auth(&config.plugins_config_input(), auth.as_ref())
             .await;
         let connector_snapshot =
             codex_connectors::ConnectorSnapshot::from_plugin_capability_summaries(
                 loaded_plugins.capability_summaries(),
             );
         let plugin_apps = connector_snapshot.connector_ids().to_vec();
-        let (mut accessible_connectors, mut all_connectors) = tokio::join!(
-            connectors::list_cached_accessible_connectors_from_mcp_tools(&config),
-            connectors::list_cached_all_connectors(&config, &plugin_apps)
-        );
+        let mut accessible_connectors =
+            connectors::list_cached_accessible_connectors_from_mcp_tools_with_auth(
+                &config,
+                auth.as_ref(),
+            );
+        let mut all_connectors = match auth.as_ref() {
+            Some(auth) => {
+                connectors::list_cached_all_connectors_with_auth(&config, auth, &plugin_apps)
+            }
+            None => Some(Vec::new()),
+        };
         let cached_all_connectors = all_connectors.clone();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut loaders = tokio::task::JoinSet::new();
 
         let accessible_config = config.clone();
-        let accessible_tx = tx.clone();
-        tokio::spawn(async move {
-            let result = connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager(
-                &accessible_config,
-                force_refetch,
-                Arc::clone(&environment_manager),
-                mcp_manager,
-            )
-            .await
-            .map_err(|err| format!("failed to load accessible apps: {err}"));
-            let _ = accessible_tx.send(AppListLoadResult::Accessible(result));
+        let accessible_auth_manager = Arc::clone(&auth_manager);
+        let accessible_auth = auth.clone();
+        loaders.spawn(async move {
+            let result =
+                connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager_and_auth(
+                    &accessible_config,
+                    force_refetch,
+                    Arc::clone(&environment_manager),
+                    mcp_manager,
+                    accessible_auth_manager,
+                    accessible_auth,
+                )
+                .await
+                .map_err(|err| format!("failed to load accessible apps: {err}"));
+            AppListLoadResult::Accessible(result)
         });
 
         let all_config = config.clone();
         let all_plugin_apps = plugin_apps.clone();
-        tokio::spawn(async move {
-            let result = connectors::list_all_connectors_with_options(
-                &all_config,
-                force_refetch,
-                &all_plugin_apps,
-            )
-            .await
+        loaders.spawn(async move {
+            let result = match auth.as_ref() {
+                Some(auth) => {
+                    connectors::list_all_connectors_with_options_and_auth(
+                        &all_config,
+                        auth,
+                        force_refetch,
+                        &all_plugin_apps,
+                    )
+                    .await
+                }
+                None => Ok(Vec::new()),
+            }
             .map_err(|err| format!("failed to list apps: {err}"));
-            let _ = tx.send(AppListLoadResult::Directory(result));
+            AppListLoadResult::Directory(result)
         });
 
         let app_list_deadline = tokio::time::Instant::now() + APP_LIST_LOAD_TIMEOUT;
@@ -249,16 +295,26 @@ impl AppsRequestProcessor {
                 merged.as_slice(),
                 accessible_loaded,
                 all_loaded,
-            ) {
-                send_app_list_updated_notification(outgoing, merged.clone()).await;
+            ) && send_app_list_updated_notification(
+                outgoing,
+                merged.clone(),
+                profile_auth_router,
+                originating_account_id,
+            )
+            .await
+            {
                 last_notified_apps = Some(merged);
                 sent_app_list_update = true;
             }
         }
 
         loop {
-            let result = match tokio::time::timeout_at(app_list_deadline, rx.recv()).await {
-                Ok(Some(result)) => result,
+            let result = match tokio::time::timeout_at(app_list_deadline, loaders.join_next()).await
+            {
+                Ok(Some(Ok(result))) => result,
+                Ok(Some(Err(err))) => {
+                    return Err(internal_error(format!("app list loader failed: {err}")));
+                }
                 Ok(None) => {
                     return Err(internal_error("failed to load app lists"));
                 }
@@ -315,8 +371,14 @@ impl AppsRequestProcessor {
                     && accessible_loaded
                     && all_loaded
                     && !sent_app_list_update))
+                && send_app_list_updated_notification(
+                    outgoing,
+                    merged.clone(),
+                    profile_auth_router,
+                    originating_account_id,
+                )
+                .await
             {
-                send_app_list_updated_notification(outgoing, merged.clone()).await;
                 last_notified_apps = Some(merged.clone());
                 sent_app_list_update = true;
             }
@@ -352,6 +414,13 @@ impl AppsRequestProcessor {
             .load_latest_config(fallback_cwd)
             .await
             .map_err(|err| internal_error(format!("failed to reload config: {err}")))
+    }
+
+    async fn operation_auth_lease(&self) -> Result<AuthManagerLease, JSONRPCErrorError> {
+        self.profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)
     }
 
     async fn load_apps_config(&self, thread_id: Option<&str>) -> Result<Config, JSONRPCErrorError> {
@@ -436,11 +505,27 @@ fn paginate_apps(
 async fn send_app_list_updated_notification(
     outgoing: &Arc<OutgoingMessageSender>,
     data: Vec<AppInfo>,
-) {
+    profile_auth_router: &SharedProfileAuthRouter,
+    originating_account_id: Option<&codex_account_registry::AccountId>,
+) -> bool {
+    if !app_list_authority_is_current(profile_auth_router, originating_account_id).await {
+        return false;
+    }
     let data = data.into_iter().map(app_info_to_api).collect();
     outgoing
         .send_server_notification(ServerNotification::AppListUpdated(
             AppListUpdatedNotification { data },
         ))
         .await;
+    true
+}
+
+async fn app_list_authority_is_current(
+    profile_auth_router: &SharedProfileAuthRouter,
+    originating_account_id: Option<&codex_account_registry::AccountId>,
+) -> bool {
+    profile_auth_router
+        .lease_for_operation()
+        .await
+        .is_ok_and(|lease| lease.account_id() == originating_account_id)
 }

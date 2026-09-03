@@ -19,6 +19,7 @@ use axum::http::StatusCode;
 use axum::http::Uri;
 use axum::http::header::AUTHORIZATION;
 use axum::routing::get;
+use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::AppBranding;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AppListUpdatedNotification;
@@ -35,6 +36,8 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::ProfileAuthStorage;
+use codex_login::load_auth_dot_json;
 use codex_login::save_auth;
 use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
@@ -1130,6 +1133,23 @@ async fn list_apps_force_refetch_preserves_previous_cache_on_failure() -> Result
             .chatgpt_account_id("account-123"),
         AuthCredentialsStoreMode::File,
     )?;
+    let invalid_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?
+    .expect("invalid auth fixture should be written");
+    let active_account_id = RegistryStore::new(codex_home.path())
+        .read()?
+        .default_account_id
+        .expect("legacy auth should migrate to one active profile");
+    ProfileAuthStorage::new(
+        codex_home.path(),
+        active_account_id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?
+    .save(&invalid_auth)?;
 
     let refetch_request = mcp
         .send_apps_list_request(AppsListParams {

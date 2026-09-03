@@ -1,6 +1,7 @@
 use super::*;
 use codex_core::config::permission_profile_catalog;
 use codex_hooks::HookListEntryHandler;
+use codex_login::SharedProfileAuthRouter;
 use futures::StreamExt;
 
 #[derive(Clone)]
@@ -10,6 +11,7 @@ pub(crate) struct CatalogRequestProcessor {
     pub(super) thread_manager: Arc<ThreadManager>,
     pub(super) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
+    pub(super) profile_auth_router: SharedProfileAuthRouter,
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
@@ -120,6 +122,7 @@ impl CatalogRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        profile_auth_router: SharedProfileAuthRouter,
     ) -> Self {
         Self {
             outgoing,
@@ -127,6 +130,7 @@ impl CatalogRequestProcessor {
             thread_manager,
             config,
             config_manager,
+            profile_auth_router,
         }
     }
 
@@ -170,13 +174,9 @@ impl CatalogRequestProcessor {
         &self,
         params: ModelListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        Self::list_models(
-            self.thread_manager.clone(),
-            self.config.http_client_factory(),
-            params,
-        )
-        .await
-        .map(|response| Some(response.into()))
+        self.list_models(self.config.http_client_factory(), params)
+            .await
+            .map(|response| Some(response.into()))
     }
 
     pub(crate) async fn experimental_feature_list(
@@ -241,7 +241,7 @@ impl CatalogRequestProcessor {
     }
 
     async fn list_models(
-        thread_manager: Arc<ThreadManager>,
+        &self,
         http_client_factory: codex_http_client::HttpClientFactory,
         params: ModelListParams,
     ) -> Result<ModelListResponse, JSONRPCErrorError> {
@@ -250,8 +250,23 @@ impl CatalogRequestProcessor {
             cursor,
             include_hidden,
         } = params;
-        let models = supported_models(
-            thread_manager,
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(|error| internal_error(error.safe_message()))?;
+        let mut model_config = self.config.as_ref().clone();
+        if let Some(account_id) = auth_lease.account_id() {
+            model_config.codex_home = self
+                .config
+                .codex_home
+                .join("accounts")
+                .join(account_id.as_str());
+        }
+        let models_manager =
+            codex_core::build_models_manager(&model_config, Arc::clone(auth_lease.auth_manager()));
+        let models = crate::models::supported_models_with_manager(
+            models_manager,
             include_hidden.unwrap_or(false),
             http_client_factory,
         )
@@ -480,6 +495,12 @@ impl CatalogRequestProcessor {
             cwds
         };
 
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(|error| internal_error(error.safe_message()))?;
+        let auth = auth_lease.auth_manager().auth().await;
         let skills_service = self.thread_manager.skills_service();
         let plugins_manager = self.thread_manager.plugins_manager();
         if force_reload {
@@ -497,6 +518,7 @@ impl CatalogRequestProcessor {
                 let fs = fs.clone();
                 let skills_request = &skills_request;
                 let plugins_manager = Arc::clone(&plugins_manager);
+                let auth = auth.clone();
                 async move {
                     let config = match self.load_latest_config(Some(cwd.clone())).await {
                         Ok(resolved) => resolved,
@@ -516,9 +538,11 @@ impl CatalogRequestProcessor {
                         }
                     };
                     let plugins_input = config.plugins_config_input();
-                    let plugins = plugins_manager.plugins_for_config(&plugins_input).await;
-                    let plugin_skill_snapshots =
-                        plugins_manager.plugin_skill_snapshots_for_config(&plugins_input);
+                    let plugins = plugins_manager
+                        .plugins_for_config_with_auth(&plugins_input, auth.as_ref())
+                        .await;
+                    let plugin_skill_snapshots = plugins_manager
+                        .plugin_skill_snapshots_for_config_with_auth(&plugins_input, auth.as_ref());
                     let skills_input = codex_skills_extension::HostSkillsLoadInput::new(
                         config.cwd.clone(),
                         plugins.effective_plugin_skill_roots(),
@@ -580,6 +604,12 @@ impl CatalogRequestProcessor {
         };
 
         let plugins_manager = self.thread_manager.plugins_manager();
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(|error| internal_error(error.safe_message()))?;
+        let auth = auth_lease.auth_manager().auth().await;
         let mut data = Vec::new();
         for cwd in cwds {
             let config = match self
@@ -609,7 +639,9 @@ impl CatalogRequestProcessor {
             let hooks_enabled = config.features.enabled(Feature::CodexHooks);
             let plugin_hooks = if hooks_enabled && config.features.enabled(Feature::Plugins) {
                 let plugins_input = config.plugins_config_input();
-                let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
+                let plugin_outcome = plugins_manager
+                    .plugins_for_config_with_auth(&plugins_input, auth.as_ref())
+                    .await;
                 codex_core_plugins::PluginHookLoadOutcome {
                     hook_sources: plugin_outcome.effective_plugin_hook_sources(),
                     hook_load_warnings: plugin_outcome.effective_plugin_hook_warnings(),
