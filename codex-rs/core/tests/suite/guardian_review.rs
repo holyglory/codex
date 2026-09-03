@@ -150,7 +150,7 @@ async fn guardian_session_inherits_parent_http_fallback(
     let server = start_mock_server().await;
     let websocket_fallback = Mock::given(method("GET"))
         .and(path_regex(".*/responses$"))
-        .respond_with(ResponseTemplate::new(426))
+        .respond_with(ResponseTemplate::new(426).set_delay(Duration::from_millis(250)))
         .expect(1)
         .mount_as_scoped(&server)
         .await;

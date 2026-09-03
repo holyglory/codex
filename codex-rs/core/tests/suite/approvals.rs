@@ -3471,11 +3471,11 @@ async fn invalid_requested_prefix_rule_falls_back_for_compound_command() -> Resu
     let test = builder.build(&server).await?;
 
     let call_id = "invalid-prefix-rule";
-    let command =
-        "touch /tmp/codex-fallback-rule-test.txt && echo hello > /tmp/codex-fallback-rule-test.txt";
+    let target = test.cwd_path().join("codex-fallback-rule-test.txt");
+    let command = format!("touch {target:?} && echo hello > {target:?}");
     let event = shell_event_with_prefix_rule(
         call_id,
-        command,
+        &command,
         /*timeout_ms*/ 1_000,
         SandboxPermissions::RequireEscalated,
         Some(vec!["touch".to_string()]),
@@ -3499,7 +3499,7 @@ async fn invalid_requested_prefix_rule_falls_back_for_compound_command() -> Resu
     )
     .await?;
 
-    let approval = expect_exec_approval(&test, command).await;
+    let approval = expect_exec_approval(&test, &command).await;
     let amendment = approval
         .proposed_execpolicy_amendment
         .expect("should have a proposed execpolicy amendment");
@@ -3524,11 +3524,11 @@ async fn approving_fallback_rule_for_compound_command_works() -> Result<()> {
     let test = builder.build(&server).await?;
 
     let call_id = "invalid-prefix-rule";
-    let command =
-        "touch /tmp/codex-fallback-rule-test.txt && echo hello > /tmp/codex-fallback-rule-test.txt";
+    let target = test.cwd_path().join("codex-fallback-rule-test.txt");
+    let command = format!("touch {target:?} && echo hello > {target:?}");
     let event = shell_event_with_prefix_rule(
         call_id,
-        command,
+        &command,
         /*timeout_ms*/ 10_000,
         SandboxPermissions::RequireEscalated,
         Some(vec!["touch".to_string()]),
@@ -3552,7 +3552,7 @@ async fn approving_fallback_rule_for_compound_command_works() -> Result<()> {
     )
     .await?;
 
-    let approval = expect_exec_approval(&test, command).await;
+    let approval = expect_exec_approval(&test, &command).await;
     let approval_id = approval.effective_approval_id();
     let amendment = approval
         .proposed_execpolicy_amendment
@@ -3571,11 +3571,9 @@ async fn approving_fallback_rule_for_compound_command_works() -> Result<()> {
     wait_for_completion(&test).await;
 
     let call_id = "invalid-prefix-rule-again";
-    let command =
-        "touch /tmp/codex-fallback-rule-test.txt && echo hello > /tmp/codex-fallback-rule-test.txt";
     let event = shell_event_with_prefix_rule(
         call_id,
-        command,
+        &command,
         /*timeout_ms*/ 10_000,
         SandboxPermissions::RequireEscalated,
         Some(vec!["touch".to_string()]),

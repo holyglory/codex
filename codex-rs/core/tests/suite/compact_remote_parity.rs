@@ -3,7 +3,9 @@ use codex_core::TurnInputRequest;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
 use codex_history::RolloutItem;
@@ -28,7 +30,8 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 
-const FIXED_CWD: &str = "/tmp/codex_remote_compaction_parity_workspace";
+static FIXED_CWD: LazyLock<tempfile::TempDir> =
+    LazyLock::new(|| tempfile::tempdir().expect("fixed parity cwd"));
 const IMAGE_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const SUMMARY: &str = "REMOTE_COMPACTION_PARITY_ENCRYPTED_SUMMARY";
 const DUMMY_FUNCTION_NAME: &str = "test_tool";
@@ -512,7 +515,7 @@ async fn build_harness_inner(
     hooks: bool,
     auto_compact_limit: Option<i64>,
 ) -> Result<TestCodexHarness> {
-    fs::create_dir_all(FIXED_CWD)?;
+    fs::create_dir_all(FIXED_CWD.path())?;
     let mut builder = test_codex()
         .with_auth(settings.auth.build())
         .with_pre_build_hook(allow_echo_commands)
@@ -524,10 +527,9 @@ async fn build_harness_inner(
         builder = builder.with_pre_build_hook(write_manual_compact_hooks);
     }
     TestCodexHarness::with_builder(builder.with_config(move |config| {
-        config.cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(PathBuf::from(
-            FIXED_CWD,
-        ))
-        .expect("fixed cwd should be absolute");
+        config.cwd =
+            codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(FIXED_CWD.path())
+                .expect("fixed cwd should be absolute");
         config.developer_instructions = Some("PARITY_DEVELOPER_INSTRUCTIONS".to_string());
         if settings.service_tier_fast {
             config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
@@ -862,7 +864,8 @@ fn python_hook_command(script_path: &Path) -> String {
 }
 
 fn hook_log_view(path: &Path) -> Result<Value> {
-    let text = fs::read_to_string(path)?;
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read compact hook log {}", path.display()))?;
     let values = text
         .lines()
         .filter(|line| !line.trim().is_empty())

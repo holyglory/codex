@@ -41,6 +41,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -49,7 +50,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
-use tempfile::TempDir;
 use wiremock::MockServer;
 
 const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
@@ -215,8 +215,10 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     let request_log = mount_initial_flow(&server).await;
     let expected_model = "gpt-5.4";
     // 2. Start a new conversation and drive it through the compact/resume/fork steps.
-    let (_home, config, manager, base) =
-        start_test_conversation(&server, Some(expected_model)).await;
+    let test = start_test_conversation(&server, Some(expected_model)).await;
+    let config = test.config.clone();
+    let manager = Arc::clone(&test.thread_manager);
+    let base = Arc::clone(&test.codex);
 
     user_turn(&base, "hello world").await;
     compact_conversation(&base).await;
@@ -372,7 +374,10 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let request_log = mount_second_compact_sequence(&server).await;
 
     // 2. Drive the conversation through compact -> resume -> fork -> compact -> resume.
-    let (_home, config, manager, base) = start_test_conversation(&server, /*model*/ None).await;
+    let test = start_test_conversation(&server, /*model*/ None).await;
+    let config = test.config.clone();
+    let manager = Arc::clone(&test.thread_manager);
+    let base = Arc::clone(&test.codex);
 
     user_turn(&base, "hello world").await;
     compact_conversation(&base).await;
@@ -535,23 +540,28 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
 
     let request_log = mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
 
-    let (_home, _config, _manager, base) = start_test_conversation(&server, /*model*/ None).await;
+    let test = start_test_conversation(&server, /*model*/ None).await;
+    let base = Arc::clone(&test.codex);
 
-    user_turn(&base, "hello world").await;
+    test.submit_turn("hello world").await?;
     compact_conversation(&base).await;
-    user_turn(&base, EDITED_AFTER_COMPACT).await;
+    test.submit_turn(EDITED_AFTER_COMPACT).await?;
 
     base.submit(Op::ThreadRollback { num_turns: 1 })
         .await
         .expect("submit thread rollback");
-    let rollback_event =
-        wait_for_event(&base, |ev| matches!(ev, EventMsg::ThreadRolledBack(_))).await;
-    let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
-        panic!("expected thread rolled back event");
+    let rollback_event = wait_for_event(&base, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_) | EventMsg::Error(_))
+    })
+    .await;
+    let rollback_event = match rollback_event {
+        EventMsg::ThreadRolledBack(event) => event,
+        EventMsg::Error(error) => anyhow::bail!("thread rollback failed: {}", error.message),
+        event => panic!("expected thread rollback result, got {event:?}"),
     };
     assert_eq!(rollback_event.num_turns, 1);
 
-    user_turn(&base, AFTER_ROLLBACK).await;
+    test.submit_turn(AFTER_ROLLBACK).await?;
 
     let requests = request_log.requests();
     assert_eq!(requests.len(), 4);
@@ -629,8 +639,9 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     )
     .await;
 
-    let (_home, config, _manager, conversation) =
-        start_test_conversation(&server, Some(MODEL)).await;
+    let test = start_test_conversation(&server, Some(MODEL)).await;
+    let config = test.config.clone();
+    let conversation = Arc::clone(&test.codex);
 
     user_turn(&conversation, TURN_ONE_USER).await;
 
@@ -839,10 +850,7 @@ async fn mount_second_compact_sequence(server: &MockServer) -> ResponseMock {
     mount_sse_sequence(server, vec![sse1, sse2, sse3, sse4, sse5, sse6, sse7, sse8]).await
 }
 
-async fn start_test_conversation(
-    server: &MockServer,
-    model: Option<&str>,
-) -> (Arc<TempDir>, Config, Arc<ThreadManager>, Arc<CodexThread>) {
+async fn start_test_conversation(server: &MockServer, model: Option<&str>) -> TestCodex {
     let base_url = format!("{}/v1", server.uri());
     let model = model.map(str::to_string);
     let mut builder = test_codex().with_config(move |config| {
@@ -854,10 +862,9 @@ async fn start_test_conversation(
             config.model = Some(model);
         }
     });
-    let test = Box::pin(builder.build(server))
+    Box::pin(builder.build(server))
         .await
-        .expect("create conversation");
-    (test.home, test.config, test.thread_manager, test.codex)
+        .expect("create conversation")
 }
 
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
