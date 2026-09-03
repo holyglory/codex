@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use crate::provider_usage::ProviderUsageObservation;
 use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
@@ -94,6 +95,11 @@ pub struct MemorySummarizeOutput {
     pub memory_summary: String,
 }
 
+/// Workspace-internal transport events emitted by Codex API clients.
+///
+/// New internal observation variants may be added when all workspace consumers are updated. This
+/// enum is not a stable external wire protocol; app-server and SDK compatibility types live in
+/// `codex-protocol` and `codex-app-server-protocol`.
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
@@ -111,6 +117,9 @@ pub enum ResponseEvent {
     /// meaning the server already accounted for past reasoning tokens and the
     /// client should not re-estimate them.
     ServerReasoningIncluded(bool),
+    /// Exact presence-preserving usage from a terminal provider response.
+    /// Existing `Completed::token_usage` remains the compatibility projection.
+    ProviderUsage(ProviderUsageObservation),
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,

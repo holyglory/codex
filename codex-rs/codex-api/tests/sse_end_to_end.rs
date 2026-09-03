@@ -7,6 +7,8 @@ use bytes::Bytes;
 use codex_api::AuthProvider;
 use codex_api::Compression;
 use codex_api::Provider;
+use codex_api::ProviderResponseStatus;
+use codex_api::ProviderTokenCount;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesClient;
 use codex_client::HttpTransport;
@@ -148,7 +150,7 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
         .filter(|ev| !matches!(ev, ResponseEvent::RateLimits(_)))
         .collect();
 
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
 
     match &events[0] {
         ResponseEvent::OutputItemDone(ResponseItem::Message { role, .. }) => {
@@ -165,6 +167,25 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
     }
 
     match &events[2] {
+        ResponseEvent::ProviderUsage(observation) => {
+            assert_eq!(observation.status(), ProviderResponseStatus::Completed);
+            assert_eq!(
+                observation.usage().input_tokens(),
+                ProviderTokenCount::Value(10)
+            );
+            assert_eq!(
+                observation.usage().cached_input_tokens(),
+                ProviderTokenCount::Absent
+            );
+            assert_eq!(
+                observation.usage().total_tokens(),
+                ProviderTokenCount::Value(15)
+            );
+        }
+        other => panic!("unexpected third event: {other:?}"),
+    }
+
+    match &events[3] {
         ResponseEvent::Completed {
             response_id,
             token_usage,
@@ -192,7 +213,7 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
             );
             assert!(end_turn.is_none());
         }
-        other => panic!("unexpected third event: {other:?}"),
+        other => panic!("unexpected fourth event: {other:?}"),
     }
 
     Ok(())
