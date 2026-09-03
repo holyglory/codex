@@ -50,7 +50,8 @@ impl PluginRequestProcessor {
         }
         let plugin_sharing_enabled = config.features.enabled(Feature::PluginSharing);
 
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
         let remote_plugin_enabled = config.features.enabled(Feature::RemotePlugin);
         let use_remote_global_catalog =
@@ -136,6 +137,7 @@ impl PluginRequestProcessor {
             let roots = cwds.unwrap_or_default();
             let plugins_input = config.plugins_config_input();
             let plugins_manager = self.thread_manager.plugins_manager();
+            let auth_for_marketplace_listing = auth.clone();
             let shared_plugin_ids_by_local_path = load_shared_plugin_ids_by_local_path(&config)
                 .unwrap_or_else(|err| {
                     warn!(
@@ -145,10 +147,11 @@ impl PluginRequestProcessor {
                     Default::default()
                 });
             let outcome = tokio::task::spawn_blocking(move || {
-                plugins_manager.list_marketplaces_for_config(
+                plugins_manager.list_marketplaces_for_config_with_auth(
                     &plugins_input,
                     &roots,
                     /*include_openai_curated*/ !use_remote_global_catalog,
+                    auth_for_marketplace_listing.as_ref(),
                 )
             })
             .await

@@ -26,14 +26,9 @@ impl AppsRequestProcessor {
             .into_iter()
             .filter(|app_id| seen_app_ids.insert(app_id.clone()))
             .collect::<Vec<_>>();
-        let mut config = self.load_apps_config(thread_id.as_deref()).await?;
-        let auth = match self.auth_manager.auth_with_http_client_factory().await {
-            Some((auth, factory)) => {
-                config.application_network_policy = factory.network_policy().clone();
-                Some(auth)
-            }
-            None => None,
-        };
+        let config = self.load_apps_config(thread_id.as_deref()).await?;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         if !config
             .features
             .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
@@ -58,7 +53,7 @@ impl AppsRequestProcessor {
         let loaded_plugins = self
             .thread_manager
             .plugins_manager()
-            .plugins_for_config(&config.plugins_config_input())
+            .plugins_for_config_with_auth(&config.plugins_config_input(), Some(auth))
             .await;
         let connector_snapshot =
             codex_connectors::ConnectorSnapshot::from_plugin_capability_summaries(
