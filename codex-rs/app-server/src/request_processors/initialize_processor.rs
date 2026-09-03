@@ -144,6 +144,16 @@ impl InitializeRequestProcessor {
             codex_home,
             platform_family: std::env::consts::FAMILY.to_string(),
             platform_os: std::env::consts::OS.to_string(),
+            multi_account: (self.config.cli_auth_credentials_store_mode
+                != codex_config::types::AuthCredentialsStoreMode::Ephemeral)
+                .then_some(codex_app_server_protocol::MultiAccountCapability {
+                    version: 2,
+                    supports_managed_login: true,
+                    supports_auto_selection: true,
+                }),
+            local_usage_accounting: Some(
+                codex_app_server_protocol::LocalUsageAccountingCapability { version: 2 },
+            ),
         };
 
         self.outgoing

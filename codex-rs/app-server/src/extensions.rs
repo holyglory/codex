@@ -40,6 +40,7 @@ use crate::thread_state::ThreadStateManager;
 pub(crate) struct ThreadExtensionDependencies {
     pub(crate) event_sink: Arc<dyn ExtensionEventSink>,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) profile_auth_router: codex_login::SharedProfileAuthRouter,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
@@ -62,6 +63,7 @@ where
     let ThreadExtensionDependencies {
         event_sink,
         auth_manager,
+        profile_auth_router,
         state_db,
         analytics_events_client,
         thread_manager,
@@ -97,11 +99,12 @@ where
         git_attribution_base_url,
         http_client_factory,
     );
-    codex_guardian_v2::install(
+    codex_guardian_v2::install_with_auth_resolver(
         &mut builder,
         guardian_agent_spawner,
         internal_session_spawner(thread_manager.clone()),
         auth_manager.clone(),
+        profile_auth_router,
         thread_manager,
     );
     codex_memories_extension::install(&mut builder, codex_otel::global());
