@@ -84,6 +84,23 @@ exit 1
 }
 
 #[test]
+fn system_bwrap_warning_drains_signature_before_pipe_capacity() {
+    let fake_bwrap = write_fake_bwrap(
+        r#"#!/bin/sh
+echo 'No permissions to create a new namespace' >&2
+dd if=/dev/zero bs=1024 count=128 >&2
+exit 1
+"#,
+    );
+    let fake_bwrap_path: &Path = fake_bwrap.as_ref();
+
+    assert_eq!(
+        system_bwrap_warning_for_path(Some(fake_bwrap_path)),
+        Some(USER_NAMESPACE_WARNING.to_string())
+    );
+}
+
+#[test]
 fn detects_wsl1_proc_version_formats() {
     assert!(proc_version_indicates_wsl1(
         "Linux version 4.4.0-22621-Microsoft"
