@@ -770,6 +770,7 @@ async fn run_websocket_response_stream(
                 let turn_moderation_metadata = event.turn_moderation_metadata();
                 let safety_buffering =
                     safety_buffering_for_event(&event, &mut safety_buffering_treatment);
+                let provider_usage = event.provider_usage_observation();
                 if event.kind() == "codex.rate_limits" {
                     if let Some(snapshot) = parse_rate_limit_event(&text) {
                         let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
@@ -807,6 +808,16 @@ async fn run_websocket_response_stream(
                 if let Some(buffering) = safety_buffering
                     && tx_event
                         .send(Ok(ResponseEvent::SafetyBuffering(buffering)))
+                        .await
+                        .is_err()
+                {
+                    return Err(ApiError::Stream(
+                        "response event consumer dropped".to_string(),
+                    ));
+                }
+                if let Some(provider_usage) = provider_usage
+                    && tx_event
+                        .send(Ok(ResponseEvent::ProviderUsage(provider_usage)))
                         .await
                         .is_err()
                 {
@@ -927,6 +938,8 @@ mod tests {
     use super::*;
     use crate::common::ResponseCreateWsRequest;
     use crate::common::ResponsesApiRequest;
+    use crate::provider_usage::ProviderResponseStatus;
+    use crate::provider_usage::ProviderTokenCount;
     use codex_protocol::ResponseItemId;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
@@ -936,6 +949,123 @@ mod tests {
     use serde_json::value::to_raw_value;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    fn fake_ws_stream(events: Vec<Value>) -> WsStream {
+        let (tx_command, mut rx_command) = mpsc::channel(4);
+        let (tx_message, rx_message) = mpsc::unbounded_channel();
+        for event in events {
+            tx_message
+                .send(Ok(Message::Text(event.to_string().into())))
+                .expect("fake websocket receiver should remain open");
+        }
+        drop(tx_message);
+        let pump_task = tokio::spawn(async move {
+            while let Some(WsCommand::Send { tx_result, .. }) = rx_command.recv().await {
+                let _ = tx_result.send(Ok(()));
+            }
+        });
+        WsStream {
+            tx_command,
+            rx_message,
+            pump_task,
+        }
+    }
+
+    fn timing_log_context() -> ResponsesWebsocketTimingLogContext {
+        ResponsesWebsocketTimingLogContext {
+            model: "test-model".to_string(),
+            session_id: None,
+            thread_id: None,
+            turn_id: None,
+            traceparent: None,
+            previous_response_id: None,
+            request_start_ms: None,
+            warmup: false,
+            connection_reused: false,
+        }
+    }
+
+    async fn collect_ws_events(events: Vec<Value>) -> Vec<Result<ResponseEvent, ApiError>> {
+        let mut stream = fake_ws_stream(events);
+        let (tx, mut rx) = mpsc::channel(16);
+        let result = run_websocket_response_stream(
+            &mut stream,
+            tx,
+            "{}".to_string(),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            /*turn_state*/ None,
+            &timing_log_context(),
+        )
+        .await;
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        if let Err(error) = result {
+            events.push(Err(error));
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn websocket_terminal_usage_matches_sse_status_and_ordering() {
+        for (kind, status) in [
+            ("response.completed", ProviderResponseStatus::Completed),
+            ("response.failed", ProviderResponseStatus::Failed),
+            ("response.incomplete", ProviderResponseStatus::Incomplete),
+        ] {
+            let mut response = json!({
+                "id": format!("resp-{kind}"),
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+            });
+            if kind == "response.failed" {
+                response["error"] = json!({"code": "insufficient_quota", "message": "fixture"});
+            }
+            if kind == "response.incomplete" {
+                response["incomplete_details"] = json!({"reason": "max_output_tokens"});
+            }
+            let events = collect_ws_events(vec![json!({
+                "type": kind,
+                "response": response
+            })])
+            .await;
+
+            assert_eq!(events.len(), 2);
+            let Ok(ResponseEvent::ProviderUsage(observation)) = &events[0] else {
+                panic!(
+                    "expected provider usage before terminal result: {:?}",
+                    events[0]
+                );
+            };
+            assert_eq!(observation.status(), status);
+            assert_eq!(
+                observation.usage().total_tokens(),
+                ProviderTokenCount::Value(5)
+            );
+            if status == ProviderResponseStatus::Completed {
+                assert!(matches!(&events[1], Ok(ResponseEvent::Completed { .. })));
+            } else {
+                assert!(events[1].is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_suppresses_replayed_terminal_usage() {
+        let terminal = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp-ws-replay",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }
+        });
+        let events = collect_ws_events(vec![terminal.clone(), terminal]).await;
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Ok(ResponseEvent::ProviderUsage(_))));
+        assert!(matches!(&events[1], Ok(ResponseEvent::Completed { .. })));
+    }
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
