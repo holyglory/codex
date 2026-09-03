@@ -32,6 +32,7 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthFuture;
 use codex_login::ExternalAuthRefreshContext;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -97,6 +98,7 @@ const TEST_CATALOG_GUARDIAN_POLICY: &str =
     "Require review before sending organization data to third-party services.";
 const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
+const TEST_CATALOG_RESPONSE_BUDGET: usize = 4;
 
 struct RefreshableAuth(std::sync::Mutex<&'static str>);
 
@@ -892,6 +894,23 @@ async fn sample_configured_conversation_history_with_source(
     source: ToolCallSource,
 ) -> Result<(serde_json::Value, TestCodex, ExtensionRegistry<Config>)> {
     let thread_server = responses::start_mock_server().await;
+    let mut catalog = codex_models_manager::bundled_models_response()
+        .expect("bundled model catalog should parse");
+    catalog
+        .models
+        .iter_mut()
+        .find(|model| model.slug == "codex-auto-review")
+        .and_then(|model| model.model_messages.as_mut())
+        .and_then(|messages| messages.auto_review.as_mut())
+        .expect("reviewer model should have Guardian policy")
+        .policy = Some(TEST_CATALOG_GUARDIAN_POLICY.to_owned());
+    // Workspace builds perform up to three startup reads before this fixture explicitly primes the
+    // exact host manager consumed by legacy Guardian scoring. Keep all four responses identical and
+    // bounded so any unexpected fifth read fails instead of silently changing policy provenance.
+    let mut _catalog_mocks = Vec::with_capacity(TEST_CATALOG_RESPONSE_BUDGET);
+    for _ in 0..TEST_CATALOG_RESPONSE_BUDGET {
+        _catalog_mocks.push(responses::mount_models_once(&thread_server, catalog.clone()).await);
+    }
     let guardian_policy = guardian_policy.map(str::to_owned);
     let guardian_config = format!(
         "{guardian_config}\n[features.guardianv2.review_scope]\ncomputer_use_only = false\n"
@@ -930,6 +949,22 @@ async fn sample_configured_conversation_history_with_source(
         builder
     };
     let test = builder.build_with_auto_env(&thread_server).await?;
+    let host_models_manager = test.thread_manager.get_models_manager();
+    host_models_manager
+        .list_models(RefreshStrategy::Online, test.config.http_client_factory())
+        .await;
+    let reviewer_model = host_models_manager
+        .get_model_info("codex-auto-review", &test.config.to_models_manager_config())
+        .await;
+    assert_eq!(
+        reviewer_model
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.auto_review.as_ref())
+            .and_then(|review| review.policy.as_deref()),
+        Some(TEST_CATALOG_GUARDIAN_POLICY),
+        "legacy Guardian must read the primed host reviewer metadata"
+    );
     let mut completed = ev_completed("response-1");
     completed["response"]["usage"] = json!({
         "input_tokens": 120,
@@ -946,7 +981,7 @@ async fn sample_configured_conversation_history_with_source(
         "http://{}/v1",
         server.uri().trim_start_matches("ws://")
     )));
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-api-key"));
+    let auth_manager = test.thread_manager.auth_manager();
     let mut config = test.config.clone();
     config.model_provider = provider_info;
     config.features.enable(Feature::GuardianV2)?;
