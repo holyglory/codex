@@ -41,7 +41,6 @@ const SECRETS_VERSION: u8 = 1;
 const LOCAL_SECRETS_FILENAME: &str = "local.age";
 const CODEX_AUTH_SECRETS_FILENAME: &str = "codex_auth.age";
 const MCP_OAUTH_SECRETS_FILENAME: &str = "mcp_oauth.age";
-const GATEWAY_OAUTH_SECRETS_FILENAME: &str = "gateway_oauth.age";
 static MCP_OAUTH_CACHE: Mutex<Option<CachedMcpSecrets>> = Mutex::new(None);
 
 /// Selects the local encrypted file used by a `LocalSecretsBackend`.
@@ -52,10 +51,10 @@ pub enum LocalSecretsNamespace {
     ManagedSecrets,
     /// Codex authentication credentials used by the CLI, TUI, app server, and other clients.
     CodexAuth,
+    /// Version-one profile-scoped Codex authentication credentials.
+    CodexProfileAuthV1,
     /// OAuth credentials for external MCP servers.
     McpOAuth,
-    /// Gateway OAuth credentials, isolated from primary auth in file and encryption key.
-    GatewayOAuth,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,9 +156,10 @@ impl LocalSecretsBackend {
     fn secrets_path(&self) -> PathBuf {
         let filename = match self.namespace {
             LocalSecretsNamespace::ManagedSecrets => LOCAL_SECRETS_FILENAME,
-            LocalSecretsNamespace::CodexAuth => CODEX_AUTH_SECRETS_FILENAME,
+            LocalSecretsNamespace::CodexAuth | LocalSecretsNamespace::CodexProfileAuthV1 => {
+                CODEX_AUTH_SECRETS_FILENAME
+            }
             LocalSecretsNamespace::McpOAuth => MCP_OAUTH_SECRETS_FILENAME,
-            LocalSecretsNamespace::GatewayOAuth => GATEWAY_OAUTH_SECRETS_FILENAME,
         };
         self.secrets_dir().join(filename)
     }
@@ -221,6 +221,11 @@ impl LocalSecretsBackend {
         let dir = self.secrets_dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create secrets dir {}", dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        }
 
         let passphrase = self.load_or_create_passphrase()?;
         let plaintext = serde_json::to_vec(file).context("failed to serialize secrets file")?;
@@ -239,7 +244,15 @@ impl LocalSecretsBackend {
     }
 
     fn load_or_create_passphrase(&self) -> Result<SecretString> {
-        let account = compute_keyring_account(&self.codex_home, self.namespace);
+        let account = match self.namespace {
+            LocalSecretsNamespace::CodexProfileAuthV1 => format!(
+                "secrets|codex-profile-auth-v1|{}",
+                compute_keyring_account(&self.codex_home).trim_start_matches("secrets|")
+            ),
+            LocalSecretsNamespace::ManagedSecrets
+            | LocalSecretsNamespace::CodexAuth
+            | LocalSecretsNamespace::McpOAuth => compute_keyring_account(&self.codex_home),
+        };
         let loaded = self
             .keyring_store
             .load(keyring_service(), &account)
@@ -303,16 +316,19 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     ));
 
     {
-        let mut tmp_file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .with_context(|| {
-                format!(
-                    "failed to create temp secrets file at {}",
-                    tmp_path.display()
-                )
-            })?;
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp_path).with_context(|| {
+            format!(
+                "failed to create temp secrets file at {}",
+                tmp_path.display()
+            )
+        })?;
         tmp_file.write_all(contents).with_context(|| {
             format!(
                 "failed to write temp secrets file at {}",
@@ -324,39 +340,133 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
         })?;
     }
 
-    match fs::rename(&tmp_path, path) {
-        Ok(()) => Ok(()),
-        Err(initial_error) => {
-            #[cfg(target_os = "windows")]
-            {
-                if path.exists() {
-                    fs::remove_file(path).with_context(|| {
-                        format!(
-                            "failed to remove existing secrets file at {} before replace",
-                            path.display()
-                        )
-                    })?;
-                    fs::rename(&tmp_path, path).with_context(|| {
-                        format!(
-                            "failed to replace secrets file at {} with {}",
-                            path.display(),
-                            tmp_path.display()
-                        )
-                    })?;
-                    return Ok(());
-                }
-            }
-
-            let _ = fs::remove_file(&tmp_path);
-            Err(initial_error).with_context(|| {
-                format!(
-                    "failed to atomically replace secrets file at {} with {}",
-                    path.display(),
-                    tmp_path.display()
-                )
-            })
-        }
+    #[cfg(windows)]
+    if path.exists() {
+        copy_windows_dacl(path, &tmp_path)?;
     }
+    let replace_result = replace_file(&tmp_path, path);
+    if let Err(error) = replace_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error).context("failed to atomically replace secrets file");
+    }
+    sync_parent_directory(dir).context("failed to synchronize secrets directory")
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let source = wide_path(source);
+    let destination = wide_path(destination);
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_windows_dacl(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::GetFileSecurityW;
+    use windows_sys::Win32::Security::GetSecurityDescriptorControl;
+    use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::SE_DACL_PROTECTED;
+    use windows_sys::Win32::Security::SetFileSecurityW;
+    use windows_sys::Win32::Security::UNPROTECTED_DACL_SECURITY_INFORMATION;
+
+    let source = wide_path(source);
+    let mut bytes_needed = 0_u32;
+    let initial = unsafe {
+        GetFileSecurityW(
+            source.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_needed,
+        )
+    };
+    if initial != 0 {
+        return Err(std::io::Error::other(
+            "security descriptor query unexpectedly returned no data",
+        ));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+        return Err(error);
+    }
+    let mut descriptor = vec![0_u32; bytes_needed.div_ceil(4) as usize];
+    let result = unsafe {
+        GetFileSecurityW(
+            source.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            descriptor.as_mut_ptr().cast(),
+            bytes_needed,
+            &mut bytes_needed,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    let result = unsafe {
+        GetSecurityDescriptorControl(descriptor.as_mut_ptr().cast(), &mut control, &mut revision)
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let protection = if control & SE_DACL_PROTECTED != 0 {
+        PROTECTED_DACL_SECURITY_INFORMATION
+    } else {
+        UNPROTECTED_DACL_SECURITY_INFORMATION
+    };
+    let destination = wide_path(destination);
+    let result = unsafe {
+        SetFileSecurityW(
+            destination.as_ptr(),
+            DACL_SECURITY_INFORMATION | protection,
+            descriptor.as_ptr().cast_mut().cast(),
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn wide_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn generate_passphrase() -> Result<SecretString> {
@@ -453,8 +563,7 @@ mod tests {
     fn set_fails_when_keyring_is_unavailable() -> Result<()> {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let keyring = Arc::new(MockKeyringStore::default());
-        let account =
-            compute_keyring_account(codex_home.path(), LocalSecretsNamespace::ManagedSecrets);
+        let account = compute_keyring_account(codex_home.path());
         keyring.set_error(
             &account,
             KeyringError::Invalid("error".into(), "load".into()),
@@ -522,20 +631,14 @@ mod tests {
         );
         let mcp_backend = LocalSecretsBackend::new_with_namespace(
             codex_home.path().to_path_buf(),
-            keyring.clone(),
+            keyring,
             LocalSecretsNamespace::McpOAuth,
-        );
-        let gateway_backend = LocalSecretsBackend::new_with_namespace(
-            codex_home.path().to_path_buf(),
-            keyring.clone(),
-            LocalSecretsNamespace::GatewayOAuth,
         );
         let scope = SecretScope::Global;
         let name = SecretName::new("TEST_SECRET")?;
 
         codex_auth_backend.set(&scope, &name, "codex-auth-value")?;
         mcp_backend.set(&scope, &name, "mcp-value")?;
-        gateway_backend.set(&scope, &name, "gateway-value")?;
 
         assert_eq!(
             codex_auth_backend.get(&scope, &name)?,
@@ -567,23 +670,6 @@ mod tests {
                 .exists()
         );
         assert!(!codex_home.path().join("secrets").join("local.age").exists());
-        assert!(
-            codex_home
-                .path()
-                .join("secrets/gateway_oauth.age")
-                .is_file()
-        );
-        // Primary-auth key removal must not make the independent gateway file unreadable.
-        keyring
-            .delete(
-                keyring_service(),
-                &compute_keyring_account(codex_home.path(), LocalSecretsNamespace::CodexAuth),
-            )
-            .expect("remove primary secrets key");
-        assert_eq!(
-            gateway_backend.get(&scope, &name)?,
-            Some("gateway-value".to_string())
-        );
         Ok(())
     }
 
