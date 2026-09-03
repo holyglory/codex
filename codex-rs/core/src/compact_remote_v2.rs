@@ -29,6 +29,7 @@ use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::usage_runtime::UsageRequestChain;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -241,6 +242,7 @@ async fn run_remote_compact_task_inner_impl(
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
+    let usage_chain = UsageRequestChain::new();
     let attempt = run_remote_compact_v2_attempt(
         sess,
         step_context,
@@ -248,6 +250,7 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        &usage_chain,
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -276,6 +279,7 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                &usage_chain,
             )
             .await;
             record_model_fallback(
@@ -373,6 +377,7 @@ async fn run_remote_compaction_request_v2(
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
+    usage_chain: &UsageRequestChain,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
     let max_retries = turn_context
@@ -383,7 +388,7 @@ async fn run_remote_compaction_request_v2(
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
         let result = match client_session
-            .stream(
+            .stream_with_usage_chain(
                 prompt,
                 turn_context.model_info(),
                 &turn_context.session_telemetry,
@@ -392,6 +397,7 @@ async fn run_remote_compaction_request_v2(
                 step_context.settings.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
+                usage_chain,
             )
             .await
         {

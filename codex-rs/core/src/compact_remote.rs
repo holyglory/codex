@@ -23,6 +23,7 @@ use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::usage_runtime::UsageRequestChain;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -210,6 +211,7 @@ async fn run_remote_compact_task_inner_impl(
         turn_context.provider.info().name.as_str(),
     );
     let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
+    let usage_chain = UsageRequestChain::new();
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
     let attempt = run_remote_compact_attempt(
@@ -219,6 +221,7 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        &usage_chain,
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -247,6 +250,7 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                &usage_chain,
             )
             .await;
             record_model_fallback(

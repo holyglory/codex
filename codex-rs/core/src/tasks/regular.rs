@@ -11,6 +11,7 @@ use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_thread_store::PersistContext;
 use tracing::Instrument;
 use tracing::trace_span;
@@ -89,6 +90,17 @@ impl SessionTask for RegularTask {
                 return Ok(last_agent_message);
             }
             if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+                if ctx.automatic_account_switched() {
+                    sess.send_event(
+                        ctx.as_ref(),
+                        EventMsg::Warning(WarningEvent {
+                            message:
+                                "Automatically selected another eligible account for this turn."
+                                    .to_string(),
+                        }),
+                    )
+                    .await;
+                }
                 return Ok(last_agent_message);
             }
             next_input = Vec::new();

@@ -20,6 +20,7 @@ use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::usage_runtime::UsageRuntime;
 use arc_swap::ArcSwap;
 use arc_swap::ArcSwapOption;
 use codex_analytics::AnalyticsEventsClient;
@@ -30,6 +31,7 @@ use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::AuthManager;
+use codex_login::SharedProfileAuthRouter;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
@@ -62,6 +64,7 @@ pub(crate) struct SessionServices {
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) profile_auth_router: Option<SharedProfileAuthRouter>,
     /// Upload-only clients shared across turns without logging signed blob URLs.
     pub(crate) openai_file_upload_client_pool: RouteAwareClientPool,
     pub(crate) models_manager: SharedModelsManager,
@@ -95,6 +98,7 @@ pub(crate) struct SessionServices {
     pub(crate) time_provider: Arc<dyn TimeProvider>,
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
+    pub(crate) usage_runtime: Arc<UsageRuntime>,
     pub(crate) executed_tool_calls: Option<Arc<ExecutedToolCallRecorder>>,
     pub(crate) code_mode_service: CodeModeService,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,

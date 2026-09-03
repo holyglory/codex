@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use codex_diagnostics::Gauge;
 use codex_extension_api::ThreadIdleCause;
+use codex_history::RolloutItem;
 use futures::future::BoxFuture;
 use tokio::select;
 use tokio::sync::Mutex;
@@ -835,7 +836,8 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
-        self.send_event(turn_context.as_ref(), event).await;
+        self.persist_rollout_items(&[RolloutItem::EventMsg(event.clone())])
+            .await;
         self.services
             .guardian_rejection_circuit_breaker
             .lock()
@@ -854,6 +856,8 @@ impl Session {
                 false
             }
         };
+        self.send_persisted_event(turn_context.as_ref(), event)
+            .await;
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }

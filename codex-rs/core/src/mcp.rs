@@ -59,6 +59,13 @@ pub(crate) struct McpThreadIdentity<'a> {
     pub(crate) session_source: &'a SessionSource,
     pub(crate) originator: &'a str,
     pub(crate) environments: McpEnvironmentScope<'a>,
+    pub(crate) auth: Option<&'a CodexAuth>,
+}
+
+#[derive(Clone, Copy)]
+enum McpPluginAuth<'a> {
+    Legacy,
+    Captured(Option<&'a CodexAuth>),
 }
 
 enum OrderedMcpOverlay {
@@ -119,6 +126,22 @@ impl McpManager {
             /*originator*/
             None,
             McpEnvironmentScope::HostOnly,
+            McpPluginAuth::Legacy,
+        )
+        .await
+        .config
+    }
+
+    pub async fn runtime_config_with_auth(
+        &self,
+        config: &Config,
+        auth: Option<&CodexAuth>,
+    ) -> McpConfig {
+        self.runtime_config_with_context(
+            McpServerContributionContext::global(config),
+            /*originator*/ None,
+            McpEnvironmentScope::HostOnly,
+            McpPluginAuth::Captured(auth),
         )
         .await
         .config
@@ -146,6 +169,7 @@ impl McpManager {
             .with_session_source(identity.session_source),
             Some(identity.originator),
             identity.environments,
+            McpPluginAuth::Captured(identity.auth),
         )
         .await
     }
@@ -155,6 +179,7 @@ impl McpManager {
         context: McpServerContributionContext<'_, Config>,
         originator: Option<&str>,
         environment_scope: McpEnvironmentScope<'_>,
+        plugin_auth: McpPluginAuth<'_>,
     ) -> McpRuntimeProjection {
         let config = context.config();
         let mut selected_plugin_available = false;
@@ -240,10 +265,19 @@ impl McpManager {
             }
         }
 
-        let loaded_plugins = self
-            .plugins_manager
-            .plugins_for_config(&config.plugins_config_input())
-            .await;
+        let plugins_input = config.plugins_config_input();
+        let loaded_plugins = match plugin_auth {
+            McpPluginAuth::Legacy => {
+                self.plugins_manager
+                    .plugins_for_config(&plugins_input)
+                    .await
+            }
+            McpPluginAuth::Captured(auth) => {
+                self.plugins_manager
+                    .plugins_for_config_with_auth(&plugins_input, auth)
+                    .await
+            }
+        };
         let plugins_available =
             selected_plugin_available || !loaded_plugins.capability_summaries().is_empty();
         let mut mcp_config = config

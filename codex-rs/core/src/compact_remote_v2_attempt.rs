@@ -10,6 +10,7 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::usage_runtime::UsageRequestChain;
 use codex_history::CodexHarnessMetadata;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
@@ -35,6 +36,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    usage_chain: &UsageRequestChain,
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
@@ -107,6 +109,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         client_session,
         &prompt,
         &responses_metadata,
+        usage_chain,
     )
     .await;
     trace_attempt.record_result(

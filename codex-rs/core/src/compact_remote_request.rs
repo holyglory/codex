@@ -9,6 +9,7 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::usage_runtime::UsageRequestChain;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
@@ -27,6 +28,7 @@ pub(super) async fn run_remote_compact_attempt(
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    usage_chain: &UsageRequestChain,
 ) -> CodexResult<RemoteCompactAttempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
@@ -75,9 +77,20 @@ pub(super) async fn run_remote_compact_attempt(
             CodexResponsesRequestKind::Compaction(compaction_metadata),
         )
         .await;
-    let new_history = sess
-        .services
-        .model_client
+    let mut model_client = match &turn_context.auth_manager {
+        Some(auth_manager) => sess
+            .services
+            .model_client
+            .for_auth_manager(Arc::clone(auth_manager)),
+        None => sess.services.model_client.clone(),
+    };
+    if let Some(lease) = &turn_context.account_lease
+        && let Ok(account_profile_ref) =
+            codex_usage::AccountProfileRef::new(lease.account_id().as_str())
+    {
+        model_client = model_client.with_account_profile_ref(account_profile_ref);
+    }
+    let new_history = model_client
         .compact_conversation_history(
             &prompt,
             turn_context.model_info(),
@@ -85,7 +98,12 @@ pub(super) async fn run_remote_compact_attempt(
             CompactConversationRequestSettings {
                 effort: turn_context.reasoning_effort().cloned(),
                 summary: turn_context.reasoning_summary(),
-                service_tier: if sess.services.auth_manager.auth_mode() == Some(AuthMode::ApiKey) {
+                service_tier: if turn_context
+                    .auth_manager
+                    .as_ref()
+                    .and_then(|auth_manager| auth_manager.auth_mode())
+                    == Some(AuthMode::ApiKey)
+                {
                     None
                 } else {
                     step_context.settings.service_tier.clone()
@@ -94,6 +112,7 @@ pub(super) async fn run_remote_compact_attempt(
             &turn_context.session_telemetry,
             compaction_trace,
             &responses_metadata,
+            usage_chain,
         )
         .await?;
     Ok(RemoteCompactAttempt {
