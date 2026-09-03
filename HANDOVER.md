@@ -930,6 +930,15 @@ launchers resolve it as `codex`. Before replacement:
 Do not overwrite user credentials during binary installation. Credential
 migration belongs to the customized CLI and must be tested independently.
 
+Public downstream distribution is separately authorized by DEC-CODEX-016. The
+source fork is `https://github.com/holyglory/codex`, and the intended public npm
+package is `@holyglory/codex`. The package has not yet been submitted or
+published. Build and verify all six native platform payloads before the root
+wrapper; bootstrap the first package through the operator's interactive npm
+session, then configure `downstream-npm-release.yml` as the sole stage-only OIDC
+trusted publisher. npm publication never authorizes a VPS deployment or the
+inclusion of credentials and per-user runtime data in an artifact.
+
 The `holyglory` deployment `be8103fc-42a4-4665-b3d8-1d0ae960456c`
 preserves `0.147.0` as its exact binary rollback release. Its first-run legacy
 account migration completed with healthy private-storage checks and a local,

@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-08-25
+Last reviewed: 2026-09-03
 
 ## Confirmed project context
 
@@ -43,6 +43,19 @@ Last reviewed: 2026-08-25
   launchers, current-release links, runtime data, and processes of
   `holygloryTT` and `axel` remain outside this deployment mutation boundary
   (user confirmations on 2026-08-22 and 2026-08-25).
+- **Public distribution:** The operator authorizes a public source fork at
+  `github.com/holyglory/codex` and a public npm package named
+  `@holyglory/codex`. Published packages preserve the `codex` executable name,
+  contain only reviewed release artifacts and required redistribution files,
+  and must not include credentials or per-user runtime data (user confirmation
+  on 2026-09-03; DEC-CODEX-016).
+- **Publication authority:** The first npm release uses the operator's
+  interactive, 2FA-protected npm session because npm requires a package to
+  exist before trusted publishing can be configured. Subsequent submissions
+  use GitHub Actions OIDC with stage-only authority; a human approves staged
+  versions before they become public. Long-lived npm write tokens are not an
+  accepted steady-state control (user confirmation on 2026-09-03;
+  DEC-CODEX-016).
 - **Authorized accounting scope:** The current request authorizes categorical
   token/tool usage accounting per chat and repository and totals across
   repositories. It does not authorize retaining the content of prompts,
@@ -82,6 +95,10 @@ Last reviewed: 2026-08-25
 - Required capture blocks a new model/tool operation when its durable start
   event cannot be written. Incomplete operations remain explicit coverage gaps;
   missing counts are never synthesized.
+- Public release automation builds on GitHub-hosted runners, verifies the
+  complete platform package set before publication, stages platform payloads
+  before the root wrapper, and keeps final publication behind npm's interactive
+  2FA approval boundary.
 
 ## Unknown or out of scope
 
@@ -111,4 +128,6 @@ or its read-only/pre-turn boundary, deploying to another Unix account beyond
 owner. Also revisit before allowing agent tools to perform login, credential
 access or deletion, profile
 removal, external export, or account mutations beyond the authorized routing
-metadata.
+metadata. Revisit before transferring the GitHub repository or npm package,
+adding another trusted publisher or package maintainer, permitting direct
+unreviewed publication, or introducing a persistent npm write credential.

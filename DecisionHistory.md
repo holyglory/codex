@@ -24,6 +24,10 @@ priority is a descending drain rank: higher numbers are consumed before lower
 numbers, with `1000` as the neutral default (DEC-CODEX-013). Complete approved
 usage facts and safe account-routing controls are available to both the operator
 and in-product agents through bounded structured surfaces (DEC-CODEX-014).
+The maintained fork is publicly distributed from `holyglory/codex` as
+`@holyglory/codex`, with platform-complete staged releases, human 2FA approval,
+and GitHub Actions OIDC instead of a persistent npm write token
+(DEC-CODEX-016).
 
 ### DEC-CODEX-001
 
@@ -199,3 +203,16 @@ and in-product agents through bounded structured surfaces (DEC-CODEX-014).
   and downstream history; copying the tree delta or claiming plain 0.149.1
   would lose provenance or misstate the modified binary.
 - [Details](DecisionDetails/DEC-CODEX-015.md)
+
+### DEC-CODEX-016
+
+- **Decision:** Publish the public `holyglory/codex` fork as
+  `@holyglory/codex`, preserving the `codex` executable and all six platform
+  payloads; bootstrap through interactive 2FA, then use a stage-only GitHub
+  Actions trusted publisher with human approval.
+- **Why:** A scoped downstream package provides the requested standard npm
+  installation without impersonating OpenAI. Platform-split artifacts retain
+  upstream install efficiency, while staged OIDC publishing avoids a durable
+  write token and prevents an automated workflow from making a release public
+  without operator approval.
+- [Details](DecisionDetails/DEC-CODEX-016.md)

@@ -1,4 +1,4 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center"><strong>Codex Multi</strong> is an unofficial downstream fork of OpenAI Codex CLI with first-class multi-account support and content-free local usage accounting.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
@@ -11,46 +11,41 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Installing and running Codex Multi
 
-Run the following on Mac or Linux to install Codex CLI:
+Install the downstream package on a supported platform:
+
+```shell
+npm install -g @holyglory/codex
+```
+
+Then run the compatible `codex` executable:
+
+```shell
+codex
+```
+
+The package is maintained at [holyglory/codex](https://github.com/holyglory/codex). It preserves the upstream command name and interfaces but is not an OpenAI distribution. OpenAI service authentication, subscription, workspace, usage, and rate-limit terms still apply.
+
+### Installing official OpenAI Codex
+
+OpenAI's standalone installers, `@openai/codex` npm package, and Homebrew cask install the official upstream CLI rather than this fork:
 
 ```shell
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
-
-```shell
+```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
-
 ```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
-
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
-
-Codex CLI can also be installed via the following package managers:
-
-```shell
-# Install using npm
 npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
 brew install --cask codex
 ```
 
-Then simply run `codex` to get started.
-
 <details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+<summary>You can also go to the <a href="https://github.com/holyglory/codex/releases/latest">latest downstream GitHub Release</a> and download the appropriate binary for your platform.</summary>
 
 Each GitHub Release contains many executables, but in practice, you likely want one of these:
 
