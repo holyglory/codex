@@ -1067,6 +1067,7 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
         origins: vec![McpResourceOrigin {
             call_id: "widget-call".to_string(),
             turn_id: Some("keep-before-compaction".to_string()),
+            account_id: None,
             tool: "_product_search".to_string(),
             connector_id: "shopping".to_string(),
             link_id: None,
