@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: auto
+---
+  Automatic account selection
+
+     Status: off
+› 1. Turn on
+     Policy: Priority
+     Priority order: higher numbers drain first; smaller numbers drain
+     last
+     Eligible: Managed ChatGPT OAuth only
+     Stale/unknown limits
+     Never auto-selected
+
+  enter confirm · esc back
