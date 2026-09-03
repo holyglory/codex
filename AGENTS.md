@@ -1,5 +1,14 @@
 # Rust/codex-rs
 
+## Route local usage requests directly
+
+- In a model-routed chat surface, treat `/usage all` as a direct request to call the built-in
+  `usage_stats` tool with `action="summary"` and `scope="all"`; return the report without searching
+  OpenAI documentation.
+- Likewise, route `/usage chat` to `scope="current_chat"` and `/usage repo` to
+  `scope="current_repository"`. Do not claim that the client intercepted a slash command unless
+  the active surface is the Codex TUI, which has its own local `/usage` dispatcher.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
