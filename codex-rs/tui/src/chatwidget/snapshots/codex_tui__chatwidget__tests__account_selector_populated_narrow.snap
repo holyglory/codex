@@ -1,0 +1,61 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: narrow
+---
+  Accounts
+
+  Search accounts
+› ● primary (current)
+                       primary@example
+                       .com · Plus ·
+                       signed in ·
+                       enabled ·
+                       default ·
+                       priority 10 ·
+                       limits unknown
+  backup
+                       backup@example.
+                       com · Plus ·
+                       signed in ·
+                       enabled ·
+                       priority 10 ·
+                       limits unknown
+  logged-out           logged-
+                       out@example.com
+                       · Plus · logged
+                       out · enabled ·
+                       priority 10 ·
+                       limits unknown
+  Add account
+  Automatic selection  off · policy:
+                       Priority ·
+                       higher numbers
+                       drain first;
+                       smaller numbers
+                       drain last
+
+  enter confirm · esc back
+---
+  noted
+
+     Account status
+     noted@example.com · Plus · logged
+     out · enabled · priority 10 ·
+     limits unknown
+     Use for next turn (disabled)
+     Sign in before selecting this
+     account.
+› 1. Edit alias
+  2. Edit priority
+     Higher numbers drain first;
+     smaller numbers drain last.
+  3. Edit note
+     Prefer this profile for long-
+     running review and documentation
+     tasks when limits permit.
+  4. Clear note
+  5. Disable
+     View limits (disabled)
+     Sign in to read limits.
+
+  enter confirm · esc back
