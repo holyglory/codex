@@ -539,8 +539,7 @@ impl ToolRegistry {
                         .as_ref()
                         .and_then(|manager| manager.get_api_auth_mode())
                 }),
-        )
-        .map_err(|error| FunctionCallError::Fatal(error.to_string()))?;
+        );
         let usage_repositories = usage_repository_candidates_for_tool(&invocation);
         let (execution_group_id, execution_role) = usage_tool_execution(&invocation).await;
         let usage_attempt = invocation
@@ -560,8 +559,7 @@ impl ToolRegistry {
                 account: usage_account,
                 repositories: usage_repositories,
             })
-            .await
-            .map_err(|error| FunctionCallError::Fatal(error.to_string()))?;
+            .await;
 
         {
             let mut active = invocation.session.active_turn.lock().await;
