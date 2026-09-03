@@ -5,6 +5,7 @@ use codex_backend_client::RequestError;
 use codex_config::types::OtelExporterKind;
 use codex_core::config::Config;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_otel::SessionTelemetry;
@@ -46,6 +47,7 @@ pub(crate) struct TurnCostWorkerHandle {
 enum TurnCostObservationKind {
     Started {
         session_telemetry: Box<SessionTelemetry>,
+        auth_lease: Option<AuthManagerLease>,
     },
     ResponseCompleted {
         response_id: String,
@@ -75,6 +77,7 @@ struct TurnCostEntry {
     status: TurnCostStatus,
     next_poll_at: Instant,
     attempt_count: u8,
+    auth_lease: Option<AuthManagerLease>,
 }
 
 struct WorkerRuntime {
@@ -91,7 +94,6 @@ enum TurnCostBackend {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendAvailability {
-    AwaitingAuthChange,
     RetryProbe,
     Ready,
     Disabled,
@@ -164,23 +166,31 @@ impl TurnCostWorkerHandle {
         thread_id: ThreadId,
         thread_config: &Config,
         event: &Event,
+        auth_lease: Option<AuthManagerLease>,
         session_telemetry: impl FnOnce() -> SessionTelemetry,
     ) {
         if thread_config.model_provider != self.config.model_provider {
             return;
         }
-        if let TurnCostBackend::OpenAi(auth_manager) = &self.backend {
-            let Some(auth) = auth_manager.auth_cached() else {
-                return;
-            };
-            if !auth.is_api_key_auth() && !auth.is_chatgpt_auth() {
-                return;
-            }
-        }
         let kind = match &event.msg {
-            EventMsg::TurnStarted(_) => TurnCostObservationKind::Started {
-                session_telemetry: Box::new(session_telemetry()),
-            },
+            EventMsg::TurnStarted(_) => {
+                if let TurnCostBackend::OpenAi(fallback_auth_manager) = &self.backend {
+                    let auth_manager = auth_lease
+                        .as_ref()
+                        .map(AuthManagerLease::auth_manager)
+                        .unwrap_or(fallback_auth_manager);
+                    let Some(auth) = auth_manager.auth_cached() else {
+                        return;
+                    };
+                    if !auth.is_api_key_auth() && !auth.is_chatgpt_auth() {
+                        return;
+                    }
+                }
+                TurnCostObservationKind::Started {
+                    session_telemetry: Box::new(session_telemetry()),
+                    auth_lease,
+                }
+            }
             EventMsg::RawResponseCompleted(event) => TurnCostObservationKind::ResponseCompleted {
                 response_id: event.response_id.clone(),
             },
@@ -198,13 +208,17 @@ impl TurnCostWorkerHandle {
 
 impl WorkerRuntime {
     async fn run(self, receiver: mpsc::Receiver<TurnCostObservation>, shutdown: CancellationToken) {
-        let auth_changes = match &self.backend {
-            TurnCostBackend::OpenAi(auth_manager) => Some(auth_manager.auth_change_receiver()),
-            TurnCostBackend::ModelProvider(_) => None,
+        let backend_availability = match &self.backend {
+            TurnCostBackend::OpenAi(_) => BackendAvailability::Ready,
+            TurnCostBackend::ModelProvider(_) => self.probe_backend().await,
         };
-        let backend_availability = self.probe_backend().await;
-        self.run_with_backend_availability(receiver, shutdown, auth_changes, backend_availability)
-            .await;
+        self.run_with_backend_availability(
+            receiver,
+            shutdown,
+            /*auth_changes*/ None,
+            backend_availability,
+        )
+        .await;
     }
 
     async fn run_with_backend_availability(
@@ -253,8 +267,7 @@ impl WorkerRuntime {
                         BackendAvailability::RetryProbe => {
                             backend_availability = self.probe_backend().await;
                         }
-                        BackendAvailability::AwaitingAuthChange
-                        | BackendAvailability::Disabled => {}
+                        BackendAvailability::Disabled => {}
                     }
                 }
             }
@@ -262,21 +275,22 @@ impl WorkerRuntime {
     }
 
     async fn probe_backend(&self) -> BackendAvailability {
+        if matches!(&self.backend, TurnCostBackend::OpenAi(_)) {
+            return BackendAvailability::Ready;
+        }
         let probe_turn_ids = [uuid::Uuid::new_v4().to_string()];
-        match tokio::time::timeout(REQUEST_TIMEOUT, self.query_turn_costs(&probe_turn_ids)).await {
+        match tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.query_turn_costs(&probe_turn_ids, /*auth_manager*/ None),
+        )
+        .await
+        {
             Ok(Ok(Some(_))) => BackendAvailability::Ready,
-            Ok(Ok(None)) => match self.backend {
-                TurnCostBackend::OpenAi(_) => BackendAvailability::AwaitingAuthChange,
+            Ok(Ok(None)) => match &self.backend {
+                TurnCostBackend::OpenAi(_) => BackendAvailability::Ready,
                 TurnCostBackend::ModelProvider(_) => BackendAvailability::Disabled,
             },
             Ok(Err(error)) => match error.status().map(|status| status.as_u16()) {
-                Some(401 | 403) if matches!(self.backend, TurnCostBackend::OpenAi(_)) => {
-                    tracing::debug!(
-                        status = error.status().map(|status| status.as_u16()),
-                        "turn cost worker waiting for auth change after backend availability check"
-                    );
-                    BackendAvailability::AwaitingAuthChange
-                }
                 Some(401 | 403 | 429) => BackendAvailability::RetryProbe,
                 Some(400..=499) => {
                     tracing::debug!(
@@ -304,7 +318,10 @@ impl WorkerRuntime {
 
     fn record_observation(&mut self, observation: TurnCostObservation) {
         match observation.kind {
-            TurnCostObservationKind::Started { session_telemetry } => {
+            TurnCostObservationKind::Started {
+                session_telemetry,
+                auth_lease,
+            } => {
                 if self.turns.len() < MAX_TRACKED_TURNS {
                     self.turns
                         .entry(observation.turn_id)
@@ -315,6 +332,7 @@ impl WorkerRuntime {
                             status: TurnCostStatus::Running,
                             next_poll_at: Instant::now(),
                             attempt_count: 0,
+                            auth_lease,
                         });
                 }
             }
@@ -348,39 +366,82 @@ impl WorkerRuntime {
 
     async fn poll_due(&mut self) {
         let now = Instant::now();
-        let due_turn_ids: Vec<String> = self
-            .turns
-            .iter()
-            .filter(|(_, entry)| {
-                entry.status != TurnCostStatus::Running && entry.next_poll_at <= now
-            })
-            .take(MAX_QUERY_TURNS)
-            .map(|(turn_id, _)| turn_id.clone())
-            .collect();
-        if !due_turn_ids.is_empty() {
-            self.poll_entries(&due_turn_ids).await;
+        if let TurnCostBackend::OpenAi(fallback_auth_manager) = &self.backend {
+            let mut groups: Vec<(Arc<AuthManager>, Vec<String>)> = Vec::new();
+            for (turn_id, entry) in self
+                .turns
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.status != TurnCostStatus::Running && entry.next_poll_at <= now
+                })
+                .take(MAX_QUERY_TURNS)
+            {
+                let auth_manager = entry
+                    .auth_lease
+                    .as_ref()
+                    .map(AuthManagerLease::auth_manager)
+                    .unwrap_or(fallback_auth_manager);
+                if let Some((_, turn_ids)) = groups
+                    .iter_mut()
+                    .find(|(existing, _)| Arc::ptr_eq(existing, auth_manager))
+                {
+                    turn_ids.push(turn_id.clone());
+                } else {
+                    groups.push((Arc::clone(auth_manager), vec![turn_id.clone()]));
+                }
+            }
+            for (auth_manager, turn_ids) in groups {
+                self.poll_entries_with_auth(&turn_ids, Some(&auth_manager))
+                    .await;
+            }
+        } else {
+            let due_turn_ids = self
+                .turns
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.status != TurnCostStatus::Running && entry.next_poll_at <= now
+                })
+                .take(MAX_QUERY_TURNS)
+                .map(|(turn_id, _)| turn_id.clone())
+                .collect::<Vec<_>>();
+            if !due_turn_ids.is_empty() {
+                self.poll_entries(&due_turn_ids).await;
+            }
         }
     }
 
     async fn poll_entries(&mut self, turn_ids: &[String]) {
-        let costs =
-            match tokio::time::timeout(REQUEST_TIMEOUT, self.query_turn_costs(turn_ids)).await {
-                Ok(Ok(Some(costs))) => costs,
-                Ok(Ok(None)) => return,
-                Ok(Err(error)) => {
-                    warn!(
-                        status = error.status().map(|status| status.as_u16()),
-                        "failed to query turn costs"
-                    );
-                    self.retry_entries(turn_ids);
-                    return;
-                }
-                Err(_) => {
-                    warn!("timed out querying turn costs");
-                    self.retry_entries(turn_ids);
-                    return;
-                }
-            };
+        self.poll_entries_with_auth(turn_ids, /*auth_manager*/ None)
+            .await;
+    }
+
+    async fn poll_entries_with_auth(
+        &mut self,
+        turn_ids: &[String],
+        auth_manager: Option<&Arc<AuthManager>>,
+    ) {
+        let costs = match tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.query_turn_costs(turn_ids, auth_manager.map(Arc::as_ref)),
+        )
+        .await
+        {
+            Ok(Ok(Some(costs))) => costs,
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => {
+                warn!(
+                    status = error.status().map(|status| status.as_u16()),
+                    "failed to query turn costs"
+                );
+                self.retry_entries(turn_ids);
+                return;
+            }
+            Err(_) => {
+                warn!("timed out querying turn costs");
+                self.retry_entries(turn_ids);
+                return;
+            }
+        };
         let costs_by_turn: HashMap<String, ApiKeyTurnCost> = costs
             .into_iter()
             .map(|cost| (cost.turn_id.clone(), cost))
@@ -397,9 +458,11 @@ impl WorkerRuntime {
     async fn query_turn_costs(
         &self,
         turn_ids: &[String],
+        auth_manager: Option<&AuthManager>,
     ) -> Result<Option<Vec<ApiKeyTurnCost>>, RequestError> {
         match &self.backend {
-            TurnCostBackend::OpenAi(auth_manager) => {
+            TurnCostBackend::OpenAi(fallback_auth_manager) => {
+                let auth_manager = auth_manager.unwrap_or(fallback_auth_manager);
                 let Some(auth) = auth_manager.auth().await else {
                     return Ok(None);
                 };
