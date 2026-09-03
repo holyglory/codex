@@ -124,6 +124,23 @@ impl RouteAwareRequestError {
             {
                 return Some(RouteFailureClass::TlsError);
             }
+            let compact_message = error
+                .to_string()
+                .to_ascii_lowercase()
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>();
+            if [
+                "invalidcertificate",
+                "unknownissuer",
+                "alertreceivedprotocolversion",
+                "tlsv1alertprotocolversion",
+            ]
+            .iter()
+            .any(|marker| compact_message.contains(marker))
+            {
+                return Some(RouteFailureClass::TlsError);
+            }
             if error.to_string() == "tunnel error: proxy authorization required" {
                 return Some(RouteFailureClass::ProxyAuthenticationRequired);
             }

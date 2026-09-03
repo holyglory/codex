@@ -303,6 +303,26 @@ impl McpResourceClient {
         .await
     }
 
+    pub(crate) async fn open_event_stream_with_connections(
+        connections: Arc<McpConnectionSet>,
+        cancel_event_streams_on_server_removal: watch::Receiver<()>,
+        event_name: &str,
+        arguments: &Value,
+        request_meta: Option<&Map<String, Value>>,
+    ) -> Result<McpEventStream> {
+        let (managed, _) = connections
+            .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
+            .await?;
+        McpEventStream::open(
+            managed.client,
+            cancel_event_streams_on_server_removal,
+            event_name,
+            arguments,
+            request_meta,
+        )
+        .await
+    }
+
     /// Creates an event stream opener using the task's event server settings.
     pub fn event_stream_opener(&self) -> Result<McpEventStreamOpener> {
         self.runtime.event_stream_opener()
