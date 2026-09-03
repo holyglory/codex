@@ -3,6 +3,10 @@ use crate::common::ResponseStream;
 use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
+use crate::provider_usage::ProviderResponseStatus;
+use crate::provider_usage::ProviderSourceEventKey;
+use crate::provider_usage::ProviderUsage;
+use crate::provider_usage::ProviderUsageObservation;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::telemetry::SseTelemetry;
@@ -193,6 +197,30 @@ where
 impl ResponsesStreamEvent {
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    pub(crate) fn provider_usage_observation(&self) -> Option<ProviderUsageObservation> {
+        let status = match self.kind() {
+            "response.completed" => ProviderResponseStatus::Completed,
+            "response.failed" => ProviderResponseStatus::Failed,
+            "response.incomplete" => ProviderResponseStatus::Incomplete,
+            _ => return None,
+        };
+        let response = self.response.as_ref()?;
+        let usage = response.get("usage")?;
+        if usage.is_null() {
+            return None;
+        }
+        let source_event_key = response
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(ProviderSourceEventKey::from_provider_response_id);
+
+        Some(ProviderUsageObservation::new(
+            status,
+            source_event_key,
+            ProviderUsage::from_json_value(usage),
+        ))
     }
 
     /// Returns the effective model reported by the server, if present.
@@ -569,7 +597,6 @@ async fn process_sse_with_treatment(
     safety_buffering_treatment: SafetyBufferingTreatment,
 ) {
     let mut stream = stream.eventsource();
-    let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
 
     loop {
@@ -586,10 +613,11 @@ async fn process_sse_with_treatment(
                 return;
             }
             Ok(None) => {
-                let error = response_error.unwrap_or(ApiError::Stream(
-                    "stream closed before response.completed".into(),
-                ));
-                let _ = tx_event.send(Err(error)).await;
+                let _ = tx_event
+                    .send(Err(ApiError::Stream(
+                        "stream closed before response.completed".into(),
+                    )))
+                    .await;
                 return;
             }
             Err(_) => {
@@ -618,6 +646,7 @@ async fn process_sse_with_treatment(
         let model_verifications = event.model_verifications();
         let turn_moderation_metadata = event.turn_moderation_metadata();
         let safety_buffering = event.safety_buffering(&safety_buffering_treatment);
+        let provider_usage = event.provider_usage_observation();
 
         if let Some(model) = event.response_model()
             && last_server_model.as_deref() != Some(model.as_str())
@@ -655,6 +684,14 @@ async fn process_sse_with_treatment(
         {
             return;
         }
+        if let Some(provider_usage) = provider_usage
+            && tx_event
+                .send(Ok(ResponseEvent::ProviderUsage(provider_usage)))
+                .await
+                .is_err()
+        {
+            return;
+        }
 
         match process_responses_event(event) {
             Ok(Some(event)) => {
@@ -668,7 +705,8 @@ async fn process_sse_with_treatment(
             }
             Ok(None) => {}
             Err(error) => {
-                response_error = Some(error.into_api_error());
+                let _ = tx_event.send(Err(error.into_api_error())).await;
+                return;
             }
         };
     }
@@ -809,7 +847,10 @@ mod tests {
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {
-            out.push(ev.expect("channel closed"));
+            let event = ev.expect("channel closed");
+            if !matches!(event, ResponseEvent::ProviderUsage(_)) {
+                out.push(event);
+            }
         }
         out
     }
@@ -2052,3 +2093,7 @@ mod tests {
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";
 }
+
+#[cfg(test)]
+#[path = "responses_usage_tests.rs"]
+mod usage_tests;
