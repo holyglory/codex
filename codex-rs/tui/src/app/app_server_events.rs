@@ -224,6 +224,16 @@ impl App {
                 }
                 return;
             }
+            ServerNotification::AccountLoginCompleted(notification) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_login(notification.success);
+                return;
+            }
+            ServerNotification::AccountProfileActiveChanged(_) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_active_change();
+                return;
+            }
             ServerNotification::AccountUpdated(notification) => {
                 self.chat_widget.cyber_policy_notice = Default::default();
                 self.rate_limit_hard_stop_generation =
