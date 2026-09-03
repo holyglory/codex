@@ -813,7 +813,7 @@ async fn collect_process_output_from_events(
     let mut stderr = String::new();
     let mut exit_code = None;
     loop {
-        match timeout(Duration::from_secs(2), events.recv()).await?? {
+        match timeout(Duration::from_secs(5), events.recv()).await?? {
             ExecProcessEvent::Output(chunk) => match chunk.stream {
                 ExecOutputStream::Stdout | ExecOutputStream::Pty => {
                     stdout.push_str(&String::from_utf8_lossy(&chunk.chunk.into_inner()));
