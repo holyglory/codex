@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -19,8 +20,11 @@ use wiremock::matchers::path;
 
 use super::policy::resolve_attribution_policy;
 
-fn enterprise_auth_manager() -> Arc<AuthManager> {
-    AuthManager::from_auth_for_testing(enterprise_auth("workspace-123"))
+fn enterprise_auth_manager(codex_home: &Path) -> Arc<AuthManager> {
+    AuthManager::from_auth_for_testing_with_home(
+        enterprise_auth("workspace-123"),
+        codex_home.to_path_buf(),
+    )
 }
 
 fn http_client_factory() -> HttpClientFactory {
@@ -53,6 +57,7 @@ async fn set_auth(auth_manager: &AuthManager, account_id: &str) {
 
 #[tokio::test]
 async fn policy_resolution_recovers_after_unauthorized() {
+    let codex_home = tempfile::tempdir().expect("create Codex home");
     let server = MockServer::start().await;
     let request_count = Arc::new(AtomicUsize::new(0));
     Mock::given(method("GET"))
@@ -71,7 +76,7 @@ async fn policy_resolution_recovers_after_unauthorized() {
         .expect(2)
         .mount(&server)
         .await;
-    let auth_manager = enterprise_auth_manager();
+    let auth_manager = enterprise_auth_manager(codex_home.path());
     set_auth(auth_manager.as_ref(), "workspace-123").await;
 
     let policy = resolve_attribution_policy(
@@ -90,6 +95,7 @@ async fn policy_resolution_recovers_after_unauthorized() {
 
 #[tokio::test]
 async fn policy_resolution_retries_after_auth_refresh() {
+    let codex_home = tempfile::tempdir().expect("create Codex home");
     let server = MockServer::start().await;
     let request_started = Arc::new(Notify::new());
     let request_count = Arc::new(AtomicUsize::new(0));
@@ -116,7 +122,7 @@ async fn policy_resolution_retries_after_auth_refresh() {
         .expect(3)
         .mount(&server)
         .await;
-    let auth_manager = enterprise_auth_manager();
+    let auth_manager = enterprise_auth_manager(codex_home.path());
     let resolve = tokio::spawn({
         let auth_manager = auth_manager.clone();
         let base_url = format!("{}/backend-api", server.uri());
