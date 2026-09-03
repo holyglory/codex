@@ -66,6 +66,12 @@ pub struct RemoteInstalledPluginBundleSyncOutcome {
     pub failed_materialization_remote_plugin_ids: Vec<String>,
 }
 
+impl RemoteInstalledPluginBundleSyncOutcome {
+    pub fn changed_local_cache(&self) -> bool {
+        !self.materialized_remote_plugins.is_empty() || !self.changed_plugins.is_empty()
+    }
+}
+
 pub(crate) struct RemoteInstalledPluginBundleSyncResult {
     pub(crate) outcome: RemoteInstalledPluginBundleSyncOutcome,
     pub(crate) installed_plugins: Vec<RemoteInstalledPlugin>,

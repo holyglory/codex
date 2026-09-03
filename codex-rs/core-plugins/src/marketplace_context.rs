@@ -34,6 +34,7 @@ impl PluginMarketplaceContext {
         &self,
         manager: &PluginsManager,
         include_openai_curated: bool,
+        auth: Option<&CodexAuth>,
     ) -> Result<ConfiguredMarketplaceListOutcome, MarketplaceError> {
         let mut plugin_states = ConfiguredPluginStates::default();
         for scope in self
@@ -68,6 +69,7 @@ impl PluginMarketplaceContext {
                 scope.cwd.as_slice(),
                 include_openai_curated,
                 &plugin_states,
+                auth,
             )?;
             for mut marketplace in outcome.marketplaces {
                 if !seen_marketplace_paths.insert(marketplace.path.clone()) {
