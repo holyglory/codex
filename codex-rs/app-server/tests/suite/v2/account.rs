@@ -11,6 +11,7 @@ use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
+use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::AccountUpdatedNotification;
@@ -44,6 +45,7 @@ use codex_http_client::HttpClientBuilder;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CLIENT_ID_OVERRIDE_ENV_VAR;
+use codex_login::ProfileAuthStorage;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::auth::BedrockAccessKeysAuth;
 use codex_login::auth::BedrockApiKeyAuth;
@@ -2120,9 +2122,30 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
     };
     assert_eq!(payload.auth_mode, Some(AuthMode::Chatgpt));
     assert_eq!(payload.plan_type, Some(AccountPlanType::Pro));
-    assert!(
-        codex_home.path().join("auth.json").exists(),
-        "auth.json should be created when device code login succeeds"
+    let stored_auth = match load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )? {
+        Some(auth) => auth,
+        None => {
+            let registry = RegistryStore::new(codex_home.path()).read()?;
+            let account_id = registry
+                .default_account_id
+                .expect("successful singular login should select a persisted profile");
+            ProfileAuthStorage::new(
+                codex_home.path(),
+                account_id,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+            )?
+            .load()?
+            .expect("successful singular login should persist profile credentials")
+        }
+    };
+    assert_eq!(
+        stored_auth.tokens.map(|tokens| tokens.access_token),
+        Some("access-token-123".to_string())
     );
     Ok(())
 }
@@ -2173,14 +2196,7 @@ async fn login_account_chatgpt_device_code_failure_notifies_without_account_upda
     };
     assert_eq!(payload.login_id, Some(login_id));
     assert_eq!(payload.success, false);
-    assert!(
-        payload
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("device auth failed with status")),
-        "unexpected error: {:?}",
-        payload.error
-    );
+    assert_eq!(payload.error.as_deref(), Some("Login failed"));
 
     let maybe_updated = timeout(
         Duration::from_millis(500),
@@ -3066,7 +3082,9 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
                 "code": "refresh_token_reused"
             }
         })))
-        .expect(1..=2)
+        // Startup refreshes through the cloud-config and runtime managers race
+        // with the lazily migrated profile manager used by this request.
+        .expect(1..=3)
         .mount(&server)
         .await;
 

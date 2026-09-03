@@ -40,6 +40,11 @@ async fn account_thread_usage_uses_active_workspace_and_canonical_thread_ids() -
         ChatGptAuthFixture::new("active-token").account_id("active-workspace"),
         AuthCredentialsStoreMode::File,
     )?;
+    codex_login::migrate_legacy_auth_if_needed(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        codex_login::AuthKeyringBackendKind::default(),
+    )?;
 
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -54,9 +59,6 @@ async fn account_thread_usage_uses_active_workspace_and_canonical_thread_ids() -
 
     Mock::given(method("POST"))
         .and(path("/api/codex/usage/thread_usage/query"))
-        .and(header("authorization", "Bearer active-token"))
-        .and(header("chatgpt-account-id", "active-workspace"))
-        .and(body_json(json!({ "thread_ids": [thread_id] })))
         .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
             "threads": [{
                 "thread_id": thread_id,
@@ -87,6 +89,29 @@ async fn account_thread_usage_uses_active_workspace_and_canonical_thread_ids() -
         .await?;
     let response: GetAccountTokenUsageResponse =
         timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(request_id)).await??;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.url.path(), "/api/codex/usage/thread_usage/query");
+    assert_eq!(
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer active-token")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("active-workspace")
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        json!({ "thread_ids": [thread_id] })
+    );
 
     assert_eq!(
         response,
