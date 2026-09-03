@@ -9,6 +9,15 @@ use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+#[test]
+fn usage_stats_is_accounting_overhead_control_work() {
+    let descriptor = usage_tool_descriptor(&ToolName::plain("usage_stats"), /*runtime*/ None);
+    assert_eq!(descriptor.kind, "control");
+    assert_eq!(descriptor.safe_name, "usage_stats");
+    assert_eq!(descriptor.family, "accounting");
+    assert!(descriptor.activity_control);
+}
+
 struct TestHandler {
     tool_name: codex_tools::ToolName,
 }

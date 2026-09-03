@@ -180,6 +180,7 @@ impl McpHandler {
         let prepared_mcp_call = invocation
             .session
             .prepare_mcp_call(
+                &invocation.call_id,
                 &self.tool_info.server_name,
                 self.tool_info.tool.name.as_ref(),
             )

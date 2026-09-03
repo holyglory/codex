@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use codex_tools::ToolOutput;
 pub use codex_tools::ToolPayload;
+use codex_tools::UsageTerminalOutcome;
 
 pub(crate) fn boxed_tool_output<T>(output: T) -> Box<dyn ToolOutput>
 where
@@ -225,6 +226,7 @@ pub struct FunctionToolOutput {
     pub body: Vec<FunctionCallOutputContentItem>,
     pub success: Option<bool>,
     pub post_tool_use_response: Option<JsonValue>,
+    pub usage_terminal_outcome: Option<UsageTerminalOutcome>,
 }
 
 impl FunctionToolOutput {
@@ -233,6 +235,7 @@ impl FunctionToolOutput {
             body: vec![FunctionCallOutputContentItem::InputText { text }],
             success,
             post_tool_use_response: None,
+            usage_terminal_outcome: None,
         }
     }
 
@@ -244,6 +247,7 @@ impl FunctionToolOutput {
             body: content,
             success,
             post_tool_use_response: None,
+            usage_terminal_outcome: None,
         }
     }
 
@@ -259,6 +263,16 @@ impl ToolOutput for FunctionToolOutput {
 
     fn success_for_logging(&self) -> bool {
         self.success.unwrap_or(true)
+    }
+
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        self.usage_terminal_outcome.unwrap_or_else(|| {
+            if self.success_for_logging() {
+                UsageTerminalOutcome::COMPLETED
+            } else {
+                UsageTerminalOutcome::FAILED
+            }
+        })
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
@@ -374,6 +388,14 @@ impl ToolOutput for ExecCommandToolOutput {
 
     fn success_for_logging(&self) -> bool {
         true
+    }
+
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        if self.exit_code.is_some_and(|exit_code| exit_code != 0) {
+            UsageTerminalOutcome::FAILED
+        } else {
+            UsageTerminalOutcome::COMPLETED
+        }
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
