@@ -7,6 +7,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
+use crate::tools::handlers::AccountManagementHandler;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -28,6 +29,8 @@ use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::UsageActivityHandler;
+use crate::tools::handlers::UsageStatsHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -1132,6 +1135,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     let turn_context = context.turn_context;
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.environments);
+
+    if turn_context.config.local_control_tools_enabled {
+        registry.add(UsageActivityHandler);
+        registry.add(UsageStatsHandler);
+        registry.add(AccountManagementHandler);
+    }
 
     if turn_context.config.update_plan_enabled {
         registry.add(PlanHandler);
