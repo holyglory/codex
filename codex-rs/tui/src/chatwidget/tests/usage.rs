@@ -4,6 +4,7 @@ use super::*;
 use chrono::TimeZone;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditOutcome;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
+use codex_app_server_protocol::LocalUsageCoverage;
 use codex_app_server_protocol::RateLimitResetCredit;
 use codex_app_server_protocol::RateLimitResetCreditStatus;
 use codex_app_server_protocol::RateLimitResetCreditsSummary;
@@ -121,6 +122,57 @@ async fn usage_command_opens_menu_when_reset_is_available_snapshot() {
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(rx.try_recv(), Ok(AppEvent::OpenTokenActivity));
+}
+
+#[tokio::test]
+async fn local_usage_menu_puts_current_chat_first_wide_and_narrow_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.set_local_usage_supported(/*supported*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    chat.dispatch_command(SlashCommand::Usage);
+
+    assert_chatwidget_snapshot!(
+        "local_usage_menu_wide",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
+    assert_chatwidget_snapshot!(
+        "local_usage_menu_narrow",
+        render_bottom_popup(&chat, /*width*/ 36)
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenLocalUsage {
+            query: LocalUsageQuery::Chat { thread_id: actual }
+        }) if actual == thread_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn local_usage_partial_chat_leads_with_coverage_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_local_usage_supported(/*supported*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.open_local_usage_command("chat");
+    let Ok(AppEvent::RefreshLocalUsage { request_id, query }) = rx.try_recv() else {
+        panic!("expected local usage request");
+    };
+    chat.finish_local_usage(
+        request_id,
+        query,
+        Ok(LocalUsageResponse::Chat(
+            super::local_usage_advanced::local_thread_response(LocalUsageCoverage::Partial),
+        )),
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 64);
+    assert!(!rendered.contains("private-thread-id"));
+    assert!(!rendered.contains("private-repository-key"));
+    assert_chatwidget_snapshot!("local_usage_chat_partial", rendered);
 }
 
 #[tokio::test]
