@@ -92,9 +92,15 @@ Last reviewed: 2026-09-03
 - Environment, workload-identity, and externally refreshed credentials retain
   their upstream owner. An explicit local `--account` pin conflicts with those
   sources rather than silently overriding or being overridden by them.
-- Required capture blocks a new model/tool operation when its durable start
-  event cannot be written. Incomplete operations remain explicit coverage gaps;
-  missing counts are never synthesized.
+- Usage accounting is observational and never blocks model or tool work. When
+  its private durable store is unavailable, corrupt, or inconsistent, the
+  process retains content-free pending records in a bounded in-memory retry
+  cache, retries after later capture opportunities, and emits content-free
+  outage, overflow, retry, and recovery logs. Exhausted cache capacity or
+  process exit may leave a collection gap visible only in those logs, but
+  missing facts are never synthesized and accounting failure never becomes a
+  work-availability gate (user confirmation on 2026-09-03;
+  UIL-BUSINESS-LOGIC-USAGE-ACCOUNTING-003).
 - Public release automation builds on GitHub-hosted runners, verifies the
   complete platform package set before publication, stages platform payloads
   before the root wrapper, and keeps final publication behind npm's interactive
@@ -131,3 +137,6 @@ removal, external export, or account mutations beyond the authorized routing
 metadata. Revisit before transferring the GitHub repository or npm package,
 adding another trusted publisher or package maintainer, permitting direct
 unreviewed publication, or introducing a persistent npm write credential.
+Revisit before making usage capture a prerequisite for model or tool work,
+changing the bounded in-memory retry policy, or adding any persistent fallback
+outside the private usage database.

@@ -1428,36 +1428,50 @@ impl ModelClientSession {
             return Ok(None);
         };
         let Some(provider) = &self.client.usage_provider_kind else {
-            return Err(runtime.reject_invalid_metadata());
+            tracing::warn!(
+                stage = "model_provider",
+                "usage accounting metadata was skipped; model operation will continue"
+            );
+            return Ok(None);
         };
-        let usage_request = usage_chain.next_attempt()?;
+        let usage_request = match usage_chain.next_attempt() {
+            Ok(usage_request) => usage_request,
+            Err(_) => {
+                tracing::warn!(
+                    stage = "model_attempt_number",
+                    "usage accounting metadata was skipped; model operation will continue"
+                );
+                return Ok(None);
+            }
+        };
         let parent_thread_id = responses_metadata.parent_thread_id.map(|id| id.to_string());
         let client_origin = usage_client_origin(&self.client.state.session_source);
-        runtime
-            .begin_model_attempt(ModelAttemptContext {
-                thread_id: &responses_metadata.thread_id,
-                parent_thread_id: parent_thread_id.as_deref(),
-                turn_id: responses_metadata.turn_id.as_deref(),
-                delegated: self.client.state.session_source.is_non_root_agent(),
-                provider: provider.clone(),
-                model,
-                transport,
-                client_origin,
-                account: crate::usage_runtime::usage_account_snapshot(
-                    self.client
-                        .usage_account_profile_ref
-                        .as_ref()
-                        .map(codex_usage::AccountProfileRef::as_str),
-                    auth_mode,
-                )?,
-                repositories: usage_repository_candidates(responses_metadata),
-                attempt_number: usage_request.attempt_number,
-                retry_of_operation_id: usage_request.retry_of_operation_id,
-                retry_slot: usage_request.retry_slot,
-                context_estimate,
-            })
-            .await
-            .map(Some)
+        Ok(Some(
+            runtime
+                .begin_model_attempt(ModelAttemptContext {
+                    thread_id: &responses_metadata.thread_id,
+                    parent_thread_id: parent_thread_id.as_deref(),
+                    turn_id: responses_metadata.turn_id.as_deref(),
+                    delegated: self.client.state.session_source.is_non_root_agent(),
+                    provider: provider.clone(),
+                    model,
+                    transport,
+                    client_origin,
+                    account: crate::usage_runtime::usage_account_snapshot(
+                        self.client
+                            .usage_account_profile_ref
+                            .as_ref()
+                            .map(codex_usage::AccountProfileRef::as_str),
+                        auth_mode,
+                    ),
+                    repositories: usage_repository_candidates(responses_metadata),
+                    attempt_number: usage_request.attempt_number,
+                    retry_of_operation_id: usage_request.retry_of_operation_id,
+                    retry_slot: usage_request.retry_slot,
+                    context_estimate,
+                })
+                .await,
+        ))
     }
 }
 
@@ -1475,34 +1489,48 @@ impl ModelClient {
             return Ok(None);
         };
         let Some(provider) = &self.usage_provider_kind else {
-            return Err(runtime.reject_invalid_metadata());
+            tracing::warn!(
+                stage = "model_provider",
+                "usage accounting metadata was skipped; model operation will continue"
+            );
+            return Ok(None);
         };
         let parent_thread_id = responses_metadata.parent_thread_id.map(|id| id.to_string());
-        let usage_request = usage_chain.next_attempt()?;
-        runtime
-            .begin_model_attempt(ModelAttemptContext {
-                thread_id: &responses_metadata.thread_id,
-                parent_thread_id: parent_thread_id.as_deref(),
-                turn_id: responses_metadata.turn_id.as_deref(),
-                delegated: self.state.session_source.is_non_root_agent(),
-                provider: provider.clone(),
-                model,
-                transport,
-                client_origin: usage_client_origin(&self.state.session_source),
-                account: crate::usage_runtime::usage_account_snapshot(
-                    self.usage_account_profile_ref
-                        .as_ref()
-                        .map(codex_usage::AccountProfileRef::as_str),
-                    auth_mode,
-                )?,
-                repositories: usage_repository_candidates(responses_metadata),
-                attempt_number: usage_request.attempt_number,
-                retry_of_operation_id: usage_request.retry_of_operation_id,
-                retry_slot: usage_request.retry_slot,
-                context_estimate,
-            })
-            .await
-            .map(Some)
+        let usage_request = match usage_chain.next_attempt() {
+            Ok(usage_request) => usage_request,
+            Err(_) => {
+                tracing::warn!(
+                    stage = "model_attempt_number",
+                    "usage accounting metadata was skipped; model operation will continue"
+                );
+                return Ok(None);
+            }
+        };
+        Ok(Some(
+            runtime
+                .begin_model_attempt(ModelAttemptContext {
+                    thread_id: &responses_metadata.thread_id,
+                    parent_thread_id: parent_thread_id.as_deref(),
+                    turn_id: responses_metadata.turn_id.as_deref(),
+                    delegated: self.state.session_source.is_non_root_agent(),
+                    provider: provider.clone(),
+                    model,
+                    transport,
+                    client_origin: usage_client_origin(&self.state.session_source),
+                    account: crate::usage_runtime::usage_account_snapshot(
+                        self.usage_account_profile_ref
+                            .as_ref()
+                            .map(codex_usage::AccountProfileRef::as_str),
+                        auth_mode,
+                    ),
+                    repositories: usage_repository_candidates(responses_metadata),
+                    attempt_number: usage_request.attempt_number,
+                    retry_of_operation_id: usage_request.retry_of_operation_id,
+                    retry_slot: usage_request.retry_slot,
+                    context_estimate,
+                })
+                .await,
+        ))
     }
 }
 
