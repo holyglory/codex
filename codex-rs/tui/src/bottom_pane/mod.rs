@@ -417,6 +417,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_account_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_account_command_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub fn set_mentions_v2_enabled(&mut self, enabled: bool) {
         self.composer.set_mentions_v2_enabled(enabled);
         self.request_redraw();

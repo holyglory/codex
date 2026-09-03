@@ -34,6 +34,28 @@ use codex_protocol::mcp::Tool;
 use rmcp::model::ContentBlock;
 
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+fn normalize_cli_version(rendered: String) -> String {
+    let runtime_version = crate::version::CODEX_CLI_VERSION;
+    let runtime_label = format!("(v{runtime_version})");
+    let normalized_label = format!("{:<width$}", "(v0.0.0)", width = runtime_label.len());
+    rendered
+        .replace(&runtime_label, &normalized_label)
+        .lines()
+        .map(|line| {
+            if !line.contains(runtime_version) {
+                return line.to_string();
+            }
+            let mut line = line.replace(runtime_version, "0.0.0");
+            if let Some(border) = line.rfind('│') {
+                line.insert_str(border, &" ".repeat(runtime_version.len() - "0.0.0".len()));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn test_config() -> Config {
     let codex_home = std::env::temp_dir();
     ConfigBuilder::default()
@@ -707,7 +729,7 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         /*show_fast_status*/ false,
     );
 
-    let rendered = render_transcript(&cell).join("\n");
+    let rendered = normalize_cli_version(render_transcript(&cell).join("\n"));
     insta::assert_snapshot!(rendered);
 }
 
@@ -1215,7 +1237,8 @@ fn web_search_history_cell_snapshot() {
 fn standalone_unix_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered =
+        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
 
     insta::assert_snapshot!(rendered);
 }
@@ -1224,7 +1247,8 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 fn standalone_windows_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered =
+        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
 
     insta::assert_snapshot!(rendered);
 }
@@ -1233,7 +1257,8 @@ fn standalone_windows_update_available_history_cell_snapshot() {
 fn pnpm_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered =
+        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
 
     insta::assert_snapshot!(rendered);
 }
@@ -1244,7 +1269,8 @@ fn vite_plus_update_available_history_cell_snapshot() {
         "9.9.9".to_string(),
         Some(UpdateAction::VitePlusGlobalLatest),
     );
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered =
+        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
 
     insta::assert_snapshot!(rendered);
 }
