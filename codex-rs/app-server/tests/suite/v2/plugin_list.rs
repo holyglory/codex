@@ -11,6 +11,8 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
+use codex_account_registry::AccountRegistry;
+use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::HookMetadata;
 use codex_app_server_protocol::HookTrustStatus;
 use codex_app_server_protocol::HooksListParams;
@@ -104,6 +106,34 @@ remote_plugin = false
 "#,
         ),
     )
+}
+
+#[tokio::test]
+async fn plugin_list_keeps_local_marketplaces_available_with_empty_account_registry() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    write_plugins_enabled_config(codex_home.path())?;
+    RegistryStore::new(codex_home.path()).create(&AccountRegistry {
+        generation: 1,
+        ..AccountRegistry::default()
+    })?;
+
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let request_id = app_server
+        .send_plugin_list_request(PluginListParams {
+            cwds: None,
+            marketplace_kinds: Some(vec![PluginListMarketplaceKind::Local]),
+            force_refetch: false,
+        })
+        .await?;
+
+    let response: PluginListResponse =
+        timeout(DEFAULT_TIMEOUT, app_server.read_response(request_id)).await??;
+    assert!(response.marketplace_load_errors.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
