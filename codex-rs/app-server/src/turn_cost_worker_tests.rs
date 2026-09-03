@@ -3,6 +3,7 @@ use codex_backend_client::ApiKeyResponseCost;
 use codex_core::config::ConfigBuilder;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
 use codex_login::login_with_api_key;
 use codex_model_provider_info::ModelProviderInfo;
@@ -29,14 +30,6 @@ mod chatgpt;
 #[tokio::test]
 async fn worker_starts_with_otlp_metrics_exporter_without_log_exporter() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(TURN_COST_PATH))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "turns": []
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
     let codex_home = TempDir::new().expect("temporary Codex home");
     let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
@@ -54,9 +47,7 @@ async fn worker_starts_with_otlp_metrics_exporter_without_log_exporter() {
 
     let worker = TurnCostWorker::spawn(Arc::new(config), auth_manager)
         .expect("OTLP metrics exporter should enable turn-cost collection");
-    wait_for_request_count(&server, /*expected*/ 1).await;
     worker.shutdown();
-    server.verify().await;
 }
 
 #[tokio::test]
@@ -100,14 +91,22 @@ async fn handle_observes_only_matching_model_provider() {
         ..model_provider
     };
 
-    handle.observe_event(thread_id, &mismatched_config, &event, || {
-        panic!("telemetry should not be captured for a mismatched provider")
-    });
+    handle.observe_event(
+        thread_id,
+        &mismatched_config,
+        &event,
+        /*auth_lease*/ None,
+        || panic!("telemetry should not be captured for a mismatched provider"),
+    );
     assert!(receiver.try_recv().is_err());
 
-    handle.observe_event(thread_id, config.as_ref(), &event, || {
-        test_session_telemetry(thread_id)
-    });
+    handle.observe_event(
+        thread_id,
+        config.as_ref(),
+        &event,
+        /*auth_lease*/ None,
+        || test_session_telemetry(thread_id),
+    );
     let observation = receiver.recv().await.expect("matching observation");
     assert_eq!(observation.thread_id, thread_id);
     assert_eq!(observation.turn_id, "turn-1");
@@ -115,45 +114,6 @@ async fn handle_observes_only_matching_model_provider() {
         observation.kind,
         TurnCostObservationKind::Started { .. }
     ));
-}
-
-#[tokio::test]
-async fn worker_waits_for_late_api_key_login() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(TURN_COST_PATH))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "turns": []
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let auth_home = TempDir::new().expect("temporary auth home");
-    let auth_manager = auth_manager_at(auth_home.path()).await;
-    let runtime = test_runtime(&server, Arc::clone(&auth_manager)).await;
-    let (_sender, receiver) = mpsc::channel(OBSERVATION_CHANNEL_CAPACITY);
-    let shutdown = CancellationToken::new();
-    let mut task = tokio::spawn(runtime.run(receiver, shutdown.clone()));
-
-    assert!(
-        timeout(Duration::from_millis(/*millis*/ 50), &mut task)
-            .await
-            .is_err(),
-        "worker exited while waiting for login"
-    );
-    login_with_api_key(
-        auth_home.path(),
-        "sk-test",
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )
-    .expect("write API-key auth");
-    assert!(auth_manager.reload().await);
-    wait_for_request_count(&server, /*expected*/ 1).await;
-
-    shutdown.cancel();
-    task.await.expect("worker task");
-    server.verify().await;
 }
 
 #[tokio::test]
@@ -264,22 +224,39 @@ async fn custom_provider_does_not_send_chatgpt_auth_for_turn_costs() {
 async fn transient_probe_failure_keeps_worker_alive() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(TURN_COST_PATH))
+        .and(path("/analytics/codex/turn-costs"))
         .respond_with(ResponseTemplate::new(500).set_body_string("temporary failure"))
         .expect(1)
         .mount(&server)
         .await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-test"));
-    let runtime = test_runtime(&server, Arc::clone(&auth_manager)).await;
+    let codex_home = TempDir::new().expect("temporary Codex home");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await
+        .expect("test config");
+    config.model_provider = ModelProviderInfo {
+        name: "custom-provider".to_string(),
+        base_url: Some(server.uri()),
+        ..Default::default()
+    };
+    let backend = TurnCostBackend::ModelProvider(create_model_provider(
+        config.model_provider.clone(),
+        /*auth_manager*/ None,
+    ));
+    let runtime = WorkerRuntime {
+        config: Arc::new(config),
+        backend,
+        turns: HashMap::new(),
+    };
     let backend_availability = runtime.probe_backend().await;
     assert_eq!(backend_availability, BackendAvailability::RetryProbe);
     let (_sender, receiver) = mpsc::channel(OBSERVATION_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let auth_changes = Some(auth_manager.auth_change_receiver());
     let mut task = tokio::spawn(runtime.run_with_backend_availability(
         receiver,
         shutdown.clone(),
-        auth_changes,
+        /*auth_changes*/ None,
         backend_availability,
     ));
 
@@ -299,7 +276,11 @@ async fn transient_probe_failure_keeps_worker_alive() {
 async fn priced_cost_uses_telemetry_captured_before_thread_removal() {
     let server = MockServer::start().await;
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-test"));
-    let mut runtime = test_runtime(&server, auth_manager).await;
+    let mut runtime = test_runtime(
+        &server,
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-fallback")),
+    )
+    .await;
     let thread_id = ThreadId::new();
     let turn_id = "turn-1";
 
@@ -308,6 +289,7 @@ async fn priced_cost_uses_telemetry_captured_before_thread_removal() {
         turn_id: turn_id.to_string(),
         kind: TurnCostObservationKind::Started {
             session_telemetry: Box::new(test_session_telemetry(thread_id)),
+            auth_lease: Some(AuthManagerLease::legacy(auth_manager)),
         },
     });
     runtime.record_observation(TurnCostObservation {
@@ -344,7 +326,7 @@ async fn priced_cost_uses_telemetry_captured_before_thread_removal() {
 async fn priced_cost_waits_for_every_response_when_response_costs_are_available() {
     let server = MockServer::start().await;
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-test"));
-    let mut runtime = test_runtime(&server, auth_manager).await;
+    let mut runtime = test_runtime(&server, Arc::clone(&auth_manager)).await;
     let thread_id = ThreadId::new();
     let turn_id = "turn-1";
 
@@ -357,6 +339,7 @@ async fn priced_cost_waits_for_every_response_when_response_costs_are_available(
             status: TurnCostStatus::Completed,
             next_poll_at: Instant::now(),
             attempt_count: 0,
+            auth_lease: Some(AuthManagerLease::legacy(auth_manager)),
         },
     );
 
@@ -389,6 +372,54 @@ async fn priced_cost_waits_for_every_response_when_response_costs_are_available(
     runtime.process_turn_cost(turn_id, &cost);
 
     assert_eq!(runtime.turns.len(), 0);
+}
+
+#[tokio::test]
+async fn delayed_cost_polls_keep_each_originating_turn_auth_manager() {
+    let server = MockServer::start().await;
+    for (api_key, turn_id) in [("sk-account-a", "turn-a"), ("sk-account-b", "turn-b")] {
+        Mock::given(method("POST"))
+            .and(path(TURN_COST_PATH))
+            .and(header("authorization", format!("Bearer {api_key}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "turns": [{
+                    "turn_id": turn_id,
+                    "status": "priced",
+                    "total_usd": "0.25",
+                    "event_count": 0
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let mut runtime = test_runtime(
+        &server,
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-fallback")),
+    )
+    .await;
+    for (api_key, turn_id) in [("sk-account-a", "turn-a"), ("sk-account-b", "turn-b")] {
+        let thread_id = ThreadId::new();
+        runtime.turns.insert(
+            turn_id.to_string(),
+            TurnCostEntry {
+                thread_id,
+                session_telemetry: test_session_telemetry(thread_id),
+                expected_response_ids: HashSet::new(),
+                status: TurnCostStatus::Completed,
+                next_poll_at: Instant::now(),
+                attempt_count: 0,
+                auth_lease: Some(AuthManagerLease::legacy(
+                    AuthManager::from_auth_for_testing(CodexAuth::from_api_key(api_key)),
+                )),
+            },
+        );
+    }
+
+    runtime.poll_due().await;
+
+    assert_eq!(runtime.turns.len(), 0);
+    server.verify().await;
 }
 
 async fn test_runtime(server: &MockServer, auth_manager: Arc<AuthManager>) -> WorkerRuntime {
@@ -437,20 +468,6 @@ fn test_session_telemetry(thread_id: ThreadId) -> SessionTelemetry {
     )
 }
 
-async fn wait_for_request_count(server: &MockServer, expected: usize) {
-    timeout(Duration::from_secs(/*secs*/ 15), async {
-        loop {
-            let requests = server.received_requests().await.unwrap_or_default();
-            if requests.len() >= expected {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("timed out waiting for turn-cost request");
-}
-
 #[test_case(500; "HTTP failure")]
 #[test_case(200; "decode failure")]
 #[tokio::test]
@@ -461,7 +478,7 @@ async fn turn_cost_failures_do_not_log_response_bodies(status: u16) {
         .respond_with(
             ResponseTemplate::new(status).set_body_string("private-workspace-response-marker"),
         )
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
     let mut runtime = test_runtime(
@@ -476,16 +493,11 @@ async fn turn_cost_failures_do_not_log_response_bodies(status: u16) {
         .with_writer(Arc::new(capture.reopen().expect("log writer")))
         .finish();
     async {
-        assert_eq!(
-            runtime.probe_backend().await,
-            BackendAvailability::RetryProbe
-        );
         runtime.poll_entries(&["turn-1".to_string()]).await;
     }
     .with_subscriber(subscriber)
     .await;
     let logs = std::fs::read_to_string(capture.path()).expect("captured logs");
-    assert!(logs.contains("backend availability check failed temporarily"));
     assert!(logs.contains("failed to query turn costs"));
     assert!(!logs.contains("private-workspace-response-marker"));
     server.verify().await;
