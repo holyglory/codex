@@ -1,8 +1,8 @@
 # Codex Multi-Account CLI Fork: Engineering Handover
 
-Status: `0.153.0-alpha.6+multi.4` rebased and source-validated, but not packaged or deployed; `0.150.1+multi.2` remains deployed for `holyglory`; `slawa` remains on verified `0.149.1+multi.1`; `holygloryTT` and `axel` unchanged
+Status: `0.153.0-alpha.6+multi.4` rebased, source-validated, packaged, and deployed only for `holyglory`; `slawa` remains on verified `0.149.1+multi.1`; `holygloryTT` and `axel` remain unchanged
 
-Last updated: 2026-09-02
+Last updated: 2026-09-03
 
 Deployment host: `vr.ae`
 
@@ -963,6 +963,21 @@ the native report and DevCoordinator2. Warm all-history reads complete in
 3.53–4.48 seconds; the first cold read on the 1.14 GB collector took 125
 seconds and remains a separately tracked performance improvement. Only
 `holyglory` was targeted; `slawa`, `holygloryTT`, and `axel` were not modified.
+
+The `holyglory` deployment `6777849d-e475-41fe-be85-a7b276728f00`
+atomically activated `0.153.0-alpha.6+multi.4` and preserves
+`0.150.1+multi.2` as the immediate rollback release. Tag
+`v0.153.0-alpha.6-multi.4` identifies the tested source commit. The complete
+Rust workspace passed all 17,352 tests with 31 intentional skips and one
+retry-resolved SQLite-startup race; the MUSL package smoke passed all seven
+applicable checks with two non-Linux checks skipped. The remote UI reconnected,
+both app-server processes and the code-mode host resolved through the new
+release, account integrity passed all five checks, and usage storage reported
+integrity `ok` with five migrations. The post-handoff doctor reported 91
+incomplete usage operations, which remain truthful historical gaps; no token
+count or terminal state was synthesized. Only `holyglory` was targeted, and the
+recorded launcher/current-link modification times for `slawa`, `holygloryTT`,
+and `axel` all predate this deployment.
 
 ## 19. VPS Collaboration Model
 

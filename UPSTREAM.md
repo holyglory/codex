@@ -33,5 +33,8 @@ in `HANDOVER.md` completes for the new revision.
   skipped and one unrelated SQLite-startup race passing on its automatic retry.
 - The release and completion-ledger scripts passed all 25 tests. Affected-crate
   Clippy/fix, formatting, snapshot review, and diff validation passed.
-- Package validation and deployment were intentionally not run. This branch is
-  source-validated but is not a packaged, release-ready, or deployed build.
+- The x86_64 MUSL CLI and app-server packages plus shared symbols archive were
+  built and package-smoke validated. Deployment
+  `6777849d-e475-41fe-be85-a7b276728f00` activated the verified CLI package
+  only for `holyglory`, retaining `0.150.1+multi.2` as rollback; the other local
+  accounts were not targeted.
