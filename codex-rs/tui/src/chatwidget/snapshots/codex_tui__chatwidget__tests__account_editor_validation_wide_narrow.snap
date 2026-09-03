@@ -1,0 +1,24 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: "[alias, note, priority.clone()].join(\"\\n---\\n\")"
+---
+▌ Edit correctable
+▌ Lowercase letters/digits/._-; start with one (1–64).
+▌
+▌ INVALID-alias
+
+Press enter to confirm or esc to go back
+---
+▌ Note for correctable
+▌ Max 1024 bytes; no control characters.
+▌
+▌ correctable note
+
+Press enter to confirm or esc to go back
+---
+▌ Priority for correctable
+▌ Higher first; smaller last (0–u32 max)
+▌
+▌ 42
+
+Press enter to confirm or esc to go back

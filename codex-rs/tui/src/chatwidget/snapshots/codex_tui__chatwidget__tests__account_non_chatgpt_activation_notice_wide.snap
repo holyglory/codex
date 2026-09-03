@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: "render_bottom_popup(&chat, 96)"
+---
+  Accounts
+
+  Search accounts
+› ● metered (current)  metered@example.com · Plus · signed in · enabled · default · priority
+                       10 · limits unknown
+  Add account
+  Automatic selection  on · policy: Priority · higher numbers drain first; smaller numbers
+                       drain last
+
+  metered is now the default account, but automatic selection uses only locally managed ChatGPT
+  OAuth profiles. Turn automatic selection off or start Codex with --account metered to use this
+  profile.
+  enter confirm · esc back

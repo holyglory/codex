@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: rendered.clone()
+---
+  Accounts
+  Account sign-in failed.
+
+  Search accounts
+› Add account
+  Automatic selection  off · policy: Priority · higher numbers drain
+                       first; smaller numbers drain last
+
+  enter confirm · esc back
