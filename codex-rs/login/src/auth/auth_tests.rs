@@ -1,4 +1,5 @@
 use super::*;
+use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::FileAuthStorage;
 use crate::auth::storage::get_auth_file;
 use crate::token_data::IdTokenInfo;
@@ -32,6 +33,103 @@ use wiremock::matchers::path;
 const WORKSPACE_ID_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174000";
 const WORKSPACE_ID_SECOND_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174001";
 const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
+
+struct CapturedLogWriter {
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for CapturedLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.buffer
+            .lock()
+            .expect("captured log buffer lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn codex_auth_debug_output_redacts_variant_credentials() {
+    let api_key_secret = "api-key-debug-secret";
+    let api_key_auth = CodexAuth::from_api_key(api_key_secret);
+    let api_key_debug = match &api_key_auth {
+        CodexAuth::ApiKey(auth) => format!("{api_key_auth:?} {auth:?}"),
+        _ => unreachable!("from_api_key should construct API key auth"),
+    };
+
+    let header_secret = "header-debug-secret";
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_str(&format!("Bearer {header_secret}"))
+            .expect("authorization header should be valid"),
+    );
+    let header_auth = CodexAuth::Headers(AuthHeaders::new(headers));
+    let header_debug = match &header_auth {
+        CodexAuth::Headers(auth) => format!("{header_auth:?} {auth:?}"),
+        _ => unreachable!("header variant should contain header auth"),
+    };
+
+    let chatgpt_auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let chatgpt_debug = match &chatgpt_auth {
+        CodexAuth::Chatgpt(auth) => format!("{chatgpt_auth:?} {auth:?}"),
+        _ => unreachable!("dummy ChatGPT auth should construct managed ChatGPT auth"),
+    };
+
+    let debug_output = format!("{api_key_debug} {header_debug} {chatgpt_debug}");
+    for secret in [api_key_secret, header_secret, "Access Token", "account_id"] {
+        assert!(
+            !debug_output.contains(secret),
+            "debug output exposed credential marker {secret}"
+        );
+    }
+    assert!(debug_output.contains("<redacted>"));
+}
+
+#[test]
+fn refresh_failure_classification_and_tracing_exclude_backend_bodies() {
+    let raw_body_secret = "raw-refresh-backend-debug-secret";
+    let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer_buffer = Arc::clone(&buffer);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || CapturedLogWriter {
+            buffer: Arc::clone(&writer_buffer),
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let permanent = refresh_failure_from_response(
+        StatusCode::UNAUTHORIZED,
+        &json!({
+            "error": {
+                "code": "refresh_token_reused",
+                "detail": raw_body_secret,
+            }
+        })
+        .to_string(),
+    );
+    let transient = refresh_failure_from_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        &json!({ "error": raw_body_secret }).to_string(),
+    );
+
+    assert_eq!(
+        permanent.failed_reason(),
+        Some(RefreshTokenFailedReason::Exhausted)
+    );
+    assert!(matches!(&transient, RefreshTokenError::Transient(_)));
+    assert!(!permanent.to_string().contains(raw_body_secret));
+    assert!(!transient.to_string().contains(raw_body_secret));
+    let logs = String::from_utf8(buffer.lock().expect("captured log buffer lock").clone())
+        .expect("captured logs should be UTF-8");
+    assert!(logs.contains("Failed to refresh token"));
+    assert!(!logs.contains(raw_body_secret));
+}
 
 #[test]
 fn header_auth_exposes_a_valid_chatgpt_account_id() {
@@ -1210,13 +1308,16 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
     updated_tokens.access_token = "new-access-token".to_string();
     updated_tokens.refresh_token = "new-refresh-token".to_string();
     let updated_auth = CodexAuth::from_auth_dot_json(
-        codex_home.path(),
         updated_auth_dot_json,
-        AuthCredentialsStoreMode::File,
         /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::Direct,
         /*agent_identity_authapi_base_url*/ None,
         &crate::test_support::transport_default_auth_route_config(),
+        StoredAuthContext {
+            codex_home: codex_home.path(),
+            credentials_store_mode: AuthCredentialsStoreMode::File,
+            keyring_backend_kind: AuthKeyringBackendKind::Direct,
+            storage_override: None,
+        },
     )
     .await
     .expect("updated auth should parse");
@@ -2466,10 +2567,10 @@ async fn enforce_login_restrictions_logs_out_for_workspace_mismatch() {
     let err = super::enforce_login_restrictions(&config)
         .await
         .expect_err("expected workspace mismatch to error");
-    assert!(
-        err.to_string()
-            .contains(&format!("workspace(s) {WORKSPACE_ID_ALLOWED}"))
-    );
+    let message = err.to_string();
+    assert!(message.contains("configured workspace restriction"));
+    assert!(!message.contains(WORKSPACE_ID_ALLOWED));
+    assert!(!message.contains(WORKSPACE_ID_DISALLOWED));
     assert!(
         !codex_home.path().join("auth.json").exists(),
         "auth.json should be removed on mismatch"
@@ -2518,9 +2619,14 @@ async fn enforce_login_restrictions_logs_out_for_personal_access_token_workspace
     let err = super::enforce_login_restrictions(&config)
         .await
         .expect_err("expected workspace mismatch to error");
-    assert!(err.to_string().contains(&format!(
-        "current credentials belong to {WORKSPACE_ID_DISALLOWED}"
-    )));
+    let message = err.to_string();
+    assert!(
+        message.contains("configured workspace restriction"),
+        "{message}"
+    );
+    assert!(!message.contains(WORKSPACE_ID_ALLOWED));
+    assert!(!message.contains(WORKSPACE_ID_DISALLOWED));
+    assert!(!message.contains("at-workspace-mismatch"));
     assert!(
         !codex_home.path().join("auth.json").exists(),
         "auth.json should be removed on mismatch"
@@ -2649,11 +2755,11 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
     .expect_err("expected workspace mismatch to error");
     let message = err.to_string();
     assert!(
-        message.contains(&format!(
-            "current credentials belong to {WORKSPACE_ID_DISALLOWED}"
-        )),
+        message.contains("configured workspace restriction"),
         "{message}"
     );
+    assert!(!message.contains(WORKSPACE_ID_ALLOWED));
+    assert!(!message.contains(WORKSPACE_ID_DISALLOWED));
     assert!(
         !codex_home.path().join("auth.json").exists(),
         "auth.json should be removed on mismatch"
