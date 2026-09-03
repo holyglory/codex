@@ -43,6 +43,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
+mod account_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod cloud_config;
@@ -59,14 +60,17 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod usage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
+use crate::account_cmd::AccountCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::queue_cmd::QueueCommand;
 use crate::remote_control_cmd::RemoteControlCommand;
+use crate::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -145,6 +149,12 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Manage local account profiles.
+    Account(AccountCommand),
+
+    /// Inspect, correct, and export local usage accounting.
+    Usage(UsageCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -554,6 +564,10 @@ struct AppServerCommand {
     /// Error out when config.toml contains fields that are not recognized by this version of Codex.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
+
+    /// Pin this app-server process to one local account profile.
+    #[arg(long = "account", value_name = "ALIAS_OR_ID")]
+    account: Option<String>,
 
     /// Transport endpoint URL. Supported values: `stdio://` (default),
     /// `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`.
@@ -1086,6 +1100,18 @@ async fn cli_main(
     if let Some(subcommand) = subcommand.as_ref() {
         profile_v2_for_subcommand(&interactive, subcommand)?;
     }
+    if interactive.shared.account.is_some()
+        && !matches!(
+            subcommand,
+            None | Some(Subcommand::Exec(_))
+                | Some(Subcommand::Review(_))
+                | Some(Subcommand::Resume(_))
+                | Some(Subcommand::Fork(_))
+                | Some(Subcommand::AppServer(_))
+        )
+    {
+        anyhow::bail!("--account applies only to TUI, exec, review, resume, fork, or app-server");
+    }
 
     let open_agents_overview = matches!(&subcommand, Some(Subcommand::Agents(_)));
     match subcommand {
@@ -1247,6 +1273,7 @@ async fn cli_main(
                 subcommand,
                 code_mode_host,
                 strict_config: app_server_strict_config,
+                account: app_server_account,
                 listen,
                 stdio,
                 remote_control,
@@ -1254,12 +1281,22 @@ async fn cli_main(
                 auth,
             } = app_server_cli;
             let strict_config = app_server_strict_config || root_strict_config;
+            let process_account = match (interactive.shared.account.clone(), app_server_account) {
+                (Some(root), Some(scoped)) if root != scoped => {
+                    anyhow::bail!("codex app-server received conflicting --account values")
+                }
+                (Some(root), _) => Some(root),
+                (_, scoped) => scoped,
+            };
             reject_strict_config_for_app_server_subcommand(strict_config, subcommand.as_ref())?;
             reject_remote_mode_for_app_server_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
                 subcommand.as_ref(),
             )?;
+            if subcommand.is_some() && process_account.is_some() {
+                anyhow::bail!("--account applies only when running codex app-server");
+            }
             match subcommand {
                 None => {
                     let transport = if stdio {
@@ -1282,6 +1319,7 @@ async fn cli_main(
                                 codex_app_server::RemoteControlStartupMode::ResolvePersisted
                             }
                         },
+                        process_account,
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(
@@ -1568,6 +1606,38 @@ async fn cli_main(
             );
             run_logout(logout_cli.config_overrides).await;
         }
+        Some(Subcommand::Account(mut account_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "account",
+            )?;
+            prepend_config_flags(
+                &mut account_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            let json = account_cli.json;
+            if let Err(error) = account_cmd::run(account_cli, root_strict_config).await {
+                account_cmd::print_error(&error, json);
+                std::process::exit(error.exit_code());
+            }
+        }
+        Some(Subcommand::Usage(mut usage_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "usage",
+            )?;
+            prepend_config_flags(
+                &mut usage_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            let json = usage_cli.json;
+            if let Err(error) = usage_cmd::run(usage_cli, root_strict_config).await {
+                usage_cmd::print_error(&error, json);
+                std::process::exit(error.exit_code());
+            }
+        }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1844,6 +1914,9 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
+        Subcommand::Usage(_) => {
+            anyhow::bail!("--profile is not supported for `codex usage`")
+        }
         _ => anyhow::bail!(
             "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
         ),
@@ -2422,7 +2495,9 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Delete(_))
         | Some(Subcommand::Unarchive(_))
         | Some(Subcommand::Fork(_))
-        | Some(Subcommand::Doctor(_)) => None,
+        | Some(Subcommand::Doctor(_))
+        | Some(Subcommand::Account(_))
+        | Some(Subcommand::Usage(_)) => None,
         Some(Subcommand::AppServer(app_server)) if app_server.subcommand.is_none() => None,
         Some(Subcommand::AppServer(app_server)) => {
             Some(app_server_subcommand_name(app_server.subcommand.as_ref()))
@@ -3149,6 +3224,7 @@ mod tests {
     #[test]
     fn profile_v2_is_rejected_for_config_management_subcommands() {
         assert!(profile_v2_for_args(&["codex", "--profile", "work", "features", "list"]).is_err());
+        assert!(profile_v2_for_args(&["codex", "--profile", "work", "account", "list"]).is_err());
     }
 
     #[test]
@@ -4297,6 +4373,63 @@ mod tests {
 
         reject_root_strict_config_for_subcommand(cli.interactive.strict_config, &cli.subcommand)
             .expect("exec-server should support root --strict-config");
+    }
+
+    #[test]
+    fn root_strict_config_is_supported_for_account_management() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--strict-config", "account", "list"])
+            .expect("parse");
+
+        reject_root_strict_config_for_subcommand(cli.interactive.strict_config, &cli.subcommand)
+            .expect("account management should honor root --strict-config");
+    }
+
+    #[test]
+    fn account_pin_parses_for_root_exec_and_app_server() {
+        let root =
+            MultitoolCli::try_parse_from(["codex", "--account", "alpha"]).expect("parse root pin");
+        assert_eq!(root.interactive.shared.account.as_deref(), Some("alpha"));
+
+        let mut inherited =
+            MultitoolCli::try_parse_from(["codex", "--account", "alpha", "exec", "prompt"])
+                .expect("parse inherited exec pin");
+        let Some(Subcommand::Exec(exec)) = inherited.subcommand.as_mut() else {
+            panic!("expected exec command");
+        };
+        exec.shared
+            .inherit_exec_root_options(&inherited.interactive.shared);
+        assert_eq!(exec.shared.account.as_deref(), Some("alpha"));
+
+        let scoped = MultitoolCli::try_parse_from(["codex", "exec", "--account", "beta", "prompt"])
+            .expect("parse scoped exec pin");
+        let Some(Subcommand::Exec(exec)) = scoped.subcommand else {
+            panic!("expected exec command");
+        };
+        assert_eq!(exec.shared.account.as_deref(), Some("beta"));
+
+        let app_server = app_server_from_args(&["codex", "app-server", "--account", "gamma"]);
+        assert_eq!(app_server.account.as_deref(), Some("gamma"));
+    }
+
+    #[test]
+    fn root_strict_config_is_supported_for_usage() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--strict-config", "usage", "summary"])
+            .expect("parse");
+
+        reject_root_strict_config_for_subcommand(cli.interactive.strict_config, &cli.subcommand)
+            .expect("usage should honor root --strict-config");
+    }
+
+    #[test]
+    fn profile_is_rejected_for_usage() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--profile", "work", "usage", "summary"])
+            .expect("parse");
+        let error = profile_v2_for_subcommand(&cli.interactive, cli.subcommand.as_ref().unwrap())
+            .expect_err("usage must not silently apply a runtime profile");
+        assert_eq!(
+            error.to_string(),
+            "--profile is not supported for `codex usage`"
+        );
     }
 
     #[test]
