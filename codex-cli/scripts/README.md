@@ -32,6 +32,11 @@ environment before OIDC credentials are issued. It submits platform payloads
 first and the root `latest` wrapper last; staged versions still require the npm
 approval step before becoming public.
 
+Staged trusted publishing requires each package name to exist first and the npm
+trust relationship to allow `stage publish` without allowing unattended direct
+publication. Bootstrap and trust configuration are separate release operations;
+the candidate workflow never performs them.
+
 Rust release versions retain truthful build metadata such as
 `0.153.0+multi.1`. npm strips SemVer build metadata, so the workflow uses the
 collision-safe equivalent `0.153.0-multi.1` and requires the annotated tag
