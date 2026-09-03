@@ -21,7 +21,8 @@ impl PluginRequestProcessor {
             self.load_latest_config(/*fallback_cwd*/ None).await
         }?;
         // TODO(sites-migration): Remove this initial migration wait after bundled Sites is retired.
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         match Box::pin(
             self.thread_manager
                 .plugins_manager()
@@ -29,7 +30,9 @@ impl PluginRequestProcessor {
         )
         .await
         {
-            Ok(Some(change)) => (self.effective_plugins_changed_callback())(change),
+            Ok(Some(change)) => {
+                (self.effective_plugins_changed_callback(&auth_lease, auth.as_ref()))(change);
+            }
             Ok(None) => {}
             Err(err) => {
                 warn!(error = %err, "Sites migration refresh failed; preserving local plugins")

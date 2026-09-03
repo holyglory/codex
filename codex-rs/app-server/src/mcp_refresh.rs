@@ -2,10 +2,13 @@ use crate::config_manager::ConfigManager;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_login::AuthManagerLease;
 use std::io;
 use std::sync::Arc;
+#[cfg(test)]
 use tracing::warn;
 
+#[cfg(test)]
 pub(crate) async fn reload_mcp_config(
     thread_manager: &Arc<ThreadManager>,
     config_manager: &ConfigManager,
@@ -28,6 +31,32 @@ pub(crate) async fn reload_mcp_config(
     Ok(())
 }
 
+pub(crate) async fn reload_mcp_config_with_auth_lease(
+    thread_manager: &Arc<ThreadManager>,
+    config_manager: &ConfigManager,
+    auth_lease: &AuthManagerLease,
+) -> io::Result<()> {
+    config_manager
+        .load_latest_config(/*fallback_cwd*/ None)
+        .await?;
+    let mut refreshes = Vec::new();
+    for thread_id in thread_manager.list_thread_ids().await {
+        let thread = thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|err| io::Error::other(format!("failed to load thread {thread_id}: {err}")))?;
+        let config = load_refresh_config(thread.as_ref(), config_manager).await?;
+        refreshes.push((thread, config));
+    }
+    for (thread, config) in refreshes {
+        thread
+            .refresh_mcp_config_with_auth_lease(config, auth_lease)
+            .await;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) async fn reload_mcp_config_best_effort(
     thread_manager: &Arc<ThreadManager>,
     config_manager: &ConfigManager,
@@ -331,6 +360,12 @@ enabled = false
                     ThreadExtensionDependencies {
                         event_sink: Arc::new(NoopExtensionEventSink),
                         auth_manager: auth_manager.clone(),
+                        profile_auth_router:
+                            codex_login::SharedProfileAuthRouter::new_with_external_auth(
+                                good_config.auth_config(),
+                                codex_login::RouterExternalAuthState::default(),
+                                auth_manager.clone(),
+                            ),
                         state_db: Some(state_db.clone()),
                         analytics_events_client: codex_analytics::AnalyticsEventsClient::disabled(),
                         thread_manager: thread_manager.clone(),

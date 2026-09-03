@@ -196,7 +196,14 @@ async fn list_models_uses_chatgpt_remote_catalog_as_source_of_truth() -> Result<
             }))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let models_mock = mount_models_once(
+    let startup_models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: remote_models.clone(),
+        },
+    )
+    .await;
+    let operation_models_mock = mount_models_once(
         &server,
         ModelsResponse {
             models: remote_models.clone(),
@@ -276,9 +283,9 @@ openai_base_url = "{server_uri}/v1"
     assert_eq!(items, expected_items);
     assert!(next_cursor.is_none());
     assert_eq!(
-        models_mock.requests().len(),
-        1,
-        "expected a single /models request"
+        startup_models_mock.requests().len() + operation_models_mock.requests().len(),
+        2,
+        "expected startup and profile-scoped /models requests"
     );
     Ok(())
 }

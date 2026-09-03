@@ -575,6 +575,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
 
 struct PendingDynamicToolCall {
     mcp: TestAppServer,
+    _codex_home: TempDir,
     server: MockServer,
     request_id: RequestId,
     params: DynamicToolCallParams,
@@ -682,6 +683,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
 
     Ok(PendingDynamicToolCall {
         mcp,
+        _codex_home: codex_home,
         server,
         request_id,
         params,
@@ -694,6 +696,7 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
     let call_id = "dyn-call-items-1";
     let PendingDynamicToolCall {
         mut mcp,
+        _codex_home,
         server,
         request_id,
         params,
@@ -810,6 +813,7 @@ async fn dynamic_tool_remote_image_response_becomes_model_visible_error() -> Res
     let call_id = "dyn-call-remote-image";
     let PendingDynamicToolCall {
         mut mcp,
+        _codex_home,
         server,
         request_id,
         params,
@@ -866,6 +870,7 @@ async fn dynamic_tool_remote_audio_response_becomes_model_visible_error() -> Res
     let call_id = "dyn-call-remote-audio";
     let PendingDynamicToolCall {
         mut mcp,
+        _codex_home,
         server,
         request_id,
         params,
