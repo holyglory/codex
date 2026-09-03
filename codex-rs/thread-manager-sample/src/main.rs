@@ -295,6 +295,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         web_search_mode: Constrained::allow_any(WebSearchMode::Disabled),
         web_search_config: None,
         experimental_request_user_input_enabled: true,
+        local_control_tools_enabled: true,
         update_plan_enabled: true,
         tool_registry: Default::default(),
         code_mode: Default::default(),
