@@ -1,3 +1,4 @@
+use crate::provider_usage::ProviderUsage;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -62,6 +63,9 @@ pub struct ImageResponse {
     pub quality: Option<ImageQuality>,
     #[serde(default)]
     pub size: Option<String>,
+    /// Content-free provider token usage returned by the image endpoint, when supplied.
+    #[serde(default)]
+    pub usage: Option<ProviderUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -70,3 +74,7 @@ pub struct ImageData {
     #[serde(default)]
     pub generation_id: Option<String>,
 }
+
+#[cfg(test)]
+#[path = "images_usage_tests.rs"]
+mod usage_tests;
