@@ -1,11 +1,15 @@
 #![cfg(not(target_os = "windows"))]
 #![allow(clippy::unwrap_used)]
 
-use codex_core::TurnInputRequest;
-use core_test_support::test_codex::local_selections;
+#[path = "tool_parallelism_support.rs"]
+mod support;
+
 use std::fs;
 use std::time::Duration;
-use std::time::Instant;
+
+use anyhow::Context;
+use codex_core::TurnInputRequest;
+use core_test_support::test_codex::local_selections;
 
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -36,57 +40,9 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
-    let session_model = test.session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.cwd.path());
-
-    test.codex
-        .start_or_steer_turn(
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: prompt.into(),
-                text_elements: Vec::new(),
-            }])
-            .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                collaboration_mode: Some(CollaborationMode {
-                    mode: ModeKind::Default,
-                    settings: Settings {
-                        model: session_model,
-                        reasoning_effort: None,
-                        developer_instructions: None,
-                    },
-                }),
-                ..Default::default()
-            }),
-        )
-        .await?;
-
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    Ok(())
-}
-
-async fn run_turn_and_measure(test: &TestCodex, prompt: &str) -> anyhow::Result<Duration> {
-    let start = Instant::now();
-    run_turn(test, prompt).await?;
-    Ok(start.elapsed())
-}
-
 async fn build_codex_with_test_tool(server: &wiremock::MockServer) -> anyhow::Result<TestCodex> {
     let mut builder = test_codex().with_model("test-gpt-5.1-codex");
     builder.build(server).await
-}
-
-fn assert_parallel_duration(actual: Duration) {
-    // Allow headroom for slow CI scheduling; barrier synchronization already enforces overlap.
-    assert!(
-        actual < Duration::from_millis(1_600),
-        "expected parallel execution to finish quickly, got {actual:?}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -94,38 +50,17 @@ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = build_codex_with_test_tool(&server).await?;
-
-    let warmup_args = json!({
-        "sleep_after_ms": 10,
-        "barrier": {
-            "id": "parallel-test-sync-warmup",
-            "participants": 2,
-            "timeout_ms": 1_000,
-        }
-    })
-    .to_string();
+    let fixture = support::build_parallel_fixture(&server, "test-gpt-5.1-codex").await?;
 
     let parallel_args = json!({
         "sleep_after_ms": 300,
         "barrier": {
             "id": "parallel-test-sync",
             "participants": 2,
-            "timeout_ms": 1_000,
+            "timeout_ms": 5_000,
         }
     })
     .to_string();
-
-    let warmup_first = sse(vec![
-        json!({"type": "response.created", "response": {"id": "resp-warm-1"}}),
-        ev_function_call("warm-call-1", "test_sync_tool", &warmup_args),
-        ev_function_call("warm-call-2", "test_sync_tool", &warmup_args),
-        ev_completed("resp-warm-1"),
-    ]);
-    let warmup_second = sse(vec![
-        ev_assistant_message("warm-msg-1", "warmup complete"),
-        ev_completed("resp-warm-2"),
-    ]);
 
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
@@ -137,16 +72,17 @@ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(
-        &server,
-        vec![warmup_first, warmup_second, first_response, second_response],
-    )
-    .await;
+    let responses = mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
-    run_turn(&test, "warm up parallel tool").await?;
-
-    let duration = run_turn_and_measure(&test, "exercise sync tool").await?;
-    assert_parallel_duration(duration);
+    fixture.run_turn("exercise sync tool").await?;
+    fixture.assert_lifecycle(&[("call-1", "test_sync_tool"), ("call-2", "test_sync_tool")]);
+    let continuation = responses
+        .last_request()
+        .context("model should receive both test tool outputs")?;
+    assert_eq!(
+        ["call-1", "call-2"].map(|call_id| continuation.function_call_output_text(call_id)),
+        [Some("ok".to_string()), Some("ok".to_string())]
+    );
 
     Ok(())
 }
@@ -156,17 +92,8 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.4");
-    let test = builder.build(&server).await?;
-
-    let shell_args = json!({
-        "cmd": "sleep 0.25",
-        // Avoid user-specific shell startup cost (e.g. zsh profile scripts) in timing assertions.
-        "login": false,
-        "yield_time_ms": 1_000,
-    });
-    let args_one = serde_json::to_string(&shell_args)?;
-    let args_two = serde_json::to_string(&shell_args)?;
+    let fixture = support::build_parallel_fixture(&server, "gpt-5.4").await?;
+    let [args_one, args_two] = fixture.shell_exec_arguments();
 
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
@@ -178,10 +105,15 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(&server, vec![first_response, second_response]).await;
+    let responses = mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
-    let duration = run_turn_and_measure(&test, "run exec_command twice").await?;
-    assert_parallel_duration(duration);
+    fixture.run_turn("run exec_command twice").await?;
+    fixture.assert_lifecycle(&[("call-1", "exec_command"), ("call-2", "exec_command")]);
+    let continuation = responses
+        .last_request()
+        .context("model should receive both exec_command outputs")?;
+    support::assert_exec_command_succeeded(&continuation, "call-1");
+    support::assert_exec_command_succeeded(&continuation, "call-2");
 
     Ok(())
 }
@@ -191,33 +123,41 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = build_codex_with_test_tool(&server).await?;
-
-    let sync_args = json!({
-        "sleep_after_ms": 300
-    })
-    .to_string();
-    let shell_args = serde_json::to_string(&json!({
-        "cmd": "sleep 0.25",
-        // Avoid user-specific shell startup cost in timing assertions.
-        "login": false,
-        "yield_time_ms": 1_000,
-    }))?;
+    let mut fixture = support::build_mixed_parallel_fixture(&server).await?;
+    let exec_args = fixture.exec_arguments();
 
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
-        ev_function_call("call-1", "test_sync_tool", &sync_args),
-        ev_function_call("call-2", "exec_command", &shell_args),
+        ev_function_call("call-1", support::MIXED_PARALLEL_TOOL_NAME, "{}"),
+        ev_function_call("call-2", "exec_command", &exec_args),
         ev_completed("resp-1"),
     ]);
     let second_response = sse(vec![
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(&server, vec![first_response, second_response]).await;
+    let responses = mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
-    let duration = run_turn_and_measure(&test, "mix tools").await?;
-    assert_parallel_duration(duration);
+    if let Err(err) = fixture.run_turn("mix tools").await {
+        let outputs = responses.last_request().map(|request| {
+            ["call-1", "call-2"].map(|call_id| request.function_call_output_text(call_id))
+        });
+        return Err(err).context(format!(
+            "mixed parallel tool outputs after rendezvous failure: {outputs:?}"
+        ));
+    }
+    fixture.parallel.assert_lifecycle(&[
+        ("call-1", support::MIXED_PARALLEL_TOOL_NAME),
+        ("call-2", "exec_command"),
+    ]);
+    let continuation = responses
+        .last_request()
+        .context("model should receive mixed parallel tool outputs")?;
+    assert_eq!(
+        continuation.function_call_output_text("call-1").as_deref(),
+        Some(r#"{"tool":"parallel_test_tool"}"#)
+    );
+    support::assert_exec_command_succeeded(&continuation, "call-2");
 
     Ok(())
 }
@@ -254,7 +194,7 @@ async fn tool_results_grouped() -> anyhow::Result<()> {
     )
     .await;
 
-    run_turn(&test, "run shell three times").await?;
+    support::run_turn(&test, "run shell three times").await?;
 
     let input = tool_output_request.single_request().input();
 
