@@ -38,6 +38,34 @@
       ],
       "type": "object"
     },
+    "AccountProfileActiveChangedNotification": {
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "changedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "previousAccountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accountId",
+        "changedAt",
+        "generation"
+      ],
+      "type": "object"
+    },
     "AccountRateLimitsUpdatedNotification": {
       "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and does not clear a previously observed value.",
       "properties": {
@@ -2670,6 +2698,36 @@
     },
     "LegacyAppPathString": {
       "type": "string"
+    },
+    "LocalUsageUpdatedNotification": {
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "repositoryKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation",
+        "updatedAt"
+      ],
+      "type": "object"
     },
     "McpServerEventNotification": {
       "properties": {
@@ -7628,6 +7686,46 @@
         "params"
       ],
       "title": "Account/rateLimits/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "accountProfile/activeChanged"
+          ],
+          "title": "AccountProfile/activeChangedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AccountProfileActiveChangedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "AccountProfile/activeChangedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "localUsage/updated"
+          ],
+          "title": "LocalUsage/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/LocalUsageUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "LocalUsage/updatedNotification",
       "type": "object"
     },
     {

@@ -5,6 +5,109 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AccountAutoSelectionPolicy": {
+      "enum": [
+        "priority"
+      ],
+      "type": "string"
+    },
+    "AccountProfileLoginMethodParams": {
+      "oneOf": [
+        {
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "apiKey"
+              ],
+              "title": "ApiKeyAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiKey",
+            "type"
+          ],
+          "title": "ApiKeyAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "appBrand": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LoginAppBrand"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "codexStreamlinedLogin": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "chatgpt"
+              ],
+              "title": "ChatgptAccountProfileLoginMethodParamsType",
+              "type": "string"
+            },
+            "useHostedLoginSuccessPage": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChatgptAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "chatgptDeviceCode"
+              ],
+              "title": "ChatgptDeviceCodeAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChatgptDeviceCodeAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "amazonBedrock"
+              ],
+              "title": "AmazonBedrockAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiKey",
+            "region",
+            "type"
+          ],
+          "title": "AmazonBedrockAccountProfileLoginMethodParams",
+          "type": "object"
+        }
+      ]
+    },
     "AddCreditsNudgeCreditType": {
       "enum": [
         "credits",
@@ -1729,6 +1832,76 @@
         "completed",
         "in_progress",
         "incomplete"
+      ],
+      "type": "string"
+    },
+    "LocalUsageActivityKind": {
+      "enum": [
+        "requirements",
+        "specification",
+        "repositoryAnalysis",
+        "research",
+        "diagnosis",
+        "architectureDesign",
+        "workPlanning",
+        "coding",
+        "configuration",
+        "refactoring",
+        "dependencyOrBuildChange",
+        "testAuthoring",
+        "documentationAuthoring",
+        "dataOrSchemaChange",
+        "buildValidation",
+        "unitTesting",
+        "integrationTesting",
+        "browserQa",
+        "compatibilityTesting",
+        "migrationRehearsal",
+        "verificationReview",
+        "packaging",
+        "deployment",
+        "rollback",
+        "runtimeOperations",
+        "monitoring",
+        "userElaboration",
+        "statusUpdate",
+        "completionHandoff",
+        "reviewFeedback",
+        "coordination",
+        "accountingOverhead",
+        "mixed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "LocalUsageEventKind": {
+      "enum": [
+        "modelRequestStarted",
+        "modelRequestCompleted",
+        "toolStarted",
+        "toolCompleted",
+        "activityChanged",
+        "classificationCorrected",
+        "coverageGap"
+      ],
+      "type": "string"
+    },
+    "LocalUsageExportFormat": {
+      "enum": [
+        "json",
+        "jsonl",
+        "csv"
+      ],
+      "type": "string"
+    },
+    "LocalUsagePhase": {
+      "enum": [
+        "planning",
+        "implementation",
+        "testing",
+        "deployment",
+        "reporting",
+        "unattributed"
       ],
       "type": "string"
     },

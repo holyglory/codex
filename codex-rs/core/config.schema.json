@@ -1900,6 +1900,16 @@
     "LegacyAppPathString": {
       "type": "string"
     },
+    "LocalControlsToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "MarketplaceConfig": {
       "additionalProperties": false,
       "properties": {
@@ -3795,6 +3805,9 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "local_controls": {
+          "$ref": "#/definitions/LocalControlsToolConfig"
         },
         "update_plan": {
           "$ref": "#/definitions/UpdatePlanToolConfig"
