@@ -111,6 +111,10 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
 
     while let Some(error) = source {
         let message = error.to_string().to_ascii_lowercase();
+        let compact_message = message
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>();
         if [
             "certificate",
             "unknown issuer",
@@ -124,6 +128,14 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
         ]
         .iter()
         .any(|marker| message.contains(marker))
+            || [
+                "invalidcertificate",
+                "unknownissuer",
+                "unknownca",
+                "selfsigned",
+            ]
+            .iter()
+            .any(|marker| compact_message.contains(marker))
         {
             return false;
         }
@@ -132,6 +144,10 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
         let is_macos_protocol_version_error = message.contains("bad protocol version");
         // Linux OpenSSL reports the peer's "tlsv1 alert protocol version".
         let is_linux_protocol_version_error = message.contains("tlsv1 alert protocol version");
+        let is_rustls_protocol_version_error = compact_message
+            .contains("alertreceivedprotocolversion")
+            || compact_message.contains("receivedfatalalertprotocolversion")
+            || compact_message.contains("protocolversionalert");
         // Windows Schannel may expose the protocol alert as a raw or formatted OS error.
         let is_schannel_protocol_version_error = error
             .downcast_ref::<std::io::Error>()
@@ -141,6 +157,7 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
             || message.contains("0x80090302");
         if is_macos_protocol_version_error
             || is_linux_protocol_version_error
+            || is_rustls_protocol_version_error
             || is_schannel_protocol_version_error
         {
             recognized_negotiation_failure = true;
