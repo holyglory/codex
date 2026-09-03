@@ -5143,3 +5143,159 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
         }
     );
 }
+
+#[test]
+fn multi_account_local_usage_initialize_capabilities_are_optional_and_typed() {
+    let stock: crate::protocol::v1::InitializeResponse = serde_json::from_value(json!({
+        "userAgent": "codex-test",
+        "codexHome": absolute_path_string("codex-home"),
+        "platformFamily": "unix",
+        "platformOs": "linux"
+    }))
+    .expect("stock initialize response should remain valid");
+    assert_eq!(stock.multi_account, None);
+    assert_eq!(stock.local_usage_accounting, None);
+
+    let enhanced: crate::protocol::v1::InitializeResponse = serde_json::from_value(json!({
+        "userAgent": "codex-test",
+        "codexHome": absolute_path_string("codex-home"),
+        "platformFamily": "unix",
+        "platformOs": "linux",
+        "multiAccount": {
+            "version": 2,
+            "supportsManagedLogin": true,
+            "supportsAutoSelection": true
+        },
+        "localUsageAccounting": {"version": 2}
+    }))
+    .expect("enhanced initialize response should deserialize");
+    assert_eq!(
+        enhanced.multi_account,
+        Some(MultiAccountCapability {
+            version: 2,
+            supports_managed_login: true,
+            supports_auto_selection: true,
+        })
+    );
+    assert_eq!(
+        enhanced.local_usage_accounting,
+        Some(LocalUsageAccountingCapability { version: 2 })
+    );
+}
+
+#[test]
+fn local_usage_export_and_list_filters_have_explicit_wire_fields() {
+    let export = serde_json::to_value(LocalUsageExportCreateParams {
+        format: LocalUsageExportFormat::Jsonl,
+        output_path: "/private/export/usage.jsonl".to_string(),
+        repository_key: None,
+        thread_id: Some("thread-one".to_string()),
+        from_at: Some(10),
+        to_at: Some(20),
+    })
+    .expect("export params should serialize");
+    assert_eq!(
+        export,
+        json!({
+            "format": "jsonl",
+            "outputPath": "/private/export/usage.jsonl",
+            "repositoryKey": null,
+            "threadId": "thread-one",
+            "fromAt": 10,
+            "toAt": 20
+        })
+    );
+
+    let tools: LocalUsageToolListParams = serde_json::from_value(json!({
+        "cursor": null,
+        "limit": 25,
+        "threadId": "thread-one",
+        "repositoryKey": null,
+        "fromAt": 10,
+        "toAt": 20
+    }))
+    .expect("tool list time range should deserialize");
+    assert_eq!(
+        tools,
+        LocalUsageToolListParams {
+            cursor: None,
+            limit: Some(25),
+            thread_id: Some("thread-one".to_string()),
+            repository_key: None,
+            from_at: Some(10),
+            to_at: Some(20),
+        }
+    );
+}
+
+#[test]
+fn multi_account_local_usage_login_debug_redacts_nested_credentials() {
+    let params = AccountProfileLoginStartParams {
+        alias: Some("work".to_string()),
+        activate: false,
+        login: AccountProfileLoginMethod::ApiKey {
+            api_key: "api-key-secret".to_string(),
+        },
+    };
+
+    let debug = format!("{params:?}");
+    assert!(!debug.contains("api-key-secret"));
+    assert!(debug.contains("<redacted>"));
+}
+
+#[test]
+fn account_profile_login_activation_defaults_false_and_omits_false_on_the_wire() {
+    let params: AccountProfileLoginStartParams = serde_json::from_value(json!({
+        "alias": "work",
+        "login": {
+            "type": "apiKey",
+            "apiKey": "api-key-secret"
+        }
+    }))
+    .expect("login params should deserialize without activation");
+    assert_eq!(
+        params,
+        AccountProfileLoginStartParams {
+            alias: Some("work".to_string()),
+            activate: false,
+            login: AccountProfileLoginMethod::ApiKey {
+                api_key: "api-key-secret".to_string(),
+            },
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&params).expect("login params should serialize"),
+        json!({
+            "alias": "work",
+            "login": {
+                "type": "apiKey",
+                "apiKey": "api-key-secret"
+            }
+        })
+    );
+
+    let activating: AccountProfileLoginStartParams = serde_json::from_value(json!({
+        "alias": null,
+        "activate": true,
+        "login": {"type": "chatgptDeviceCode"}
+    }))
+    .expect("activating login params should deserialize");
+    assert!(activating.activate);
+}
+
+#[test]
+fn account_auto_selection_declares_higher_first_priority_order_on_the_wire() {
+    assert_eq!(
+        serde_json::to_value(AccountAutoSelection {
+            enabled: true,
+            policy: AccountAutoSelectionPolicy::Priority,
+            priority_order: AccountPriorityOrder::HigherFirst,
+        })
+        .expect("automatic selection should serialize"),
+        json!({
+            "enabled": true,
+            "policy": "priority",
+            "priorityOrder": "higherFirst"
+        })
+    );
+}

@@ -1,6 +1,7 @@
 mod shared;
 
 mod account;
+mod account_profile;
 mod apps;
 mod attestation;
 mod bedrock;
@@ -17,6 +18,7 @@ mod feedback;
 mod fs;
 mod hook;
 mod item;
+mod local_usage;
 mod mcp;
 mod model;
 mod notification;
@@ -35,6 +37,7 @@ mod turn;
 mod windows_sandbox;
 
 pub use account::*;
+pub use account_profile::*;
 pub use apps::*;
 pub use attestation::*;
 pub use bedrock::*;
@@ -51,6 +54,7 @@ pub use feedback::*;
 pub use fs::*;
 pub use hook::*;
 pub use item::*;
+pub use local_usage::*;
 pub use mcp::*;
 pub use model::*;
 pub use notification::*;
