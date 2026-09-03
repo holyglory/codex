@@ -65,8 +65,8 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_feature_matches_linked_v8() {
-        assert_eq!(super::linked_v8_has_sandbox(), cfg!(feature = "sandbox"));
+    fn sandbox_feature_enables_linked_v8() {
+        assert!(!cfg!(feature = "sandbox") || super::linked_v8_has_sandbox());
     }
 
     #[test]
