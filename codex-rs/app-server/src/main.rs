@@ -51,6 +51,10 @@ struct AppServerArgs {
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
+    /// Pin this app-server process to one local account profile.
+    #[arg(long = "account", value_name = "ALIAS_OR_ID")]
+    account: Option<String>,
+
     /// Hidden debug-only test hook used by integration tests that spawn the
     /// production app-server binary.
     #[cfg(debug_assertions)]
@@ -72,6 +76,7 @@ fn main() -> anyhow::Result<()> {
             session_source,
             auth,
             strict_config,
+            account,
             #[cfg(debug_assertions)]
             disable_plugin_startup_tasks_for_tests,
             remote_control,
@@ -87,6 +92,7 @@ fn main() -> anyhow::Result<()> {
         let auth = auth.try_into_settings()?;
         let mut runtime_options = AppServerRuntimeOptions {
             code_mode_host_transport: code_mode_host.into(),
+            process_account: account,
             ..Default::default()
         };
         #[cfg(debug_assertions)]
