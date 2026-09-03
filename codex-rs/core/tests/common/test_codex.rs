@@ -13,11 +13,10 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_analytics::AnalyticsEventsClient;
-use codex_attachment_store::AttachmentStore;
+use codex_code_mode::CodeModeSessionProvider;
 use codex_config::CloudConfigBundleLoader;
 use codex_core::CodexThread;
-pub use codex_core::StartThreadOptions;
+use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::TimeProvider;
 pub use codex_core::TurnInputRequest;
@@ -30,7 +29,7 @@ use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::RemoveOptions;
 use codex_extension_api::ExtensionRegistry;
-use codex_extension_api::LoadInstructionsFuture;
+use codex_extension_api::LoadUserInstructionsFuture;
 use codex_extension_api::UserInstructionsProvider;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
@@ -42,15 +41,12 @@ use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
-use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
@@ -62,6 +58,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::ThreadStore;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -83,7 +80,6 @@ use crate::responses::start_mock_server;
 use crate::streaming_sse::StreamingSseServer;
 use crate::test_environment;
 use crate::wait_for_event;
-use crate::wait_for_event_match;
 use crate::wait_for_event_with_timeout;
 use wiremock::Match;
 use wiremock::matchers::path_regex;
@@ -116,7 +112,7 @@ impl RecordingUserInstructionsProvider {
 }
 
 impl UserInstructionsProvider for RecordingUserInstructionsProvider {
-    fn load_user_instructions(&self) -> LoadInstructionsFuture<'_> {
+    fn load_user_instructions(&self) -> LoadUserInstructionsFuture<'_> {
         self.load_count.fetch_add(1, Ordering::SeqCst);
         self.inner.load_user_instructions()
     }
@@ -330,7 +326,6 @@ pub fn turn_permission_fields(
 pub struct TestCodexBuilder {
     config_mutators: Vec<Box<ConfigMutator>>,
     auth: CodexAuth,
-    analytics_events_client: Option<AnalyticsEventsClient>,
     pre_build_hooks: Vec<Box<PreBuildHook>>,
     workspace_setups: Vec<Box<WorkspaceSetup>>,
     home: Option<Arc<TempDir>>,
@@ -342,18 +337,12 @@ pub struct TestCodexBuilder {
     supports_openai_form_elicitation: bool,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
+    code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
     history_mode: Option<ThreadHistoryMode>,
     models_manager: Option<SharedModelsManager>,
-    thread_store: Option<Arc<dyn ThreadStore>>,
-    image_store: Arc<dyn AttachmentStore>,
 }
 
 impl TestCodexBuilder {
-    pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
-        self.thread_store = Some(thread_store);
-        self
-    }
-
     pub fn with_config<T>(mut self, mutator: T) -> Self
     where
         T: FnOnce(&mut Config) + Send + 'static,
@@ -367,21 +356,8 @@ impl TestCodexBuilder {
         self
     }
 
-    pub fn with_analytics_events_client(
-        mut self,
-        analytics_events_client: AnalyticsEventsClient,
-    ) -> Self {
-        self.analytics_events_client = Some(analytics_events_client);
-        self
-    }
-
     pub fn with_models_manager(mut self, models_manager: SharedModelsManager) -> Self {
         self.models_manager = Some(models_manager);
-        self
-    }
-
-    pub fn with_image_store(mut self, image_store: Arc<dyn AttachmentStore>) -> Self {
-        self.image_store = image_store;
         self
     }
 
@@ -404,23 +380,8 @@ impl TestCodexBuilder {
         let model = model.to_string();
         self.with_config(move |config| {
             let model_catalog = config.model_catalog.get_or_insert_with(|| {
-                bundled_models_response().expect("test model catalog should parse")
+                bundled_models_response().expect("bundled models.json should parse")
             });
-            if !model_catalog
-                .models
-                .iter()
-                .any(|candidate| candidate.slug == model)
-            {
-                let mut fixture = bundled_models_response()
-                    .expect("bundled model catalog should parse")
-                    .models
-                    .into_iter()
-                    .find(|candidate| candidate.slug == "gpt-5.5")
-                    .expect("missing bundled model gpt-5.5");
-                fixture.slug = model.clone();
-                fixture.display_name = model.clone();
-                model_catalog.models.push(fixture);
-            }
             let model_info = model_catalog
                 .models
                 .iter_mut()
@@ -497,6 +458,14 @@ impl TestCodexBuilder {
 
     pub fn with_code_mode_host_program(mut self, host_program: PathBuf) -> Self {
         self.code_mode_host_program = Some(host_program);
+        self
+    }
+
+    pub fn with_code_mode_session_provider(
+        mut self,
+        provider: Arc<dyn CodeModeSessionProvider>,
+    ) -> Self {
+        self.code_mode_session_provider = Some(provider);
         self
     }
 
@@ -717,10 +686,7 @@ impl TestCodexBuilder {
     ) -> anyhow::Result<TestCodex> {
         let auth = self.auth.clone();
         let state_db = codex_core::init_state_db(&config).await;
-        let thread_store = self
-            .thread_store
-            .clone()
-            .unwrap_or_else(|| thread_store_from_config(&config, state_db.clone()));
+        let thread_store = thread_store_from_config(&config, state_db.clone());
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let user_instructions_provider =
             self.user_instructions_provider.clone().unwrap_or_else(|| {
@@ -736,47 +702,41 @@ impl TestCodexBuilder {
             .models_manager
             .clone()
             .unwrap_or_else(|| codex_core::build_models_manager(&config, auth_manager.clone()));
+        let thread_manager = ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            models_manager,
+            codex_core::CodexAppsToolsCache::default(),
+            SessionSource::Exec,
+            Arc::clone(&environment_manager),
+            Arc::clone(&self.extensions),
+            user_instructions_provider,
+            /*analytics_events_client*/ None,
+            codex_core::passthrough_image_store(),
+            Arc::clone(&thread_store),
+            codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),
+            installation_id,
+            /*attestation_provider*/ None,
+            /*external_time_provider*/ self.external_time_provider.clone(),
+        );
         let code_mode_host_program = self
             .code_mode_host_program
             .take()
             .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
-        let thread_manager = Arc::new_cyclic(|manager| {
-            let mut extensions = self.extensions.to_builder();
-            codex_core::install_agent_message_board(&mut extensions, manager.clone());
-            if config.features.enabled(Feature::GuardianV2) {
-                codex_guardian_v2::install(&mut extensions, auth_manager.clone(), manager.clone());
-            } else {
-                codex_guardian_v2::install_reviewer(&mut extensions, manager.clone());
-            }
-            let thread_manager = ThreadManager::new(
+        let thread_manager = if let Some(provider) = self.code_mode_session_provider.take() {
+            thread_manager.with_code_mode_session_provider(provider)
+        } else if config.features.enabled(Feature::CodeModeHost)
+            && let Some(code_mode_host_program) = code_mode_host_program
+        {
+            codex_core::test_support::with_code_mode_host_program(
+                thread_manager,
+                code_mode_host_program,
                 &config,
-                auth_manager.clone(),
-                models_manager,
-                codex_core::CodexAppsToolsCache::default(),
-                SessionSource::Exec,
-                Arc::clone(&environment_manager),
-                Arc::new(extensions.build()),
-                user_instructions_provider,
-                self.analytics_events_client.clone(),
-                Arc::clone(&self.image_store),
-                Arc::clone(&thread_store),
-                codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),
-                installation_id,
-                /*attestation_provider*/ None,
-                /*external_time_provider*/ self.external_time_provider.clone(),
-            );
-            if config.features.enabled(Feature::CodeModeHost)
-                && let Some(code_mode_host_program) = code_mode_host_program
-            {
-                codex_core::test_support::with_code_mode_host_program(
-                    thread_manager,
-                    code_mode_host_program,
-                    &config,
-                )
-            } else {
-                thread_manager
-            }
-        });
+            )
+        } else {
+            thread_manager
+        };
+        let thread_manager = Arc::new(thread_manager);
         let user_shell_override = self.user_shell_override.clone();
         let client_mcp_extensions = || {
             ClientMcpExtensions::new(
@@ -927,23 +887,16 @@ fn ensure_test_model_catalog(config: &mut Config) -> Result<()> {
         return Ok(());
     }
 
-    let bundled_models = bundled_models_response().expect("test model catalog should parse");
+    let bundled_models = bundled_models_response().expect("bundled models.json should parse");
     let mut model = bundled_models
         .models
         .iter()
-        .find(|candidate| candidate.slug == "gpt-5.5")
+        .find(|candidate| candidate.slug == "gpt-5.2")
         .cloned()
-        .expect("missing bundled model gpt-5.5");
+        .expect("missing bundled model gpt-5.2");
     model.slug = TEST_MODEL_WITH_EXPERIMENTAL_TOOLS.to_string();
     model.display_name = TEST_MODEL_WITH_EXPERIMENTAL_TOOLS.to_string();
     model.experimental_supported_tools = vec!["test_sync_tool".to_string()];
-    model.truncation_policy = TruncationPolicyConfig::bytes(/*limit*/ 10_000);
-    model.default_reasoning_summary = ReasoningSummary::Auto;
-    model.comp_hash = None;
-    model.service_tiers.clear();
-    model.additional_speed_tiers.clear();
-    model.web_search_tool_type = WebSearchToolType::Text;
-    model.supports_image_detail_original = false;
     config.model_catalog = Some(ModelsResponse {
         models: vec![model],
     });
@@ -1128,7 +1081,8 @@ impl TestCodex {
         let turn_environment_selections = environments.map(|environments| {
             TurnEnvironmentSelections::new(self.config.cwd.clone(), environments)
         });
-        self.codex
+        let submission = self
+            .codex
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
                     text: prompt.into(),
@@ -1152,12 +1106,15 @@ impl TestCodex {
                 }),
             )
             .await?;
-
-        let turn_id = wait_for_event_match(&self.codex, |event| match event {
-            EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
-            _ => None,
-        })
-        .await;
+        let turn_id = match submission {
+            TurnInputSubmission::Started { turn_id } => turn_id,
+            TurnInputSubmission::Steered { turn_id } => {
+                anyhow::bail!("expected a new turn, but input steered active turn {turn_id}")
+            }
+            TurnInputSubmission::NotSubmitted { reason } => {
+                anyhow::bail!("expected a new turn, but input was not submitted: {reason:?}")
+            }
+        };
         wait_for_event_with_timeout(
             &self.codex,
             |event| match event {
@@ -1408,7 +1365,6 @@ pub fn test_codex() -> TestCodexBuilder {
                 .expect("test config should allow ShellSnapshot override");
         })],
         auth: CodexAuth::from_api_key("dummy"),
-        analytics_events_client: None,
         pre_build_hooks: vec![],
         workspace_setups: vec![],
         home: None,
@@ -1420,36 +1376,10 @@ pub fn test_codex() -> TestCodexBuilder {
         supports_openai_form_elicitation: false,
         external_time_provider: None,
         code_mode_host_program: None,
+        code_mode_session_provider: None,
         history_mode: None,
         models_manager: None,
-        thread_store: None,
-        image_store: codex_core::passthrough_image_store(),
     }
-}
-
-pub fn run_test_with_large_stack<F, Fut>(name: &str, test: F) -> Result<()>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<()>> + Send + 'static,
-{
-    const WORKER_THREADS: usize = 2;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
-    let handle = std::thread::Builder::new()
-        .name(name.to_string())
-        .stack_size(TEST_STACK_SIZE_BYTES)
-        .spawn(move || -> Result<()> {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(WORKER_THREADS)
-                .thread_stack_size(TEST_STACK_SIZE_BYTES)
-                .enable_all()
-                .build()?;
-            runtime.block_on(Box::pin(test()))
-        })?;
-
-    handle
-        .join()
-        .map_err(|_| anyhow!("{name} thread panicked"))?
 }
 
 #[cfg(test)]
