@@ -1153,6 +1153,7 @@ mod tests {
             session_source: serde_json::from_value(serde_json::json!("cli"))
                 .expect("cli session source should deserialize"),
             enable_codex_api_key_env: false,
+            process_account: None,
             client_name: "test".to_string(),
             client_version: "test".to_string(),
             experimental_api: true,

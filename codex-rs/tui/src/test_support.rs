@@ -18,6 +18,68 @@ pub(crate) static TEST_MODEL_PRESETS: LazyLock<Vec<ModelPreset>> = LazyLock::new
     presets
 });
 
+const NORMALIZED_CLI_VERSION_LABEL: &str = "(v<VERSION>)";
+
+pub(crate) fn normalize_cli_version(rendered: String) -> String {
+    normalize_cli_version_label(
+        rendered,
+        crate::version::CODEX_CLI_VERSION,
+        NORMALIZED_CLI_VERSION_LABEL,
+    )
+}
+
+fn normalize_cli_version_for(rendered: String, cli_version: &str) -> String {
+    normalize_cli_version_label(rendered, cli_version, NORMALIZED_CLI_VERSION_LABEL)
+}
+
+pub(crate) fn normalize_cli_version_to(rendered: String, normalized_version: &str) -> String {
+    normalize_cli_version_label(
+        rendered,
+        crate::version::CODEX_CLI_VERSION,
+        &format!("(v{normalized_version})"),
+    )
+}
+
+fn normalize_cli_version_label(
+    rendered: String,
+    cli_version: &str,
+    normalized_label: &str,
+) -> String {
+    let runtime_label = format!("(v{cli_version})");
+    let field_width = runtime_label.len().max(normalized_label.len());
+    // Replace equal-width fields so short Bazel versions borrow right padding while long
+    // downstream versions donate it, leaving surrounding snapshot geometry unchanged.
+    let runtime_field = format!("{runtime_label:<field_width$}");
+    let normalized_field = format!("{normalized_label:<field_width$}");
+    rendered
+        .replace(&runtime_field, &normalized_field)
+        .lines()
+        .map(|line| {
+            let Some(start) = line.find("(v") else {
+                return line.to_string();
+            };
+            let border = line.rfind('│').unwrap_or(line.len());
+            if start >= border {
+                return line.to_string();
+            }
+            let visible_end = start + line[start..border].trim_end().len();
+            let visible = &line[start..visible_end];
+            if !runtime_label.starts_with(visible) {
+                return line.to_string();
+            }
+            let mut replacement = normalized_label
+                .chars()
+                .take(visible.len())
+                .collect::<String>();
+            replacement.push_str(&" ".repeat(visible.len().saturating_sub(replacement.len())));
+            let mut normalized = line.to_string();
+            normalized.replace_range(start..visible_end, &replacement);
+            normalized
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) fn test_path_display(path: &str) -> String {
     test_path_buf(path).display().to_string()
 }
@@ -53,3 +115,7 @@ where
             panic!("app-server wire value should map to legacy helper type: {err}")
         })
 }
+
+#[cfg(test)]
+#[path = "test_support_tests.rs"]
+mod tests;

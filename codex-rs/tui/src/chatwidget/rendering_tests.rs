@@ -1,5 +1,6 @@
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use crate::test_support::normalize_cli_version;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -149,31 +150,32 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
         Some(ChatWidget::placeholder_session_header_cell(&widget.config));
 
     let frame = render_frame(&widget, /*width*/ 48);
-    let header = frame
-        .content
-        .chunks(usize::from(frame.area.width))
-        .take(/*n*/ 6)
-        .map(|row| {
-            row.iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+    let header = normalize_cli_version(
+        frame
+            .content
+            .chunks(usize::from(frame.area.width))
+            .take(/*n*/ 6)
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 
     let cwd = widget.config.cwd.as_path().display().to_string();
     let normalized_cwd = format!("{:<width$}", "/tmp/project", width = cwd.len());
 
     insta::assert_snapshot!(header.replace(&cwd, &normalized_cwd), @r"
-    ╭───────────────────────────────────────╮
-    │ >_ OpenAI Codex (v<VERSION>)              │
-    │                                       │
-    │ model:     loading   /model to change │
-    │ directory: /tmp/project               │
-    ╰───────────────────────────────────────╯
+    ╭────────────────────────────────────────────╮
+    │ >_ OpenAI Codex (v<VERSION>)               │
+    │                                            │
+    │ model:     loading   /model to change      │
+    │ directory: /tmp/project                    │
+    ╰────────────────────────────────────────────╯
     ");
 }
 

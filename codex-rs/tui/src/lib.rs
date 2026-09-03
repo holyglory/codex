@@ -264,6 +264,7 @@ async fn start_embedded_app_server(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    process_account: Option<String>,
 ) -> color_eyre::Result<InProcessAppServerClient> {
     start_embedded_app_server_with(
         arg0_paths,
@@ -276,6 +277,7 @@ async fn start_embedded_app_server(
         log_db,
         state_db,
         environment_manager,
+        process_account,
         InProcessAppServerClient::start,
     )
     .await
@@ -486,7 +488,9 @@ async fn start_app_server(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    process_account: Option<String>,
 ) -> color_eyre::Result<AppServerClient> {
+    validate_process_account_target(target, process_account.as_deref())?;
     match target {
         AppServerTarget::Embedded => start_embedded_app_server(
             arg0_paths,
@@ -499,6 +503,7 @@ async fn start_app_server(
             log_db,
             state_db,
             environment_manager,
+            process_account,
         )
         .await
         .map(AppServerClient::InProcess),
@@ -506,6 +511,18 @@ async fn start_app_server(
             connect_remote_app_server(endpoint.clone()).await
         }
     }
+}
+
+fn validate_process_account_target(
+    target: &AppServerTarget,
+    process_account: Option<&str>,
+) -> color_eyre::Result<()> {
+    if process_account.is_some() && !matches!(target, AppServerTarget::Embedded) {
+        color_eyre::eyre::bail!(
+            "--account is owned by the remote app-server; start that server with --account instead"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn start_app_server_for_picker(
@@ -526,6 +543,7 @@ pub(crate) async fn start_app_server_for_picker(
         /*log_db*/ None,
         state_db,
         environment_manager,
+        /*process_account*/ None,
     )
     .await?;
     Ok(AppServerSession::new(app_server, target.thread_params_mode()).with_startup_config(config))
@@ -557,6 +575,7 @@ async fn start_embedded_app_server_with<F, Fut>(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    process_account: Option<String>,
     start_client: F,
 ) -> color_eyre::Result<InProcessAppServerClient>
 where
@@ -588,6 +607,7 @@ where
         session_source: serde_json::from_value(serde_json::json!("cli"))
             .unwrap_or_else(|err| panic!("cli session source should deserialize: {err}")),
         enable_codex_api_key_env: false,
+        process_account,
         client_name: "codex-tui".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,
@@ -1041,6 +1061,7 @@ async fn run_ratatui_app(
                 log_db.clone(),
                 state_db.clone(),
                 environment_manager.clone(),
+                cli.shared.account.clone(),
             ),
         )
         .await;
@@ -1606,7 +1627,9 @@ async fn run_ratatui_app(
         no_alt_screen,
         ..
     } = cli;
-    let images = shared.into_inner().images;
+    let shared = shared.into_inner();
+    let process_account = shared.account.clone();
+    let images = shared.images;
 
     let use_alt_screen = determine_alt_screen_mode(no_alt_screen, config.tui_alternate_screen);
     tui.set_alt_screen_enabled(use_alt_screen);
@@ -1635,6 +1658,7 @@ async fn run_ratatui_app(
                     log_db.clone(),
                     state_db.clone(),
                     environment_manager.clone(),
+                    process_account,
                 ),
             )
             .await
@@ -2062,6 +2086,20 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn process_account_pin_is_owned_by_embedded_or_remote_server() {
+        assert!(validate_process_account_target(&AppServerTarget::Embedded, Some("alpha")).is_ok());
+        let remote = AppServerTarget::Remote {
+            endpoint: RemoteAppServerEndpoint::WebSocket {
+                websocket_url: "ws://127.0.0.1:9876".to_string(),
+                auth_token: None,
+            },
+        };
+        let error = validate_process_account_target(&remote, Some("alpha"))
+            .expect_err("client pin must be rejected for remote TUI");
+        assert!(error.to_string().contains("remote app-server"));
+    }
+
     fn write_session_rollout(
         codex_home: &Path,
         filename_ts: &str,
@@ -2243,6 +2281,7 @@ mod tests {
             /*log_db*/ None,
             state_db,
             Arc::new(EnvironmentManager::default_for_tests()),
+            /*process_account*/ None,
         )
         .await
     }
@@ -3300,6 +3339,7 @@ mod tests {
             /*log_db*/ None,
             /*state_db*/ None,
             Arc::new(EnvironmentManager::default_for_tests()),
+            /*process_account*/ None,
             |_args| async { Err(std::io::Error::other("boom")) },
         )
         .await;

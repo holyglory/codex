@@ -19,6 +19,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
+use crate::test_support::normalize_cli_version;
 use crate::tui::FrameRequester;
 use crate::tui::TuiEvent;
 
@@ -104,8 +105,8 @@ fn startup_draft_renders_full_empty_and_multiline_composer_frames() {
                     .to_string()
             })
             .collect::<Vec<_>>()
-            .join("\n")
-            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+            .join("\n");
+        let frame = normalize_cli_version(frame);
 
         assert!(
             cursor.1 >= pump.header.desired_height(width),
@@ -132,7 +133,7 @@ async fn startup_draft_clears_loading_status_when_starting_fresh() {
         );
         let mut buffer = Buffer::empty(area);
         renderable.render(area, &mut buffer);
-        (0..area.height)
+        let rendered = (0..area.height)
             .map(|row| {
                 (0..area.width)
                     .map(|column| buffer[(column, row)].symbol())
@@ -141,8 +142,8 @@ async fn startup_draft_clears_loading_status_when_starting_fresh() {
                     .to_string()
             })
             .collect::<Vec<_>>()
-            .join("\n")
-            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+            .join("\n");
+        normalize_cli_version(rendered)
     };
 
     for (label, initial_screen, session_action) in [
@@ -693,8 +694,8 @@ async fn startup_draft_waits_for_onboarding_before_accepting_input() {
                 .to_string()
         })
         .collect::<Vec<_>>()
-        .join("\n")
-        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+        .join("\n");
+    let visible_frame = normalize_cli_version(visible_frame);
     drop(renderable);
     frames.push_str(&format!("\n---\nafter onboarding:\n{visible_frame}"));
     insta::assert_snapshot!("startup_draft_onboarding_transition", frames);

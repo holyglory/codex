@@ -182,6 +182,10 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
         .collect()
 }
 
+fn normalize_cli_version(rendered: String) -> String {
+    crate::test_support::normalize_cli_version_to(rendered, "0.0.0")
+}
+
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     let frame_width = lines
         .iter()
@@ -190,7 +194,7 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
         .map(|line| {
-            if let (Some(frame_width), Some(dir_pos), Some(pipe_idx)) =
+            let line = if let (Some(frame_width), Some(dir_pos), Some(pipe_idx)) =
                 (frame_width, line.find("Directory: "), line.rfind('│'))
             {
                 let prefix = &line[..dir_pos + "Directory: ".len()];
@@ -209,7 +213,8 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 rebuilt
             } else {
                 line
-            }
+            };
+            normalize_cli_version(line)
         })
         .collect()
 }

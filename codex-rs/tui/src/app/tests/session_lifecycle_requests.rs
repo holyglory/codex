@@ -117,6 +117,7 @@ async fn start_recording_app_server_with_history(
         /*log_db*/ None,
         state_db,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*process_account*/ None,
     )
     .await?;
     let codex_home = config.codex_home.display().to_string();
