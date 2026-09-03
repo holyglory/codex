@@ -59,12 +59,26 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        multi_account,
+        local_usage_accounting,
     } = to_response::<InitializeResponse>(response)?;
 
     assert!(user_agent.starts_with("codex_vscode/"));
     assert_eq!(response_codex_home, expected_codex_home);
     assert_eq!(platform_family, std::env::consts::FAMILY);
     assert_eq!(platform_os, std::env::consts::OS);
+    assert_eq!(
+        multi_account,
+        Some(codex_app_server_protocol::MultiAccountCapability {
+            version: 2,
+            supports_managed_login: true,
+            supports_auto_selection: true,
+        })
+    );
+    assert_eq!(
+        local_usage_accounting.map(|capability| capability.version),
+        Some(2)
+    );
     Ok(())
 }
 
@@ -171,6 +185,8 @@ async fn initialize_respects_originator_override_env_var() -> Result<()> {
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        multi_account: _,
+        local_usage_accounting: _,
     } = to_response::<InitializeResponse>(response)?;
 
     assert!(user_agent.starts_with("codex_originator_via_env_var/"));
