@@ -112,8 +112,8 @@ fn read_rollout_ordinals(path: &Path) -> std::io::Result<Vec<Option<u64>>> {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let value = serde_json::from_str::<serde_json::Value>(line)
-                .map_err(std::io::Error::other)?;
+            let value =
+                serde_json::from_str::<serde_json::Value>(line).map_err(std::io::Error::other)?;
             Ok(value.get("ordinal").and_then(serde_json::Value::as_u64))
         })
         .collect()
@@ -1013,8 +1013,7 @@ async fn resumed_paginated_rollout_continues_after_ordinal_gap() -> std::io::Res
 }
 
 #[tokio::test]
-async fn resumed_paginated_rollout_consumes_floating_point_record_ordinal()
--> std::io::Result<()> {
+async fn resumed_paginated_rollout_consumes_floating_point_record_ordinal() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
     let rollout_path = home.path().join("rollout.jsonl");
@@ -1102,8 +1101,8 @@ async fn resumed_paginated_rollout_consumes_unknown_record_ordinal() -> std::io:
 }
 
 #[tokio::test]
-async fn repeated_paginated_resume_cycles_keep_ordinals_strictly_increasing()
--> std::io::Result<()> {
+async fn repeated_paginated_resume_cycles_keep_ordinals_strictly_increasing() -> std::io::Result<()>
+{
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
     let rollout_path = home.path().join("rollout.jsonl");
@@ -1160,8 +1159,8 @@ async fn resumed_paginated_rollout_advances_past_duplicate_tail() -> std::io::Re
 }
 
 #[tokio::test]
-async fn resumed_paginated_rollout_rejects_valid_tail_without_usable_ordinal()
--> std::io::Result<()> {
+async fn resumed_paginated_rollout_rejects_valid_tail_without_usable_ordinal() -> std::io::Result<()>
+{
     let cases = [
         ("missing", serde_json::json!({ "type": "future_record" })),
         (
