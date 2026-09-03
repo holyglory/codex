@@ -123,6 +123,54 @@ fn test_model_client_with_thread_id(
     )
 }
 
+#[test]
+fn auth_rebinding_shares_websocket_cache_only_for_same_manager() {
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-api-key"));
+    let other_auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("other-api-key"));
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        SessionSource::Cli,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    let same_auth = client.for_auth_manager(auth_manager);
+    let switched_auth = client.for_auth_manager(other_auth_manager);
+
+    assert_eq!(
+        (
+            Arc::ptr_eq(
+                &client.state.cached_websocket_session,
+                &same_auth.state.cached_websocket_session,
+            ),
+            Arc::ptr_eq(
+                &client.state.cached_websocket_session,
+                &switched_auth.state.cached_websocket_session,
+            ),
+            Arc::ptr_eq(
+                &client.state.disable_websockets,
+                &same_auth.state.disable_websockets,
+            ),
+            Arc::ptr_eq(
+                &client.state.disable_websockets,
+                &switched_auth.state.disable_websockets,
+            ),
+        ),
+        (true, false, true, true)
+    );
+}
+
 #[tokio::test]
 async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::Result<()> {
     let server = MockServer::start().await;
@@ -204,6 +252,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
             &test_session_telemetry(),
             &CompactionTraceContext::disabled(),
             &responses_metadata,
+            &crate::usage_runtime::UsageRequestChain::new(),
         )
         .await?;
 
@@ -807,6 +856,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        /*usage_attempt*/ None,
     );
 
     let observed = stream
@@ -858,6 +908,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*usage_attempt*/ None,
     );
 
     while stream.next().await.is_some() {}
@@ -1079,6 +1130,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        /*usage_attempt*/ None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
