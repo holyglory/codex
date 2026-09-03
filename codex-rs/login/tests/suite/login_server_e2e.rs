@@ -150,6 +150,7 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
         forced_chatgpt_workspace_id: Some(vec![chatgpt_account_id.to_string()]),
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -252,6 +253,7 @@ async fn hosted_login_redirects_to_configured_open_app_url() -> Result<()> {
             app_brand: LoginSuccessPageBrand::Chatgpt,
         },
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
     })?;
     let login_port = server.actual_port;
     let client = HttpClientBuilder::new()
@@ -301,6 +303,7 @@ async fn creates_missing_codex_home_dir() -> Result<()> {
         forced_chatgpt_workspace_id: None,
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -347,6 +350,7 @@ async fn login_server_includes_forced_workspaces_as_one_query_param() -> Result<
         ]),
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -388,6 +392,7 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -405,11 +410,11 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
     assert!(resp.status().is_success());
     let body = resp.text().await?;
     assert!(
-        body.contains(&format!(
-            "Login is restricted to workspace id(s) {WORKSPACE_ID_ALLOWED}"
-        )),
+        body.contains("Login credentials do not satisfy the configured workspace restriction."),
         "error body should mention workspace restriction"
     );
+    assert!(!body.contains(WORKSPACE_ID_ALLOWED));
+    assert!(!body.contains(WORKSPACE_ID_DISALLOWED));
 
     let result = server.block_until_done().await;
     assert!(
@@ -418,6 +423,10 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
     );
     let err = result.unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    let message = err.to_string();
+    assert!(message.contains("configured workspace restriction"));
+    assert!(!message.contains(WORKSPACE_ID_ALLOWED));
+    assert!(!message.contains(WORKSPACE_ID_DISALLOWED));
 
     let auth_path = codex_home.join("auth.json");
     assert!(
@@ -451,6 +460,7 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
         forced_chatgpt_workspace_id: None,
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -522,6 +532,7 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         forced_chatgpt_workspace_id: None,
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
     let server = run_login_server(opts)?;
@@ -566,7 +577,7 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
     let result = server.block_until_done().await;
     assert!(result.is_err(), "login should fail for access_denied");
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(err.kind(), io::ErrorKind::Interrupted);
     assert!(
         err.to_string()
             .contains("Sign-in failed: some_other_reason"),
@@ -672,6 +683,7 @@ async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
         forced_chatgpt_workspace_id: None,
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
 
@@ -696,6 +708,7 @@ async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
         forced_chatgpt_workspace_id: None,
         codex_streamlined_login: false,
         auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        profile_auth_storage: None,
         login_success_page: LoginSuccessPage::Local,
     };
 
