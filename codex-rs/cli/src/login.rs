@@ -7,6 +7,8 @@
 //! into a one-shot CLI command while still producing a durable `codex-login.log` artifact that
 //! support can request from users.
 
+use codex_account_registry::RegistryStore;
+use codex_account_registry::RegistryStoreError;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEdit;
@@ -15,10 +17,16 @@ use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CLIENT_ID;
+use codex_login::PendingProfileLogin;
+use codex_login::ProfileAuthCommitError;
+use codex_login::ProfileAuthStorage;
 use codex_login::ServerOptions;
 use codex_login::is_workload_identity_selected;
 use codex_login::login_with_access_token;
+use codex_login::login_with_access_token_to_profile;
 use codex_login::login_with_api_key;
+use codex_login::login_with_api_key_to_profile;
+use codex_login::logout_profile_with_revoke;
 use codex_login::logout_with_revoke;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
@@ -29,7 +37,6 @@ use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
-use std::path::PathBuf;
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
@@ -44,6 +51,123 @@ const API_KEY_LOGIN_DISABLED_MESSAGE: &str =
 const ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE: &str =
     "Access token login is disabled. Use API key login instead.";
 const LOGIN_SUCCESS_MESSAGE: &str = "Successfully logged in";
+
+#[derive(Clone, Debug)]
+enum CliAuthTarget {
+    Legacy,
+    Profile(ProfileAuthStorage),
+}
+
+#[derive(Debug)]
+enum CliLoginTarget {
+    Legacy,
+    Profile {
+        active: ProfileAuthStorage,
+        pending: Box<PendingProfileLogin>,
+    },
+}
+
+fn resolve_auth_target(config: &Config) -> std::io::Result<CliAuthTarget> {
+    let registry = match RegistryStore::new(&config.codex_home).read() {
+        Ok(registry) => registry,
+        Err(RegistryStoreError::NotFound) => return Ok(CliAuthTarget::Legacy),
+        Err(_) => return Err(std::io::Error::other("account registry is unavailable")),
+    };
+    let account_id = registry
+        .default_account_id
+        .ok_or_else(|| std::io::Error::other("active account profile is unavailable"))?;
+    let account = registry
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .ok_or_else(|| std::io::Error::other("active account profile is unavailable"))?;
+    if !account.enabled {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "active account profile is disabled",
+        ));
+    }
+    ProfileAuthStorage::new(
+        &config.codex_home,
+        account_id,
+        config.cli_auth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
+    )
+    .map(CliAuthTarget::Profile)
+}
+
+fn auth_target_or_exit(config: &Config) -> CliAuthTarget {
+    match resolve_auth_target(config) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("Error resolving active account: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn login_target_or_exit(config: &Config) -> CliLoginTarget {
+    match auth_target_or_exit(config) {
+        CliAuthTarget::Legacy => CliLoginTarget::Legacy,
+        CliAuthTarget::Profile(active) => {
+            let store = RegistryStore::new(&config.codex_home);
+            let guard = match store.acquire_lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    eprintln!(
+                        "Error preparing active account login: account registry is unavailable"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let registry = match store.read() {
+                Ok(registry) => registry,
+                Err(_) => {
+                    eprintln!(
+                        "Error preparing active account login: account registry is unavailable"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let alias = match registry
+                .accounts
+                .iter()
+                .find(|account| &account.id == active.account_id())
+            {
+                Some(account) if account.enabled => account.alias.clone(),
+                Some(_) => {
+                    eprintln!("Error preparing active account login: active account is disabled");
+                    std::process::exit(1);
+                }
+                None => {
+                    eprintln!(
+                        "Error preparing active account login: active account is unavailable"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let pending = match PendingProfileLogin::begin(
+                &config.codex_home,
+                alias,
+                config.cli_auth_credentials_store_mode,
+                config.auth_keyring_backend_kind(),
+            ) {
+                Ok(pending) => pending,
+                Err(_) => {
+                    eprintln!(
+                        "Error preparing active account login: pending profile storage is unavailable"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            drop(guard);
+            CliLoginTarget::Profile {
+                active,
+                pending: Box::new(pending),
+            }
+        }
+    }
+}
 
 /// Installs a small file-backed tracing layer for direct `codex login` flows.
 ///
@@ -62,10 +186,7 @@ fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
     };
 
     if let Err(err) = std::fs::create_dir_all(&log_dir) {
-        eprintln!(
-            "Warning: failed to create login log directory {}: {err}",
-            log_dir.display()
-        );
+        eprintln!("Warning: failed to create the login log directory: {err}");
         return None;
     }
 
@@ -82,10 +203,7 @@ fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
     let log_file = match log_file_opts.open(&log_path) {
         Ok(log_file) => log_file,
         Err(err) => {
-            eprintln!(
-                "Warning: failed to open login log file {}: {err}",
-                log_path.display()
-            );
+            eprintln!("Warning: failed to open the login log file: {err}");
             return None;
         }
     };
@@ -103,10 +221,7 @@ fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
     // Persist the same login targets to a file so support can inspect auth failures
     // without reproducing them through TUI or app-server.
     if let Err(err) = tracing_subscriber::registry().with(file_layer).try_init() {
-        eprintln!(
-            "Warning: failed to initialize login log file {}: {err}",
-            log_path.display()
-        );
+        eprintln!("Warning: failed to initialize login file logging: {err}");
         return None;
     }
 
@@ -137,34 +252,93 @@ async fn clear_existing_auth_before_login(
     }
 }
 
-pub async fn login_with_chatgpt(
-    codex_home: PathBuf,
-    forced_chatgpt_workspace_id: Option<Vec<String>>,
-    cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
-    auth_keyring_backend_kind: AuthKeyringBackendKind,
-    auth_route_config: AuthRouteConfig,
-) -> std::io::Result<()> {
-    clear_existing_auth_before_login(
-        &codex_home,
-        cli_auth_credentials_store_mode,
-        auth_keyring_backend_kind,
-        &auth_route_config,
-    )
-    .await;
+async fn clear_auth_target_before_login(
+    target: &CliLoginTarget,
+    config: &Config,
+    auth_route_config: &AuthRouteConfig,
+) {
+    match target {
+        CliLoginTarget::Legacy => {
+            clear_existing_auth_before_login(
+                &config.codex_home,
+                config.cli_auth_credentials_store_mode,
+                config.auth_keyring_backend_kind(),
+                auth_route_config,
+            )
+            .await;
+        }
+        CliLoginTarget::Profile { .. } => {}
+    }
+}
 
-    let opts = ServerOptions::new(
-        codex_home,
-        CLIENT_ID.to_string(),
-        forced_chatgpt_workspace_id,
-        cli_auth_credentials_store_mode,
-        auth_keyring_backend_kind,
-        auth_route_config,
-    );
-    let server = run_login_server(opts)?;
+fn options_for_target(mut options: ServerOptions, target: &CliLoginTarget) -> ServerOptions {
+    if let CliLoginTarget::Profile { pending, .. } = target {
+        options = options.with_profile_auth_storage(pending.storage().clone());
+    }
+    options
+}
 
-    print_login_server_start(server.actual_port, &server.auth_url);
+fn notify_profile_auth_changed(config: &Config, target: &CliAuthTarget) -> std::io::Result<()> {
+    if !matches!(target, CliAuthTarget::Profile(_)) {
+        return Ok(());
+    }
+    let store = RegistryStore::new(&config.codex_home);
+    let guard = store.acquire_lock().map_err(std::io::Error::other)?;
+    let registry = store.read().map_err(std::io::Error::other)?;
+    match store.compare_and_swap_with_guard(&guard, registry.generation, |_| {}) {
+        Ok(_) => Ok(()),
+        Err(RegistryStoreError::CommittedDurabilityUncertain { .. }) => store
+            .repair_committed_durability_with_guard(&guard)
+            .map_err(std::io::Error::other),
+        Err(error) => Err(std::io::Error::other(error)),
+    }
+}
 
-    server.block_until_done().await
+fn finish_login(target: CliLoginTarget) -> ! {
+    if let CliLoginTarget::Profile { active, pending } = target {
+        let first = pending.storage().load();
+        let second = pending.storage().load();
+        let auth = match (first, second) {
+            (Ok(Some(first)), Ok(Some(second))) if first == second => first,
+            _ => {
+                let _ = pending.cleanup();
+                eprintln!("Login failed while verifying the staged account credentials.");
+                std::process::exit(1);
+            }
+        };
+        match active.replace_auth_and_metadata(&auth) {
+            Ok(_) => {
+                if pending.cleanup().is_err() {
+                    eprintln!("Login succeeded, but pending profile cleanup failed.");
+                    std::process::exit(1);
+                }
+            }
+            Err(ProfileAuthCommitError::CommittedDurabilityUncertain) => {
+                eprintln!(
+                    "Login committed, but account registry durability is uncertain; retry after storage recovers."
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                let _ = pending.cleanup();
+                eprintln!("Error committing active account login: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    eprintln!("{LOGIN_SUCCESS_MESSAGE}");
+    std::process::exit(0);
+}
+
+fn fail_login(target: CliLoginTarget, message: impl std::fmt::Display) -> ! {
+    if let CliLoginTarget::Profile { pending, .. } = target
+        && pending.cleanup().is_err()
+    {
+        eprintln!("Login failed and pending profile cleanup also failed.");
+        std::process::exit(1);
+    }
+    eprintln!("{message}");
+    std::process::exit(1);
 }
 
 pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
@@ -180,24 +354,30 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
         std::process::exit(1);
     }
 
-    let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
-    match login_with_chatgpt(
-        config.codex_home.to_path_buf(),
-        effective_chatgpt_workspaces,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        config.auth_route_config(),
-    )
-    .await
-    {
-        Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Error logging in: {e}");
-            std::process::exit(1);
-        }
+    let target = login_target_or_exit(&config);
+    let auth_route_config = config.auth_route_config();
+    clear_auth_target_before_login(&target, &config, &auth_route_config).await;
+    let options = options_for_target(
+        ServerOptions::new(
+            config.codex_home.to_path_buf(),
+            CLIENT_ID.to_string(),
+            config.auth_config().effective_chatgpt_workspaces(),
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            auth_route_config,
+        ),
+        &target,
+    );
+    let result = run_login_server(options).inspect(|server| {
+        print_login_server_start(server.actual_port, &server.auth_url);
+    });
+    let result = match result {
+        Ok(server) => server.block_until_done().await,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(_) => finish_login(target),
+        Err(error) => fail_login(target, format_args!("Error logging in: {error}")),
     }
 }
 
@@ -217,20 +397,21 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
-    match login_with_api_key(
-        &config.codex_home,
-        &api_key,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-    ) {
-        Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+    let target = login_target_or_exit(&config);
+    let result = match &target {
+        CliLoginTarget::Legacy => login_with_api_key(
+            &config.codex_home,
+            &api_key,
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+        ),
+        CliLoginTarget::Profile { pending, .. } => {
+            login_with_api_key_to_profile(pending.storage(), &api_key)
         }
-        Err(e) => {
-            eprintln!("Error logging in: {e}");
-            std::process::exit(1);
-        }
+    };
+    match result {
+        Ok(_) => finish_login(target),
+        Err(error) => fail_login(target, format_args!("Error logging in: {error}")),
     }
 }
 
@@ -252,25 +433,37 @@ pub async fn run_login_with_access_token(
 
     let auth_route_config = config.auth_route_config();
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
-    match login_with_access_token(
-        &config.codex_home,
-        &access_token,
-        config.cli_auth_credentials_store_mode,
-        effective_chatgpt_workspaces.as_deref(),
-        Some(&config.chatgpt_base_url),
-        config.auth_keyring_backend_kind(),
-        &auth_route_config,
-    )
-    .await
-    {
-        Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+    let target = login_target_or_exit(&config);
+    let result = match &target {
+        CliLoginTarget::Legacy => {
+            login_with_access_token(
+                &config.codex_home,
+                &access_token,
+                config.cli_auth_credentials_store_mode,
+                effective_chatgpt_workspaces.as_deref(),
+                Some(&config.chatgpt_base_url),
+                config.auth_keyring_backend_kind(),
+                &auth_route_config,
+            )
+            .await
         }
-        Err(e) => {
-            eprintln!("Error logging in with access token: {e}");
-            std::process::exit(1);
+        CliLoginTarget::Profile { pending, .. } => {
+            login_with_access_token_to_profile(
+                pending.storage(),
+                &access_token,
+                effective_chatgpt_workspaces.as_deref(),
+                Some(&config.chatgpt_base_url),
+                &auth_route_config,
+            )
+            .await
         }
+    };
+    match result {
+        Ok(_) => finish_login(target),
+        Err(error) => fail_login(
+            target,
+            format_args!("Error logging in with access token: {error}"),
+        ),
     }
 }
 
@@ -332,34 +525,29 @@ pub async fn run_login_with_device_code(
         std::process::exit(1);
     }
     let auth_route_config = config.auth_route_config();
-    clear_existing_auth_before_login(
-        &config.codex_home,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        &auth_route_config,
-    )
-    .await;
+    let target = login_target_or_exit(&config);
+    clear_auth_target_before_login(&target, &config, &auth_route_config).await;
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
-    let mut opts = ServerOptions::new(
-        config.codex_home.to_path_buf(),
-        client_id.unwrap_or(CLIENT_ID.to_string()),
-        effective_chatgpt_workspaces,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        auth_route_config,
+    let mut opts = options_for_target(
+        ServerOptions::new(
+            config.codex_home.to_path_buf(),
+            client_id.unwrap_or(CLIENT_ID.to_string()),
+            effective_chatgpt_workspaces,
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            auth_route_config,
+        ),
+        &target,
     );
     if let Some(iss) = issuer_base_url {
         opts.issuer = iss;
     }
     match run_device_code_login(opts).await {
-        Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Error logging in with device code: {e}");
-            std::process::exit(1);
-        }
+        Ok(()) => finish_login(target),
+        Err(error) => fail_login(
+            target,
+            format_args!("Error logging in with device code: {error}"),
+        ),
     }
 }
 
@@ -383,22 +571,20 @@ pub async fn run_login_with_device_code_fallback_to_browser(
         std::process::exit(1);
     }
     let auth_route_config = config.auth_route_config();
-    clear_existing_auth_before_login(
-        &config.codex_home,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        &auth_route_config,
-    )
-    .await;
+    let target = login_target_or_exit(&config);
+    clear_auth_target_before_login(&target, &config, &auth_route_config).await;
 
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
-    let mut opts = ServerOptions::new(
-        config.codex_home.to_path_buf(),
-        client_id.unwrap_or(CLIENT_ID.to_string()),
-        effective_chatgpt_workspaces,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        auth_route_config,
+    let mut opts = options_for_target(
+        ServerOptions::new(
+            config.codex_home.to_path_buf(),
+            client_id.unwrap_or(CLIENT_ID.to_string()),
+            effective_chatgpt_workspaces,
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            auth_route_config,
+        ),
+        &target,
     );
     if let Some(iss) = issuer_base_url {
         opts.issuer = iss;
@@ -406,10 +592,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     opts.open_browser = false;
 
     match run_device_code_login(opts.clone()).await {
-        Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
-        }
+        Ok(()) => finish_login(target),
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 eprintln!("Device code login is not enabled; falling back to browser login.");
@@ -417,24 +600,19 @@ pub async fn run_login_with_device_code_fallback_to_browser(
                     Ok(server) => {
                         print_login_server_start(server.actual_port, &server.auth_url);
                         match server.block_until_done().await {
-                            Ok(()) => {
-                                eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-                                std::process::exit(0);
-                            }
-                            Err(e) => {
-                                eprintln!("Error logging in: {e}");
-                                std::process::exit(1);
+                            Ok(()) => finish_login(target),
+                            Err(error) => {
+                                fail_login(target, format_args!("Error logging in: {error}"))
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error logging in: {e}");
-                        std::process::exit(1);
-                    }
+                    Err(error) => fail_login(target, format_args!("Error logging in: {error}")),
                 }
             } else {
-                eprintln!("Error logging in with device code: {e}");
-                std::process::exit(1);
+                fail_login(
+                    target,
+                    format_args!("Error logging in with device code: {e}"),
+                )
             }
         }
     }
@@ -456,6 +634,20 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
         }
     }
 
+    if let CliAuthTarget::Profile(profile) = auth_target_or_exit(&config) {
+        match profile.load() {
+            Ok(Some(auth)) => report_profile_login_status(auth),
+            Ok(None) => {
+                eprintln!("Not logged in");
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!("Error checking login status: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let auth_config = config.auth_config();
     match auth_config
         .load_auth(/*enable_codex_api_key_env*/ false)
@@ -463,8 +655,8 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     {
         Ok(Some(auth)) => match auth.auth_mode() {
             AuthMode::ApiKey => match auth.get_token() {
-                Ok(api_key) => {
-                    eprintln!("Logged in using an API key - {}", safe_format_key(&api_key));
+                Ok(_api_key) => {
+                    eprintln!("Logged in using an API key");
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -507,24 +699,75 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     }
 }
 
+fn report_profile_login_status(auth: codex_login::AuthDotJson) -> ! {
+    match auth.resolved_mode() {
+        AuthMode::ApiKey => match auth.openai_api_key.as_deref() {
+            Some(_api_key) => {
+                eprintln!("Logged in using an API key");
+                std::process::exit(0);
+            }
+            None => {
+                eprintln!("Error checking login status: API key auth is incomplete");
+                std::process::exit(1);
+            }
+        },
+        AuthMode::Chatgpt => {
+            eprintln!("Logged in using ChatGPT");
+            std::process::exit(0);
+        }
+        AuthMode::ChatgptAuthTokens | AuthMode::Headers => {
+            eprintln!("Error checking login status: external auth cannot be stored in a profile");
+            std::process::exit(1);
+        }
+        AuthMode::AgentIdentity => {
+            eprintln!("Logged in using access token");
+            std::process::exit(0);
+        }
+        AuthMode::PersonalAccessToken => {
+            eprintln!("Logged in using personal access token");
+            std::process::exit(0);
+        }
+        AuthMode::BedrockApiKey => {
+            eprintln!("Logged in using Amazon Bedrock API key");
+            std::process::exit(0);
+        }
+        AuthMode::BedrockAccessKeys => {
+            eprintln!("Logged in using Amazon Bedrock AWS access keys");
+            std::process::exit(0);
+        }
+    }
+}
+
 pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let auth_route_config = config.auth_route_config();
 
-    let logged_out = match logout_with_revoke(
-        &config.codex_home,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        &auth_route_config,
-    )
-    .await
-    {
+    let target = auth_target_or_exit(&config);
+    let logged_out = match match &target {
+        CliAuthTarget::Legacy => {
+            logout_with_revoke(
+                &config.codex_home,
+                config.cli_auth_credentials_store_mode,
+                config.auth_keyring_backend_kind(),
+                &auth_route_config,
+            )
+            .await
+        }
+        CliAuthTarget::Profile(profile) => {
+            logout_profile_with_revoke(profile, &auth_route_config).await
+        }
+    } {
         Ok(logged_out) => logged_out,
         Err(err) => {
             eprintln!("Error logging out: {err}");
             std::process::exit(1);
         }
     };
+
+    if logged_out && notify_profile_auth_changed(&config, &target).is_err() {
+        eprintln!("Logout succeeded, but the account registry notification failed.");
+        std::process::exit(1);
+    }
 
     let cleared_bedrock_config =
         if let Some(paths) = ConfigEditsBuilder::bedrock_provider_config_paths_to_clear(&config) {
@@ -576,15 +819,6 @@ async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config
     }
 }
 
-fn safe_format_key(key: &str) -> String {
-    if key.len() <= 13 {
-        return "***".to_string();
-    }
-    let prefix = &key[..8];
-    let suffix = &key[key.len() - 5..];
-    format!("{prefix}***{suffix}")
-}
-
 #[cfg(test)]
 mod tests {
     use codex_config::types::AuthCredentialsStoreMode;
@@ -595,7 +829,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::clear_existing_auth_before_login;
-    use super::safe_format_key;
 
     #[tokio::test]
     async fn clears_existing_auth_before_login() {
@@ -623,17 +856,5 @@ mod tests {
         )
         .expect("load auth after cleanup");
         assert_eq!(auth, None);
-    }
-
-    #[test]
-    fn formats_long_key() {
-        let key = "sk-proj-1234567890ABCDE";
-        assert_eq!(safe_format_key(key), "sk-proj-***ABCDE");
-    }
-
-    #[test]
-    fn short_key_returns_stars() {
-        let key = "sk-proj-12345";
-        assert_eq!(safe_format_key(key), "***");
     }
 }

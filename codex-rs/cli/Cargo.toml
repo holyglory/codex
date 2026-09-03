@@ -31,6 +31,8 @@ codex-app-server = { workspace = true }
 codex-app-server-daemon = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-app-server-test-client = { workspace = true }
+codex-account-registry = { workspace = true }
+codex-backend-client = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-build-info = { workspace = true }
 codex-api = { workspace = true }
@@ -60,6 +62,7 @@ codex-model-provider = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
+codex-private-storage = { workspace = true }
 codex-responses-api-proxy = { workspace = true }
 codex-tcp-tunnel = { workspace = true }
 codex-rmcp-client = { workspace = true }
@@ -72,6 +75,7 @@ codex-stdio-to-uds = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-thread-store = { workspace = true }
 codex-tui = { workspace = true }
+codex-usage = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
