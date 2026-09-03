@@ -2529,6 +2529,80 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 - `account/rateLimits/read` — fetch ChatGPT rate limits, an optional effective monthly credit limit, whether spend control has been reached, and the earned rate-limit resets currently available, including expiry details when provided by the backend. Rate-limit updates arrive via `account/rateLimits/updated` (notify); reset-credit and backend-banner data are snapshot-only.
 - `account/rateLimitResetCredit/consume` — consume one earned reset using a caller-provided idempotency key, optionally selecting a reset-credit ID returned by `account/rateLimits/read`.
 - `account/usage/read` — fetch ChatGPT account token-activity summary and daily buckets, or pass a valid thread UUID as `threadId` to read estimated credits, optional cost, and usage breakdowns for one thread using the app-server's active account. The optional `threadUsage` response field is absent on older servers and `null` when the billing route is unavailable.
+
+The downstream protocol also declares experimental, additive `accountProfile*`,
+`accountAutoSelection*`, and `localUsage*` method families. Enhanced servers advertise support
+through optional `initialize` response fields named `multiAccount` and
+`localUsageAccounting`; clients must capability-detect them and enable `experimentalApi` before
+calling the extension methods. Stock clients can ignore these fields and the experimental
+`accountProfile/activeChanged` and `localUsage/updated` notifications. The declarations contain
+only local profile metadata and content-free accounting data; credentials remain confined to the
+dedicated profile-login request.
+
+Multi-account capability version `2` adds explicit credential-presence and priority-order fields;
+clients that require those fields should check `multiAccount.version >= 2`.
+
+`accountProfile/list` is ordered by descending numeric priority, then alias and local profile ID;
+its cursor preserves that order. Higher priority numbers are drained first by automatic selection,
+while smaller numbers are preserved until later. `accountProfile` records include only a boolean
+`authenticated` credential-presence indicator, never credential values. New profiles start at
+priority `1000`, and enhanced clients can change a profile priority through
+`accountProfile/update`. `accountAutoSelection/read` and `accountAutoSelection/write` report
+`priorityOrder: "higherFirst"` so clients do not have to infer the numeric direction.
+
+The customized server implements the `localUsage*` family against the private
+`${CODEX_HOME}/usage/usage.sqlite3` store. Reports expose coverage before exact token totals and
+never substitute zero for absent or incomplete provider usage. Local-usage capability version `2`
+adds a required, versioned `report` to `localUsage/summary`, `localUsageThread/read`, and
+`localUsageRepository/read` while preserving their existing `aggregate` and `tokenCategories`
+fields. The report includes every approved collector summary dimension: schema and taxonomy
+versions, scope and time range, coverage events and gaps, provider-native token categories with
+measurement provenance, activity attribution provenance, operation/model/tool counts, tool
+outcomes and durations, wall-time and interval unions, summed per-agent active time,
+classifications, repository participation, and aggregation formulas. Repository token rows also
+include a current safe `repositoryLabel`; their stable `repositoryBucket` remains a private local
+HMAC key and never contains a path or remote. Account filters return a current local alias or a
+redacted removed-account fingerprint, never email or service/workspace identity.
+
+List methods use opaque keyset
+cursors, accept limits from 1 through 100, and tool/activity/event lists accept an inclusive
+`fromAt` and exclusive `toAt` in Unix seconds. Repository aliases, repository merges, and
+classification corrections append facts and emit `localUsage/updated` only after the mutation
+succeeds. Database corruption or migration failure returns a content-free JSON-RPC error and does
+not recreate or reset the store.
+
+`localUsageExport/create` requires the caller to provide an absolute `outputPath` with a private,
+existing parent directory and an extension matching `json`, `jsonl`, or `csv`. Export creation is
+explicit, local-only, atomic, no-clobber, and mode `0600` on Unix; the response returns only the
+safe final file name, never the output path. Export payloads use the same content-free report DTOs
+and contain no prompts, output, commands, tool payloads, raw errors, paths, or repository remotes.
+The customized server implements the capability-gated `accountProfile*` and
+`accountAutoSelection*` methods against the private account registry and profile credential
+namespaces. Listing and reading expose only nonsecret metadata. Activation is a registry CAS that
+new turns observe at their next turn boundary; an already running turn retains its original
+account lease. Update validates aliases, notes, priorities, and enabled/default fallback state.
+Removal permanently deletes that profile's stored credentials and is rejected while another turn
+or process holds a profile-use lease. Automatic selection currently supports the explicit
+`priority` policy with higher numeric values selected before smaller values.
+
+`accountProfileLogin/start` creates an invisible pending profile before browser, device-code,
+API-key, or managed Amazon Bedrock authorization. Failed and cancelled authorization deletes the
+pending credentials and journal; successful authorization verifies the stored credential twice,
+rejects duplicate aliases and complete service-identity pairs, then commits registry metadata.
+The optional `activate` request field defaults to `false`; when it is omitted or false, the new
+profile remains inactive even when it is the first profile. Pass `activate: true` to make it the
+default after authorization succeeds, or activate the committed profile later with
+`accountProfile/activate`.
+Device codes and authorization URLs are returned only in the authorized login response and never
+appear in notifications or logs. `accountProfileLogin/cancel` accepts the returned login ID.
+Profile rate-limit reads retain every validated service bucket and normalize an omitted primary
+bucket ID to `codex`.
+
+The existing singular account read, login, logout, rate-limit, usage, workspace-message, and reset
+operations remain compatible views of the active profile. Stock `account/updated` and
+`account/login/completed` notifications remain in place. Enhanced clients additionally receive
+experimental `accountProfile/activeChanged`; the transport suppresses that notification for stock
+connections that did not enable the experimental API.
 - `account/workspaceMessages/read` — fetch active workspace messages, including workspace notification headlines when available.
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change. This is a sparse rolling update; merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot.
   `spendControlReached` is `true` or `false` when the backend reports spend-control state; `null` means unavailable and must not clear a previously observed value in a sparse update.
