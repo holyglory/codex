@@ -149,7 +149,7 @@ impl fmt::Debug for Client {
             .field("base_url", &self.base_url)
             .field("auth_provider", &"<provider>")
             .field("user_agent", &self.user_agent)
-            .field("chatgpt_account_id", &self.chatgpt_account_id)
+            .field("has_chatgpt_account_id", &self.chatgpt_account_id.is_some())
             .field(
                 "chatgpt_account_is_fedramp",
                 &self.chatgpt_account_is_fedramp,
@@ -210,9 +210,16 @@ impl Client {
         auth: &CodexAuth,
         http_client_factory: HttpClientFactory,
     ) -> Self {
-        Self::new(base_url, http_client_factory)
+        let mut client = Self::new(base_url, http_client_factory)
             .with_user_agent(get_codex_user_agent())
-            .with_auth_provider(codex_model_provider::auth_provider_from_auth(auth))
+            .with_auth_provider(codex_model_provider::auth_provider_from_auth(auth));
+        if let Some(account_id) = auth.get_account_id() {
+            client = client.with_chatgpt_account_id(account_id);
+        }
+        if auth.is_fedramp_account() {
+            client = client.with_fedramp_routing_header();
+        }
+        client
     }
 
     pub fn with_auth_provider(mut self, auth: SharedAuthProvider) -> Self {
@@ -1176,6 +1183,7 @@ mod tests {
             HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
         );
         let headers = client.headers();
+        let debug = format!("{client:?}");
 
         assert_eq!(
             [
@@ -1188,6 +1196,8 @@ mod tests {
             ],
             [Some("Bearer e30.e30.c2ln"), Some("workspace-123")]
         );
+        assert!(!debug.contains("workspace-123"));
+        assert!(debug.contains("has_chatgpt_account_id: true"));
     }
 
     fn test_client(base_url: &str, path_style: PathStyle) -> Client {

@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use async_channel::Sender;
 use codex_config::types::McpServerDisabledReason;
 use codex_connectors::ConnectorRuntimeContextKey;
@@ -23,6 +24,7 @@ use codex_exec_server::EnvironmentManager;
 use codex_exec_server::HttpClient;
 use codex_exec_server::RouteAwareHttpClient;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -51,6 +53,8 @@ use crate::elicitation::ElicitationRequestRouter;
 use crate::elicitation::ElicitationReviewerHandle;
 use crate::event_stream::McpEventStreamOpener;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::resource_client::McpEventStream;
+use crate::resource_client::McpResourceClient;
 use crate::resource_origin::ResourceOrigins;
 use crate::server::EffectiveMcpServer;
 use crate::tool_catalog_cache::McpToolCatalogCache;
@@ -93,6 +97,8 @@ pub struct McpRuntimeInput {
 pub struct McpRuntime {
     current: ArcSwap<PublishedMcpRuntime>,
     event_stream_cancellation: Mutex<EventStreamCancellation>,
+    hook_binding: ArcSwapOption<McpBinding>,
+    hosted_event_server_removals: watch::Sender<()>,
     reconnect_pending: AtomicBool,
     elicitation_router: ElicitationRequestRouter,
     resource_origins: Mutex<ResourceOrigins>,
@@ -190,6 +196,8 @@ impl McpRuntime {
                 cancel_event_streams_on_server_removal: watch::channel(()).0,
                 retained_subscription_cancellation: None,
             }),
+            hook_binding: ArcSwapOption::empty(),
+            hosted_event_server_removals: watch::channel(()).0,
             reconnect_pending: AtomicBool::new(false),
             elicitation_router: ElicitationRequestRouter::default(),
             resource_origins: Mutex::default(),
@@ -229,9 +237,102 @@ impl McpRuntime {
             .restore_checkpoint(checkpoint);
     }
 
-    /// Reads a widget through the current binding of the app tool that produced it.
-    pub async fn read_resource_for_call(
+    pub fn set_hook_binding(&self, binding: Arc<McpBinding>) {
+        self.hook_binding.store(Some(binding));
+    }
+
+    pub fn clear_hook_binding(&self) {
+        self.hook_binding.store(None);
+    }
+
+    pub async fn call_hook_tool(
         &self,
+        server: &str,
+        tool: &str,
+        environment_id: Option<&str>,
+        arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
+        requested_timeout: Option<Duration>,
+    ) -> anyhow::Result<CallToolResult> {
+        let binding = self
+            .hook_binding
+            .load_full()
+            .ok_or_else(|| anyhow::anyhow!("MCP hook authority is unavailable"))?;
+        binding
+            .call_tool(
+                server,
+                tool,
+                environment_id,
+                arguments,
+                meta,
+                requested_timeout,
+                /*wait_for_server*/ false,
+            )
+            .await
+    }
+
+    pub async fn open_event_stream_with_binding(
+        &self,
+        binding: &McpBinding,
+        event_name: &str,
+        arguments: &serde_json::Value,
+        request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> anyhow::Result<McpEventStream> {
+        McpResourceClient::open_event_stream_with_connections(
+            binding.connections(),
+            self.hosted_event_server_removals.subscribe(),
+            event_name,
+            arguments,
+            request_meta,
+        )
+        .await
+    }
+
+    /// Retains the exact client binding and profile lease for a possible widget read.
+    pub fn bind_resource_origin_call(
+        &self,
+        call_id: &str,
+        binding: Arc<McpBinding>,
+        auth_lease: AuthManagerLease,
+    ) {
+        self.resource_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_call(call_id, binding, auth_lease);
+    }
+
+    pub fn resource_origin_account_id(&self, call_id: &str) -> anyhow::Result<Option<String>> {
+        self.resource_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .account_id(call_id)
+    }
+
+    /// Reads a live widget through the exact binding and lease captured for its tool call.
+    pub async fn read_resource_for_call_with_bound_authority(
+        &self,
+        thread_id: ThreadId,
+        call_id: &str,
+        uri: &str,
+    ) -> anyhow::Result<Option<ReadResourceResult>> {
+        let authority = self
+            .resource_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound_authority(call_id)?;
+        let Some((origin, binding, auth_lease)) = authority else {
+            return Ok(None);
+        };
+
+        let result = origin.read(&binding, thread_id, uri).await?;
+        drop(auth_lease);
+        Ok(Some(result))
+    }
+
+    /// Reads a restored widget through an exact binding reacquired for its saved profile.
+    pub async fn read_resource_for_call_with_binding(
+        &self,
+        binding: &McpBinding,
         thread_id: ThreadId,
         call_id: &str,
         uri: &str,
@@ -241,12 +342,7 @@ impl McpRuntime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .find(call_id)?;
-        let binding = self
-            .current_binding_for_call(crate::CODEX_APPS_MCP_SERVER_NAME)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("codex_apps MCP server is unavailable"))?;
-
-        origin.read(&binding, thread_id, uri).await
+        origin.read(binding, thread_id, uri).await
     }
 
     pub async fn new(input: McpRuntimeInput) -> Self {
@@ -257,6 +353,7 @@ impl McpRuntime {
 
     /// Reconciles configured servers and publishes their immutable runtime snapshot.
     pub async fn replace(&self, input: McpRuntimeInput) {
+        self.clear_hook_binding();
         let current = self.current.load_full();
         let mut reconnect = McpReconnectGuard {
             pending: &self.reconnect_pending,
@@ -272,6 +369,7 @@ impl McpRuntime {
 
     /// Starts fresh connections and returns their complete, refreshed Apps catalog.
     pub async fn replace_fresh(&self, input: McpRuntimeInput) -> anyhow::Result<Vec<ToolInfo>> {
+        self.clear_hook_binding();
         self.publish(input, /*previous*/ None).await;
         self.latest_hard_refresh_codex_apps_tools_cache().await
     }
@@ -1161,5 +1259,19 @@ mod tests {
             Err(error) => panic!("local stdio MCP should resolve: {error}"),
         };
         assert!(resolved_runtime.is_some());
+    }
+
+    #[tokio::test]
+    async fn hook_calls_fail_closed_without_a_turn_binding() {
+        let runtime = McpRuntime::empty(/*prefix_mcp_tool_names*/ false);
+        let error = runtime
+            .call_hook_tool(
+                "server", "tool", /*environment_id*/ None, /*arguments*/ None,
+                /*meta*/ None, /*requested_timeout*/ None,
+            )
+            .await
+            .expect_err("ambient runtime must not authorize a hook call");
+
+        assert_eq!(error.to_string(), "MCP hook authority is unavailable");
     }
 }

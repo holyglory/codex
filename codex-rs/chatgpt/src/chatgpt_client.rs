@@ -64,13 +64,26 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
     path: String,
     timeout: Option<Duration>,
 ) -> anyhow::Result<T> {
-    let chatgpt_base_url = &config.chatgpt_base_url;
     let auth_manager =
         AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
     let auth = auth_manager
         .auth()
         .await
         .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
+    chatgpt_get_request_with_timeout_and_auth(config, &auth, path, timeout).await
+}
+
+/// Makes a GET request with an already-captured auth identity.
+///
+/// Callers that bind cache state or background work to one account should pass that same snapshot
+/// rather than reacquiring auth while the request is in flight.
+pub(crate) async fn chatgpt_get_request_with_timeout_and_auth<T: DeserializeOwned>(
+    config: &Config,
+    auth: &CodexAuth,
+    path: String,
+    timeout: Option<Duration>,
+) -> anyhow::Result<T> {
+    let chatgpt_base_url = &config.chatgpt_base_url;
     anyhow::ensure!(
         auth.uses_codex_backend(),
         "ChatGPT backend requests require Codex backend auth"
@@ -95,7 +108,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
     let mut request = client
         .get(&url)
         .headers(default_headers())
-        .headers(codex_model_provider::auth_provider_from_auth(&auth).to_auth_headers())
+        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers())
         .header(OAI_PRODUCT_SKU_HEADER, CODEX_PRODUCT_SKU)
         .header("Content-Type", "application/json");
     if let Some(timeout) = timeout {
