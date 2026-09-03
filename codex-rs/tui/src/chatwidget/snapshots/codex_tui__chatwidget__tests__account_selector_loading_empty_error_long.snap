@@ -1,0 +1,48 @@
+---
+source: tui/src/chatwidget/tests/account_profiles.rs
+expression: "[loading, empty, error, long].join(\"\\n---\\n\")"
+---
+  Accounts
+
+›    Loading account profiles...
+
+  enter confirm · esc back
+---
+  Accounts
+  No account profiles configured.
+
+  Search accounts
+› Add account
+  Automatic selection  Status unavailable
+
+  enter confirm · esc back
+---
+  Accounts
+  The account request could not be completed.
+
+› 1. Try again
+
+  Press enter to confirm or esc to go back
+---
+  Accounts
+
+  Search accounts
+› ● a-very-long-account-alias-tha… a-very-long-
+                                   account-alias-
+                                   that-needs-
+                                   wrapping@exampl
+                                   e.com · Plus ·
+                                   signed in ·
+                                   enabled ·
+                                   default ·
+                                   priority 10 ·
+                                   limits unknown
+  Add account
+  Automatic selection              off · policy:
+                                   Priority ·
+                                   higher numbers
+                                   drain first;
+                                   smaller numbers
+                                   drain last
+
+  enter confirm · esc back
