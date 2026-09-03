@@ -529,6 +529,16 @@ impl AppServerSession {
         client.server_version()
     }
 
+    pub(crate) fn supports_local_usage_accounting(&self) -> bool {
+        self.client
+            .server_capabilities()
+            .supports_local_usage_accounting()
+    }
+
+    pub(crate) fn supports_multi_account(&self) -> bool {
+        self.client.server_capabilities().supports_multi_account()
+    }
+
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;

@@ -51,11 +51,19 @@ use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
+use crate::chatwidget::AccountProfilesError;
+use crate::chatwidget::AccountProfilesRequest;
+use crate::chatwidget::AccountProfilesResponse;
 use crate::chatwidget::ConnectorScopeGeneration;
+use crate::chatwidget::LocalUsageQuery;
+use crate::chatwidget::LocalUsageResponse;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
+use codex_app_server_protocol::AccountProfile;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::LocalUsageActivity;
+use codex_app_server_protocol::LocalUsageTool;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
@@ -541,6 +549,83 @@ pub(crate) enum AppEvent {
     /// Open the default token-activity view selected from the `/usage` menu.
     OpenTokenActivity,
 
+    /// Open a local-usage view and begin its typed background request.
+    OpenLocalUsage {
+        query: LocalUsageQuery,
+    },
+
+    /// Fetch one local-usage view from app-server without blocking the UI loop.
+    RefreshLocalUsage {
+        request_id: u64,
+        query: LocalUsageQuery,
+    },
+
+    /// Result of a local-usage background request.
+    LocalUsageLoaded {
+        request_id: u64,
+        query: LocalUsageQuery,
+        result: Result<LocalUsageResponse, String>,
+    },
+
+    /// Open one tool row while retaining a functional back target.
+    ShowLocalUsageToolDetail {
+        tool: LocalUsageTool,
+        back: LocalUsageQuery,
+    },
+
+    /// Open one activity row while retaining a functional back target.
+    ShowLocalUsageActivityDetail {
+        activity: LocalUsageActivity,
+        back: LocalUsageQuery,
+    },
+
+    /// Show one wrapped, content-free local usage fact and return to its report.
+    ShowLocalUsageFactDetail {
+        title: String,
+        detail: String,
+        back: LocalUsageQuery,
+    },
+
+    OpenAccountProfiles {
+        request: AccountProfilesRequest,
+    },
+    RefreshAccountProfiles {
+        request_id: u64,
+        request: AccountProfilesRequest,
+    },
+    AccountProfilesLoaded {
+        request_id: u64,
+        request: AccountProfilesRequest,
+        result: Result<AccountProfilesResponse, AccountProfilesError>,
+    },
+    ShowAccountProfileActions {
+        profile: AccountProfile,
+    },
+    OpenAccountAliasPrompt {
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountLoginChoice {
+        alias: String,
+    },
+    OpenAccountAliasEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountPriorityEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountNoteEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountRemoveConfirmation {
+        profile: AccountProfile,
+    },
     /// Open the reset-credit flow selected from the `/usage` menu.
     OpenRateLimitResetCredits,
 

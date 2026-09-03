@@ -206,6 +206,16 @@ impl App {
                 }
                 return;
             }
+            ServerNotification::AccountLoginCompleted(notification) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_login(notification.success);
+                return;
+            }
+            ServerNotification::AccountProfileActiveChanged(_) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_active_change();
+                return;
+            }
             ServerNotification::AccountUpdated(notification) => {
                 self.rate_limit_hard_stop_generation =
                     self.rate_limit_hard_stop_generation.wrapping_add(1);

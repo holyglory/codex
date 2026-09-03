@@ -249,8 +249,9 @@ impl ChatWidget {
         self.bottom_pane
             .set_connectors_enabled(self.connectors_enabled());
         self.refresh_connector_mentions(/*force_refresh*/ false);
-        self.bottom_pane
-            .set_token_activity_command_enabled(has_codex_backend_auth);
+        self.bottom_pane.set_token_activity_command_enabled(
+            has_codex_backend_auth || self.local_usage_supported,
+        );
         self.refresh_status_surfaces();
     }
 
