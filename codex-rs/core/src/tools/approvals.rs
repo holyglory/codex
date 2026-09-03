@@ -42,6 +42,8 @@ use codex_protocol::protocol::NetworkPolicyRuleAction;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_tools::ToolName;
+use codex_usage::ApprovalOutcome;
+use codex_usage::ApprovalProvenance;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
@@ -521,6 +523,17 @@ impl Session {
         // Approval precedence is:
         // 1. Hooks
         // 2. If StrictAutoReview || Guardian enabled, then Guardian. Else, user.
+        let usage_wait = self
+            .services
+            .usage_runtime
+            .begin_active_tool_wait(
+                &self.thread_id().to_string(),
+                Some(ctx.review_context.turn().sub_id.as_str()),
+                &ctx.call_id,
+                codex_usage::ActivityState::BlockedWait,
+            )
+            .await
+            .map_err(ToolError::Codex)?;
         let resolution = match run_permission_request_hooks(
             self,
             ctx.review_context.turn(),
@@ -539,6 +552,24 @@ impl Session {
             },
             None => self.request_reviewer_approval(action, &ctx).await,
         };
+        if let Some(usage_wait) = &usage_wait {
+            usage_wait.heartbeat().await;
+            usage_wait.finish().await;
+        }
+        self.services
+            .usage_runtime
+            .record_active_tool_approval(
+                &self.thread_id().to_string(),
+                Some(ctx.review_context.turn().sub_id.as_str()),
+                &ctx.call_id,
+                usage_approval_outcome(&resolution.decision),
+                match resolution.source {
+                    ApprovalResolutionSource::Hook => ApprovalProvenance::PermissionHook,
+                    ApprovalResolutionSource::Guardian => ApprovalProvenance::Guardian,
+                    ApprovalResolutionSource::User => ApprovalProvenance::User,
+                },
+            )
+            .await;
         // Network approvals record their final telemetry after validation and persistence.
         if !is_network_approval {
             record_resolution(&ctx, &resolution);
@@ -889,6 +920,24 @@ impl Session {
                 unreachable!("permission requests are routed directly to Guardian")
             }
         }
+    }
+}
+
+fn usage_approval_outcome(decision: &ReviewDecision) -> ApprovalOutcome {
+    match decision {
+        ReviewDecision::Approved
+        | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+        | ReviewDecision::ApprovedForSession
+        | ReviewDecision::ApprovedMcpPolicyAmendment => ApprovalOutcome::Approved,
+        ReviewDecision::NetworkPolicyAmendment {
+            network_policy_amendment,
+        } => match network_policy_amendment.action {
+            NetworkPolicyRuleAction::Allow => ApprovalOutcome::Approved,
+            NetworkPolicyRuleAction::Deny => ApprovalOutcome::Denied,
+        },
+        ReviewDecision::Denied { .. } => ApprovalOutcome::Denied,
+        ReviewDecision::TimedOut => ApprovalOutcome::TimedOut,
+        ReviewDecision::Abort => ApprovalOutcome::Cancelled,
     }
 }
 

@@ -179,9 +179,7 @@ async fn wait_on_barrier(args: BarrierArgs) -> Result<(), FunctionCallError> {
     let timeout = Duration::from_millis(args.timeout_ms);
     let wait_result = tokio::time::timeout(timeout, barrier.wait())
         .await
-        .map_err(|_| {
-            FunctionCallError::RespondToModel("test_sync_tool barrier wait timed out".to_string())
-        })?;
+        .map_err(|_| FunctionCallError::timed_out("test_sync_tool barrier wait timed out"))?;
 
     if wait_result.is_leader() {
         let mut map = barrier_map().lock().await;

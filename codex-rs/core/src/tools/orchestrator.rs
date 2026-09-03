@@ -34,6 +34,8 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
+use codex_usage::ApprovalOutcome;
+use codex_usage::ApprovalProvenance;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -200,9 +202,33 @@ impl ToolOrchestrator {
                         &ReviewDecision::Approved,
                         Some(ToolDecisionSource::Config),
                     );
+                    tool_ctx
+                        .session
+                        .services
+                        .usage_runtime
+                        .record_active_tool_approval(
+                            &tool_ctx.session.thread_id().to_string(),
+                            Some(tool_ctx.step_context.turn.sub_id.as_str()),
+                            &tool_ctx.call_id,
+                            ApprovalOutcome::NotRequired,
+                            ApprovalProvenance::Policy,
+                        )
+                        .await;
                 }
             }
             ExecApprovalRequirement::Forbidden { reason } => {
+                tool_ctx
+                    .session
+                    .services
+                    .usage_runtime
+                    .record_active_tool_approval(
+                        &tool_ctx.session.thread_id().to_string(),
+                        Some(tool_ctx.step_context.turn.sub_id.as_str()),
+                        &tool_ctx.call_id,
+                        ApprovalOutcome::Denied,
+                        ApprovalProvenance::Policy,
+                    )
+                    .await;
                 return Err(ToolError::Rejected(reason.clone()));
             }
             ExecApprovalRequirement::NeedsApproval { reason, .. } => {
