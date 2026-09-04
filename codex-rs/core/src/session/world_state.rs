@@ -22,6 +22,7 @@ use crate::context::world_state::PersonalityState;
 use crate::context::world_state::PluginsInstructionsState;
 use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
+use crate::context::world_state::UsageStatsInstructionsState;
 use crate::context::world_state::WorldState;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_extension_api::WorldStateContributionInput;
@@ -250,6 +251,9 @@ impl Session {
                     .config
                     .features
                     .enabled(Feature::DeferredExecutor),
+        ));
+        world_state.add_section(UsageStatsInstructionsState::new(
+            turn_context.config.local_control_tools_enabled,
         ));
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {

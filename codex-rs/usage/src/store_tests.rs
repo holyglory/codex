@@ -49,6 +49,37 @@ async fn private_store_workflow_protects_database_and_sidecars() {
     }
 }
 
+#[tokio::test]
+async fn repository_lookup_index_preserves_history_across_reopen() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("open store");
+    let before = store.database_schema_version().await.expect("schema");
+    let plan: Vec<String> = sqlx::query("EXPLAIN QUERY PLAN SELECT operation_id FROM repository_attributions WHERE repository_id = 'fixture'")
+        .fetch_all(&store.pool).await.expect("query plan")
+        .into_iter().map(|row| row.get::<String, _>("detail")).collect();
+    assert!(
+        plan.iter().any(|detail| detail
+            .contains("USING COVERING INDEX repository_attributions_repository_operation_idx")),
+        "{plan:?}"
+    );
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 1, /*started_at_ms*/ 1)
+        .await
+        .expect("record process");
+    drop(store);
+    let reopened = UsageStore::open(temp.path()).await.expect("reopen");
+    assert_eq!(
+        reopened.database_schema_version().await.expect("schema"),
+        before
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_instances")
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("preserved history");
+    assert_eq!(count, 1);
+}
+
 #[cfg(unix)]
 fn operation(process_id: &ProcessId) -> NewOperation {
     NewOperation {
