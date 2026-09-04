@@ -58,6 +58,7 @@ members = [
     "exec-server",
     "exec-server/tests/support",
     "execpolicy",
+    "event-subscriptions",
     "ext/agent",
     "ext/connectors",
     "ext/extension-api",
@@ -210,6 +211,7 @@ codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
+codex-event-subscriptions = { path = "event-subscriptions" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-goal-extension = { path = "ext/goal" }
