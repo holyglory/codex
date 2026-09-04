@@ -654,17 +654,19 @@ fn login_success_page(
         LoginAppBrand::Codex => LoginSuccessPageBrand::Codex,
         LoginAppBrand::Chatgpt => LoginSuccessPageBrand::Chatgpt,
     };
-    let mut url = codex_login::CODEX_OPEN_APP_URL
+    let url = codex_login::CODEX_OPEN_APP_URL
         .parse()
         .map_err(|_| internal_error("login success URL is invalid"))?;
     #[cfg(debug_assertions)]
-    if let Ok(override_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
+    let url = if let Ok(override_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
         && !override_url.trim().is_empty()
     {
-        url = override_url
+        override_url
             .parse()
-            .map_err(|_| internal_error("login success URL is invalid"))?;
-    }
+            .map_err(|_| internal_error("login success URL is invalid"))?
+    } else {
+        url
+    };
     Ok(LoginSuccessPage::Hosted {
         url,
         app_brand: brand,
