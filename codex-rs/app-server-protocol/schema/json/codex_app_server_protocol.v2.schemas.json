@@ -6898,6 +6898,134 @@
       "title": "ErrorNotification",
       "type": "object"
     },
+    "EventSourceCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "EventSubscription": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventSubscriptionFilter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "heartbeatIntervalSeconds": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "nextHeartbeatAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventSourceCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "id",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionFilter": {
+      "additionalProperties": false,
+      "properties": {
+        "eventTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventTypes",
+        "labels",
+        "source"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionHeartbeat": {
+      "additionalProperties": false,
+      "properties": {
+        "firstDeadlineAt": {
+          "description": "Nullable first deadline as whole Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intervalSeconds": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intervalSeconds"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeature": {
       "properties": {
         "announcement": {
@@ -9596,6 +9724,44 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "IngressEvent": {
+      "additionalProperties": false,
+      "description": "Security boundary from `security-assumptions.md`: only these bounded metadata fields cross ingress; unknown publisher payload fields are rejected rather than retained or injected.",
+      "properties": {
+        "cursor": {
+          "$ref": "#/definitions/EventSourceCursor"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "occurredAt": {
+          "description": "Event occurrence time as whole Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "eventType",
+        "id",
+        "labels",
+        "occurredAt",
+        "source"
+      ],
       "type": "object"
     },
     "InitializeCapabilities": {
