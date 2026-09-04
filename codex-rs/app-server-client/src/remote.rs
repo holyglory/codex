@@ -814,6 +814,8 @@ struct InitializeCapabilityFields {
     multi_account: Option<MultiAccountCapability>,
     #[serde(default)]
     local_usage_accounting: Option<LocalUsageAccountingCapability>,
+    #[serde(default)]
+    event_subscriptions: Option<codex_app_server_protocol::EventSubscriptionsCapability>,
 }
 
 async fn initialize_remote_connection<S>(
@@ -865,6 +867,7 @@ where
                             server_capabilities = AppServerCapabilities::from_advertised(
                                 advertised.multi_account,
                                 advertised.local_usage_accounting,
+                                advertised.event_subscriptions,
                             );
                             server_version = response
                                 .result

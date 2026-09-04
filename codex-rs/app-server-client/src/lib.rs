@@ -37,6 +37,7 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::EventSubscriptionsCapability;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -313,6 +314,7 @@ pub struct InProcessAppServerClient {
 pub struct AppServerCapabilities {
     multi_account: Option<MultiAccountCapability>,
     local_usage_accounting: Option<LocalUsageAccountingCapability>,
+    event_subscriptions: Option<EventSubscriptionsCapability>,
 }
 
 impl AppServerCapabilities {
@@ -324,17 +326,20 @@ impl AppServerCapabilities {
                 supports_auto_selection: true,
             }),
             local_usage_accounting: Some(LocalUsageAccountingCapability { version: 2 }),
+            event_subscriptions: None,
         }
     }
 
     pub(crate) fn from_advertised(
         multi_account: Option<MultiAccountCapability>,
         local_usage_accounting: Option<LocalUsageAccountingCapability>,
+        event_subscriptions: Option<EventSubscriptionsCapability>,
     ) -> Self {
         Self {
             multi_account: multi_account.filter(|capability| capability.version == 2),
             local_usage_accounting: local_usage_accounting
                 .filter(|capability| capability.version == 2),
+            event_subscriptions: event_subscriptions.filter(|capability| capability.version == 1),
         }
     }
 
@@ -352,6 +357,10 @@ impl AppServerCapabilities {
 
     pub fn supports_local_usage_accounting(&self) -> bool {
         self.local_usage_accounting.is_some()
+    }
+
+    pub fn supports_event_subscriptions(&self) -> bool {
+        self.event_subscriptions.is_some()
     }
 }
 
@@ -1011,6 +1020,7 @@ mod tests {
         websocket: &mut tokio_tungstenite::WebSocketStream<S>,
         multi_account_version: Option<u32>,
         local_usage_version: Option<u32>,
+        event_subscriptions_version: Option<u32>,
     ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
@@ -1027,6 +1037,13 @@ mod tests {
         }
         if let Some(version) = local_usage_version {
             metadata["localUsageAccounting"] = serde_json::json!({"version": version});
+        }
+        if let Some(version) = event_subscriptions_version {
+            metadata["eventSubscriptions"] = serde_json::json!({
+                "version": version,
+                "supportsHeartbeats": true,
+                "supportsEventIngress": true,
+            });
         }
         expect_remote_initialize_with_metadata(websocket, metadata).await;
     }
@@ -1360,15 +1377,20 @@ mod tests {
 
     #[tokio::test]
     async fn remote_capabilities_handle_stock_enhanced_reconnect_and_unknown_versions() {
-        for (multi_version, usage_version, expected_multi, expected_usage) in [
-            (None, None, false, false),
-            (Some(2), Some(2), true, true),
-            (Some(1), Some(1), false, false),
-            (Some(99), Some(99), false, false),
+        for (multi_version, usage_version, event_version, expected) in [
+            (None, None, None, (false, false, false)),
+            (Some(2), Some(2), Some(1), (true, true, true)),
+            (Some(1), Some(1), Some(2), (false, false, false)),
+            (Some(99), Some(99), Some(99), (false, false, false)),
         ] {
             let websocket_url = start_test_remote_server(move |mut websocket| async move {
-                expect_remote_initialize_capabilities(&mut websocket, multi_version, usage_version)
-                    .await;
+                expect_remote_initialize_capabilities(
+                    &mut websocket,
+                    multi_version,
+                    usage_version,
+                    event_version,
+                )
+                .await;
                 websocket.close(None).await.expect("close should succeed");
             })
             .await;
@@ -1377,13 +1399,17 @@ mod tests {
                 .expect("remote client should connect");
             assert_eq!(
                 client.server_capabilities().supports_multi_account(),
-                expected_multi
+                expected.0
             );
             assert_eq!(
                 client
                     .server_capabilities()
                     .supports_local_usage_accounting(),
-                expected_usage
+                expected.1
+            );
+            assert_eq!(
+                client.server_capabilities().supports_event_subscriptions(),
+                expected.2
             );
             client.shutdown().await.expect("shutdown should complete");
         }

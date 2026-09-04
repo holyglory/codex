@@ -539,6 +539,12 @@ impl AppServerSession {
         self.client.server_capabilities().supports_multi_account()
     }
 
+    pub(crate) fn supports_event_subscriptions(&self) -> bool {
+        self.client
+            .server_capabilities()
+            .supports_event_subscriptions()
+    }
+
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;
