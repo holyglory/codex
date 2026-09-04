@@ -17,6 +17,7 @@ mod realtime;
 #[cfg(test)]
 mod test_support;
 mod tools;
+mod usage_stats_instructions;
 
 use crate::context::ContextualUserFragment;
 use codex_extension_api::PreviousWorldStateSection;
@@ -55,6 +56,7 @@ pub(crate) use personality::PersonalityState;
 pub(crate) use plugins_instructions::PluginsInstructionsState;
 pub(crate) use realtime::RealtimeState;
 pub(crate) use tools::ToolsState;
+pub(crate) use usage_stats_instructions::UsageStatsInstructionsState;
 
 trait ErasedWorldStateSection: Send + Sync {
     fn snapshot(&self) -> Option<Value>;

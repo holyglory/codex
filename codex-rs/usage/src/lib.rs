@@ -150,6 +150,7 @@ pub use types::OperationLinks;
 pub use types::Phase;
 pub use types::ProcessId;
 pub use types::ProviderKind;
+pub use types::TAXONOMY_VERSION;
 pub use types::TerminalOperation;
 pub use types::TerminalStatus;
 pub use types::ThreadId;
