@@ -1,0 +1,13 @@
+name: downstream-candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  registration-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Dispatch this workflow from the tested sync branch."
