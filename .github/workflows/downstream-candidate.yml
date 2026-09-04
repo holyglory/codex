@@ -82,6 +82,8 @@ jobs:
         run: cargo fmt -- --config imports_granularity=Item --check
       - name: Run complete Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Reclaim Clippy build output
+        run: cargo clean
       - name: Run complete Rust suite
         run: just test
       - name: Regenerate schemas
