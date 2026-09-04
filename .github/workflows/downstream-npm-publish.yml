@@ -60,13 +60,9 @@ jobs:
             echo "Tag ${RELEASE_TAG} must equal npm-v${npm_version}." >&2
             exit 1
           fi
-          candidate_commit="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" \
-            --jq .head_sha)"
-          if [[ "$candidate_commit" != "$tag_commit" ]]; then
-            echo "Candidate run ${CANDIDATE_RUN_ID} tested ${candidate_commit}, not ${tag_commit}." >&2
-            exit 1
-          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" |
+            python3 codex-cli/scripts/verify_candidate_run.py \
+              --repository "$GITHUB_REPOSITORY" --commit "$tag_commit"
           echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
 
   stage-npm:

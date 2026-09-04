@@ -29,6 +29,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: clippy, rustfmt
@@ -81,10 +85,17 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+      - name: Install and verify the Linux sandbox prerequisite
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: x86_64-unknown-linux-gnu
+      - name: Build the code-mode test companion
+        run: cargo build --locked --bin codex-code-mode-host
       - name: Run downstream suites
         run: >-
           just test
@@ -94,6 +105,8 @@ jobs:
           -p codex-account-selection
           -p codex-login
           -p codex-usage
+          -p codex-event-subscriptions
+          -p codex-state
           -p codex-core
           -p codex-app-server-protocol
           -p codex-app-server
@@ -112,6 +125,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - uses: ./.github/actions/setup-rusty-v8
         with:
