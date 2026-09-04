@@ -1,7 +1,16 @@
 //! Provider-neutral, durable event subscriptions and shared-deadline scheduling.
 
+mod service;
 mod types;
 
+pub use service::Clock;
+pub use service::EventSubscriptionService;
+pub use service::EventSubscriptionStore;
+pub use service::ServiceError;
+pub use service::StoreError;
+pub use service::SystemClock;
+pub use service::WakeDisposition;
+pub use service::WakeSink;
 pub use types::EventFilter;
 pub use types::EventMetadata;
 pub use types::HeartbeatSpec;
