@@ -8,6 +8,7 @@ fn parser_exposes_functional_surface_without_untruthful_current() {
         vec!["usage", "summary"],
         vec!["usage", "chat", "thread-1"],
         vec!["usage", "repo"],
+        vec!["usage", "--json", "repo", "current", "--identity-only"],
         vec!["usage", "repo", "alias", "repo", "alias"],
         vec!["usage", "repo", "merge", "source", "target"],
         vec!["usage", "repositories"],
@@ -56,6 +57,19 @@ fn unsupported_filters_and_breakdowns_are_rejected() {
         ..UsageFilters::default()
     };
     assert!(filters.ensure_only(&[], &["activity"]).is_err());
+}
+
+#[test]
+fn repository_position_does_not_become_a_global_filter() {
+    let command =
+        UsageCommand::try_parse_from(["usage", "--json", "repo", "current", "--identity-only"])
+            .expect("identity command");
+    assert!(command.filters.repository.is_none());
+    let UsageAction::Repo(args) = command.action else {
+        panic!("repository action")
+    };
+    assert_eq!(args.reference.as_deref(), Some("current"));
+    assert!(args.identity_only);
 }
 
 #[test]

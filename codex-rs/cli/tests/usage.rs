@@ -44,7 +44,13 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     const OS_PID_SENTINEL: u32 = 4_294_000_001;
     let home = TempDir::new()?;
     let checkout = TempDir::new()?;
-    std::fs::create_dir(checkout.path().join(".git"))?;
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(checkout.path())
+            .status()?
+            .success()
+    );
     let store = UsageStore::open(home.path()).await?;
     let process_id = ProcessId::new();
     store
@@ -107,6 +113,32 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
             occurred_at_ms: 6,
         })
         .await?;
+
+    let identity = stdout_json(
+        codex_command(home.path())?
+            .current_dir(checkout.path())
+            .args(["usage", "--json", "repo", "current", "--identity-only"])
+            .assert()
+            .success(),
+    )?;
+    assert_eq!(identity["kind"], "usageRepositoryIdentity");
+    assert_eq!(identity["scope"]["id"], repository.as_str());
+    assert_eq!(identity["databaseSchemaVersion"], 5);
+    assert!(identity.get("tokens").is_none());
+    assert_eq!(identity.as_object().unwrap().len(), 5);
+    codex_command(home.path())?
+        .current_dir(checkout.path())
+        .args([
+            "usage",
+            "--json",
+            "repo",
+            "--identity-only",
+            "alias",
+            "current",
+            "changed",
+        ])
+        .assert()
+        .failure();
 
     let details = stdout_json(
         codex_command(home.path())?
