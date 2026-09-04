@@ -2072,6 +2072,7 @@ dependencies = [
  "codex-core",
  "codex-core-plugins",
  "codex-diagnostics",
+ "codex-event-subscriptions",
  "codex-exec-server",
  "codex-extension-api",
  "codex-external-agent-migration",
@@ -2526,6 +2527,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "url",
+ "uuid",
  "which 8.0.0",
  "windows-sys 0.52.0",
  "wiremock",
@@ -2848,6 +2850,7 @@ dependencies = [
  "codex-context-fragments",
  "codex-core-plugins",
  "codex-diagnostics",
+ "codex-event-subscriptions",
  "codex-exec-server",
  "codex-exec-server-test-support",
  "codex-execpolicy",
@@ -3042,6 +3045,20 @@ version = "0.153.0+multi.1"
 dependencies = [
  "libc",
  "pretty_assertions",
+]
+
+[[package]]
+name = "codex-event-subscriptions"
+version = "0.153.0+multi.1"
+dependencies = [
+ "codex-protocol",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4437,6 +4454,7 @@ version = "0.153.0+multi.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "codex-event-subscriptions",
  "codex-git-utils",
  "codex-history",
  "codex-protocol",
@@ -4449,6 +4467,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "strum 0.27.2",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

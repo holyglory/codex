@@ -5,6 +5,27 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "EventSubscriptionsCapability": {
+      "properties": {
+        "supportsEventIngress": {
+          "type": "boolean"
+        },
+        "supportsHeartbeats": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsEventIngress",
+        "supportsHeartbeats",
+        "version"
+      ],
+      "type": "object"
+    },
     "LocalUsageAccountingCapability": {
       "properties": {
         "version": {
@@ -48,6 +69,18 @@
         }
       ],
       "description": "Absolute path to the server's $CODEX_HOME directory."
+    },
+    "eventSubscriptions": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/EventSubscriptionsCapability"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Advertises the additive provider-neutral event-subscription extension."
     },
     "localUsageAccounting": {
       "anyOf": [
