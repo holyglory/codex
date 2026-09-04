@@ -91,11 +91,7 @@ impl Stage {
 /// Unique features toggled via configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// Preview consumer five-hour and weekly allowance history.
-    AnalyticsPlanHistory,
-    /// Discover model catalogs for OpenAI API-key authentication.
-    ApiKeyModelDiscovery,
-    /// Deprecated no-op; use `tui.fullscreen_transcript` instead.
+    /// Enable the interactive transcript composer and turn-selection UI.
     TranscriptV2,
     // Stable.
     /// Enable the default shell tool.
@@ -110,8 +106,6 @@ pub enum Feature {
     SecretAuthStorage,
 
     // Experimental
-    /// Automatically start the shared local daemon for eligible interactive launches.
-    DaemonAutoStart,
     /// Send per-content-entry classifications in internal Responses metadata.
     ContentItemKinds,
     /// Record model-attempted tool calls in internal Responses metadata.
@@ -199,14 +193,10 @@ pub enum Feature {
     Worktrees,
     /// Respect host system proxy settings for Codex-owned network clients.
     RespectSystemProxy,
-    /// Retry eligible bootstrap requests through the system proxy after normal routing fails.
-    SystemProxyFallback,
     /// Enable collab tools.
     Collab,
     /// Enable task-path-based multi-agent routing.
     MultiAgentV2,
-    /// Enable shared discussion tools for an agent tree.
-    AgentMessageBoard,
     /// Removed compatibility flag retained as a no-op.
     MultiAgentMode,
     /// Removed compatibility flag for the deleted agent-job tools.
@@ -219,12 +209,8 @@ pub enum Feature {
     EnableMcpApps,
     /// Enable MCP protocol version 2026-07-28 support.
     Mcp20260728,
-    /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
-    CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
     McpOAuthRefreshCoordination,
-    /// Enable enterprise refresh-token authorization for configured MCP resources.
-    UseXaa,
     /// Removed compatibility flag for the legacy Apps MCP path override.
     AppsMcpPathOverride,
     /// Removed compatibility flag retained as a no-op now that tool_search is always enabled.
@@ -315,8 +301,6 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Removed compatibility flag for model-enabled async user messaging.
     SendAsyncMessage,
-    /// Allow root agents to send async user messages without model catalog support.
-    SendMessageToUserAsync,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
     /// Select thread-owned context for both Guardian reviewers.
@@ -330,7 +314,7 @@ pub enum Feature {
     GuardianNodeReplTranscriptImages,
     /// Enable Guardian V2 automatic approval reviews.
     GuardianV2,
-    /// Removed compatibility flag for the unused Guardian extension prototype.
+    /// Enable the extension-owned synchronous Guardian reviewer.
     GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
@@ -344,15 +328,15 @@ pub enum Feature {
     ReasoningEffortOverride,
     /// Add current-time reminders to model-visible context.
     CurrentTimeReminder,
-    /// Report failed clock reads to the model without failing the turn.
-    NonfatalClockReadErrors,
+    /// Enable durable provider-neutral event subscriptions and agent wake-up.
+    EventSubscriptions,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
     ToolCallMcpElicitation,
     /// Prompt Codex Apps connector auth failures through MCP URL elicitations.
     AuthElicitation,
     /// Offer Amazon Bedrock setup during TUI sign-in onboarding.
     BedrockSetupWizard,
-    /// Removed compatibility flag retained as a no-op.
+    /// Enable personality selection in the TUI.
     Personality,
     /// Enable native artifact tools.
     Artifact,
@@ -360,11 +344,11 @@ pub enum Feature {
     FastMode,
     /// Enable explicitly requested model changes for later step captures.
     StepModelSwitching,
-    /// Enable voice conversations in the TUI.
+    /// Removed compatibility flag. Realtime sessions no longer require a per-thread opt-in.
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
-    /// Removed compatibility key, still advertised to the Responses API.
+    /// Enable remote compaction v2 over the normal Responses API.
     RemoteCompactionV2,
     /// Include retained images in the remote compaction context budget.
     CompactionImageBudget,
@@ -594,10 +578,6 @@ impl Features {
                         Feature::WebSearchCached,
                     );
                 }
-                "transcript_v2" => {
-                    self.record_legacy_usage_force("features.transcript_v2", Feature::TranscriptV2);
-                    continue;
-                }
                 "tui_app_server" => {
                     continue;
                 }
@@ -610,7 +590,7 @@ impl Features {
                 "js_repl_tools_only" => {
                     continue;
                 }
-                "remote_control" | "remote_compaction_v2" => {
+                "remote_control" => {
                     continue;
                 }
                 "apply_patch_freeform" => {
@@ -622,7 +602,7 @@ impl Features {
                 "image_detail_original" | "resize_all_images" | "item_ids" => {
                     continue;
                 }
-                "personality" | "plugin_hooks" => {
+                "plugin_hooks" => {
                     continue;
                 }
                 "skill_env_var_dependency_prompt" => {
@@ -702,10 +682,6 @@ impl Features {
 fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>) {
     let canonical = feature.key();
     match feature {
-        Feature::TranscriptV2 => (
-            "`[features].transcript_v2` is deprecated and ignored.".to_string(),
-            Some("Use `[tui].fullscreen_transcript` in config.toml instead.".to_string()),
-        ),
         Feature::WebSearchRequest | Feature::WebSearchCached => {
             let label = match alias {
                 "web_search" => "[features].web_search",
@@ -925,29 +901,9 @@ pub struct FeatureSpec {
 
 pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
-        id: Feature::AnalyticsPlanHistory,
-        key: "analytics_plan_history",
-        stage: Stage::Experimental {
-            name: "Analytics plan history",
-            menu_description: "Preview five-hour and weekly allowance history for consumer accounts in /analytics.",
-            announcement: "",
-        },
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::DaemonAutoStart,
-        key: "daemon_auto_start",
-        stage: Stage::Experimental {
-            name: "Automatically start the background server",
-            menu_description: "Use the shared local server for new, resumed, and forked sessions. Takes effect next launch.",
-            announcement: "Automatic background server startup can now be enabled from /experimental.",
-        },
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::TranscriptV2,
         key: "transcript_v2",
-        stage: Stage::Deprecated,
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     // Stable features.
@@ -1264,12 +1220,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::ApiKeyModelDiscovery,
-        key: "api_key_model_discovery",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::EnableRequestCompression,
         key: "enable_request_compression",
         stage: Stage::Stable,
@@ -1294,20 +1244,18 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Worktrees,
         key: "worktrees",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Experimental {
+            name: "Worktrees",
+            menu_description: "Create isolated Git worktrees and group sessions by repository.",
+            announcement: "NEW: Worktrees can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::RespectSystemProxy,
         key: "respect_system_proxy",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::SystemProxyFallback,
-        key: "system_proxy_fallback",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Collab,
@@ -1319,12 +1267,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentV2,
         key: "multi_agent_v2",
         stage: Stage::Stable,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::AgentMessageBoard,
-        key: "agent_message_board",
-        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1364,20 +1306,8 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::CodexAppsMcp20260728,
-        key: "codex_apps_mcp_2026_07_28",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::McpOAuthRefreshCoordination,
         key: "mcp_oauth_refresh_coordination",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::UseXaa,
-        key: "use_xaa",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1610,12 +1540,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::SendMessageToUserAsync,
-        key: "send_message_to_user_async",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::TerminalVisualizationInstructions,
         key: "terminal_visualization_instructions",
         stage: Stage::UnderDevelopment,
@@ -1636,8 +1560,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianReuseParentCompaction,
         key: "guardian_reuse_parent_compaction",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::GuardianEnhancedNodeReplTranscripts,
@@ -1660,7 +1584,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianExt,
         key: "guardian_ext",
-        stage: Stage::Removed,
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1700,8 +1624,8 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::NonfatalClockReadErrors,
-        key: "nonfatal_clock_read_errors",
+        id: Feature::EventSubscriptions,
+        key: "event_subscriptions",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1732,8 +1656,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
-        stage: Stage::Removed,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Artifact,
@@ -1756,8 +1680,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RealtimeConversation,
         key: "realtime_conversation",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::RemoteControl,
@@ -1816,8 +1740,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteCompactionV2,
         key: "remote_compaction_v2",
-        stage: Stage::Removed,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CompactionImageBudget,
