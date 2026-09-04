@@ -108,6 +108,7 @@ mod current_time;
 mod dynamic_tools;
 mod effective_plugin_change;
 mod error_code;
+mod event_subscriptions;
 mod extensions;
 mod external_agent_migration;
 mod external_auth;
@@ -554,6 +555,11 @@ pub async fn run_main_with_transport_options(
         }
     };
     config.auth_config().validate()?;
+    validate_event_subscription_transport_auth(
+        config.features.enabled(Feature::EventSubscriptions),
+        &transport,
+        &auth,
+    )?;
     let code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>> =
         match &runtime_options.code_mode_host_transport {
             CodeModeHostTransport::Local => None,
@@ -1214,6 +1220,25 @@ pub async fn run_main_with_transport_options(
     Ok(())
 }
 
+/// Enforces the confirmed `security-assumptions.md` ingress boundary: every WebSocket publisher
+/// of provider-neutral events must cross the existing app-server bearer-authentication policy.
+fn validate_event_subscription_transport_auth(
+    event_subscriptions_enabled: bool,
+    transport: &AppServerTransport,
+    auth: &AppServerWebsocketAuthSettings,
+) -> IoResult<()> {
+    if event_subscriptions_enabled
+        && matches!(transport, AppServerTransport::WebSocket { .. })
+        && auth.config.is_none()
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "event subscriptions require authenticated WebSocket transport; configure `--ws-auth capability-token` or `--ws-auth signed-bearer-token`",
+        ));
+    }
+    Ok(())
+}
+
 struct SqliteRecoveryNotice {
     details: String,
 }
@@ -1390,9 +1415,14 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 
 #[cfg(test)]
 mod tests {
+    use super::AppServerTransport;
+    use super::AppServerWebsocketAuthSettings;
     use super::LogFormat;
     #[cfg(debug_assertions)]
     use super::loader_overrides_with_test_user_config_file;
+    use super::validate_event_subscription_transport_auth;
+    use crate::transport::auth::AppServerWebsocketAuthConfig;
+    use crate::transport::auth::AppServerWebsocketCapabilityTokenSource;
     #[cfg(debug_assertions)]
     use codex_config::LoaderOverrides;
     #[cfg(debug_assertions)]
@@ -1415,6 +1445,44 @@ mod tests {
         assert_eq!(LogFormat::from_env_value(Some("")), LogFormat::Default);
         assert_eq!(LogFormat::from_env_value(Some("text")), LogFormat::Default);
         assert_eq!(LogFormat::from_env_value(Some("jsonl")), LogFormat::Default);
+    }
+
+    #[test]
+    fn event_subscription_websocket_ingress_requires_existing_auth() {
+        let websocket = AppServerTransport::WebSocket {
+            bind_address: "127.0.0.1:0".parse().expect("loopback address"),
+        };
+        assert!(
+            validate_event_subscription_transport_auth(
+                /*event_subscriptions_enabled*/ true,
+                &websocket,
+                &AppServerWebsocketAuthSettings::default(),
+            )
+            .is_err()
+        );
+        let authenticated = AppServerWebsocketAuthSettings {
+            config: Some(AppServerWebsocketAuthConfig::CapabilityToken {
+                source: AppServerWebsocketCapabilityTokenSource::TokenSha256 {
+                    token_sha256: [7; 32],
+                },
+            }),
+        };
+        assert!(
+            validate_event_subscription_transport_auth(
+                /*event_subscriptions_enabled*/ true,
+                &websocket,
+                &authenticated,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_event_subscription_transport_auth(
+                /*event_subscriptions_enabled*/ true,
+                &AppServerTransport::Stdio,
+                &AppServerWebsocketAuthSettings::default(),
+            )
+            .is_ok()
+        );
     }
 
     #[cfg(debug_assertions)]
