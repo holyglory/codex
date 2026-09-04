@@ -122,6 +122,11 @@ jobs:
             -- \
             test \
             --keep_going \
+            --local_test_jobs=2 \
+            --test_env=RUST_TEST_THREADS=1 \
+            --test_env=RUST_MIN_STACK=16777216 \
+            --test_timeout=300,600,1200,3600 \
+            --flaky_test_attempts=3 \
             --test_tag_filters=-argument-comment-lint \
             --test_verbose_timeout_warnings \
             --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
