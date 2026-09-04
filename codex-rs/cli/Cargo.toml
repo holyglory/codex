@@ -106,6 +106,7 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 unicode-segmentation = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 which = { workspace = true }
 
 [target.'cfg(all(target_os = "linux", target_env = "musl", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
