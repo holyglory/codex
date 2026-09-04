@@ -204,6 +204,11 @@ Example with notification opt-out:
 - `thread/queue/reorder` — experimental; replace the order of a thread's queued turns.
 - `thread/queue/start` — experimental; start the queue head or a selected queued submission when the thread is idle.
 - `thread/queue/changed` — experimental notification emitted with the changed `threadId`.
+- `eventSubscription/create` — experimental; create a durable event and/or heartbeat subscription for one persistent thread.
+- `eventSubscription/list` — experimental; page through subscriptions, optionally filtered by `threadId`.
+- `eventSubscription/cancel` — experimental; cancel one subscription and discard its undelivered wake metadata.
+- `eventSubscription/trigger` — experimental; directly trigger one or more subscription IDs.
+- `event/publish` — experimental; publish one bounded provider-neutral event for filter matching and cursor advancement.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
@@ -904,6 +909,78 @@ A queued submission contains its user input and a required, client-provided `cli
 Use `thread/queue/list` to read the ordered queue. Pass optional `cursor` and `limit` values to request a page, and continue with the returned `nextCursor` until it is `null`. Each `thread/queue/changed` notification contains the changed `threadId`; fetch the current pages to refresh the queue. Update a queued turn by passing its `queuedSubmissionId` and replacement `input` to `thread/queue/update`; the submission keeps its IDs and position. Pass that ID to `thread/queue/delete` to remove it, or pass every queued ID in its new order as `queuedSubmissionIds` to `thread/queue/reorder`.
 
 Completed and failed turns automatically start the next queued submission. Interrupted turns leave the queue paused, including after `thread/resume`. Start the queue head with `thread/queue/start`, or select a queued submission by passing `queuedSubmissionId`. An idle thread starts a new turn and returns it; an active thread returns an invalid-request error and leaves the queue unchanged. The queued submission's client message ID remains stable, and its queue entry is removed when Core accepts the new turn. An ordinary `turn/start` does not consume queued submissions.
+
+### Example: Subscribe a thread to events and heartbeats (experimental)
+
+Event subscriptions require the `event_subscriptions` feature and
+`capabilities.experimentalApi = true`. The `initialize` response advertises
+`eventSubscriptions: { version: 1, supportsHeartbeats: true,
+supportsEventIngress: true }` only when the durable local thread store is
+available. The API runs over the existing app-server transport: Unix socket and
+stdio callers use the local OS boundary, while WebSocket publishers use the
+configured app-server bearer authentication. It does not open a separate
+webhook listener.
+
+Create an event subscription, a clock-only subscription, or both. Event
+filters use an exact provider-neutral `source`, one or more `eventTypes`, and
+optional exact-match labels. Cursors combine a monotonically increasing
+`sequence` with an optional opaque value; duplicate and out-of-order sequences
+are ignored independently for each matching subscription.
+
+```json
+{ "method": "eventSubscription/create", "id": 50, "params": {
+    "threadId": "019faba0-0000-7000-8000-000000000001",
+    "filter": {
+        "source": "build",
+        "eventTypes": ["completed"],
+        "labels": { "branch": "main" }
+    },
+    "sourceCursor": { "sequence": 41, "value": "build-41" },
+    "heartbeat": { "intervalSeconds": 900, "firstDeadlineAt": null }
+} }
+```
+
+Publish only the typed envelope; arbitrary external payloads, headers, and
+credentials are not accepted or stored.
+
+```json
+{ "method": "event/publish", "id": 51, "params": { "event": {
+    "id": "build-42",
+    "source": "build",
+    "eventType": "completed",
+    "cursor": { "sequence": 42, "value": "build-42" },
+    "labels": { "branch": "main" },
+    "occurredAt": 1788530000
+} } }
+```
+
+One process-wide deadline scheduler serves every heartbeat. On a deadline it
+collects all due subscriptions, groups them by thread, and submits at most one
+automatic continuation per affected thread. A real event processed at the same
+deadline is included in that batch. Active threads retain and coalesce pending
+wakes until their normal idle boundary; unloaded threads are resumed from their
+durable history before delivery. The model-visible developer message always
+contains every due subscription ID and bounded typed metadata, never raw
+external content. Opaque cursor values, label values, and publisher event IDs
+remain outside model context. Waiting itself makes no model request.
+
+The CLI uses the same RPCs, for example:
+
+```shell
+codex features enable event_subscriptions
+codex app-server daemon restart
+codex subscriptions create \
+  --thread 019faba0-0000-7000-8000-000000000001 \
+  --source build --event-type completed --label branch=main \
+  --heartbeat-seconds 900
+codex subscriptions publish \
+  --source build --event-type completed --sequence 42 \
+  --cursor build-42 --label branch=main
+```
+
+The CLI requires a persistent local daemon or an explicit authenticated remote
+endpoint; it does not create clock subscriptions in a short-lived embedded
+server that would exit before the deadline.
 
 ### Example: Archive a thread
 
@@ -2531,9 +2608,10 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 - `account/usage/read` — fetch ChatGPT account token-activity summary and daily buckets, or pass a valid thread UUID as `threadId` to read estimated credits, optional cost, and usage breakdowns for one thread using the app-server's active account. The optional `threadUsage` response field is absent on older servers and `null` when the billing route is unavailable.
 
 The downstream protocol also declares experimental, additive `accountProfile*`,
-`accountAutoSelection*`, and `localUsage*` method families. Enhanced servers advertise support
+`accountAutoSelection*`, `localUsage*`, and event-subscription method families. Enhanced servers advertise support
 through optional `initialize` response fields named `multiAccount` and
-`localUsageAccounting`; clients must capability-detect them and enable `experimentalApi` before
+`localUsageAccounting`, plus `eventSubscriptions` when its feature is enabled;
+clients must capability-detect them and enable `experimentalApi` before
 calling the extension methods. Stock clients can ignore these fields and the experimental
 `accountProfile/activeChanged` and `localUsage/updated` notifications. The declarations contain
 only local profile metadata and content-free accounting data; credentials remain confined to the
