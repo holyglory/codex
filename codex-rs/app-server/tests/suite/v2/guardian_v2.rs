@@ -581,6 +581,10 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     scope: GuardianToolScope,
     sensitive_action: Option<bool>,
 ) -> Result<()> {
+    if lifecycle.has_post_tool_hook() {
+        skip_if_remote!(Ok(()), "command hooks use a host-local script path");
+        skip_if_wine_exec!(Ok(()), "command hooks use a host-local script path");
+    }
     let server_name = match scope {
         GuardianToolScope::AllTools => TEST_SERVER_NAME,
         GuardianToolScope::ComputerUseOnly { server_name } => server_name,

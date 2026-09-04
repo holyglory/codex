@@ -12,6 +12,11 @@ call :resolve_runfile "__TEST_BIN__"
 if errorlevel 1 exit /b 1
 set "test_bin=!resolve_runfile_result!"
 
+if defined TEST_TMPDIR (
+  set "TEMP=%TEST_TMPDIR%"
+  set "TMP=%TEST_TMPDIR%"
+)
+
 __RUNFILE_ENV_EXPORTS__
 
 if not defined test_bin (

@@ -49,6 +49,10 @@ workspace_root="$(dirname "$(dirname "$(dirname "${workspace_root_marker}")")")"
 test_bin="$(resolve_runfile "__TEST_BIN__")"
 RUNFILE_ENV_ARGS=()
 
+if [[ -n "${TEST_TMPDIR:-}" ]]; then
+  export TMPDIR="${TEST_TMPDIR}"
+fi
+
 __RUNFILE_ENV_EXPORTS__
 
 run_test_bin() {
