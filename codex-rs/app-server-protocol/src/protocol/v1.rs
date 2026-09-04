@@ -83,6 +83,9 @@ pub struct InitializeResponse {
     /// Advertises the additive local usage-accounting extension.
     #[serde(default)]
     pub local_usage_accounting: Option<crate::protocol::v2::LocalUsageAccountingCapability>,
+    /// Advertises the additive provider-neutral event-subscription extension.
+    #[serde(default)]
+    pub event_subscriptions: Option<crate::protocol::v2::EventSubscriptionsCapability>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
