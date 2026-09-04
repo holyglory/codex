@@ -12,6 +12,7 @@ use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_event_subscriptions::EventSubscriptionService;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
@@ -51,6 +52,8 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) http_client_factory: HttpClientFactory,
     /// Process-scoped queue shared by idle dispatch and app-server requests.
     pub(crate) queue_service: Option<Arc<QueuedItemService>>,
+    /// Process-scoped event subscriptions shared by scheduling and requests.
+    pub(crate) event_subscription_service: Option<EventSubscriptionService>,
 }
 
 pub(crate) fn thread_extensions<S>(
@@ -73,10 +76,16 @@ where
         git_attribution_base_url,
         http_client_factory,
         queue_service,
+        event_subscription_service,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
+    }
+    if let Some(service) = event_subscription_service {
+        builder.thread_lifecycle_contributor(Arc::new(
+            crate::event_subscriptions::EventSubscriptionLifecycle::new(service),
+        ));
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     if let Some(state_db) = state_db {
