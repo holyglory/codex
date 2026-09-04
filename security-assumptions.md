@@ -67,6 +67,22 @@ Last reviewed: 2026-09-03
   This does not authorize an agent tool to read credentials, complete login,
   delete profiles or credentials, expose email or opaque service/workspace
   identities, or broaden automatic selection beyond managed ChatGPT OAuth.
+- **Provider-neutral event ingress:** Subscription management and event ingress
+  reuse the existing app-server transport boundary. Local stdio and Unix-socket
+  callers rely on the existing owner-controlled OS access boundary; WebSocket
+  publishers use the app-server's existing capability-token or signed-bearer
+  authentication. When event subscriptions are enabled, even a loopback
+  WebSocket listener requires that authentication; non-loopback WebSocket
+  listeners remain forbidden without it in all modes. No separate webhook
+  listener or new credential store is authorized (user confirmation on
+  2026-09-04).
+- **Event data sensitivity:** Durable subscription state and model-visible wake
+  state contains only bounded, typed metadata: subscription IDs,
+  provider-neutral source and event kinds, opaque source cursors, label maps,
+  delivery reasons, and timestamps. Model-visible wakes further omit opaque
+  cursor values, label values, and publisher event IDs. Raw external content,
+  credentials, headers, and adapter payloads are neither retained nor
+  automatically injected into model context (user request on 2026-09-04).
 
 ## Current trust boundaries and controls
 
@@ -77,6 +93,10 @@ Last reviewed: 2026-09-03
   user's `CODEX_HOME`.
 - Local usage accounting has no network listener or automatic exporter. Its
   SQLite database and explicit exports use private filesystem permissions.
+- Event subscriptions use the same per-user runtime storage boundary as other
+  Codex state. Event ingress inherits the app-server transport's authentication
+  boundary, validates bounded metadata before persistence, and cannot carry raw
+  publisher content into a model turn.
 - Model-visible usage and account-management responses are structured and
   size-bounded. Detailed facts are paginated; account mutations are
   generation-aware and limited to the expressly authorized nonsecret routing
@@ -112,6 +132,9 @@ Last reviewed: 2026-09-03
   not approved or designed.
 - A shared/networked stats service, remote dashboard, automatic exporter, or
   third-party analytics integration is not approved.
+- Direct third-party webhook listeners, adapter-specific credentials inside
+  Codex, and multi-tenant event publishing are not approved by the current
+  provider-neutral ingress design.
 - Raw prompt, output, reasoning, command, source, browser, or tool-content
   retention is not approved.
 - Additional operators, multi-tenant hosting, deployment beyond `slawa` and
@@ -123,8 +146,9 @@ Last reviewed: 2026-09-03
 
 ## Review triggers
 
-Revisit these assumptions before implementing cross-user aggregation, a
-network API, external export, raw-content capture, additional operators,
+Revisit these assumptions before implementing cross-user aggregation, a new
+network listener or authentication system, external export, raw-content
+capture, additional operators,
 multi-tenant or production deployment, a different host ownership model,
 automatic retention/deletion, or any control that changes credential or usage
 database access. Also revisit before broadening automatic selection beyond
