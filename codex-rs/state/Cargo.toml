@@ -8,6 +8,7 @@ license.workspace = true
 anyhow = { workspace = true }
 chrono = { workspace = true }
 codex-history = { workspace = true }
+codex-event-subscriptions = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 libsqlite3-sys = { workspace = true }
@@ -25,6 +26,7 @@ uuid = { workspace = true }
 codex-git-utils = { workspace = true }
 pretty_assertions = { workspace = true }
 scopeguard = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
