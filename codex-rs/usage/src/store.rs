@@ -127,6 +127,10 @@ impl UsageStore {
             pool.close().await;
             return Err(UsageStoreError::Migration(error));
         }
+        sqlx::query("CREATE INDEX IF NOT EXISTS repository_attributions_repository_operation_idx ON repository_attributions(repository_id, operation_id)")
+            .execute(&pool)
+            .await
+            .map_err(UsageStoreError::Database)?;
         let _ = crate::report_cache::ensure(&pool).await;
         let repository_key = match load_or_create_repository_key(&usage_dir, &pool).await {
             Ok(repository_key) => repository_key,
@@ -310,6 +314,15 @@ impl UsageStore {
             return Err(UsageStoreError::TerminalConflict);
         }
         Ok(())
+    }
+
+    pub async fn database_schema_version(&self) -> Result<u64, UsageStoreError> {
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?
+            .try_into()
+            .map_err(|_| UsageStoreError::DatabaseValueOutOfRange)
     }
 
     pub async fn doctor(&self) -> Result<DoctorReport, UsageStoreError> {
