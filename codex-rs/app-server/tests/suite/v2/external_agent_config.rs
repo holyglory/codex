@@ -474,7 +474,9 @@ async fn external_agent_config_secondary_source_imports_session_and_plugin_end_t
         &session_path,
         [
             serde_json::json!({
+                "cwd": &project_root,
                 "role": "user",
+                "timestamp": "2026-07-26T18:00:00Z",
                 "message": {
                     "content": [{
                         "type": "text",
