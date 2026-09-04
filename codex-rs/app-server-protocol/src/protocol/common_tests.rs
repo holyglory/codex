@@ -62,6 +62,11 @@ fn multi_account_local_usage_methods_are_registered_as_experimental() {
         "localUsageEvent/list",
         "localUsageClassification/correct",
         "localUsageExport/create",
+        "eventSubscription/create",
+        "eventSubscription/list",
+        "eventSubscription/cancel",
+        "eventSubscription/trigger",
+        "event/publish",
     ] {
         assert!(EXPERIMENTAL_CLIENT_METHODS.contains(&method), "{method}");
     }
