@@ -225,6 +225,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 
     Ok(ConfigBuilder::default()
         .codex_home(codex_home.to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .build()
         .await?)
 }
@@ -243,7 +244,7 @@ async fn build_test_processor(
     let config_manager = ConfigManager::new(
         config.codex_home.to_path_buf(),
         Vec::new(),
-        LoaderOverrides::default(),
+        LoaderOverrides::without_managed_config_for_tests(),
         /*strict_config*/ false,
         CloudConfigBundleLoader::default(),
         Arg0DispatchPaths::default(),
