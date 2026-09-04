@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
@@ -67,7 +68,10 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use tracing::Level;
 use tracing_test::internal::MockWriter;
+use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -1264,14 +1268,18 @@ async fn grandchild_full_fork_preserves_context_baseline(
         ]),
     )
     .await;
-    let _parent_followups = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![ev_completed("baseline-parent-finished-1")]),
-            sse(vec![ev_completed("baseline-parent-finished-2")]),
-        ],
-    )
-    .await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(|request: &wiremock::Request| {
+            body_contains(request, ROOT_CALL) || body_contains(request, CHILD_CALL)
+        })
+        .respond_with(sse_response(sse(vec![ev_completed(
+            "baseline-parent-finished",
+        )])))
+        .with_priority(/*p*/ 10)
+        .expect(2..)
+        .mount(&server)
+        .await;
     let test = test_codex()
         .with_history_mode(history_mode)
         .with_config(move |config| {
@@ -1324,19 +1332,38 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 sleep(Duration::from_millis(/*millis*/ 10)).await;
             }
         })
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "waiting for {agent_name} request: {parent_context:?}, {history_mode:?}; matched requests: {}",
+                mock.requests().len()
+            )
+        })?;
         let thread_id = ThreadId::from_string(
             request.body_json()["client_metadata"]["thread_id"]
                 .as_str()
                 .expect("descendant thread id"),
         )?;
         let thread = test.thread_manager.get_thread(thread_id).await?;
-        timeout(Duration::from_secs(/*secs*/ 10), async {
+        let completion = timeout(Duration::from_secs(/*secs*/ 10), async {
             while !matches!(thread.agent_status().await, AgentStatus::Completed(_)) {
                 sleep(Duration::from_millis(/*millis*/ 10)).await;
             }
         })
-        .await?;
+        .await;
+        let agent_status = thread.agent_status().await;
+        let response_requests = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path().ends_with("/responses"))
+            .count();
+        completion.with_context(|| {
+            format!(
+                "waiting for {agent_name} completion: {parent_context:?}, {history_mode:?}; status: {agent_status:?}; response requests: {response_requests}"
+            )
+        })?;
         descendant_requests.push(request);
     }
     let context_counts = [
