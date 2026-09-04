@@ -104,7 +104,10 @@ struct RepoArgs {
     #[command(subcommand)]
     action: Option<RepoAction>,
     #[arg(value_name = "REPO_OR_CURRENT")]
-    repository: Option<String>,
+    reference: Option<String>,
+    /// Resolve the stored repository identity without aggregating usage history.
+    #[arg(long)]
+    identity_only: bool,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -226,9 +229,30 @@ async fn execute(
                 render::summary(&summary, json_output, account.as_deref())?
             );
         }
+        UsageAction::Repo(args) if args.identity_only && args.action.is_some() => {
+            return Err(UsageCommandError::new(error::UsageErrorKind::Input));
+        }
         UsageAction::Repo(args) => match args.action {
             None => {
-                let repository = resolve_repository(store, args.repository.as_deref()).await?;
+                let repository = resolve_repository(store, args.reference.as_deref()).await?;
+                if args.identity_only {
+                    filters.ensure_only(&[], &[])?;
+                    if json_output {
+                        println!(
+                            "{}",
+                            json!({
+                                "schemaVersion": 1,
+                                "kind": "usageRepositoryIdentity",
+                                "databaseSchemaVersion": store.database_schema_version().await?,
+                                "taxonomyVersion": codex_usage::TAXONOMY_VERSION,
+                                "scope": { "type": "repository", "id": repository.as_str() }
+                            })
+                        );
+                    } else {
+                        println!("{}", repository.as_str());
+                    }
+                    return Ok(());
+                }
                 let (summary, account) = build_summary(
                     store,
                     registry_store,
