@@ -90,6 +90,7 @@ EOF
 fi
 
 sysroot=""
+fallback_uapi_flags=""
 if command -v zig >/dev/null; then
   zig_bin="$(command -v zig)"
   cc="${tool_root}/zigcc"
@@ -226,6 +227,15 @@ else
   else
     cxx="${cc}"
   fi
+
+  kernel_uapi_root="/usr/include"
+  compiler_multiarch="$(${musl_linker} -dumpmachine)"
+  compiler_arch_root="${kernel_uapi_root}/${compiler_multiarch}"
+  if [[ ! -f "${kernel_uapi_root}/linux/sched.h" || ! -d "${compiler_arch_root}/asm" ]]; then
+    echo "Linux UAPI headers for ${compiler_multiarch} are unavailable" >&2
+    exit 1
+  fi
+  fallback_uapi_flags="-idirafter ${kernel_uapi_root} -idirafter ${compiler_arch_root}"
 fi
 
 if [[ -n "${sysroot}" && "${sysroot}" != "/" ]]; then
@@ -235,8 +245,8 @@ if [[ -n "${sysroot}" && "${sysroot}" != "/" ]]; then
   echo "${boring_sysroot_var}=${sysroot}" >> "$GITHUB_ENV"
 fi
 
-cflags="-pthread"
-cxxflags="-pthread"
+cflags="-pthread${fallback_uapi_flags:+ ${fallback_uapi_flags}}"
+cxxflags="-pthread${fallback_uapi_flags:+ ${fallback_uapi_flags}}"
 if [[ "${TARGET}" == "aarch64-unknown-linux-musl" ]]; then
   # BoringSSL enables -Wframe-larger-than=25344 under clang and treats warnings as errors.
   cflags="${cflags} -Wno-error=frame-larger-than"
