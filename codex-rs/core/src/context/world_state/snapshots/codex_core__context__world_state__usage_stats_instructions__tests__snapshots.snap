@@ -1,0 +1,31 @@
+---
+source: core/src/context/world_state/usage_stats_instructions_tests.rs
+expression: "render_section_cases(&[(Absent, Absent), (Absent, Known(&unavailable)),\n(Absent, Known(&available)), (Known(&unavailable), Known(&available)),\n(Known(&available), Known(&available)),\n(Known(&available), Known(&unavailable)), (Unknown, Known(&unavailable)),\n(Unknown, Known(&available)),])"
+---
+Absent -> Absent
+None
+
+Absent -> false
+None
+
+Absent -> true (role - developer)
+<usage_stats_instructions>
+Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about this agent, call it before answering and ground the answer in its result: use `task_tree_summary` (`root_thread_id="current"`, `include_descendants=true`) for the task tree, or `summary` for broader scopes. Map model-routed `/usage all|chat|repo` to `summary` scopes `all|current_chat|current_repository`. Do not search OpenAI documentation for local usage unless the user asks about official product behavior.
+</usage_stats_instructions>
+
+false -> true (role - developer)
+<usage_stats_instructions>
+Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about this agent, call it before answering and ground the answer in its result: use `task_tree_summary` (`root_thread_id="current"`, `include_descendants=true`) for the task tree, or `summary` for broader scopes. Map model-routed `/usage all|chat|repo` to `summary` scopes `all|current_chat|current_repository`. Do not search OpenAI documentation for local usage unless the user asks about official product behavior.
+</usage_stats_instructions>
+
+true -> true
+None
+
+true -> false
+None
+
+Unknown -> false
+None
+
+Unknown -> true
+None
