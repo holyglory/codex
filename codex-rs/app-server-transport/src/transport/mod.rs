@@ -379,6 +379,7 @@ mod tests {
                     platform_os: "linux".to_string(),
                     multi_account: None,
                     local_usage_accounting: None,
+                    event_subscriptions: None,
                 },
             )),
         });

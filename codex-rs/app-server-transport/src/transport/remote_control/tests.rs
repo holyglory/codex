@@ -1840,6 +1840,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                             platform_os: "test-os".to_string(),
                             multi_account: None,
                             local_usage_accounting: None,
+                            event_subscriptions: None,
                         },
                     ),
                 ),
@@ -1862,6 +1863,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                     "platformOs": "test-os",
                     "multiAccount": null,
                     "localUsageAccounting": null,
+                    "eventSubscriptions": null,
                 }
             }
         })
