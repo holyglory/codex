@@ -242,6 +242,12 @@ jobs:
         uses: ./.github/actions/setup-msvc-env
         with:
           target: ${{ matrix.target }}
+      - name: Check Windows private-storage bindings before the product build
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo check --locked --tests -p codex-private-storage --target "$TARGET"
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
