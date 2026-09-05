@@ -1,0 +1,72 @@
+name: downstream-windows-storage
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "codex-rs/private-storage/**"
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - ".github/workflows/downstream-windows-storage.yml"
+  push:
+    branches: ["codex/**"]
+    paths:
+      - "codex-rs/private-storage/**"
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - ".github/workflows/downstream-windows-storage.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  private-storage:
+    name: Private storage on ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - name: Verify private permissions and atomic writes on Windows
+        run: |
+          just test --locked -p codex-private-storage --target "${{ matrix.target }}" 2>&1 |
+            Tee-Object -FilePath "${{ runner.temp }}/private-storage-tests.log"
+          exit $LASTEXITCODE
+      - name: Preserve focused test evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: private-storage-${{ matrix.target }}
+          path: ${{ runner.temp }}/private-storage-tests.log
+          retention-days: 14
