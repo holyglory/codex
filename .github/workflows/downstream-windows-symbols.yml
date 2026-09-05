@@ -1,0 +1,37 @@
+name: downstream-windows-symbols
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/scripts/archive-release-symbols-and-strip-binaries.sh"
+      - ".github/scripts/test_archive_release_symbols.py"
+      - ".github/workflows/downstream-windows-symbols.yml"
+  push:
+    branches: ["codex/**"]
+    paths:
+      - ".github/scripts/archive-release-symbols-and-strip-binaries.sh"
+      - ".github/scripts/test_archive_release_symbols.py"
+      - ".github/workflows/downstream-windows-symbols.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  symbols:
+    name: Native Windows symbols on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Check synthetic edge cases and actual native Cargo release symbols
+        shell: bash
+        run: python .github/scripts/test_archive_release_symbols.py -v
