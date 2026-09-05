@@ -8,14 +8,20 @@ const RECAP_HEADING: &str = "Conversation recap";
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct UpdateAvailableHistoryCell {
+    current_version: &'static str,
     latest_version: String,
     update_action: Option<UpdateAction>,
 }
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
 impl UpdateAvailableHistoryCell {
-    pub(crate) fn new(latest_version: String, update_action: Option<UpdateAction>) -> Self {
+    pub(crate) fn new(
+        current_version: &'static str,
+        latest_version: String,
+        update_action: Option<UpdateAction>,
+    ) -> Self {
         Self {
+            current_version,
             latest_version,
             update_action,
         }
@@ -41,7 +47,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 "✨\u{200A}".bold().cyan(),
                 "Update available!".bold().cyan(),
                 " ",
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
+                format!("{} -> {}", self.current_version, self.latest_version).bold(),
             ],
             update_instruction,
             "",
@@ -65,7 +71,10 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         };
         vec![
             Line::from("Update available!"),
-            Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
+            Line::from(format!(
+                "{} -> {}",
+                self.current_version, self.latest_version
+            )),
             Line::from(update_instruction),
             Line::from(""),
             Line::from("Fork source and history:"),

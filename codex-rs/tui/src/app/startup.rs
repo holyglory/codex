@@ -701,6 +701,7 @@ See the Codex keymap documentation for supported actions and examples."
                 tui,
                 &mut app_server,
                 AppEvent::InsertHistoryCell(Box::new(UpdateAvailableHistoryCell::new(
+                    crate::version::CODEX_CLI_VERSION,
                     latest_version,
                     crate::update_action::get_update_action(),
                 ))),
