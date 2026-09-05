@@ -1,10 +1,10 @@
-use crate::client::ModelClient;
 use crate::client::X_CODEX_TURN_METADATA_HEADER;
 use crate::context::ContextualUserFragment;
 use crate::context::RealtimeDelegation;
 use crate::context::RealtimeDelegationSource;
 use crate::realtime_context::build_realtime_startup_context;
 use crate::realtime_context::truncate_realtime_text_to_token_budget;
+use crate::realtime_conversation::auth::RealtimeAuth;
 use crate::realtime_prompt::prepare_realtime_backend_prompt;
 use crate::responses_metadata::THREAD_SOURCE_KEY;
 use crate::session::session::Session;
@@ -31,7 +31,7 @@ use codex_api::build_session_headers;
 use codex_api::map_api_error;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
-use codex_http_client::HttpClientFactory;
+use codex_login::AccountLease;
 use codex_login::CodexAuth;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
@@ -85,6 +85,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+mod auth;
 mod bem;
 mod existing_call;
 mod sideband;
@@ -100,7 +101,6 @@ const OUTPUT_EVENTS_QUEUE_CAPACITY: usize = 256;
 const REALTIME_THREAD_SOURCE_MAX_BYTES: usize = 256;
 const REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET: usize = 5_300;
 const REALTIME_ASSISTANT_OUTPUT_TOKEN_BUDGET: usize = 1_000;
-const REALTIME_REASONING_STATUS_MAX_BYTES: usize = 256;
 const REALTIME_INITIAL_ITEMS_MAX_COUNT: usize = 128;
 const REALTIME_INITIAL_ITEMS_MAX_TOKENS: usize = 8_192;
 const REALTIME_MODE_INSTRUCTIONS_MAX_TOKENS: usize = 8_192;
@@ -190,7 +190,6 @@ struct RealtimeHandoffState {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
-    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Arc<BTreeMap<String, Vec<String>>>,
     session_kind: RealtimeSessionKind,
     event_parser: RealtimeEventParser,
@@ -363,10 +362,6 @@ fn take_last_bytes_at_char_boundary(text: &str, max_bytes: usize) -> &str {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RealtimeOutbound {
-    QuietReasoningStatus {
-        handoff_id: String,
-        text: String,
-    },
     StandaloneHandoff {
         text: String,
         phase: Option<MessagePhase>,
@@ -500,6 +495,7 @@ impl RealtimeHandoffState {
 
 #[allow(dead_code)]
 struct ConversationState {
+    _account_lease: Option<AccountLease>,
     audio_tx: Sender<RealtimeAudioFrame>,
     text_tx: Sender<ConversationTextParams>,
     session_kind: RealtimeSessionKind,
@@ -514,7 +510,6 @@ struct ConversationState {
 
 struct RealtimeStart {
     api_provider: ApiProvider,
-    http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
@@ -522,11 +517,10 @@ struct RealtimeStart {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
-    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
-    model_client: ModelClient,
+    auth: RealtimeAuth,
     sdp: Option<String>,
     existing_call_id: Option<String>,
 }
@@ -609,7 +603,6 @@ impl RealtimeConversationManager {
     async fn start_inner(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
         let RealtimeStart {
             api_provider,
-            http_client_factory,
             realtime_sideband_base_url,
             extra_headers,
             client_managed_handoffs,
@@ -617,14 +610,17 @@ impl RealtimeConversationManager {
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
-            backend_reasoning_status,
             codex_response_handoff_channel_prefixes,
             realtime_call_api_provider,
             session_config,
-            model_client,
+            auth,
             sdp,
             existing_call_id,
         } = start;
+        let RealtimeAuth {
+            model_client,
+            account_lease,
+        } = auth;
         let event_parser = session_config.event_parser;
         let session_kind = match event_parser {
             RealtimeEventParser::V1 | RealtimeEventParser::FramelessBidi => RealtimeSessionKind::V1,
@@ -652,7 +648,6 @@ impl RealtimeConversationManager {
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
-            backend_reasoning_status,
             codex_response_handoff_channel_prefixes: Arc::new(
                 codex_response_handoff_channel_prefixes.unwrap_or_default(),
             ),
@@ -665,7 +660,7 @@ impl RealtimeConversationManager {
             audio_rx,
         };
 
-        let client = RealtimeWebsocketClient::new(api_provider, http_client_factory);
+        let client = RealtimeWebsocketClient::new(api_provider);
         let client = match realtime_sideband_base_url {
             Some(base_url) => client.with_webrtc_sideband_base_url(base_url),
             None => client,
@@ -746,6 +741,7 @@ impl RealtimeConversationManager {
 
         let mut guard = self.state.lock().await;
         *guard = Some(ConversationState {
+            _account_lease: account_lease,
             audio_tx,
             text_tx,
             session_kind,
@@ -847,34 +843,6 @@ impl RealtimeConversationManager {
             .await
             .map_err(|_| CodexErr::InvalidRequest("conversation is not running".to_string()))?;
         Ok(())
-    }
-
-    pub(crate) async fn send_reasoning_status(&self, text: &str) -> CodexResult<()> {
-        let handoff = self
-            .state
-            .lock()
-            .await
-            .as_ref()
-            .map(|state| state.handoff.clone());
-        let Some(handoff) = handoff.filter(|handoff| {
-            handoff.backend_reasoning_status
-                && !handoff.client_managed_handoffs
-                && handoff.event_parser == RealtimeEventParser::FramelessBidi
-        }) else {
-            return Ok(());
-        };
-        let Some(handoff_id) = handoff.stream.lock().await.active_handoff.clone() else {
-            return Ok(());
-        };
-        let text = take_bytes_at_char_boundary(text, REALTIME_REASONING_STATUS_MAX_BYTES);
-        handoff
-            .output_tx
-            .send(RealtimeOutbound::QuietReasoningStatus {
-                handoff_id,
-                text: format!("[STATUS] {text}"),
-            })
-            .await
-            .map_err(|_| CodexErr::InvalidRequest("conversation is not running".to_string()))
     }
 
     pub(crate) async fn handoff_out(
@@ -1243,8 +1211,8 @@ pub(crate) async fn handle_start(
 }
 
 struct PreparedRealtimeConversationStart {
+    auth: RealtimeAuth,
     api_provider: ApiProvider,
-    http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
@@ -1252,7 +1220,6 @@ struct PreparedRealtimeConversationStart {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
-    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_start_instructions: Option<String>,
     realtime_end_instructions: Option<String>,
@@ -1274,22 +1241,13 @@ async fn prepare_realtime_start(
     params: ConversationStartParams,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let provider = sess.provider().await;
-    let auth_manager = sess
-        .services
+    let config = sess.get_config().await;
+    let realtime_auth = RealtimeAuth::resolve(sess, &config).await?;
+    let auth_manager = realtime_auth
         .model_client
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
-    let config = sess.get_config().await;
-    let (auth, http_client_factory) = match auth_manager.auth_with_http_client_factory().await {
-        Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
-            Some(auth),
-            config
-                .http_client_factory()
-                .with_network_policy(captured_factory.network_policy().clone()),
-        ),
-        Some((auth, _)) => (Some(auth), config.http_client_factory()),
-        None => (None, config.http_client_factory()),
-    };
+    let auth = auth_manager.auth().await;
     let transport = params
         .transport
         .clone()
@@ -1395,8 +1353,8 @@ async fn prepare_realtime_start(
         extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, metadata);
     }
     Ok(PreparedRealtimeConversationStart {
+        auth: realtime_auth,
         api_provider,
-        http_client_factory,
         realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
         client_managed_handoffs: params.client_managed_handoffs,
@@ -1404,7 +1362,6 @@ async fn prepare_realtime_start(
         codex_responses_as_items: params.codex_responses_as_items,
         codex_response_item_prefix: params.codex_response_item_prefix,
         codex_response_handoff_mode: params.codex_response_handoff_mode,
-        backend_reasoning_status: params.backend_reasoning_status,
         codex_response_handoff_channel_prefixes: params.codex_response_handoff_channel_prefixes,
         realtime_start_instructions: params.realtime_start_instructions,
         realtime_end_instructions: params.realtime_end_instructions,
@@ -1619,8 +1576,8 @@ async fn handle_start_inner(
     prepared_start: PreparedRealtimeConversationStart,
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
+        auth,
         api_provider,
-        http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
@@ -1628,7 +1585,6 @@ async fn handle_start_inner(
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
-        backend_reasoning_status,
         codex_response_handoff_channel_prefixes,
         realtime_start_instructions,
         realtime_end_instructions,
@@ -1650,7 +1606,6 @@ async fn handle_start_inner(
     };
     let start = RealtimeStart {
         api_provider,
-        http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
@@ -1658,11 +1613,10 @@ async fn handle_start_inner(
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
-        backend_reasoning_status,
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
-        model_client: sess.services.model_client.clone(),
+        auth,
         sdp,
         existing_call_id,
     };
@@ -2240,7 +2194,6 @@ async fn handle_handoff_output(
     let handoff_output = handoff_output.context("handoff output channel closed")?;
     let result = match event_parser {
         RealtimeEventParser::V1 => match handoff_output {
-            RealtimeOutbound::QuietReasoningStatus { .. } => Ok(()),
             RealtimeOutbound::StandaloneHandoff { text, phase: _ } => {
                 writer
                     .send_standalone_handoff(STANDALONE_HANDOFF_ID.to_string(), text)
@@ -2282,18 +2235,6 @@ async fn handle_handoff_output(
             RealtimeOutbound::HandoffCompleteAck { .. } => Ok(()),
         },
         RealtimeEventParser::FramelessBidi => match handoff_output {
-            RealtimeOutbound::QuietReasoningStatus { handoff_id, text } => {
-                if handoff_state.stream.lock().await.active_handoff.as_deref() != Some(&handoff_id)
-                {
-                    return Ok(());
-                }
-                // An omitted channel defaults to speakable on this wire protocol.
-                writer
-                    .clone()
-                    .with_context_append_channel(RealtimeContextAppendChannel::Commentary)
-                    .send_conversation_handoff_append(handoff_id, text)
-                    .await
-            }
             RealtimeOutbound::StandaloneHandoff { text, phase } => {
                 v3_output_writer(
                     writer,
@@ -2361,7 +2302,6 @@ async fn handle_handoff_output(
             RealtimeOutbound::HandoffCompleteAck { .. } => Ok(()),
         },
         RealtimeEventParser::RealtimeV2 => match handoff_output {
-            RealtimeOutbound::QuietReasoningStatus { .. } => Ok(()),
             RealtimeOutbound::StandaloneHandoff { text, phase: _ } => {
                 if let Err(err) = writer
                     .send_conversation_item_create(text, ConversationTextRole::User)
