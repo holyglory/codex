@@ -7,13 +7,14 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
-use app_test_support::create_escalated_command_execution_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::CommandExecutionApprovalDecision;
-use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolFunctionSpec;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::EventPublishParams;
 use codex_app_server_protocol::EventPublishResponse;
 use codex_app_server_protocol::EventSourceCursor;
@@ -37,6 +38,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -243,20 +245,36 @@ async fn pending_subscription_resumes_the_correct_thread_after_process_restart()
 #[tokio::test]
 async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -> Result<()> {
     let responses = vec![
-        blocked_turn_response()?,
+        responses::sse(vec![
+            responses::ev_response_created("blocked-response"),
+            responses::ev_function_call("blocked-tool", "wait_for_test", "{}"),
+            responses::ev_completed("blocked-response"),
+        ]),
         create_final_assistant_message_sse_response("active turn done")?,
         create_final_assistant_message_sse_response("event follow-up done")?,
     ];
     let (mut app, _home, server) = event_app(responses).await?;
     let thread_id = app
-        .start_thread(ThreadStartParams::default())
+        .start_thread(ThreadStartParams {
+            dynamic_tools: Some(vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: "wait_for_test".to_string(),
+                description: "Wait for the test client to release the active turn".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+            })]),
+            ..Default::default()
+        })
         .await?
         .thread
         .id;
     let subscription = create_subscription(&mut app, &thread_id)
         .await?
         .subscription;
-    let approval_id = start_blocked_turn(&mut app, &thread_id).await?;
+    let tool_request_id = start_blocked_turn(&mut app, &thread_id).await?;
 
     let triggered: EventSubscriptionTriggerResponse = app
         .request(|request_id| ClientRequest::EventSubscriptionTrigger {
@@ -281,9 +299,12 @@ async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -
     );
 
     app.send_response(
-        approval_id,
-        serde_json::to_value(CommandExecutionRequestApprovalResponse {
-            decision: CommandExecutionApprovalDecision::Decline,
+        tool_request_id,
+        serde_json::to_value(DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                text: "The test client released the turn".to_string(),
+            }],
+            success: true,
         })?,
     )
     .await?;
@@ -430,27 +451,6 @@ fn current_unix_seconds() -> i64 {
         .unwrap_or_default()
 }
 
-fn blocked_turn_response() -> Result<String> {
-    #[cfg(target_os = "windows")]
-    let shell_command = vec![
-        "powershell".to_string(),
-        "-Command".to_string(),
-        "Start-Sleep -Seconds 10".to_string(),
-    ];
-    #[cfg(not(target_os = "windows"))]
-    let shell_command = vec![
-        "python3".to_string(),
-        "-c".to_string(),
-        "import time; time.sleep(10)".to_string(),
-    ];
-    create_escalated_command_execution_sse_response(
-        shell_command,
-        /*workdir*/ None,
-        /*timeout_ms*/ Some(10_000),
-        "event-subscription-blocked-command",
-    )
-}
-
 async fn start_blocked_turn(app: &mut TestAppServer, thread_id: &str) -> Result<RequestId> {
     let _: TurnStartResponse = app
         .request(|request_id| ClientRequest::TurnStart {
@@ -458,16 +458,17 @@ async fn start_blocked_turn(app: &mut TestAppServer, thread_id: &str) -> Result<
             params: TurnStartParams {
                 thread_id: thread_id.to_string(),
                 input: vec![UserInput::Text {
-                    text: "start an approval-blocked turn".to_string(),
+                    text: "start a turn that waits for the test tool".to_string(),
                     text_elements: Vec::new(),
                 }],
                 ..Default::default()
             },
         })
         .await?;
-    let approval = timeout(READ_TIMEOUT, app.read_stream_until_request_message()).await??;
-    let ServerRequest::CommandExecutionRequestApproval { request_id, .. } = approval else {
-        anyhow::bail!("active turn did not request command approval")
+    let request = timeout(READ_TIMEOUT, app.read_stream_until_request_message()).await??;
+    let ServerRequest::DynamicToolCall { request_id, params } = request else {
+        anyhow::bail!("active turn did not request the test tool")
     };
+    assert_eq!(params.tool, "wait_for_test");
     Ok(request_id)
 }
