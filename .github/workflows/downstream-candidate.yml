@@ -47,6 +47,10 @@ jobs:
           echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
           printf 'Candidate `%s` / npm `%s` at `%s`\n' \
             "$source_version" "$npm_version" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify downstream packaging and publication helpers
+        run: |
+          python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
 
   rust-validation:
     name: Complete Rust validation
@@ -101,10 +105,6 @@ jobs:
         run: |
           cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
           git diff --exit-code
-      - name: Verify downstream packaging helpers
-        working-directory: ${{ github.workspace }}
-        run: python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
-
   bazel-validation:
     name: Complete Bazel validation
     needs: identity
@@ -114,6 +114,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Verify and prepare disposable runner storage and short test paths
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_prepare_downstream_bazel.py'
+          python3 .github/scripts/prepare_downstream_bazel.py
       - name: Prepare Bazel CI
         uses: ./.github/actions/prepare-bazel-ci
         with:
@@ -134,6 +138,8 @@ jobs:
             --print-failed-test-logs \
             -- \
             test \
+            --disk_cache= \
+            --test_tmpdir="$CODEX_BAZEL_TEST_TMPDIR" \
             --keep_going \
             --local_test_jobs=2 \
             --test_env=RUST_TEST_THREADS=1 \
@@ -156,16 +162,30 @@ jobs:
           ./.github/scripts/run-bazel-ci.sh \
             -- \
             build \
+            --disk_cache= \
             --compilation_mode=fastbuild \
             --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no \
             --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no \
             --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
             -- \
             "${bazel_targets[@]}"
+      - name: Preserve Bazel execution and per-test evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel_validation_${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/bazel-execution-logs
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.xml
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.log
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test_attempts/*.log
+          retention-days: 14
 
   native:
     name: Build ${{ matrix.target }}
-    needs: [identity, rust-validation, bazel-validation]
+    # Compile the frozen source alongside validation. candidate-result still
+    # gates publication on every validation and packaging job succeeding.
+    needs: identity
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     permissions:
