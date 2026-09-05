@@ -916,8 +916,8 @@ fn installation_check(show_details: bool) -> DoctorCheck {
                 npm_package_root,
             } => {
                 status = CheckStatus::Fail;
-                summary =
-                    "npm install -g @openai/codex would update a different install".to_string();
+                summary = "npm install -g @holyglory/codex@latest would update a different install"
+                    .to_string();
                 remediation = Some(format!(
                     "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
                     running_package_root.display(),
@@ -1094,7 +1094,7 @@ fn npm_global_root_check() -> NpmRootCheck {
 }
 
 fn compare_npm_package_roots(running_package_root: &Path, npm_root: &Path) -> NpmRootCheck {
-    let npm_package_root = npm_root.join("@openai").join("codex");
+    let npm_package_root = npm_root.join("@holyglory").join("codex");
     let running = normalize_path_for_compare(running_package_root);
     let target = normalize_path_for_compare(&npm_package_root);
     if running == target {
@@ -3252,25 +3252,38 @@ mod tests {
 
     #[test]
     fn compare_npm_package_roots_detects_match() {
-        let running = PathBuf::from("/prefix/lib/node_modules/@openai/codex");
+        let running = PathBuf::from("/prefix/lib/node_modules/@holyglory/codex");
         let npm_root = PathBuf::from("/prefix/lib/node_modules");
         assert_eq!(
             compare_npm_package_roots(&running, &npm_root),
             NpmRootCheck::Match {
-                package_root: npm_root.join("@openai").join("codex")
+                package_root: npm_root.join("@holyglory").join("codex")
             }
         );
     }
 
     #[test]
     fn compare_npm_package_roots_detects_mismatch() {
-        let running = PathBuf::from("/old/lib/node_modules/@openai/codex");
+        let running = PathBuf::from("/old/lib/node_modules/@holyglory/codex");
         let npm_root = PathBuf::from("/new/lib/node_modules");
         assert_eq!(
             compare_npm_package_roots(&running, &npm_root),
             NpmRootCheck::Mismatch {
                 running_package_root: running,
-                npm_package_root: npm_root.join("@openai").join("codex"),
+                npm_package_root: npm_root.join("@holyglory").join("codex"),
+            }
+        );
+    }
+
+    #[test]
+    fn upstream_package_in_the_same_prefix_is_not_the_fork_update_target() {
+        let running = PathBuf::from("/prefix/lib/node_modules/@openai/codex");
+        let npm_root = PathBuf::from("/prefix/lib/node_modules");
+        assert_eq!(
+            compare_npm_package_roots(&running, &npm_root),
+            NpmRootCheck::Mismatch {
+                running_package_root: running,
+                npm_package_root: npm_root.join("@holyglory").join("codex"),
             }
         );
     }
