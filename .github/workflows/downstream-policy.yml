@@ -28,6 +28,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Verify blob-policy boundary cases
+        run: python3 -m unittest discover -s scripts -p 'test_check_blob_size.py'
       - name: Require every policy check
         env:
           NEEDS: ${{ toJSON(needs) }}
