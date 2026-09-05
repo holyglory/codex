@@ -402,6 +402,9 @@ fn canonicalize_snapshot_text(text: &str) -> String {
     if text.starts_with(PLUGINS_INSTRUCTIONS_OPEN_TAG) {
         return "<PLUGINS_INSTRUCTIONS>".to_string();
     }
+    if text.starts_with("<usage_stats_instructions>") {
+        return "<USAGE_STATS_INSTRUCTIONS>".to_string();
+    }
     if text.starts_with("# AGENTS.md instructions") {
         return "<AGENTS_MD>".to_string();
     }
@@ -450,6 +453,7 @@ fn is_capability_instruction_text(text: &str) -> bool {
     text.starts_with(APPS_INSTRUCTIONS_OPEN_TAG)
         || text.starts_with(SKILLS_INSTRUCTIONS_OPEN_TAG)
         || text.starts_with(PLUGINS_INSTRUCTIONS_OPEN_TAG)
+        || text.starts_with("<usage_stats_instructions>")
 }
 
 fn normalize_dynamic_snapshot_paths(text: &str) -> String {
@@ -573,6 +577,10 @@ mod tests {
                 {
                     "type": "input_text",
                     "text": "<plugins_instructions>\n## Plugins\nbody\n</plugins_instructions>"
+                },
+                {
+                    "type": "input_text",
+                    "text": "<usage_stats_instructions>\nbody\n</usage_stats_instructions>"
                 }
             ]
         })];
@@ -584,7 +592,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "00:message/developer[3]:\n    [01] <APPS_INSTRUCTIONS>\n    [02] <SKILLS_INSTRUCTIONS>\n    [03] <PLUGINS_INSTRUCTIONS>"
+            "00:message/developer[4]:\n    [01] <APPS_INSTRUCTIONS>\n    [02] <SKILLS_INSTRUCTIONS>\n    [03] <PLUGINS_INSTRUCTIONS>\n    [04] <USAGE_STATS_INSTRUCTIONS>"
         );
     }
 
@@ -596,7 +604,8 @@ mod tests {
             "content": [
                 { "type": "input_text", "text": "<permissions instructions>\n...</permissions instructions>" },
                 { "type": "input_text", "text": "<skills_instructions>\n## Skills\n...</skills_instructions>" },
-                { "type": "input_text", "text": "<plugins_instructions>\n## Plugins\n...</plugins_instructions>" }
+                { "type": "input_text", "text": "<plugins_instructions>\n## Plugins\n...</plugins_instructions>" },
+                { "type": "input_text", "text": "<usage_stats_instructions>\n...</usage_stats_instructions>" }
             ]
         })];
 
