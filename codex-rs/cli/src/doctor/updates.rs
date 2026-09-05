@@ -1,8 +1,8 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
 //! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version HTTP probes. It never executes package managers or
-//! other helpers selected by PATH; npm update targets are not verified.
+//! and bounded latest-version HTTP probes. npm-managed launches also verify that
+//! the global package root matches the package that launched the current process.
 
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -27,14 +27,15 @@ use super::DoctorIssue;
 use super::desktop::platform::InstalledApp;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
+use super::npm_global_root_check;
+use super::NpmRootCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::network;
 
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
-const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const VERSION_FILE_NAME: &str = "holyglory-version.json";
+const NPM_LATEST_RELEASE_URL: &str = "https://registry.npmjs.org/@holyglory%2fcodex/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -64,11 +65,45 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
     push_cached_version_details(&mut details, &version_file);
 
     let mut status = CheckStatus::Ok;
-    let summary = "update configuration is locally consistent".to_string();
+    let mut summary = "update configuration is locally consistent".to_string();
+    let mut remediation = None;
 
     if doctor_managed_by_npm(current_exe.as_deref()) {
-        details
-            .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
+        match npm_global_root_check() {
+            NpmRootCheck::Match { package_root } => {
+                details.push(format!("npm update target: {}", package_root.display()));
+            }
+            NpmRootCheck::Mismatch {
+                running_package_root,
+                npm_package_root,
+            } => {
+                status = CheckStatus::Fail;
+                summary = "update would target a different npm install".to_string();
+                details.push(format!(
+                    "running package root: {}",
+                    running_package_root.display()
+                ));
+                details.push(format!("npm package root: {}", npm_package_root.display()));
+                remediation = Some(format!(
+                    "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
+                    running_package_root.display(),
+                    npm_package_root.display()
+                ));
+            }
+            NpmRootCheck::MissingPackageRoot => {
+                status = status.max(CheckStatus::Warning);
+                summary = "npm update target could not be proven".to_string();
+                remediation = Some(
+                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
+                        .to_string(),
+                );
+            }
+            NpmRootCheck::NpmUnavailable(error) => {
+                status = status.max(CheckStatus::Warning);
+                summary = "npm update target could not be inspected".to_string();
+                details.push(format!("npm root -g failed: {error}"));
+            }
+        }
     }
     let client = RouteAwareClientPool::new_without_request_logging(
         config.http_client_factory(),
@@ -90,7 +125,11 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
         }
     }
 
-    DoctorCheck::new("updates.status", "updates", status, summary).details(details)
+    let mut check = DoctorCheck::new("updates.status", "updates", status, summary).details(details);
+    if let Some(remediation) = remediation {
+        check = check.remediation(remediation);
+    }
+    check
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -389,12 +428,11 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::Npm => "npm install -g @holyglory/codex@latest",
+        InstallMethod::Bun => "bun install -g @holyglory/codex@latest",
+        InstallMethod::VitePlus => "vp install -g @holyglory/codex@latest",
+        InstallMethod::Pnpm => "pnpm add -g @holyglory/codex@latest",
+        InstallMethod::Brew | InstallMethod::Standalone { .. } => "original fork delivery workflow",
         InstallMethod::Other => "manual or unknown",
     }
 }
@@ -404,40 +442,31 @@ async fn fetch_latest_version(
     context: &InstallContext,
 ) -> Result<String, String> {
     match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(client).await,
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::VitePlus
-        | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(client).await,
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::VitePlus | InstallMethod::Pnpm => {
+            fetch_latest_npm_release_version(client).await
+        }
+        InstallMethod::Brew | InstallMethod::Standalone { .. } | InstallMethod::Other => {
+            Err("no automatic fork updater for this installation".to_string())
+        }
     }
 }
 
-async fn fetch_latest_github_release_version(
+async fn fetch_latest_npm_release_version(
     client: &RouteAwareClientPool,
 ) -> Result<String, String> {
     #[derive(Deserialize)]
     struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(client, GITHUB_LATEST_RELEASE_URL).await?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-async fn fetch_homebrew_cask_version(client: &RouteAwareClientPool) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
         version: String,
     }
 
-    http_get_json::<HomebrewCaskInfo>(client, HOMEBREW_CASK_API_URL)
-        .await
-        .map(|info| info.version)
+    let info = http_get_json::<ReleaseInfo>(client, NPM_LATEST_RELEASE_URL).await?;
+    if !info.version.contains("-multi.") && !info.version.contains("+multi.") {
+        return Err("npm latest is not a fork root release".to_string());
+    }
+    if parse_version(&info.version).is_none() {
+        return Err("npm latest has an invalid version".to_string());
+    }
+    Ok(info.version)
 }
 
 async fn http_get_json<T>(client: &RouteAwareClientPool, url: &str) -> Result<T, String>
@@ -477,12 +506,23 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
+fn parse_version(value: &str) -> Option<(u64, u64, u64, u64)> {
+    let value = value.trim();
+    let (base, revision) = match value
+        .split_once("+multi.")
+        .or_else(|| value.split_once("-multi."))
+    {
+        Some((base, revision)) => (base, revision.parse::<u64>().ok()?),
+        None => (value, 0),
+    };
+    let mut parts = base.split('.');
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next()?.parse::<u64>().ok()?;
     let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch, revision))
 }
 
 #[derive(Deserialize)]
@@ -565,7 +605,6 @@ mod tests {
             }
         }
     }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_update_probe_uses_the_persisted_production_appcast_feed() {
@@ -682,6 +721,12 @@ mod tests {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
         assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
         assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
+        assert_eq!(is_newer("0.153.0-multi.2", "0.153.0+multi.1"), Some(true));
+        assert_eq!(is_newer("0.153.0-multi.1", "0.153.0+multi.1"), Some(false));
+        assert_eq!(
+            is_newer("0.153.0-multi.2-linux-x64", "0.153.0+multi.1"),
+            None
+        );
     }
 
     #[test]
@@ -691,14 +736,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "pnpm add -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
@@ -706,6 +751,32 @@ mod tests {
                 package_layout: None,
             }),
             "manual or unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_installer_diagnostics_do_not_probe_upstream() {
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
+
+        let context = InstallContext {
+            method: InstallMethod::Brew,
+            package_layout: None,
+        };
+        assert_eq!(
+            update_action_label(&context),
+            "original fork delivery workflow"
+        );
+        assert_eq!(
+            fetch_latest_version(
+                &RouteAwareClientPool::new_without_request_logging(
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                    ClientRouteClass::Other,
+                ),
+                &context,
+            )
+            .await,
+            Err("no automatic fork updater for this installation".to_string())
         );
     }
 }
