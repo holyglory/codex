@@ -284,6 +284,7 @@ async fn token_budget_guidance_precedes_standalone_context_window(
     assert!(request.has_content_kinds(&[
         "token_budget.context_window_guidance",
         "permissions.instructions",
+        "usage_stats.instructions",
     ]));
     assert!(request.has_content_kinds(&["token_budget.context_window"]));
     let developer_texts = request.message_input_texts("developer");
