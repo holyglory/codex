@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ SCRIPT = Path(__file__).with_name("archive-release-symbols-and-strip-binaries.sh
 BINARIES = ("codex", "codex-app-server", "codex-code-mode-host")
 
 
-class WindowsSymbolsTest(unittest.TestCase):
+class ReleaseSymbolsTest(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="codex symbols ")
         self.addCleanup(self.scratch.cleanup)
@@ -84,6 +85,28 @@ class WindowsSymbolsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Ambiguous PDBs", result.stderr)
         self.assertFalse((self.root / "archives/codex-symbols-test.tar.gz").exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "requires native ELF tools")
+    def test_linux_binaries_still_run_with_archived_debug_links(self):
+        source = self.root / "fixture.c"
+        source.write_text("int main(void) { return 0; }\n")
+        for binary in BINARIES:
+            subprocess.run(
+                ["cc", "-g", str(source), "-o", str(self.release / binary)], check=True
+            )
+        result = self.archive("x86_64-unknown-linux-gnu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        contents = self.contents()
+        self.assertEqual(set(contents), {binary + ".debug" for binary in BINARIES})
+        for binary in BINARIES:
+            self.assertTrue(contents[binary + ".debug"])
+            subprocess.run([str(self.release / binary)], check=True)
+            debug_link = subprocess.run(
+                ["readelf", "--string-dump=.gnu_debuglink", str(self.release / binary)],
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn((binary + ".debug").encode(), debug_link.stdout)
 
     @unittest.skipUnless(os.name == "nt", "requires a native MSVC Rust toolchain")
     def test_archives_real_cargo_release_pdbs_without_renaming(self):
