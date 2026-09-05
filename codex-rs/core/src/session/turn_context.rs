@@ -1224,7 +1224,7 @@ impl Session {
     }
 }
 
-pub(super) fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
+pub(crate) fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
     let provider = &config.model_provider;
     let is_auth_header = |name: &str| {
         matches!(
