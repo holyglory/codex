@@ -1242,32 +1242,37 @@ fn web_search_history_cell_snapshot() {
 
 #[test]
 fn npm_update_available_history_cell_snapshot() {
+    // Normalize the input before layout: build versions can change the border width.
     let cell = UpdateAvailableHistoryCell::new(
+        "0.153.0+multi.1",
         "0.153.0-multi.2".to_string(),
         Some(UpdateAction::NpmGlobalLatest),
     );
-    let rendered =
-        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);
 }
 
 #[test]
 fn manual_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("0.153.0-multi.2".to_string(), /*update_action*/ None);
-    let rendered =
-        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
+    let cell = UpdateAvailableHistoryCell::new(
+        "0.153.0+multi.1",
+        "0.153.0-multi.2".to_string(),
+        /*update_action*/ None,
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);
 }
 
 #[test]
 fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered =
-        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
+    let cell = UpdateAvailableHistoryCell::new(
+        "0.153.0+multi.1",
+        "9.9.9".to_string(),
+        Some(UpdateAction::PnpmGlobalLatest),
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);
 }
@@ -1275,11 +1280,11 @@ fn pnpm_update_available_history_cell_snapshot() {
 #[test]
 fn vite_plus_update_available_history_cell_snapshot() {
     let cell = UpdateAvailableHistoryCell::new(
+        "0.153.0+multi.1",
         "9.9.9".to_string(),
         Some(UpdateAction::VitePlusGlobalLatest),
     );
-    let rendered =
-        normalize_cli_version(render_lines(&cell.display_lines(/*width*/ 110)).join("\n"));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);
 }
