@@ -51,6 +51,13 @@ implements it.
 
 ## Required compatibility contracts
 
+- Voice startup resolves the same managed-profile selection before any media
+  request, including remote clients with no prior text turn. Call creation and
+  control connections use the same selected credentials; the call retains its
+  profile lease until stopped, including control reconnections. Later default
+  changes apply to later calls. Selection failure must not fall back to an empty
+  legacy login or demand a separate API key for a managed ChatGPT profile
+  (UIL-BUSINESS-LOGIC-ACCOUNT-SELECTION-005).
 - With no configured profiles, stock upstream authentication and behavior are
   unchanged.
 - Downstream app-server methods remain additive, experimental, and capability

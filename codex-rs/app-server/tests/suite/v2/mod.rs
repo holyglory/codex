@@ -81,6 +81,7 @@ mod projects;
 mod rate_limit_reset_credits;
 mod rate_limits;
 mod realtime_conversation;
+mod realtime_profile_auth;
 mod recommended_plugins;
 mod remote_control;
 #[cfg(debug_assertions)]
