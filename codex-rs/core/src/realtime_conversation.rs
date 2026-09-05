@@ -1,10 +1,10 @@
-use crate::client::ModelClient;
 use crate::client::X_CODEX_TURN_METADATA_HEADER;
 use crate::context::ContextualUserFragment;
 use crate::context::RealtimeDelegation;
 use crate::context::RealtimeDelegationSource;
 use crate::realtime_context::build_realtime_startup_context;
 use crate::realtime_context::truncate_realtime_text_to_token_budget;
+use crate::realtime_conversation::auth::RealtimeAuth;
 use crate::realtime_prompt::prepare_realtime_backend_prompt;
 use crate::responses_metadata::THREAD_SOURCE_KEY;
 use crate::session::session::Session;
@@ -31,6 +31,7 @@ use codex_api::build_session_headers;
 use codex_api::map_api_error;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_login::AccountLease;
 use codex_login::CodexAuth;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
@@ -84,6 +85,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+mod auth;
 mod bem;
 mod existing_call;
 mod sideband;
@@ -493,6 +495,7 @@ impl RealtimeHandoffState {
 
 #[allow(dead_code)]
 struct ConversationState {
+    _account_lease: Option<AccountLease>,
     audio_tx: Sender<RealtimeAudioFrame>,
     text_tx: Sender<ConversationTextParams>,
     session_kind: RealtimeSessionKind,
@@ -517,7 +520,7 @@ struct RealtimeStart {
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
-    model_client: ModelClient,
+    auth: RealtimeAuth,
     sdp: Option<String>,
     existing_call_id: Option<String>,
 }
@@ -610,10 +613,14 @@ impl RealtimeConversationManager {
             codex_response_handoff_channel_prefixes,
             realtime_call_api_provider,
             session_config,
-            model_client,
+            auth,
             sdp,
             existing_call_id,
         } = start;
+        let RealtimeAuth {
+            model_client,
+            account_lease,
+        } = auth;
         let event_parser = session_config.event_parser;
         let session_kind = match event_parser {
             RealtimeEventParser::V1 | RealtimeEventParser::FramelessBidi => RealtimeSessionKind::V1,
@@ -734,6 +741,7 @@ impl RealtimeConversationManager {
 
         let mut guard = self.state.lock().await;
         *guard = Some(ConversationState {
+            _account_lease: account_lease,
             audio_tx,
             text_tx,
             session_kind,
@@ -1203,6 +1211,7 @@ pub(crate) async fn handle_start(
 }
 
 struct PreparedRealtimeConversationStart {
+    auth: RealtimeAuth,
     api_provider: ApiProvider,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
@@ -1232,13 +1241,13 @@ async fn prepare_realtime_start(
     params: ConversationStartParams,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let provider = sess.provider().await;
-    let auth_manager = sess
-        .services
+    let config = sess.get_config().await;
+    let realtime_auth = RealtimeAuth::resolve(sess, &config).await?;
+    let auth_manager = realtime_auth
         .model_client
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
     let auth = auth_manager.auth().await;
-    let config = sess.get_config().await;
     let transport = params
         .transport
         .clone()
@@ -1344,6 +1353,7 @@ async fn prepare_realtime_start(
         extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, metadata);
     }
     Ok(PreparedRealtimeConversationStart {
+        auth: realtime_auth,
         api_provider,
         realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
@@ -1566,6 +1576,7 @@ async fn handle_start_inner(
     prepared_start: PreparedRealtimeConversationStart,
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
+        auth,
         api_provider,
         realtime_sideband_base_url,
         extra_headers,
@@ -1605,7 +1616,7 @@ async fn handle_start_inner(
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
-        model_client: sess.services.model_client.clone(),
+        auth,
         sdp,
         existing_call_id,
     };
