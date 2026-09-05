@@ -21,12 +21,13 @@ class ChangedBlob:
     is_binary: bool
 
 
-def run_git(*args: str) -> str:
+def run_git(*args: str, input_text: str | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         check=True,
         capture_output=True,
         text=True,
+        input=input_text,
     )
     return result.stdout
 
@@ -78,6 +79,10 @@ def blob_size(commit: str, path: str) -> int:
 def collect_changed_blobs(
     base: str, head: str, allowlist: set[str]
 ) -> list[ChangedBlob]:
+    if base in ("0" * 40, "0" * 64):
+        # A new branch has no prior tree. Check every file, not only HEAD's commit.
+        # Let Git calculate the empty-tree ID for the repository's object format.
+        base = run_git("hash-object", "-t", "tree", "--stdin", input_text="").strip()
     blobs: list[ChangedBlob] = []
     for path in get_changed_paths(base, head):
         blobs.append(
