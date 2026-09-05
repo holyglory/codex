@@ -1,0 +1,38 @@
+name: downstream-policy
+
+# Keep standard-runner policy checks without starting upstream private-runner
+# suites. Full Rust/Bazel and native release proof remain in downstream-candidate.
+on:
+  workflow_call:
+  push:
+    branches: ["codex/**"]
+    paths:
+      - ".github/workflows/blocking-ci.yml"
+      - ".github/workflows/postmerge-ci.yml"
+      - ".github/workflows/downstream-*.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  blob-size-policy:
+    uses: ./.github/workflows/blob-size-policy.yml
+  cargo-deny:
+    uses: ./.github/workflows/cargo-deny.yml
+  codespell:
+    uses: ./.github/workflows/codespell.yml
+  repo-checks:
+    uses: ./.github/workflows/repo-checks.yml
+  required:
+    name: Downstream policy checks passed
+    if: ${{ always() }}
+    needs: [blob-size-policy, cargo-deny, codespell, repo-checks]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require every policy check
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/check_ci_results.py
