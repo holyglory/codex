@@ -34,4 +34,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - name: Check synthetic edge cases and actual native Cargo release symbols
         shell: bash
-        run: python .github/scripts/test_archive_release_symbols.py -v
+        # Python's Windows executable search otherwise finds the WSL bash shim.
+        run: CODEX_SYMBOLS_BASH="$(cygpath -w "$BASH")" python .github/scripts/test_archive_release_symbols.py -v
