@@ -2652,14 +2652,35 @@ async fn plugin_list_honors_global_remote_catalog_cache_ttl() -> Result<()> {
         .iter()
         .find(|marketplace| marketplace.name == "openai-curated-remote")
         .expect("expected stale cached remote marketplace");
-    assert_eq!(
-        remote_marketplace.plugins[0].id,
-        "linear@openai-curated-remote"
-    );
+    // Refresh may finish between requests on a busy host. Both cache states are
+    // valid here; the first stale response and the eventual fresh response are
+    // asserted separately, along with the single refresh request.
+    assert!(matches!(
+        remote_marketplace.plugins[0].id.as_str(),
+        "linear@openai-curated-remote" | "notion@openai-curated-remote"
+    ));
 
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 1).await?;
     wait_for_cached_remote_catalog_plugin_ids(codex_home.path(), &[refreshed_remote_plugin_id])
         .await?;
+    let request_id = mcp
+        .send_plugin_list_request(PluginListParams {
+            cwds: None,
+            marketplace_kinds: None,
+            force_refetch: false,
+        })
+        .await?;
+    let response: PluginListResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
+    let remote_marketplace = response
+        .marketplaces
+        .iter()
+        .find(|marketplace| marketplace.name == "openai-curated-remote")
+        .expect("expected refreshed remote marketplace");
+    assert_eq!(
+        remote_marketplace.plugins[0].id,
+        "notion@openai-curated-remote"
+    );
     sleep(Duration::from_millis(100)).await;
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 1).await?;
 
