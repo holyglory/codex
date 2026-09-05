@@ -22,7 +22,7 @@ class WindowsSymbolsTest(unittest.TestCase):
     def archive(self, target="x86_64-pc-windows-msvc"):
         return subprocess.run(
             [
-                "bash",
+                os.environ.get("CODEX_SYMBOLS_BASH", "bash"),
                 SCRIPT.as_posix(),
                 "--target",
                 target,
