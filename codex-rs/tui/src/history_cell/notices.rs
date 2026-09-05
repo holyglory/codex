@@ -31,7 +31,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                "https://github.com/holyglory/codex".cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -45,10 +45,8 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             ],
             update_instruction,
             "",
-            "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            "Fork source and history:",
+            "https://github.com/holyglory/codex".cyan().underlined(),
         ];
 
         let inner_width = content
@@ -63,15 +61,15 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let update_instruction = if let Some(update_action) = self.update_action {
             format!("Run {} to update.", update_action.command_str())
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            "See https://github.com/holyglory/codex for installation options.".to_string()
         };
         vec![
             Line::from("Update available!"),
             Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
             Line::from(update_instruction),
             Line::from(""),
-            Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from("Fork source and history:"),
+            Line::from("https://github.com/holyglory/codex"),
         ]
     }
 

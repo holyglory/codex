@@ -839,13 +839,6 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
         #[cfg(windows)]
         {
             let (cmd, args) = action.command_args();
-            let cmd = if action == UpdateAction::StandaloneWindows {
-                // These args contain PowerShell metacharacters, so do not let
-                // PATHEXT select a batch shim for this action.
-                "powershell.exe"
-            } else {
-                cmd
-            };
             let path_env =
                 std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is not set"))?;
             let command_path = resolve_windows_update_command_from_path(cmd, &path_env)?;
@@ -909,7 +902,7 @@ fn run_update_command() -> anyhow::Result<()> {
     {
         let Some(action) = codex_tui::get_update_action() else {
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "No automatic fork updater is available for this installation. Use the original delivery workflow: https://github.com/holyglory/codex"
             );
         };
         run_update_action(action)
