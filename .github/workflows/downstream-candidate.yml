@@ -49,6 +49,7 @@ jobs:
             "$source_version" "$npm_version" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
       - name: Verify downstream packaging and publication helpers
         run: |
+          python3 .github/scripts/test_archive_release_symbols.py -v
           python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
           python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
 
