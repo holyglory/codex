@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::Barrier;
 
@@ -26,6 +27,20 @@ fn private_directory_and_file_permissions_are_verified() {
             0o600
         );
     }
+}
+
+#[test]
+fn reopening_private_file_preserves_existing_bytes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("private").join("data");
+    write_file_atomically(&path, b"existing contents", AtomicWriteMode::NoClobber)
+        .expect("initial install");
+
+    let mut file = open_private_read_write(&path).expect("reopen private file");
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .expect("read existing contents");
+    assert_eq!(contents, b"existing contents");
 }
 
 #[test]
