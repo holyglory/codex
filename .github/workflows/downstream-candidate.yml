@@ -280,6 +280,15 @@ jobs:
             args+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
           fi
           "${args[@]}"
+      - name: Verify the native fork updater without changing any installation
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          suffix=""
+          [[ "$RUNNER_OS" == "Windows" ]] && suffix=".exe"
+          python3 "${GITHUB_WORKSPACE}/scripts/check_fork_update.py" \
+            --codex-binary "${CARGO_TARGET_DIR}/${TARGET}/release/codex${suffix}"
       - name: Archive symbols and strip product binaries
         shell: bash
         env:

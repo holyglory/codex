@@ -28,9 +28,9 @@ env:
 
 jobs:
   private-storage:
-    name: Private storage on ${{ matrix.target }}
+    name: Windows storage and product checks on ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -63,10 +63,23 @@ jobs:
           just test --locked -p codex-private-storage --target "${{ matrix.target }}" 2>&1 |
             Tee-Object -FilePath "${{ runner.temp }}/private-storage-tests.log"
           exit $LASTEXITCODE
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Check release-mode product integration before optimized builds
+        env:
+          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+        run: |
+          cargo check --locked --release --bins --target "${{ matrix.target }}" `
+            -p codex-cli -p codex-app-server -p codex-code-mode-host 2>&1 |
+            Tee-Object -FilePath "${{ runner.temp }}/windows-product-check.log"
+          exit $LASTEXITCODE
       - name: Preserve focused test evidence
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: private-storage-${{ matrix.target }}
-          path: ${{ runner.temp }}/private-storage-tests.log
+          path: |
+            ${{ runner.temp }}/private-storage-tests.log
+            ${{ runner.temp }}/windows-product-check.log
           retention-days: 14
