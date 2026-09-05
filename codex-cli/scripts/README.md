@@ -37,6 +37,17 @@ trust relationship to allow `stage publish` without allowing unattended direct
 publication. Bootstrap and trust configuration are separate release operations;
 the candidate workflow never performs them.
 
+For the first release, bootstrap the package name with the verified Linux x64
+platform tarball under the `linux-x64` tag, using the operator's interactive
+2FA-protected npm session. Do not publish a placeholder or the root `latest`
+launcher before its platform dependencies are available. Then configure the
+approved stage-only trust relationship and run the protected workflow. It
+checks every tarball before staging, skips the bootstrap only when its public
+SHA-512 integrity and dist-tag exactly match, and refuses conflicting versions
+or registry errors. Remaining platforms are staged first and the root last;
+approve platform stages before approving the root stage. An already-staged but
+unapproved version is not silently replaced by this helper.
+
 Rust release versions retain truthful build metadata such as
 `0.153.0+multi.1`. npm strips SemVer build metadata, so the workflow uses the
 collision-safe equivalent `0.153.0-multi.1` and requires the annotated tag
