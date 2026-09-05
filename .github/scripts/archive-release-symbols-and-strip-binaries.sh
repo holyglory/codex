@@ -126,4 +126,5 @@ case "$target" in
 esac
 
 rm -f "$archive_path"
-tar -C "$symbols_root" -czf "$archive_path" "codex-symbols-${artifact_name}"
+# Shell redirection keeps Windows drive letters from becoming GNU tar hosts.
+tar -C "$symbols_root" -czf - "codex-symbols-${artifact_name}" > "$archive_path"
