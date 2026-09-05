@@ -101,12 +101,22 @@ case "$target" in
   *windows*)
     for binary in "${binary_names[@]}"; do
       pdb_path="${release_dir%/}/${binary}.pdb"
+      # Rust normalizes hyphens in crate names, including their MSVC PDBs.
+      normalized_pdb_path="${release_dir%/}/${binary//-/_}.pdb"
+      if [[ "$pdb_path" != "$normalized_pdb_path" && -f "$normalized_pdb_path" ]]; then
+        if [[ -f "$pdb_path" ]]; then
+          echo "Ambiguous PDBs: $pdb_path and $normalized_pdb_path" >&2
+          exit 1
+        fi
+        pdb_path="$normalized_pdb_path"
+      fi
       if [[ ! -f "$pdb_path" ]]; then
         echo "PDB $pdb_path not found" >&2
         exit 1
       fi
 
-      cp "$pdb_path" "${symbols_dir}/${binary}.pdb"
+      # Preserve the filename referenced by the executable's debug directory.
+      cp "$pdb_path" "${symbols_dir}/${pdb_path##*/}"
     done
     ;;
   *)
