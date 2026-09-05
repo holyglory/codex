@@ -9,8 +9,8 @@ use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::ACCESS_ALLOWED_ACE;
-use windows_sys::Win32::Security::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::Security::ACL;
 use windows_sys::Win32::Security::ACL_SIZE_INFORMATION;
 use windows_sys::Win32::Security::AclSizeInformation;
@@ -30,7 +30,6 @@ use windows_sys::Win32::Security::GetAce;
 use windows_sys::Win32::Security::GetAclInformation;
 use windows_sys::Win32::Security::GetSecurityDescriptorControl;
 use windows_sys::Win32::Security::GetTokenInformation;
-use windows_sys::Win32::Security::OpenProcessToken;
 use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SE_DACL_PROTECTED;
 use windows_sys::Win32::Security::SUB_CONTAINERS_AND_OBJECTS_INHERIT;
@@ -51,8 +50,9 @@ use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
 use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
 use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
-use windows_sys::Win32::System::Memory::LocalFree;
+use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
 
 pub(super) fn protect_directory(path: &Path) -> Result<(), PrivateStorageError> {
     apply_current_user_dacl(path, true)
@@ -75,6 +75,7 @@ pub(super) fn open_private_read_write(path: &Path) -> Result<File, PrivateStorag
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PrivateStorageError::io("open private file", source))
 }
@@ -164,7 +165,7 @@ fn apply_current_user_dacl(path: &Path, directory: bool) -> Result<(), PrivateSt
             std::ptr::null_mut(),
         )
     };
-    unsafe { LocalFree(acl as isize) };
+    unsafe { LocalFree(acl.cast()) };
     if result != ERROR_SUCCESS {
         return Err(win32_error("apply private access list", result));
     }
@@ -192,14 +193,14 @@ fn verify_current_user_dacl(path: &Path) -> Result<(), PrivateStorageError> {
         return Err(win32_error("read private access list", result));
     }
     let verification = verify_descriptor(descriptor, dacl, sid.as_ptr().cast());
-    unsafe { LocalFree(descriptor as isize) };
+    unsafe { LocalFree(descriptor) };
     verification
 }
 
 fn verify_descriptor(
     descriptor: *mut c_void,
     dacl: *mut ACL,
-    expected_sid: *mut c_void,
+    expected_sid: *const c_void,
 ) -> Result<(), PrivateStorageError> {
     if descriptor.is_null() || dacl.is_null() {
         return Err(PrivateStorageError::ProtectionMismatch);
@@ -234,7 +235,8 @@ fn verify_descriptor(
     let sid = (&ace.SidStart as *const u32).cast_mut().cast();
     if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE as u8
         || ace.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS
-        || unsafe { EqualSid(sid, expected_sid) } == 0
+        // EqualSid reads both SIDs; PSID uses a mutable pointer in the Win32 ABI.
+        || unsafe { EqualSid(sid, expected_sid.cast_mut()) } == 0
     {
         return Err(PrivateStorageError::ProtectionMismatch);
     }
