@@ -17,6 +17,9 @@ env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
 
 jobs:
+  policy:
+    uses: ./.github/workflows/downstream-policy.yml
+
   quality:
     name: Format, lint, schemas, and locks
     runs-on: ubuntu-24.04
