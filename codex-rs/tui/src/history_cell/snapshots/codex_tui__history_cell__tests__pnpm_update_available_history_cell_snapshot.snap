@@ -3,7 +3,7 @@ source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 ╭────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.0.0 -> 9.9.9                │
+│ ✨ Update available! 0.153.0+multi.1 -> 9.9.9      │
 │ Run pnpm add -g @holyglory/codex@latest to update. │
 │                                                    │
 │ Fork source and history:                           │
