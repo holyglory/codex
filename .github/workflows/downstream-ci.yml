@@ -58,7 +58,9 @@ jobs:
           -- -D warnings
       - name: Check downstream npm packaging helpers
         working-directory: ${{ github.workspace }}
-        run: python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+        run: |
+          python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
       - name: Regenerate schemas
         run: |
           just write-config-schema

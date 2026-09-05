@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       npm_version: ${{ steps.identity.outputs.npm_version }}
+      source_commit: ${{ steps.identity.outputs.source_commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -64,6 +65,7 @@ jobs:
             python3 codex-cli/scripts/verify_candidate_run.py \
               --repository "$GITHUB_REPOSITORY" --commit "$tag_commit"
           echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$tag_commit" >> "$GITHUB_OUTPUT"
 
   stage-npm:
     name: Stage npm packages for manual approval
@@ -76,6 +78,10 @@ jobs:
       actions: read
       id-token: write
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.source_commit }}
+          persist-credentials: false
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
@@ -97,20 +103,5 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.npm_version }}
         run: |
-          set -euo pipefail
-          for platform in \
-            linux-x64 linux-arm64 \
-            darwin-x64 darwin-arm64 \
-            win32-x64 win32-arm64
-          do
-            npm stage publish \
-              "dist/npm/codex-npm-${platform}-${VERSION}.tgz" \
-              --access public \
-              --provenance \
-              --tag "$platform"
-          done
-          npm stage publish \
-            "dist/npm/codex-npm-${VERSION}.tgz" \
-            --access public \
-            --provenance \
-            --tag latest
+          python3 scripts/stage_verified_npm_release.py \
+            --dist-dir dist/npm --version "$VERSION"
