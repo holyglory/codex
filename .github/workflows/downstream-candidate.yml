@@ -410,6 +410,11 @@ jobs:
           python3 scripts/verify_npm_release.py --version "$VERSION" --dist-dir dist/npm
           cd dist/npm
           sha256sum *.tgz > SHA256SUMS
+      - name: Verify isolated npm replacement and fork update
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: python3 scripts/check_npm_install.py --version "$VERSION" --dist-dir dist/npm
       - name: Attest npm candidate tarballs
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
