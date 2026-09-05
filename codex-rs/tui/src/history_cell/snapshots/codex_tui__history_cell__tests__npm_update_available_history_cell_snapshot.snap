@@ -1,0 +1,11 @@
+---
+source: tui/src/history_cell/tests.rs
+expression: rendered
+---
+╭─────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.0.0 -> 0.153.0-multi.2           │
+│ Run npm install -g @holyglory/codex@latest to update.   │
+│                                                         │
+│ Fork source and history:                                │
+│ https://github.com/holyglory/codex                      │
+╰─────────────────────────────────────────────────────────╯

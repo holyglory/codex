@@ -17,7 +17,7 @@ After a downstream release has been explicitly published, install it on a
 supported platform:
 
 ```shell
-npm install -g @holyglory/codex
+npm install -g @holyglory/codex@latest
 ```
 
 Then run the compatible `codex` executable:
@@ -26,7 +26,34 @@ Then run the compatible `codex` executable:
 codex
 ```
 
-The package is maintained at [holyglory/codex](https://github.com/holyglory/codex). It preserves the upstream command name and interfaces but is not an OpenAI distribution. Candidate workflows upload private build artifacts only; they do not make a GitHub Release or publish to npm. OpenAI service authentication, subscription, workspace, usage, and rate-limit terms still apply.
+The package is maintained at [holyglory/codex](https://github.com/holyglory/codex). It preserves the upstream command name and interfaces but is not an OpenAI distribution. Candidate workflows upload build artifacts only; they do not make a GitHub Release or publish to npm. OpenAI service authentication, subscription, workspace, usage, and rate-limit terms still apply.
+
+### Switching an existing npm installation
+
+Once the fork is published, close running CLI sessions and replace the upstream
+npm installation with these two commands:
+
+```shell
+npm uninstall -g @openai/codex
+npm install -g @holyglory/codex@latest
+```
+
+Run `codex --version` to check the selected executable. Release
+`0.153.0-multi.1` reports `codex-cli 0.153.0+multi.1`; the different suffix
+spelling is intentional. Precompiled packages support Linux, macOS, and Windows
+on x64 and ARM64, without a local Rust build.
+
+The fork reuses the default user state directory (`~/.codex`) or an explicitly
+configured `CODEX_HOME`. Back it up before the first switch: reusing that location
+does not guarantee downgrade compatibility with state from every newer upstream
+version. Update-check metadata is kept separately from upstream's cache.
+
+Future npm updates use `npm install -g @holyglory/codex@latest`. The built-in
+update prompt also stays on the fork's npm `latest` channel. Homebrew and
+standalone installations must use their original delivery workflow; the fork
+does not offer the official upstream installers as updates. These commands
+replace the npm CLI, not the desktop application or another installation already
+earlier on `PATH`.
 
 ### Installing official OpenAI Codex
 
