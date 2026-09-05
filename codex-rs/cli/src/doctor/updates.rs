@@ -39,9 +39,8 @@ use super::network;
 use super::npm_global_root_check;
 use super::run_command;
 
-const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const VERSION_FILE_NAME: &str = "holyglory-version.json";
+const NPM_LATEST_RELEASE_URL: &str = "https://registry.npmjs.org/@holyglory%2fcodex/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -430,48 +429,37 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::Npm => "npm install -g @holyglory/codex@latest",
+        InstallMethod::Bun => "bun install -g @holyglory/codex@latest",
+        InstallMethod::VitePlus => "vp install -g @holyglory/codex@latest",
+        InstallMethod::Pnpm => "pnpm add -g @holyglory/codex@latest",
+        InstallMethod::Brew | InstallMethod::Standalone { .. } => "original fork delivery workflow",
         InstallMethod::Other => "manual or unknown",
     }
 }
 
 fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
     match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::VitePlus
-        | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::VitePlus | InstallMethod::Pnpm => {
+            fetch_latest_npm_release_version()
+        }
+        InstallMethod::Brew | InstallMethod::Standalone { .. } | InstallMethod::Other => {
+            Err("no automatic fork updater for this installation".to_string())
+        }
     }
 }
 
-fn fetch_latest_github_release_version() -> Result<String, String> {
+fn fetch_latest_npm_release_version() -> Result<String, String> {
     #[derive(Deserialize)]
     struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
         version: String,
     }
 
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
+    let info = http_get_json::<ReleaseInfo>(NPM_LATEST_RELEASE_URL)?;
+    if !info.version.contains("-multi.") || parse_version(&info.version).is_none() {
+        return Err("npm latest is not a fork root release".to_string());
+    }
+    Ok(info.version)
 }
 
 fn http_get_json<T>(url: &str) -> Result<T, String>
@@ -489,12 +477,23 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
+fn parse_version(value: &str) -> Option<(u64, u64, u64, u64)> {
+    let value = value.trim();
+    let (base, revision) = match value
+        .split_once("+multi.")
+        .or_else(|| value.split_once("-multi."))
+    {
+        Some((base, revision)) => (base, revision.parse::<u64>().ok()?),
+        None => (value, 0),
+    };
+    let mut parts = base.split('.');
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next()?.parse::<u64>().ok()?;
     let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch, revision))
 }
 
 #[derive(Deserialize)]
@@ -509,6 +508,7 @@ struct VersionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -626,6 +626,12 @@ mod tests {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
         assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
         assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
+        assert_eq!(is_newer("0.153.0-multi.2", "0.153.0+multi.1"), Some(true));
+        assert_eq!(is_newer("0.153.0-multi.1", "0.153.0+multi.1"), Some(false));
+        assert_eq!(
+            is_newer("0.153.0-multi.2-linux-x64", "0.153.0+multi.1"),
+            None
+        );
     }
 
     #[test]
@@ -635,14 +641,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "pnpm add -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
@@ -650,6 +656,22 @@ mod tests {
                 package_layout: None,
             }),
             "manual or unknown"
+        );
+    }
+
+    #[test]
+    fn unsupported_installer_diagnostics_do_not_probe_upstream() {
+        let context = InstallContext {
+            method: InstallMethod::Brew,
+            package_layout: None,
+        };
+        assert_eq!(
+            update_action_label(&context),
+            "original fork delivery workflow"
+        );
+        assert_eq!(
+            fetch_latest_version(&context),
+            Err("no automatic fork updater for this installation".to_string())
         );
     }
 }
