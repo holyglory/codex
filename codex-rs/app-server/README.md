@@ -443,6 +443,13 @@ Paginated threads keep the same resume contract as legacy threads. A default res
 
 Only one app-server process can hold a paginated thread open for writing at a time. If another process already owns the thread, `thread/resume`, `thread/archive`, and `thread/delete` fail with JSON-RPC error `-32600`. Archive and deletion also fail if another process owns any spawned descendant. Read-only requests remain available without resuming the thread.
 
+This fork also restores a saved, unloaded thread before `turn/start` or `turn/steer`
+and attaches the requesting connection to its live notifications. This covers clients
+reconnecting after an app-server restart without changing the explicit resume API.
+Recovery preserves saved settings, archive restrictions, parent-owned child rules,
+and the single-writer lease. A stale `turn/steer` still returns `no active turn to steer`
+when its old turn has ended; it never silently starts a new turn or consumes that input.
+
 Experimental clients that want the live resume subscription plus a turns page in one round trip can pass `initialTurnsPage`. It accepts the same `limit`, `sortDirection`, and `itemsView` controls as `thread/turns/list`; omitted controls use its defaults. The response includes `initialTurnsPage` with `nextCursor` and `backwardsCursor` for follow-up pagination.
 
 By default, resume uses the latest persisted `model` and `reasoningEffort` values associated with the thread. Supplying any of `model`, `modelProvider`, `config.model`, or `config.model_reasoning_effort` disables that persisted fallback and uses the explicit overrides plus normal config resolution instead.
