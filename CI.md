@@ -40,7 +40,8 @@ automatically retrying deterministic test defects.
   dedicated disposable-runner cache retains about 4 GiB of completed `ac`/`cas`
   entries, evicting oldest entries every ten seconds and at command boundaries.
   In-flight writes are untouched, so peak usage can temporarily exceed that
-  retained-data target. Missing/evicted entries are rebuilt normally.
+  retained-data target. The cache shrinks further when necessary to reserve
+  4 GiB of free build storage. Missing/evicted entries are rebuilt normally.
 - Cache saves are best effort, including after failed tests, and do not replace
   test evidence. Only the dedicated cache is uploaded; never cache `CODEX_HOME`,
   npm credentials, installed releases or user databases. Existing GitHub cache
