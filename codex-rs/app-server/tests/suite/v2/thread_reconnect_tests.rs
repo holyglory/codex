@@ -231,6 +231,30 @@ async fn input_recovery_does_not_create_missing_tasks() -> Result<()> {
         )
         .await??;
         assert_eq!(error.error.code, -32600);
+        if thread_id != "invalid-task-id" {
+            let expected = JSONRPCErrorError {
+                code: -32600,
+                message: format!("thread not found: {thread_id}"),
+                data: None,
+            };
+            assert_eq!(error.error, expected);
+            let request = app
+                .send_turn_steer_request(TurnSteerParams {
+                    thread_id: thread_id.to_string(),
+                    input: input("must not run"),
+                    client_user_message_id: None,
+                    responsesapi_client_metadata: None,
+                    additional_context: None,
+                    expected_turn_id: "missing-turn".to_string(),
+                })
+                .await?;
+            let error = timeout(
+                READ_TIMEOUT,
+                app.read_stream_until_error_message(RequestId::Integer(request)),
+            )
+            .await??;
+            assert_eq!(error.error, expected);
+        }
         assert_eq!(loaded_threads(&mut app).await?, Vec::<String>::new());
     }
     assert_eq!(model_requests(&server).await?, Vec::<Value>::new());

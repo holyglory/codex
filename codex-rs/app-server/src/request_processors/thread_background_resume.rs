@@ -41,7 +41,15 @@ impl ThreadRequestProcessor {
                 let thread = self
                     .ensure_stored_thread_loaded(thread_id, client_mcp_extensions)
                     .await
-                    .map_err(invalid_request)?;
+                    .map_err(|message| {
+                        // Loading saved tasks must not change the existing input error
+                        // contract when the requested task genuinely does not exist.
+                        if message == format!("no rollout found for thread id {thread_id}") {
+                            invalid_request(format!("thread not found: {thread_id}"))
+                        } else {
+                            invalid_request(message)
+                        }
+                    })?;
                 self.thread_watch_manager.upsert_thread(raw_thread_id).await;
                 tracing::info!(%thread_id, "recovered unloaded thread for client input");
                 thread
