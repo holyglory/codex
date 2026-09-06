@@ -1615,6 +1615,13 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::TurnStart { params, .. } => {
+                self.thread_processor
+                    .ensure_thread_loaded_for_input(
+                        &request_id,
+                        &params.thread_id,
+                        client_mcp_extensions.clone(),
+                    )
+                    .await?;
                 self.turn_processor
                     .turn_start(
                         request_id.clone(),
@@ -1630,6 +1637,13 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::TurnSteer { params, .. } => {
+                self.thread_processor
+                    .ensure_thread_loaded_for_input(
+                        &request_id,
+                        &params.thread_id,
+                        client_mcp_extensions.clone(),
+                    )
+                    .await?;
                 self.turn_processor.turn_steer(&request_id, params).await
             }
             ClientRequest::TurnSettingsUpdate { params, .. } => {
