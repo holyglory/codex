@@ -52,10 +52,48 @@ jobs:
           python3 .github/scripts/test_archive_release_symbols.py -v
           python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
           python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
+          python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
+
+  preflight:
+    name: Critical producer and consumer regressions
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install and verify Linux test prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+      - name: Check formatting before compilation
+        working-directory: codex-rs
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Require both focused test families
+        run: python3 scripts/run_candidate_preflight.py
 
   rust-validation:
     name: Complete Rust validation
-    needs: identity
+    needs: [identity, preflight]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     defaults:
@@ -90,6 +128,7 @@ jobs:
           target: x86_64-unknown-linux-gnu
       - name: Check formatting
         run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: ./.github/actions/downstream-compiler-cache
       - name: Run complete Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Reclaim Clippy build output
@@ -108,7 +147,7 @@ jobs:
           git diff --exit-code
   bazel-validation:
     name: Complete Bazel validation
-    needs: identity
+    needs: [identity, preflight]
     runs-on: ubuntu-24.04
     # The measured full graph takes about 4h15m on this standard runner;
     # reserve time for the required release-only build that follows it.
@@ -122,10 +161,22 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_prepare_downstream_bazel.py'
           python3 .github/scripts/prepare_downstream_bazel.py
       - name: Prepare Bazel CI
+        id: bazel-setup
         uses: ./.github/actions/prepare-bazel-ci
         with:
           target: x86_64-unknown-linux-gnu
           cache-scope: downstream-candidate-bazel
+      - name: Restore bounded Bazel build results
+        id: bazel-cache
+        continue-on-error: true
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ${{ runner.temp }}/bazel-action-cache/ac
+            ${{ runner.temp }}/bazel-action-cache/cas
+          key: downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-
       - name: Check Bazel lock and V8 checksums
         shell: bash
         run: |
@@ -136,12 +187,13 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
-          ./.github/scripts/run-bazel-ci.sh \
+          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
+            ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --print-failed-test-logs \
             -- \
             test \
-            --disk_cache= \
+            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
             --test_tmpdir="$CODEX_BAZEL_TEST_TMPDIR" \
             --keep_going \
             --local_test_jobs=2 \
@@ -162,16 +214,33 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           mapfile -t bazel_targets < <(bash ./scripts/list-bazel-release-targets.sh)
-          ./.github/scripts/run-bazel-ci.sh \
+          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
+            ./.github/scripts/run-bazel-ci.sh \
             -- \
             build \
-            --disk_cache= \
+            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
             --compilation_mode=fastbuild \
             --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no \
             --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no \
             --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
             -- \
             "${bazel_targets[@]}"
+      - name: Save reusable Bazel build results even after test failures
+        if: ${{ !cancelled() && steps.bazel-cache.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ${{ runner.temp }}/bazel-action-cache/ac
+            ${{ runner.temp }}/bazel-action-cache/cas
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
+      - name: Save reusable Bazel dependency downloads
+        if: ${{ !cancelled() && steps.bazel-setup.outputs.repository-cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.bazel-setup.outputs.repository-cache-path }}
+          key: ${{ steps.bazel-setup.outputs.repository-cache-key }}
       - name: Preserve Bazel execution and per-test evidence
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -186,9 +255,9 @@ jobs:
 
   native:
     name: Build ${{ matrix.target }}
-    # Compile the frozen source alongside validation. candidate-result still
-    # gates publication on every validation and packaging job succeeding.
-    needs: identity
+    # After focused regressions pass, compile alongside complete validation.
+    # Publication still requires every validation and packaging job to succeed.
+    needs: [identity, preflight]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     permissions:
@@ -251,6 +320,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo check --locked --tests -p codex-private-storage --target "$TARGET"
+      - uses: ./.github/actions/downstream-compiler-cache
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
@@ -433,7 +503,7 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: always()
-    needs: [identity, rust-validation, bazel-validation, native, npm]
+    needs: [identity, preflight, rust-validation, bazel-validation, native, npm]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate job
