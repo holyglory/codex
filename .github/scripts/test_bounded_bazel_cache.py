@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +48,22 @@ class BoundedBazelCacheTests(unittest.TestCase):
         self.assertEqual(
             (temporary.read_bytes(), unknown.read_bytes()), (b"in progress", b"unknown")
         )
+
+    def test_cache_shrinks_below_its_cap_when_build_storage_is_low(self):
+        old = self.entry("a", 4, 1)
+        recent = self.entry("b", 5, 3)
+        metadata = self.entry("c", 2, 2, "ac")
+        with patch(
+            "run_with_bounded_bazel_cache.shutil.disk_usage",
+            return_value=SimpleNamespace(free=2),
+        ):
+            self.assertEqual(
+                trim_cache(self.root, 100, reserve_bytes=8),
+                {"retained_bytes": 5, "removed_entries": 2},
+            )
+        self.assertFalse(old.exists())
+        self.assertFalse(metadata.exists())
+        self.assertEqual(recent.read_bytes(), b"xxxxx")
 
     def test_rejects_persistent_hosts_and_symlink_roots(self):
         environment = {
