@@ -44,6 +44,7 @@ jobs:
           target: x86_64-unknown-linux-gnu
       - name: Check formatting
         run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: ./.github/actions/downstream-compiler-cache
       - name: Run focused Clippy
         run: >-
           cargo clippy --locked --tests
@@ -99,6 +100,7 @@ jobs:
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
       - name: Build the code-mode test companion
         run: cargo build --locked --bin codex-code-mode-host
       - name: Run downstream suites
@@ -138,6 +140,7 @@ jobs:
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
       - name: Compile product entrypoints
         run: >-
           cargo build --locked
