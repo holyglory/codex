@@ -153,6 +153,12 @@ impl TracingHarness {
             )
             .await;
         assert!(harness.session.initialized());
+        // This harness calls MessageProcessor directly; lib.rs normally registers the
+        // initialized connection before dispatching thread input and subscriptions.
+        harness
+            .processor
+            .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
+            .await;
 
         Ok(harness)
     }
