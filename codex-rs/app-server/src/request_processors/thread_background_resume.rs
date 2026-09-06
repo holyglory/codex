@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_core::CodexThread;
 use codex_core::NewThread;
 use codex_core::config::ConfigOverrides;
@@ -7,12 +8,75 @@ use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
 
 use super::ThreadRequestProcessor;
+use super::invalid_request;
 use super::thread_input::can_accept_direct_input;
+use super::thread_input::ensure_direct_input_allowed;
+use super::thread_lifecycle::EnsureConversationListenerResult;
+use crate::outgoing_message::ConnectionRequestId;
 
 impl ThreadRequestProcessor {
     pub(crate) async fn ensure_background_thread_loaded(
         &self,
         thread_id: ThreadId,
+    ) -> Result<Arc<CodexThread>, String> {
+        self.ensure_stored_thread_loaded(thread_id, ClientMcpExtensions::default())
+            .await
+    }
+
+    /// Reattach desktop input after a restart without replaying or implicitly starting a turn.
+    pub(crate) async fn ensure_thread_loaded_for_input(
+        &self,
+        request_id: &ConnectionRequestId,
+        raw_thread_id: &str,
+        client_mcp_extensions: ClientMcpExtensions,
+    ) -> Result<(), JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(raw_thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
+        let thread = match self.thread_manager.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => {
+                // Serialize cold loads with explicit resume, archive, and deletion. The loader
+                // checks memory again after acquiring the permit and preserves the writer lease.
+                let _permit = self.acquire_thread_list_state_permit().await?;
+                let thread = self
+                    .ensure_stored_thread_loaded(thread_id, client_mcp_extensions)
+                    .await
+                    .map_err(invalid_request)?;
+                self.thread_watch_manager.upsert_thread(raw_thread_id).await;
+                tracing::info!(%thread_id, "recovered unloaded thread for client input");
+                thread
+            }
+        };
+        ensure_direct_input_allowed(&thread).await?;
+        if self
+            .thread_state_manager
+            .subscribed_connection_ids(thread_id)
+            .await
+            .contains(&request_id.connection_id)
+        {
+            return Ok(());
+        }
+        // A loaded core handle alone is insufficient: the reconnecting client must receive
+        // the resulting deltas and completion before we allow its input to execute.
+        match self
+            .ensure_conversation_listener(
+                thread_id,
+                request_id.connection_id,
+                /*raw_events_enabled*/ false,
+            )
+            .await?
+        {
+            EnsureConversationListenerResult::Attached => Ok(()),
+            EnsureConversationListenerResult::ConnectionClosed => Err(invalid_request(
+                "connection closed before task input could be attached",
+            )),
+        }
+    }
+
+    async fn ensure_stored_thread_loaded(
+        &self,
+        thread_id: ThreadId,
+        client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<Arc<CodexThread>, String> {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             return Ok(thread);
@@ -86,7 +150,7 @@ impl ThreadRequestProcessor {
                 thread_history,
                 self.auth_manager.clone(),
                 /*parent_trace*/ None,
-                ClientMcpExtensions::default(),
+                client_mcp_extensions,
             )
             .await
         {
