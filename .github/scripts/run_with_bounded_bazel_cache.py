@@ -5,12 +5,15 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import time
 
 
-def trim_cache(root: Path, limit: int) -> dict[str, int]:
+def trim_cache(
+    root: Path, limit: int, reserve_bytes: int = 4 * 1024**3
+) -> dict[str, int]:
     if limit <= 0 or root.is_symlink():
         raise ValueError("Invalid cache root or size limit")
     entries = []
@@ -38,9 +41,12 @@ def trim_cache(root: Path, limit: int) -> dict[str, int]:
                 if stat.S_ISREG(metadata.st_mode):
                     entries.append((metadata.st_mtime_ns, metadata.st_size, entry))
     retained = sum(size for _, size, _ in entries)
+    # Compilation has priority over the optimization. Evict cache entries if
+    # necessary to keep four GiB available for the active build's next outputs.
+    target = min(limit, max(0, retained + shutil.disk_usage(root).free - reserve_bytes))
     removed = 0
     for modified, size, entry in sorted(entries):
-        if retained <= limit:
+        if retained <= target:
             break
         try:
             current = entry.lstat()
