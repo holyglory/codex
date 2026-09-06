@@ -33,6 +33,14 @@ automatically retrying deterministic test defects.
   GitHub's cache backend for the preflight, Rust validation and all native targets.
   Setup failure leaves ordinary compilation enabled; cache-server I/O failures
   use the compiler fallback. Compiler/test failures are never converted to success.
+  Disable its request-inactivity shutdown before setup and during compilation:
+  a single large compilation can exceed the default ten-minute idle window even
+  though it is still working. The existing job timeout still bounds execution.
+  The Linux preflight's `probe_compiler_cache.py` exercises an accelerated idle
+  shutdown with the real pinned cache binary and compiler, then verifies that
+  disabling idle shutdown preserves a long compilation, a cache hit, and source
+  invalidation. It uses a private socket and temporary local cache, not the job's
+  compiler cache. Run it locally with `--sccache /absolute/path/to/sccache`.
 - The full Rust job retains its existing disk reclamation between Clippy and
   tests. Compiler caching allows reusable compilation results to survive that
   cleanup without retaining a second large target tree on the runner.

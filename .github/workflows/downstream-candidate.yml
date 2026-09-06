@@ -88,6 +88,8 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
       - uses: ./.github/actions/downstream-compiler-cache
+      - name: Verify long-compilation cache survival and reuse
+        run: python3 .github/scripts/probe_compiler_cache.py
       - name: Require both focused test families
         run: python3 scripts/run_candidate_preflight.py
 
