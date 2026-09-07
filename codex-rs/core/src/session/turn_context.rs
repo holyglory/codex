@@ -1039,6 +1039,16 @@ impl Session {
                 )
             },
         );
+        if account_lease.is_some() {
+            let refresh_strategy = if session_configuration.session_source.is_non_root_agent() {
+                RefreshStrategy::Offline
+            } else {
+                RefreshStrategy::OnlineIfUncached
+            };
+            let _ = turn_models_manager
+                .raw_model_catalog(refresh_strategy, per_turn_config.http_client_factory())
+                .await;
+        }
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()

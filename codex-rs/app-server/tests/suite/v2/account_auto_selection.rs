@@ -49,6 +49,9 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+#[path = "account_auto_selection_model_tools.rs"]
+mod model_tools;
+
 const RATE_LIMIT_PATH: &str = "/api/codex/usage";
 const RESPONSES_PATH: &str = "/v1/responses";
 const AUTOMATIC_SWITCH_WARNING: &str =
