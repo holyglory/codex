@@ -3,10 +3,16 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use codex_core::TurnInputRequest;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::McpStartupStatus;
+use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
@@ -47,8 +53,8 @@ async fn optional_mcp_startup_grace_controls_initial_turn_tool_catalog(
     };
     let startup_timeout = match scenario {
         StartupGraceScenario::DisabledGraceRespectsStartupTimeout => Duration::from_millis(250),
-        StartupGraceScenario::ShortGraceOmitsPending
-        | StartupGraceScenario::CustomGraceIncludesReady
+        StartupGraceScenario::ShortGraceOmitsPending => Duration::from_secs(5),
+        StartupGraceScenario::CustomGraceIncludesReady
         | StartupGraceScenario::DisabledGraceWaitsForStartup => Duration::from_secs(1),
     };
     let responses_server = responses::start_mock_server().await;
@@ -98,12 +104,21 @@ async fn optional_mcp_startup_grace_controls_initial_turn_tool_catalog(
     .await
     .context("optional MCP initialization should begin before the first turn")?;
 
-    let mut turn = Box::pin(fixture.submit_turn("show optional MCP tools"));
+    let mut turn = Box::pin(async {
+        match scenario {
+            StartupGraceScenario::ShortGraceOmitsPending => {
+                submit_turn_while_mcp_pending(&fixture, "show optional MCP tools").await
+            }
+            StartupGraceScenario::CustomGraceIncludesReady
+            | StartupGraceScenario::DisabledGraceWaitsForStartup
+            | StartupGraceScenario::DisabledGraceRespectsStartupTimeout => {
+                fixture.submit_turn("show optional MCP tools").await
+            }
+        }
+    });
     match scenario {
         StartupGraceScenario::ShortGraceOmitsPending => {
-            tokio::time::timeout(Duration::from_millis(500), &mut turn)
-                .await
-                .context("the configured grace should omit the pending server")??;
+            (&mut turn).await?;
             release_startup
                 .send(())
                 .expect("pending optional MCP startup should remain in flight");
@@ -226,12 +241,7 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     .await
     .context("optional MCP initialization should begin before the initial turn")?;
 
-    tokio::time::timeout(
-        Duration::from_millis(500),
-        fixture.submit_turn("show initial optional MCP tools"),
-    )
-    .await
-    .context("the initial startup grace should omit the pending server")??;
+    submit_turn_while_mcp_pending(&fixture, "show initial optional MCP tools").await?;
     assert!(
         responses::namespace_child_tool(
             &initial_response.single_request().body_json(),
@@ -292,5 +302,33 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     );
 
     fixture.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+async fn submit_turn_while_mcp_pending(fixture: &TestCodex, prompt: &str) -> anyhow::Result<()> {
+    fixture
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: prompt.to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&fixture.codex, |event| {
+        if let EventMsg::McpStartupUpdate(update) = event
+            && update.server == SERVER_NAME
+        {
+            assert!(
+                matches!(update.status, McpStartupStatus::Starting),
+                "the model turn must finish while optional MCP startup remains pending: {:?}",
+                update.status
+            );
+        }
+        assert!(
+            !matches!(event, EventMsg::Error(_)),
+            "the model turn must succeed before optional MCP startup finishes"
+        );
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }
