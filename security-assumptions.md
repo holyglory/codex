@@ -56,6 +56,16 @@ Last reviewed: 2026-09-03
   versions before they become public. Long-lived npm write tokens are not an
   accepted steady-state control (user confirmation on 2026-09-03;
   DEC-CODEX-016).
+- **Build-cache scope:** The owner requested persistent build outputs between
+  GitHub jobs and explicitly approved the persistent SSH/service changes on
+  2026-09-07, allowing up to 1 TB of reusable builds. The approved design uses
+  the existing VPS and disk with a loopback cache, dedicated non-human identity,
+  restricted SSH configuration and a cache-only GitHub Actions secret. Authority
+  is cache forwarding only: no shell, other destinations, remote listeners,
+  account data or npm authority. Pin the host key and expose the credential only
+  to trusted manually dispatched fork workflows and the explicitly scoped cache
+  proof branch. Retain 900 GiB with a 930 GiB write ceiling (below 1 TB).
+  No public cache listener, new runner or paid storage tier is approved.
 - **Authorized accounting scope:** The current request authorizes categorical
   token/tool usage accounting per chat and repository and totals across
   repositories. It does not authorize retaining the content of prompts,

@@ -10,6 +10,7 @@ node_modules
 # build
 dist/
 bazel-*
+!scripts/bazel-cache/
 user.bazelrc
 build/
 out/
