@@ -83,7 +83,7 @@ def commands(root, state, directory):
             [
                 "bash",
                 "-euc",
-                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'",
+                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'",
             ],
             root,
         ),
