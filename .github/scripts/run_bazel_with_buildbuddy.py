@@ -174,6 +174,24 @@ def bazel_args_with_remote_config(
             arg.startswith(option_prefix) for arg in configured_args[:separator_idx]
         )
     ]
+    if (
+        config is None
+        and args[command_idx] in ("build", "test", "coverage", "run")
+        and env.get("CODEX_BAZEL_REMOTE_CACHE_URL")
+        and not any(
+            arg.startswith("--remote_cache=") for arg in configured_args[:separator_idx]
+        )
+    ):
+        cache_args.extend(
+            [
+                f"--remote_cache={env['CODEX_BAZEL_REMOTE_CACHE_URL']}",
+                "--remote_upload_local_results=true",
+                "--remote_verify_downloads=true",
+                "--remote_download_outputs=toplevel",
+                "--remote_timeout=30",
+                "--remote_retries=1",
+            ]
+        )
     return [
         *configured_args[:separator_idx],
         *cache_args,
