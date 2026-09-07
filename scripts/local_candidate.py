@@ -2,7 +2,6 @@
 """Local-first Linux acceptance; retain build state and dispatch exact commits only."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import fcntl
 import hashlib
@@ -27,6 +26,7 @@ GATES = (
     "schemas",
     "source-drift",
     "bazel-lock",
+    "bazel-layout",
 )
 LANES = {
     "rust": ("clippy", "rust-tests", "linux-package"),
@@ -117,6 +117,21 @@ def commands(root, state, directory):
             ],
             root,
         ),
+        "bazel-layout": (
+            [
+                *bazel,
+                "test",
+                cache,
+                "--nocache_test_results",
+                "--test_tmpdir=/tmp/b",
+                "--test_env=RUST_TEST_THREADS=1",
+                "--test_env=RUST_MIN_STACK=16777216",
+                "--",
+                "//codex-rs/app-server-transport:app-server-transport-unit-tests",
+                "//codex-rs/external-agent-migration:external-agent-migration-unit-tests",
+            ],
+            root,
+        ),
         "clippy": (
             [
                 "cargo",
@@ -144,7 +159,7 @@ def commands(root, state, directory):
                 *bazel,
                 "test",
                 cache,
-                "--test_tmpdir=/tmp/bazel-tests",
+                "--test_tmpdir=/tmp/b",
                 "--keep_going",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
@@ -209,12 +224,12 @@ def execute(plan, environ, directory, unchanged, runner=run_step):
         results.append(result)
         if result["exit_code"] != 0 or not unchanged():
             return results
-    # Two independent command sequences, not a host-wide capacity controller.
-    # Ordinary failures do not cancel the other sequence or discard its logs.
-    with ThreadPoolExecutor(max_workers=len(LANES)) as pool:
-        futures = [pool.submit(lane, names) for names in LANES.values()]
-        for future in futures:
-            results.extend(future.result())
+    # Both native engines assume they can use the host CPU. Running them together
+    # caused short-deadline integration failures even when isolated cases passed.
+    # Sequence full engines without imposing a second worker/capacity controller.
+    # An ordinary failure still leaves the other engine available to collect findings.
+    for names in LANES.values():
+        results.extend(lane(names))
     return results
 
 
