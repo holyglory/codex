@@ -2,6 +2,11 @@ name: downstream-candidate
 
 on:
   workflow_dispatch:
+    inputs:
+      local_acceptance:
+        description: Exact-commit successful Linux receipt from scripts/local_candidate.py
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -25,6 +30,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Require local Linux acceptance before hosted compilation
+        env:
+          LOCAL_ACCEPTANCE: ${{ inputs.local_acceptance }}
+        run: python3 scripts/local_candidate.py verify --commit "$GITHUB_SHA"
       - name: Validate downstream versions
         id: version
         shell: bash
@@ -53,6 +62,7 @@ jobs:
           python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
           python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
+          python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
 
   preflight:
