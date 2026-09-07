@@ -13,7 +13,12 @@ checksums and attestations must all identify the frozen source being released.
    test environment for the desktop reconnect/input boundary. Each test family
    must select tests; a renamed or empty family fails instead of silently passing.
 3. Batch related fixes, run scoped lint and formatting, and freeze the candidate.
-4. Dispatch one complete candidate run. Its identity/helper checks and focused
+4. Run `scripts/local_candidate.py check` in the isolated local environment
+   described below. Local helpers, formatting, packaging prerequisites, focused
+   tests, generated schema drift and Bazel lock checks must pass first. Then full
+   Clippy/Rust tests/Linux packaging and full Bazel validation run as independent
+   lanes. An ordinary failure does not cancel the other lane.
+5. Dispatch one complete candidate run with the successful local receipt. Its identity/helper checks and focused
    preflight must succeed before full Rust, full Bazel and six native builds begin.
    Those expensive jobs then run in parallel. All are still required for npm.
 
@@ -27,6 +32,74 @@ For a transient failure on **unchanged source**, use GitHub's failed-job rerun,
 not a new workflow dispatch. A rerun still uses that run's original commit; it
 cannot validate a source correction. Investigate repeated failures rather than
 automatically retrying deterministic test defects.
+
+## Local-first Linux validation
+
+Use a committed, clean, isolated worktree. `plan` prints the exact commands without
+starting them:
+
+```sh
+python3 scripts/local_candidate.py plan --state-dir /mnt/build-storage/codex/state/local-first
+```
+
+The local driver preserves Cargo targets, Bazel output, repository downloads and
+the Bazel action cache under that external directory. It never runs `cargo clean`
+or the disposable GitHub-runner cleanup helpers. An optional `--cargo-target-dir`
+can reuse an existing compatible compact debug/test target directory. Release
+builds use a separate persistent target (`--release-target-dir` can reuse the
+existing release store); tests and Clippy share the debug target.
+Locks prevent simultaneous drivers from writing the same stores. Do not run
+other build commands manually against those locked stores.
+
+For this Linux VPS, `scripts/run_local_candidate.sh` creates a private mount
+namespace and mounts an isolated test `/tmp` on the build disk, plus an empty read-only
+system configuration directory. It drops to the invoking account before running
+any validation. This avoids loading installed user configuration and keeps Unix
+socket paths short. It does not modify the host mounts or installed release.
+The state directory must already exist and be writable by the invoking account.
+Its backing test directories stay stable so a warm Bazel server sees the same
+files across runs; each invocation still gets a fresh temporary `CODEX_HOME`.
+Supply the existing, verified native prerequisites through these variables:
+
+- `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH`: GNU/Linux test-build artifacts.
+- `LOCAL_MUSL_V8_ARCHIVE` and `LOCAL_MUSL_V8_BINDING`: musl release-build artifacts.
+- `LOCAL_MUSL_PKG_CONFIG`: musl libcap pkg-config directory.
+- `LOCAL_PACKAGE_PYTHON`: the existing smoke-test virtualenv Python.
+- `CODEX_BAZEL_BIN` (optional): an existing pinned Bazel executable when `bazel`
+  is not on the build account's normal `PATH`.
+
+Keep these prerequisite files on the build disk, **not the host `/tmp`**, because
+the isolated `/tmp` hides host temporary files. With those variables configured:
+
+```sh
+sudo --preserve-env=CODEX_BAZEL_BIN,RUSTY_V8_ARCHIVE,RUSTY_V8_SRC_BINDING_PATH,LOCAL_MUSL_V8_ARCHIVE,LOCAL_MUSL_V8_BINDING,LOCAL_MUSL_PKG_CONFIG,LOCAL_PACKAGE_PYTHON \
+  bash scripts/run_local_candidate.sh /mnt/build-storage/codex/state/local-first
+```
+
+Install repository tool prerequisites once before this command, including the
+pinned Rust toolchain, musl target/toolchain, Clippy/rustfmt, nextest, just, Bazel,
+Node/pnpm, uv and packaging tools. Missing prerequisites are failures, not skips.
+Logs and `receipt.json` remain in the printed `accept-*` directory, including on
+ordinary failure. Linux packaging creates stripped CLI/app-server gzip and zstd
+packages, a shared symbols archive and checksums, and smoke-tests both formats.
+No installation or publication is performed.
+
+After pushing the frozen commit to its candidate branch:
+
+```sh
+python3 scripts/local_candidate.py dispatch \
+  --receipt /mnt/build-storage/codex/state/local-first/accept-EXACT/receipt.json \
+  --branch codex/EXACT-CANDIDATE-BRANCH
+```
+
+Dispatch rejects incomplete/failed receipts, changed logs, dirty source, a remote
+SHA mismatch and an active candidate on that branch. The hosted identity job also
+rejects missing or wrong-commit receipts before expensive jobs start. This is an
+owner-operated workflow gate, not a cryptographic attestation that local tests
+ran: all existing hosted verification, artifact provenance and publication gates
+remain required. Local Linux success does not establish macOS or Windows behavior.
+Those platforms and ARM builds continue using the existing GitHub-hosted runners;
+no additional machines, self-hosted runners or runner credentials are configured.
 
 ## Compilation reuse and storage
 
