@@ -30,6 +30,7 @@ use super::MAX_VERIFIED_ACCESS_RESPONSE_BYTES;
 use super::TrustedAccessContext;
 
 struct RecordingHttpClient {
+    codex_home: tempfile::TempDir,
     requests: Mutex<Vec<HttpRequestParams>>,
     status: u16,
     response: Vec<u8>,
@@ -40,6 +41,7 @@ struct RecordingHttpClient {
 impl RecordingHttpClient {
     fn new(status: u16, response: Value) -> Self {
         Self {
+            codex_home: tempfile::tempdir().expect("create isolated authentication home"),
             requests: Mutex::new(Vec::new()),
             status,
             response: serde_json::to_vec(&response).expect("serialize response"),
@@ -164,7 +166,7 @@ fn fedramp_chatgpt_auth(account_id: &str) -> CodexAuth {
 fn context(auth: CodexAuth, client: Arc<RecordingHttpClient>) -> TrustedAccessContext {
     TrustedAccessContext::new(
         auth.clone(),
-        AuthManager::from_auth_for_testing(auth),
+        AuthManager::from_auth_for_testing_with_home(auth, client.codex_home.path().to_path_buf()),
         "https://chatgpt.com/backend-api".to_string(),
         client,
     )
@@ -324,7 +326,10 @@ async fn rejects_initial_unsupported_auth_after_switch_to_chatgpt() {
         ),
     ));
     let mut context = context(header_auth(), client.clone());
-    context.auth_manager = AuthManager::from_auth_for_testing(chatgpt_auth("account-a"));
+    context.auth_manager = AuthManager::from_auth_for_testing_with_home(
+        chatgpt_auth("account-a"),
+        client.codex_home.path().to_path_buf(),
+    );
 
     assert_eq!(
         context.add_context(/*meta*/ None).await,
@@ -515,7 +520,10 @@ async fn rejects_identity_changes_before_sending_credentials() {
             ),
         ));
         let mut context = context(initial_auth, client.clone());
-        context.auth_manager = AuthManager::from_auth_for_testing(selected_auth);
+        context.auth_manager = AuthManager::from_auth_for_testing_with_home(
+            selected_auth,
+            client.codex_home.path().to_path_buf(),
+        );
         assert_eq!(
             context.add_context(/*meta*/ None).await,
             Some(expected_metadata("unknown", json!([]))),

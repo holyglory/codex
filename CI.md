@@ -15,9 +15,10 @@ checksums and attestations must all identify the frozen source being released.
 3. Batch related fixes, run scoped lint and formatting, and freeze the candidate.
 4. Run `scripts/local_candidate.py check` in the isolated local environment
    described below. Local helpers, formatting, packaging prerequisites, focused
-   tests, generated schema drift and Bazel lock checks must pass first. Then full
-   Clippy/Rust tests/Linux packaging and full Bazel validation run as independent
-   lanes. An ordinary failure does not cancel the other lane.
+   tests, generated schema drift, Bazel lock and actual Bazel socket/migration
+   fixture checks must pass first. Then full
+   Clippy/Rust tests/Linux packaging and full Bazel validation run as separate
+   sequences. An ordinary failure does not cancel the other sequence.
 5. Dispatch one complete candidate run with the successful local receipt. Its identity/helper checks and focused
    preflight must succeed before full Rust, full Bazel and six native builds begin.
    Those expensive jobs then run in parallel. All are still required for npm.
@@ -50,6 +51,13 @@ builds use a separate persistent target (`--release-target-dir` can reuse the
 existing release store); tests and Clippy share the debug target.
 Locks prevent simultaneous drivers from writing the same stores. Do not run
 other build commands manually against those locked stores.
+
+The full local engines run one at a time: the first simultaneous pass caused
+short-deadline failures that passed when isolated after compilation ended.
+This avoids a custom worker-count controller and does not relax test timeouts.
+Hosted engines still run in parallel on their separate machines.
+Both the focused backend-layout checks and the full graph use the same short,
+neutral `/tmp/b` test root inside the isolated mount namespace.
 
 For this Linux VPS, `scripts/run_local_candidate.sh` creates a private mount
 namespace and mounts an isolated test `/tmp` on the build disk, plus an empty read-only
