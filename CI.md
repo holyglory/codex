@@ -145,3 +145,32 @@ quota pressure may reduce reuse without changing the required release checks.
 
 Publication remains separate: exact candidate verification, six native packages,
 seven npm tarballs, provenance and the approved human publication gates all apply.
+
+### Persistent Bazel cache
+
+The candidate's test and release-only Bazel commands can use a persistent cache
+on the existing build disk. `scripts/bazel-cache/` contains the pinned server,
+service and restricted SSH configuration. The server keeps at most 900 GiB of
+retained build results, rejects writes at 930 GiB (below 1 TB), and only listens on loopback.
+Its service mounts only the cache directory, without granting its Unix identity
+access to the shared repository directory. No paid cache tier or extra runner is
+required. The existing small GitHub cache remains a fallback, not the primary
+long-term store.
+
+After approved installation, configure `CODEX_BAZEL_CACHE_HOST` and
+`CODEX_BAZEL_CACHE_HOST_KEY` as repository variables, and the dedicated private
+key as secret `CODEX_BAZEL_CACHE_SSH_KEY`. The host-key variable contains the
+verified server key with alias `codex-bazel-cache`, not a just-in-time network
+scan. The SSH identity can forward only to `127.0.0.1:9095`; commands, remote
+listeners and forwarding to other services are denied. It cannot deploy or
+publish packages. The client removes credentials from the build environment and
+deletes its private temporary files when the command finishes.
+
+Each successful Bazel action can upload its result immediately. Later jobs and
+branches share those content-verified results, without waiting for an archive
+save. Cache setup failures warn and continue with local compilation; a build or
+test failure is never converted to success or automatically rerun by this helper.
+Only a focused cache proof uses `--require-cache` to reject a silent cold fallback.
+Before claiming hosted reuse, verify two independent runner jobs, changed-input
+invalidation, cache-outage behavior, and the SSH restrictions. Do not restart an
+existing release candidate to adopt this tooling change.
