@@ -1,0 +1,23 @@
+[Unit]
+Description=Persistent Codex Bazel build cache (loopback only)
+After=network.target
+RequiresMountsFor=/mnt/build-storage
+
+[Service]
+User=codex-bazel-cache
+Group=codex-bazel-cache
+ExecStart=/opt/codex-bazel-cache/2.6.2/bazel-remote --config_file=/etc/codex-bazel-cache/server.yml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CacheDirectory=codex-bazel-cache
+CacheDirectoryMode=0700
+BindPaths=/mnt/build-storage/codex/state/persistent-bazel-cache/data:/var/cache/codex-bazel-cache
+ReadWritePaths=/var/cache/codex-bazel-cache
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
