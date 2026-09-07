@@ -727,6 +727,9 @@ impl UnifiedExecProcessManager {
         } else {
             // Short-lived command: emit the completed command item immediately
             // using the same helper as the background watcher.
+            // Wait for the streaming task to reconcile its final transcript,
+            // just as the stored-process exit watcher does.
+            process.output_drained_notify().notified().await;
             let finish_result = finish_deferred_network_approval_after_process_exit_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
