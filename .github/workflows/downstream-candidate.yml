@@ -64,6 +64,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
 
   preflight:
     name: Critical producer and consumer regressions
@@ -198,7 +199,11 @@ jobs:
         shell: bash
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
         run: |
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
           python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
             ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
@@ -224,8 +229,12 @@ jobs:
         shell: bash
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
         run: |
           mapfile -t bazel_targets < <(bash ./scripts/list-bazel-release-targets.sh)
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
           python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
             ./.github/scripts/run-bazel-ci.sh \
             -- \
