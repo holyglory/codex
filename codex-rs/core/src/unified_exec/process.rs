@@ -107,6 +107,9 @@ pub(crate) struct UnifiedExecProcess {
     process_handle: ProcessHandle,
     output_tx: broadcast::Sender<Vec<u8>>,
     output: OutputHandles,
+    // Unlike the per-poll output buffer, this bounded transcript is never drained.
+    // Capture before broadcasting so slow presentation consumers cannot lose history.
+    transcript: Arc<Mutex<HeadTailBuffer>>,
     output_drained: Arc<Notify>,
     interaction_lock: Arc<Mutex<()>>,
     state_tx: watch::Sender<ProcessState>,
@@ -150,6 +153,7 @@ impl UnifiedExecProcess {
             process_handle,
             output_tx,
             output,
+            transcript: Arc::new(Mutex::new(HeadTailBuffer::default())),
             output_drained,
             interaction_lock: Arc::new(Mutex::new(())),
             state_tx,
@@ -193,6 +197,10 @@ impl UnifiedExecProcess {
 
     pub(super) fn output_receiver(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
+    }
+
+    pub(super) fn transcript(&self) -> Arc<Mutex<HeadTailBuffer>> {
+        Arc::clone(&self.transcript)
     }
 
     pub(super) fn cancellation_token(&self) -> CancellationToken {
@@ -376,6 +384,7 @@ impl UnifiedExecProcess {
             output_rx,
             managed.output_handles().clone(),
             managed.output_tx.clone(),
+            managed.transcript(),
         ));
 
         match exit_rx.try_recv() {
@@ -426,6 +435,7 @@ impl UnifiedExecProcess {
             output_handles,
             managed.output_tx.clone(),
             managed.state_tx.clone(),
+            managed.transcript(),
         ));
 
         let mut state_rx = managed.state_rx.clone();
@@ -454,6 +464,7 @@ impl UnifiedExecProcess {
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
+        transcript: Arc<Mutex<HeadTailBuffer>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -532,6 +543,7 @@ impl UnifiedExecProcess {
                     } = response;
                     for chunk in chunks.into_iter().filter(|chunk| chunk.seq > last_seq) {
                         let bytes = chunk.chunk.into_inner();
+                        transcript.lock().await.push_chunk(&bytes);
                         let mut guard = output_buffer.lock().await;
                         guard.push_chunk(&bytes);
                         drop(guard);
@@ -575,6 +587,7 @@ impl UnifiedExecProcess {
                         }
                         last_seq = chunk.seq;
                         let bytes = chunk.chunk.into_inner();
+                        transcript.lock().await.push_chunk(&bytes);
                         let mut guard = output_buffer.lock().await;
                         guard.push_chunk(&bytes);
                         drop(guard);
@@ -620,6 +633,7 @@ impl UnifiedExecProcess {
         mut receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
+        transcript: Arc<Mutex<HeadTailBuffer>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -636,6 +650,7 @@ impl UnifiedExecProcess {
             loop {
                 match receiver.recv().await {
                     Ok(chunk) => {
+                        transcript.lock().await.push_chunk(&chunk);
                         let mut guard = output_buffer.lock().await;
                         guard.push_chunk(&chunk);
                         drop(guard);
