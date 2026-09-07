@@ -129,6 +129,7 @@ def commands(root, state, directory):
                 "--",
                 "//codex-rs/app-server-transport:app-server-transport-unit-tests",
                 "//codex-rs/external-agent-migration:external-agent-migration-unit-tests",
+                "//codex-rs/utils/pty:pty-unit-tests",
             ],
             root,
         ),
