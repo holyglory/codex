@@ -1,0 +1,11 @@
+# Separate from every local Bazel output tree and disk-cache format.
+# The service bind-mounts the dedicated build-disk directory here, without
+# giving its Unix identity access to the shared source/credential directories.
+dir: /var/cache/codex-bazel-cache
+max_size: 900
+max_size_hard_limit: 930
+storage_mode: zstd
+http_address: 127.0.0.1:9095
+grpc_address: none
+# Profiling is disabled by its default empty address.
+enable_ac_key_instance_mangling: true
