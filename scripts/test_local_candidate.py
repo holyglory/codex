@@ -73,19 +73,29 @@ class LocalCandidateTests(unittest.TestCase):
         checks = self.execute(unchanged=lambda: False)
         self.assertEqual([check["name"] for check in checks], [candidate.GATES[0]])
 
-    def test_failed_rust_lane_does_not_cancel_concurrent_bazel_lane(self):
-        ready = threading.Barrier(2, timeout=5)
+    def test_failed_rust_lane_preserves_later_bazel_findings(self):
         invoked = []
 
         def runner(name, *_args):
             invoked.append(name)
-            if name in ("clippy", "bazel-tests"):
-                ready.wait()
             return {"name": name, "exit_code": int(name == "clippy")}
 
         self.execute(runner=runner)
         self.assertIn("bazel-release", invoked)
         self.assertNotIn("rust-tests", invoked)
+
+    def test_full_engines_do_not_overlap_on_the_same_host(self):
+        bazel_entered = threading.Event()
+
+        def runner(name, *_args):
+            if name == "clippy":
+                self.assertFalse(bazel_entered.wait(timeout=0.1))
+            if name == "bazel-tests":
+                bazel_entered.set()
+            return {"name": name, "exit_code": 0}
+
+        self.execute(runner=runner)
+        self.assertTrue(bazel_entered.is_set())
 
     def test_failed_and_unstartable_commands_are_not_success(self):
         with redirect_stdout(io.StringIO()):
