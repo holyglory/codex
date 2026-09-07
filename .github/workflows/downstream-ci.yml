@@ -87,6 +87,22 @@ jobs:
     name: Focused downstream tests
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      # Share the selection so preflight and the suites use the same Cargo features.
+      DOWNSTREAM_TEST_PACKAGES: >-
+        -p codex-rollout
+        -p codex-thread-store
+        -p codex-account-registry
+        -p codex-account-selection
+        -p codex-login
+        -p codex-usage
+        -p codex-event-subscriptions
+        -p codex-state
+        -p codex-core
+        -p codex-app-server-protocol
+        -p codex-app-server
+        -p codex-cli
+        -p codex-tui
     defaults:
       run:
         working-directory: codex-rs
@@ -111,24 +127,17 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
       - uses: ./.github/actions/downstream-compiler-cache
-      - name: Build the code-mode test companion
-        run: cargo build --locked --bin codex-code-mode-host
+      - name: Build required test companions
+        run: cargo build --locked --bin codex-code-mode-host --bin test_stdio_server
+      - name: Verify the MCP test fixture before running downstream suites
+        run: |
+          read -r -a package_args <<< "$DOWNSTREAM_TEST_PACKAGES"
+          just test --locked "${package_args[@]}" --no-tests=fail \
+            -E 'test(=suite::rmcp_client::stdio_server_round_trip::simple_name)'
       - name: Run downstream suites
-        run: >-
-          just test
-          -p codex-rollout
-          -p codex-thread-store
-          -p codex-account-registry
-          -p codex-account-selection
-          -p codex-login
-          -p codex-usage
-          -p codex-event-subscriptions
-          -p codex-state
-          -p codex-core
-          -p codex-app-server-protocol
-          -p codex-app-server
-          -p codex-cli
-          -p codex-tui
+        run: |
+          read -r -a package_args <<< "$DOWNSTREAM_TEST_PACKAGES"
+          just test --locked "${package_args[@]}" --no-tests=fail
 
   linux-compile:
     name: Compile Linux product binaries
