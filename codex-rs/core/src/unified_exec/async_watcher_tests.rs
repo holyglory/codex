@@ -154,6 +154,55 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
 }
 
 #[tokio::test]
+// Intentionally stall only the presentation consumer while the producer runs.
+#[allow(clippy::await_holding_invalid_type)]
+async fn streaming_output_preserves_summary_when_delta_consumer_lags() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        transcript,
+        rx_event,
+        ..
+    } = streaming_output_harness().await?;
+    stdout_tx.send(b"HEAD\n".to_vec())?;
+    rx_event.recv().await?;
+    // Hold the presentation consumer behind the producer without delaying the
+    // process output reader. The bounded delta channel must not own history.
+    let transcript_guard = transcript.lock().await;
+    let mut expected: HeadTailBuffer = HeadTailBuffer::default();
+    expected.push_chunk(b"HEAD\n");
+    let handles = process.output_handles();
+    for index in 0..350 {
+        let chunk = if index == 349 {
+            b"TAIL\n".to_vec()
+        } else {
+            vec![b'x'; 4096]
+        };
+        expected.push_chunk(&chunk);
+        let output_ready = handles.output_notify.notified();
+        tokio::pin!(output_ready);
+        output_ready.as_mut().enable();
+        stdout_tx.send(chunk)?;
+        output_ready.await;
+    }
+    drop(transcript_guard);
+    drop(stdout_tx);
+    exit_tx.send(0).expect("send exit");
+    process.output_drained_notify().notified().await;
+    let actual = transcript.lock().await;
+    assert_eq!(
+        (actual.total_bytes(), actual.omitted_bytes()),
+        (expected.total_bytes(), expected.omitted_bytes()),
+    );
+    assert_eq!(
+        actual.to_bytes_with_omission_marker(),
+        expected.to_bytes_with_omission_marker()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
