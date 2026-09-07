@@ -6,6 +6,23 @@ import subprocess
 
 
 def run_preflight(root: Path) -> None:
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "codex-code-mode-host",
+            "-p",
+            "codex-rmcp-client",
+            "--bin",
+            "codex-code-mode-host",
+            "--bin",
+            "test_stdio_server",
+        ],
+        cwd=root / "codex-rs",
+        check=True,
+    )
     # Keep the package selection identical between filters: changing Cargo's
     # feature union can rebuild shared dependencies even with a warm target dir.
     command = [
@@ -27,6 +44,9 @@ def run_preflight(root: Path) -> None:
         "app::tests::turn_submission::",
         "unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags",
         "suite::unified_exec::unified_exec_formats_large_output_summary",
+        "suite::v2::account_auto_selection::",
+        "suite::models_cache_ttl::",
+        "suite::search_tool::",
     ):
         subprocess.run(
             [*command, "-E", f"test({family})"],
