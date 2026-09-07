@@ -15,6 +15,10 @@ concurrency:
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
+  # Match the already-verified full candidate's compact development profiles.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   policy:
@@ -97,6 +101,12 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
           bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - name: Verify the test runner before compiling test companions
+        run: cargo nextest --version
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: x86_64-unknown-linux-gnu

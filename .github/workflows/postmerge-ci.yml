@@ -3,8 +3,15 @@ name: postmerge-ci
 # This is the single entrypoint for main-only CI that is intentionally outside
 # the merge-blocking suite. It keeps the broader postmerge signal in one run.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
+
+# Reusable workflows are permission-validated even when their jobs are skipped
+# by the fork guard. V8's build job needs read-only access to Actions artifacts.
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   # The fork uses downstream-ci and its explicit full candidate workflow.
