@@ -62,6 +62,7 @@ pub(crate) fn start_streaming_output(
     transcript: Arc<Mutex<HeadTailBuffer>>,
 ) {
     let mut receiver = process.output_receiver();
+    let producer_transcript = process.transcript();
     let output_drained = process.output_drained_notify();
     let exit_token = process.cancellation_token();
     let OutputHandles {
@@ -154,6 +155,10 @@ pub(crate) fn start_streaming_output(
             }
         }
 
+        // Delta delivery is best effort; the producer's bounded capture is the
+        // authoritative final transcript, including bytes skipped by broadcast.
+        let final_transcript = producer_transcript.lock().await.clone();
+        *output.transcript.lock().await = final_transcript;
         output.finish().await;
         output_drained.notify_one();
     });
