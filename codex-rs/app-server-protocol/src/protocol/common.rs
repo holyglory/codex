@@ -619,6 +619,36 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueStartResponse,
     },
+    #[experimental("eventSubscription/create")]
+    EventSubscriptionCreate => "eventSubscription/create" {
+        params: v2::EventSubscriptionCreateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::EventSubscriptionCreateResponse,
+    },
+    #[experimental("eventSubscription/list")]
+    EventSubscriptionList => "eventSubscription/list" {
+        params: v2::EventSubscriptionListParams,
+        serialization: global_shared_read("event-subscriptions"),
+        response: v2::EventSubscriptionListResponse,
+    },
+    #[experimental("eventSubscription/cancel")]
+    EventSubscriptionCancel => "eventSubscription/cancel" {
+        params: v2::EventSubscriptionCancelParams,
+        serialization: global("event-subscriptions"),
+        response: v2::EventSubscriptionCancelResponse,
+    },
+    #[experimental("eventSubscription/trigger")]
+    EventSubscriptionTrigger => "eventSubscription/trigger" {
+        params: v2::EventSubscriptionTriggerParams,
+        serialization: global("event-subscriptions"),
+        response: v2::EventSubscriptionTriggerResponse,
+    },
+    #[experimental("event/publish")]
+    EventPublish => "event/publish" {
+        params: v2::EventPublishParams,
+        serialization: global("event-subscriptions"),
+        response: v2::EventPublishResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         inspect_params: true,

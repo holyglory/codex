@@ -40,6 +40,7 @@ use std::time::Instant;
 use tracing::warn;
 
 mod backfill;
+mod event_subscriptions;
 mod external_agent_config_imports;
 mod goals;
 mod logs;
@@ -55,6 +56,7 @@ mod thread_section_order;
 mod thread_sections;
 mod threads;
 
+pub use event_subscriptions::SqliteEventSubscriptionStore;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
@@ -92,6 +94,7 @@ pub struct StateRuntime {
     logs_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     memories: MemoryStore,
+    event_subscriptions: SqliteEventSubscriptionStore,
     thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -251,6 +254,7 @@ impl StateRuntime {
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
+            event_subscriptions: SqliteEventSubscriptionStore::new(Arc::clone(&queue_pool)),
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
@@ -279,6 +283,11 @@ impl StateRuntime {
 
     pub fn memories(&self) -> &MemoryStore {
         &self.memories
+    }
+
+    /// Return the durable provider-neutral event subscription store.
+    pub fn event_subscriptions(&self) -> &SqliteEventSubscriptionStore {
+        &self.event_subscriptions
     }
 
     /// Return the durable, SQLite-backed user-message queue.

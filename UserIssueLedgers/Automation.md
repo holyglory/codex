@@ -1,0 +1,5 @@
+# User Issue Ledger: Automation
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-AUTOMATION-001 | Goal continuation after an external prerequisite is resolved, and release observers across chat turns | Reporting that work will continue after successful authentication while the goal remains blocked and its background observer has exited leaves the owner waiting for progress that is not scheduled | Verify goal state and the exact observer or remote job after a prerequisite changes; continue authorized work in the current turn, and explicitly identify any user-controlled resume action needed for automatic continuation. Never imply an observer is running from an old session ID or log alone | After login or approval, check the stored goal status and current process or remote-job handle; preserve existing CI runs, restore at most one observer when needed, retain its identity and terminal result, and distinguish active remote work from inactive local continuation before handing off |

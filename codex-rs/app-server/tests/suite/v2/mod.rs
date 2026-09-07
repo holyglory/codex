@@ -30,6 +30,7 @@ mod dynamic_tools;
 mod environment_add;
 mod environment_info;
 mod environment_status;
+mod event_subscriptions;
 mod exec_server_test_support;
 #[cfg(not(target_os = "windows"))]
 mod executor_mcp;
@@ -80,6 +81,7 @@ mod projects;
 mod rate_limit_reset_credits;
 mod rate_limits;
 mod realtime_conversation;
+mod realtime_profile_auth;
 mod recommended_plugins;
 mod remote_control;
 #[cfg(debug_assertions)]

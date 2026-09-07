@@ -27,12 +27,25 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+const USAGE_STATS_INSTRUCTIONS_OPEN_TAG: &str = "<usage_stats_instructions>";
+
 fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
     let content = request
         .function_call_output_text(call_id)
         .expect("text function output");
     serde_json::from_str(&content)
         .unwrap_or_else(|error| panic!("JSON tool output ({error}): {content}"))
+}
+
+fn input_text_occurrences(request: &responses::ResponsesRequest, needle: &str) -> usize {
+    request
+        .input()
+        .iter()
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .filter(|text| text.contains(needle))
+        .count()
 }
 
 fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> Value {
@@ -269,6 +282,14 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
 
     let first_requests = first_mock.requests();
     assert_eq!(first_requests.len(), 2);
+    assert_eq!(
+        input_text_occurrences(&first_requests[0], USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
+        1
+    );
+    assert_eq!(
+        input_text_occurrences(&first_requests[1], USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
+        1
+    );
     assert!(
         first_requests[0].body_json()["tools"]
             .as_array()
@@ -356,6 +377,45 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     assert_eq!(correction["event"]["event"], "classification_corrected");
     assert_eq!(correction["event"]["provenance"], "user_corrected");
     assert!(correction.get("reportingOperationInProgress").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_local_controls_omit_usage_stats_and_its_guidance() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| config.local_control_tools_enabled = false)
+        .build(&server)
+        .await?;
+
+    test.submit_text_turn("inspect local usage").await?;
+
+    let request = response_mock.single_request();
+    assert_eq!(
+        input_text_occurrences(&request, USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
+        0
+    );
+    assert!(
+        request
+            .body_json()
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_none_or(|tools| tools
+                .iter()
+                .all(|tool| tool["name"].as_str() != Some("usage_stats")))
+    );
+
     Ok(())
 }
 

@@ -102,6 +102,7 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 unicode-segmentation = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 which = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

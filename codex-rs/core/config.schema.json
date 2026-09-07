@@ -729,6 +729,9 @@
             "enable_request_compression": {
               "type": "boolean"
             },
+            "event_subscriptions": {
+              "type": "boolean"
+            },
             "exec_permission_approvals": {
               "type": "boolean"
             },
@@ -6052,6 +6055,9 @@
           "type": "boolean"
         },
         "enable_request_compression": {
+          "type": "boolean"
+        },
+        "event_subscriptions": {
           "type": "boolean"
         },
         "exec_permission_approvals": {

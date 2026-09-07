@@ -316,6 +316,8 @@ pub enum Feature {
     RolloutBudget,
     /// Add current-time reminders to model-visible context.
     CurrentTimeReminder,
+    /// Enable durable provider-neutral event subscriptions and agent wake-up.
+    EventSubscriptions,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
     ToolCallMcpElicitation,
     /// Prompt Codex Apps connector auth failures through MCP URL elicitations.
@@ -1550,6 +1552,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CurrentTimeReminder,
         key: "current_time_reminder",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::EventSubscriptions,
+        key: "event_subscriptions",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

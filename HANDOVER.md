@@ -652,6 +652,14 @@ PAT, Agent Identity, or Bedrock credential deliberately stored in the selected
 local profile remains valid; the conflict is about externally owned process or
 host overrides, not the profile's own auth mode.
 
+Voice startup must resolve the same managed-profile selection before any media
+call, even when the remote UI has not submitted a text turn. Call creation and
+its control connection must use the same selected credentials, and the call
+must retain its profile lease until it stops, including control reconnections.
+Later default-account changes apply to later calls, not a running call. Failed
+selection must not fall back to an empty legacy login or require a separate API
+key for a managed ChatGPT profile (UIL-BUSINESS-LOGIC-ACCOUNT-SELECTION-005).
+
 ### 12.3 Locking
 
 Implement:

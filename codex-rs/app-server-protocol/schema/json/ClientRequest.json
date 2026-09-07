@@ -936,6 +936,74 @@
         }
       ]
     },
+    "EventSourceCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionFilter": {
+      "additionalProperties": false,
+      "properties": {
+        "eventTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventTypes",
+        "labels",
+        "source"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionHeartbeat": {
+      "additionalProperties": false,
+      "properties": {
+        "firstDeadlineAt": {
+          "description": "Nullable first deadline as whole Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intervalSeconds": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intervalSeconds"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {
@@ -1658,6 +1726,44 @@
         "original"
       ],
       "type": "string"
+    },
+    "IngressEvent": {
+      "additionalProperties": false,
+      "description": "Security boundary from `security-assumptions.md`: only these bounded metadata fields cross ingress; unknown publisher payload fields are rejected rather than retained or injected.",
+      "properties": {
+        "cursor": {
+          "$ref": "#/definitions/EventSourceCursor"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "occurredAt": {
+          "description": "Event occurrence time as whole Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "eventType",
+        "id",
+        "labels",
+        "occurredAt",
+        "source"
+      ],
+      "type": "object"
     },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
