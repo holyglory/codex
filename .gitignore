@@ -99,6 +99,7 @@ __pycache__/
 
 # Local project state (database-backed completion ledger)
 /.state/
+/.devcoordinator/
 
 # Local code-indexing workspace state
 /.serena/
