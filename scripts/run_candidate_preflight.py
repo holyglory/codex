@@ -16,6 +16,8 @@ def run_preflight(root: Path) -> None:
         "codex-app-server",
         "-p",
         "codex-tui",
+        "-p",
+        "codex-core",
         "--no-tests=fail",
     ]
     # Separate invocations intentionally require each family to select tests.
@@ -23,6 +25,8 @@ def run_preflight(root: Path) -> None:
     for family in (
         "suite::v2::thread_reconnect::",
         "app::tests::turn_submission::",
+        "unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags",
+        "suite::unified_exec::unified_exec_formats_large_output_summary",
     ):
         subprocess.run(
             [*command, "-E", f"test({family})"],

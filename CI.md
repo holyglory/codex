@@ -17,7 +17,8 @@ checksums and attestations must all identify the frozen source being released.
    preflight must succeed before full Rust, full Bazel and six native builds begin.
    Those expensive jobs then run in parallel. All are still required for npm.
 
-The preflight currently covers saved-task recovery and the dependent TUI turn
+The preflight currently covers saved-task recovery, bounded command-output capture,
+and the dependent TUI turn
 submission behavior. It is an early regression gate, not a replacement for
 changed-feature tests or the complete downstream suite. Extend the focused
 selection when another producer/consumer boundary changes.
