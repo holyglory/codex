@@ -3,13 +3,16 @@
 ## Product boundary
 
 This repository is the unofficial `holyglory/codex` downstream fork. Its
-product branch is based on the stable upstream `rust-v0.153.0` release and
-reports Rust version `0.153.0+multi.1`. The matching npm version is
-`0.153.0-multi.1`.
+candidate is based on the stable upstream `rust-v0.153.4` release and
+reports Rust version `0.153.4+multi.1`. The matching npm version is
+`0.153.4-multi.1`.
 
-This baseline produces a tested candidate only. It does not install Codex,
-restart an app server, change any user's active release, create a GitHub
-Release, stage npm versions, or publish to npm.
+The September 7 upgrade request authorizes preserving every downstream patch,
+installing the verified candidate for `holyglory`, and publishing to GitHub and
+npm. Existing releases remain available during validation. The new account-model
+catalogue repair restores discovery of deferred desktop task tools. Installation
+and publication remain pending until their exact-source gates pass; npm's human
+approval boundary remains unchanged.
 
 See `UPSTREAM.md` for the verified tag object, peeled commit, stable update
 policy, and branch transition procedure. See `DecisionHistory.md` for durable
