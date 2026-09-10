@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::CodexThread;
+use codex_core::StartThreadOptions;
 use codex_core::project_automation_id;
 use codex_core::project_automation_now_ms;
 use codex_event_subscriptions::ProjectAutomationCommand;
@@ -13,6 +14,9 @@ use codex_event_subscriptions::WorkPurpose;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
@@ -108,6 +112,159 @@ async fn child_echo(
         .single_request()
         .function_call_output_text(call_id)
         .context("model-visible implementation result")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_automation_partial_fixture_retains_migrated_state_across_text_turns() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let home = Arc::new(tempfile::tempdir()?);
+    let home_lifetime = Arc::downgrade(&home);
+    let TestCodex {
+        codex,
+        config,
+        session_configured,
+        ..
+    } = test_codex()
+        .with_home(home)
+        .build_with_auto_env(&server)
+        .await?;
+    assert!(home_lifetime.upgrade().is_some());
+    assert!(config.sqlite.queue_db_path().is_file());
+    let state = codex.state_db().context("initialized persistent state")?;
+    let project_id = project_automation_id(config.cwd.as_path());
+    let mut projects = Vec::new();
+    for prompt in [
+        "Analyze the project.",
+        "Continue the analysis without tools.",
+    ] {
+        let response = mount_sse_once(
+            &server,
+            sse(vec![
+                ev_assistant_message("analysis-message", "Analysis complete."),
+                ev_completed("analysis-response"),
+            ]),
+        )
+        .await;
+        codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        wait_for_event(&codex, |event| {
+            assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        assert!(response.single_request().body_contains_text(prompt));
+        let project = state
+            .event_subscriptions()
+            .project_status(&project_id)
+            .await?
+            .context("text-only project enrollment")?;
+        assert_eq!(
+            project
+                .threads
+                .get(&session_configured.thread_id.to_string()),
+            Some(&WorkPurpose::Analysis)
+        );
+        assert!(project.delivery.is_empty());
+        projects.push(project);
+    }
+    assert_eq!(
+        (
+            projects[1].started_at_ms,
+            projects[1].next_review_at_ms,
+            &projects[1].threads,
+        ),
+        (
+            projects[0].started_at_ms,
+            projects[0].next_review_at_ms,
+            &projects[0].threads,
+        )
+    );
+    assert!(projects[1].last_activity_at_ms >= projects[0].last_activity_at_ms);
+    codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_automation_guardian_turns_do_not_enroll_or_change_project_work() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let state = test.codex.state_db().context("persistent state")?;
+    let project_id = project_automation_id(test.config.cwd.as_path());
+    assert_eq!(
+        state
+            .event_subscriptions()
+            .project_status(&project_id)
+            .await?,
+        None
+    );
+    for source in [
+        SessionSource::Internal(InternalSessionSource::Guardian),
+        SessionSource::SubAgent(SubAgentSource::Other("guardian".into())),
+    ] {
+        let before = state
+            .event_subscriptions()
+            .project_status(&project_id)
+            .await?;
+        let reviewer = test
+            .thread_manager
+            .start_thread(StartThreadOptions {
+                session_source: Some(source),
+                environments: Some(vec![test.executor_environment().selection().clone()]),
+                ..StartThreadOptions::new(test.config.clone())
+            })
+            .await?;
+        let response = mount_sse_once(
+            &server,
+            sse(vec![
+                ev_assistant_message("review-message", "Review complete."),
+                ev_completed("review-response"),
+            ]),
+        )
+        .await;
+        reviewer
+            .thread
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Review the proposed action, without doing project work.".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        wait_for_event(&reviewer.thread, |event| {
+            assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let request = response.single_request();
+        let developer_text = request.message_input_texts("developer").join("\n");
+        assert!(!developer_text.contains("<project_automation_instructions>"));
+        assert!(!developer_text.contains("<usage_stats_instructions>"));
+        assert_eq!(
+            state
+                .event_subscriptions()
+                .project_status(&project_id)
+                .await?,
+            before
+        );
+        reviewer.thread.shutdown_and_wait().await?;
+        if before.is_none() {
+            text_turn(&test, &server, "Analyze the project as ordinary user work.").await?;
+            assert!(
+                state
+                    .event_subscriptions()
+                    .project_status(&project_id)
+                    .await?
+                    .is_some()
+            );
+        }
+    }
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
