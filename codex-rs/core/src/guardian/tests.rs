@@ -2233,6 +2233,9 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     )?;
     assert_eq!(turn_metadata["turn_trigger"], "guardian_review");
     let request_body = request.body_json();
+    let guardian_developer_text = request.message_input_texts("developer").join("\n");
+    assert!(!guardian_developer_text.contains("<project_automation_instructions>"));
+    assert!(!guardian_developer_text.contains("<usage_stats_instructions>"));
     assert!(
         request_body.get("tools").is_none(),
         "guardian request should use Responses Lite tool input"
@@ -2687,6 +2690,11 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     let second_body = requests[1].body_json();
     let third_body = requests[2].body_json();
     let fourth_body = requests[3].body_json();
+    for request in &requests {
+        let developer_text = request.message_input_texts("developer").join("\n");
+        assert!(!developer_text.contains("<project_automation_instructions>"));
+        assert!(!developer_text.contains("<usage_stats_instructions>"));
+    }
     let third_input = third_body["input"]
         .as_array()
         .expect("guardian review should include input items");
