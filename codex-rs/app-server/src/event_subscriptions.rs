@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::Weak;
@@ -14,6 +15,7 @@ use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadReadyInput;
 use codex_extension_api::ThreadResumeInput;
 use codex_protocol::ThreadId;
+use futures::future::join_all;
 
 use crate::request_processors::ThreadRequestProcessor;
 
@@ -54,6 +56,44 @@ impl WakeSink for AppServerSubscriptionWakeSink {
                     .await?
             }
         };
+        let projects = wake
+            .items
+            .iter()
+            .filter_map(|item| {
+                let event = item.event.as_ref()?;
+                (event.source == "codex.project")
+                    .then(|| event.labels.get("project").cloned())
+                    .flatten()
+            })
+            .collect::<BTreeSet<_>>();
+        if !projects.is_empty() {
+            let mut normal_wake = wake.clone();
+            normal_wake.items.retain(|item| {
+                !item.event.as_ref().is_some_and(|event| {
+                    event.source == "codex.project" && event.event_type == "performance_review_due"
+                })
+            });
+            let normal = if normal_wake.items.is_empty() {
+                WakeDisposition::Started
+            } else {
+                thread
+                    .start_project_subscription_wake_once(normal_wake)
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
+            let reviews = join_all(projects.iter().map(|project_id| {
+                thread_manager.run_project_review_worker(wake.thread_id, project_id)
+            }))
+            .await;
+            let mut disposition = normal;
+            for review in reviews {
+                if review.map_err(|error| error.to_string())? == WakeDisposition::DeferredUntilIdle
+                {
+                    disposition = WakeDisposition::DeferredUntilIdle;
+                }
+            }
+            return Ok(disposition);
+        }
         match thread
             .start_event_subscription_wake_if_idle(wake)
             .await
@@ -106,6 +146,12 @@ where
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         self.notify(input.thread_store.level_id());
-        Box::pin(async {})
+        Box::pin(async move {
+            match codex_core::CodexThread::project_review_worker_idle(input.thread_store).await {
+                Ok(Some(owner_thread_id)) => self.service.notify_thread_ready(owner_thread_id),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "project review idle handling failed"),
+            }
+        })
     }
 }

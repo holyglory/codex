@@ -56,6 +56,10 @@ impl RepositoryIdentityMaterial {
 pub struct CanonicalRepositoryPath(String);
 
 impl CanonicalRepositoryPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, RepositoryIdentityError> {
         let value = value.into();
         let normalized = normalize_canonical_path(&value);

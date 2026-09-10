@@ -84,6 +84,7 @@ mod plugin_search;
 mod plugin_share;
 mod plugin_uninstall;
 mod process_exec;
+mod project_automation;
 mod projects;
 mod rate_limit_reset_credits;
 mod rate_limits;

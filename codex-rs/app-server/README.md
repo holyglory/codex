@@ -917,6 +917,87 @@ Use `thread/queue/list` to read the ordered queue. Pass optional `cursor` and `l
 
 Completed and failed turns automatically start the next queued submission. Interrupted turns leave the queue paused, including after `thread/resume`. Start the queue head with `thread/queue/start`, or select a queued submission by passing `queuedSubmissionId`. An idle thread starts a new turn and returns it; an active thread returns an invalid-request error and leaves the queue unchanged. The queued submission's client message ID remains stable, and its queue entry is removed when Core accepts the new turn. An ordinary `turn/start` does not consume queued submissions.
 
+### Project delivery and performance automation
+
+`projectAutomation/command` is a typed v2 route available without experimental API opt-in.
+Send `{}` to detect support: `capability: { version: 1 }` means local control tools,
+the durable local state database, and the shared subscription scheduler are available.
+`capability: null` means unavailable; older servers return method-not-found.
+This does not enable or advertise the experimental public event-subscription API.
+
+Supply `threadId` to infer the native project scope from the persistent task's working
+directory, or `projectId` to read an already known scope. If both are supplied, they
+must agree. This scope is distinct from the desktop `project/list` collection.
+Omit `command` for status; an unenrolled scope returns `project: null` without creating it.
+Mutations require an unarchived, non-ephemeral `threadId`; all except `bind` also require
+the latest `expectedRevision`. A stale revision fails rather than overwriting newer state.
+
+```json
+{ "method": "projectAutomation/command", "id": 41, "params": {} }
+{ "method": "projectAutomation/command", "id": 42, "params": {
+    "threadId": "019faba0-0000-7000-8000-000000000003",
+    "command": { "action": "bind", "purpose": "implementation", "workstream": "cli" }
+} }
+```
+
+Commands are `status`, `bind`, `linkWork`, `activateDelivery`, `postpone`, `pause`, `resume`,
+`recordDelivery`, `requestReview`, `completeReview`, `transfer`, and `complete`.
+Purposes are `discussion`, `specification`, `analysis`, `implementation`, and `recovery`.
+A first binding without a workstream uses `default`; later bindings that omit it preserve
+the saved scope. Unrelated workstreams keep independent delivery obligations. The returned
+project mode summarizes all workstreams, not one task's admission.
+All `*Ms` timestamps and intervals are integer milliseconds, preserving native deadline
+precision. The server supplies the current time; clients cannot override it.
+Postponement, pause, and ownership transfer carry `authorizationRef`; delivery and review
+completion carry `evidenceRef` and `decisionRef`, respectively. Those completion references
+must resolve to actual Coordinator receipts validated by the server before persistence.
+`complete` requires `outcomeRef` to match the owner's saved outcome link, and verifies
+that every distinct currently linked outcome is finished in the same repository.
+The returned `completed` flag distinguishes closed work from an explicit pause; `resume`
+cannot reactivate completed work. Binding after completion assigns the new owner and
+starts a fresh performance cycle without restoring old delivery alarms or associations;
+prior command history remains retained.
+A client-provided verification boolean is neither accepted nor evidence.
+
+`linkWork` updates the calling task's saved work associations. `outcomeId` and
+`experimentRef` are optional: omitted or null IDs preserve the existing values.
+Set `clearOutcome: true` or `clearExperiment: true` to remove only that association;
+both flags default to false. Supplying an ID together with its matching clear flag,
+or supplying neither an ID nor a true clear flag, is rejected without changing state.
+An outcome ID contains at most 256 ASCII letters, digits, or `-_.:`. An experiment
+reference has the form `RECORD@REVISION`, with a canonical positive unsigned 32-bit
+revision and at most 256 bytes overall. Status returns `threadOutcomes` and
+`threadExperiments` maps keyed by task UUID, so clients can verify saved associations.
+
+```json
+{ "method": "projectAutomation/command", "id": 43, "params": {
+    "threadId": "019faba0-0000-7000-8000-000000000003", "expectedRevision": 3,
+    "command": { "action": "linkWork", "experimentRef": "review-context@1", "clearOutcome": true }
+} }
+```
+
+The CLI connects to the persistent local daemon, or an existing `--remote` endpoint;
+it never launches a short-lived server for future deadlines:
+
+```sh
+codex app-server daemon start
+codex project status
+codex project bind implementation --thread TASK_UUID --workstream cli
+codex project status --thread TASK_UUID --json
+codex project link-work --thread TASK_UUID --expected-revision REVISION --outcome-id OUTCOME_ID
+codex project link-work --thread TASK_UUID --expected-revision REVISION --experiment-ref RECORD@REVISION
+codex project link-work --thread TASK_UUID --expected-revision REVISION --clear-outcome
+codex project delivery --thread TASK_UUID --expected-revision REVISION --target cli --surface 'local executable' --acceptance 'project status responds'
+```
+
+Use the returned revision for subsequent `link-work`, `postpone`, `pause`, `resume`, `review`,
+`record-delivery`, `complete-review`, `transfer`, and `complete` commands. Configure the
+persistent server itself rather than passing per-command configuration overrides.
+CLI output stays below 16 KiB: oversized JSON reports `detailsOmitted: true` and retains
+scope, revision, mode, owner, review, counts, and the selected task's saved links;
+the RPC returns the complete typed state. Human output for `--thread` also shows
+the saved outcome and experiment, rather than merely echoing requested changes.
+
 ### Example: Subscribe a thread to events and heartbeats (experimental)
 
 Event subscriptions require the `event_subscriptions` feature and
