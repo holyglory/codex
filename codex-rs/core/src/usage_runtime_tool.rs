@@ -99,6 +99,19 @@ pub(crate) struct UsageWaitSpan {
 }
 
 impl UsageRuntime {
+    pub(crate) async fn active_operation_reference(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        call_id: &str,
+    ) -> Option<String> {
+        self.tool_state
+            .active_operations
+            .lock()
+            .await
+            .get(&operation_key(thread_id, turn_id, call_id))
+            .map(|active| active.operation_id.as_string())
+    }
     pub(super) async fn begin_tool_attempt_once(
         self: &Arc<Self>,
         context: &ToolAttemptContext<'_>,

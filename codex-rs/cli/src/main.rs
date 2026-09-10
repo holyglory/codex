@@ -71,6 +71,7 @@ mod marketplace_cmd;
 mod mcp_cmd;
 mod migrate_rollouts;
 mod plugin_cmd;
+mod project_automation_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
 #[cfg(target_os = "windows")]
@@ -172,6 +173,9 @@ enum Subcommand {
 
     /// Inspect, correct, and export local usage accounting.
     Usage(UsageCommand),
+
+    /// Manage project delivery deadlines and performance reviews.
+    Project(project_automation_cmd::ProjectAutomationCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -1552,6 +1556,15 @@ async fn cli_main(
             .await?;
             println!("{output}");
         }
+        Some(Subcommand::Project(cmd)) => {
+            anyhow::ensure!(
+                root_config_overrides.raw_overrides.is_empty(),
+                "`codex project` uses the persistent server configuration; configure that server instead of passing -c"
+            );
+            let output =
+                project_automation_cmd::run(cmd, root_remote, root_remote_auth_token_env).await?;
+            println!("{output}");
+        }
         Some(Subcommand::Subscriptions(cmd)) => {
             let output = event_subscriptions_cmd::run_event_subscriptions_command(
                 cmd,
@@ -1991,6 +2004,11 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
+        Subcommand::Project(_) => {
+            anyhow::bail!(
+                "--profile is not supported for `codex project`; use the persistent server configuration"
+            )
+        }
         Subcommand::Usage(_) => {
             anyhow::bail!("--profile is not supported for `codex usage`")
         }
@@ -2644,6 +2662,7 @@ fn unsupported_subcommand_name_for_strict_config(
             Some(app_server_subcommand_name(app_server.subcommand.as_ref()))
         }
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
+        Some(Subcommand::Project(_)) => Some("project"),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         Some(Subcommand::MigrateRollouts(_)) => Some("migrate-rollouts"),
