@@ -1,7 +1,16 @@
 //! Provider-neutral, durable event subscriptions and shared-deadline scheduling.
 
+mod project;
 mod service;
 mod types;
+
+pub use project::AutomationJob;
+pub use project::AutomationJobKind;
+pub use project::DeliveryObligation;
+pub use project::ProjectAutomation;
+pub use project::ProjectAutomationCommand;
+pub use project::ProjectMode;
+pub use project::WorkPurpose;
 
 pub use service::Clock;
 pub use service::EventSubscriptionService;

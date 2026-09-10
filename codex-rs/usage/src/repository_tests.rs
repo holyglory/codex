@@ -310,8 +310,8 @@ fn canonical_paths_accept_and_normalize_windows_drive_and_unc_shapes() {
     let unc_backslash = canonical(r"\\Server\Share\Repo");
     let unc_slash = canonical("//Server/Share/Repo");
 
-    assert_eq!(drive_backslash.0, drive_slash.0);
-    assert_eq!(unc_backslash.0, unc_slash.0);
+    assert_eq!(drive_backslash.as_str(), drive_slash.as_str());
+    assert_eq!(unc_backslash.as_str(), unc_slash.as_str());
     for invalid in [
         r"C:relative\repo",
         r"C:\Work\..\Repo",

@@ -12,6 +12,8 @@ mod developer_instructions;
 mod environment_context;
 mod environments_instructions;
 mod event_subscription_wake;
+mod project_performance_review;
+pub(crate) use project_performance_review::ProjectPerformanceReview;
 mod guardian_approved_action;
 mod guardian_budget_omission;
 mod guardian_context_mode;
