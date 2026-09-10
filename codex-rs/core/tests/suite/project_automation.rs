@@ -22,7 +22,9 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::executor_path_uri;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -44,7 +46,8 @@ async fn wait_for_review_turn(
 async fn request_review(test: &TestCodex) -> Result<ProjectAutomation> {
     let state = test.codex.state_db().context("persistent state enabled")?;
     let store = state.event_subscriptions();
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     let project = store
         .project_command(
             &project_id,
@@ -99,7 +102,12 @@ async fn echo_turn(
         marker,
         "exec_command",
         json!({
-            "cmd": format!("echo {marker}"),
+            "cmd": if test.executor_environment().selection().cwd.infer_path_convention()
+                == Some(codex_utils_path_uri::PathConvention::Windows) {
+                    format!("Write-Output '{marker}'")
+                } else {
+                    format!("echo {marker}")
+                },
             "login": false,
             "yield_time_ms": 10_000,
             "max_output_tokens": 1024,
@@ -128,7 +136,8 @@ async fn activate_delivery(
     server: &MockServer,
     started_at_ms: i64,
 ) -> Result<ProjectAutomation> {
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     let state = test.codex.state_db().context("persistent state enabled")?;
     let store = state.event_subscriptions();
     store
@@ -186,11 +195,22 @@ async fn project_automation_defaults_to_analysis_and_binds_specification_across_
     let test = test_codex().build_with_auto_env(&server).await?;
     let state = test.codex.state_db().context("persistent state enabled")?;
     let store = state.event_subscriptions();
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     assert_eq!(store.project_status(&project_id).await?, None);
 
-    let analysis_requests = echo_turn(&test, &server, "analysis-default").await?;
-    assert_echo_output(&analysis_requests[1], "analysis-default");
+    let analysis_requests = tool_turn(
+        &test,
+        &server,
+        "analysis-default",
+        "project_automation",
+        json!({"command": {"action": "status"}}),
+    )
+    .await?;
+    assert_eq!(
+        project_output(&analysis_requests[1], "analysis-default")?["purpose"],
+        "analysis"
+    );
     assert!(
         analysis_requests[0].body_json()["tools"]
             .as_array()
@@ -295,6 +315,10 @@ async fn project_automation_defaults_to_analysis_and_binds_specification_across_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn project_automation_hard_stop_blocks_only_affected_implementation() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
 
     for (elapsed_hours, expected_mode) in [
         (25, ProjectMode::DeliveryDue),
@@ -389,6 +413,10 @@ async fn project_automation_hard_stop_blocks_only_affected_implementation() -> R
 async fn project_automation_user_postponement_unblocks_later_turn_without_recording_delivery()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
 
     let server = start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
@@ -472,6 +500,10 @@ async fn project_automation_user_postponement_unblocks_later_turn_without_record
 async fn project_automation_exec_carries_saved_work_links_and_actual_operation_identity()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
     let server = start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
     let bound = tool_turn(
@@ -492,7 +524,7 @@ async fn project_automation_exec_carries_saved_work_links_and_actual_operation_i
         .infer_path_convention()
         == Some(codex_utils_path_uri::PathConvention::Windows)
     {
-        "echo $env:DEVCOORDINATOR_WORK_CONTEXT"
+        "Write-Output $env:DEVCOORDINATOR_WORK_CONTEXT"
     } else {
         "printf '%s\\n' \"$DEVCOORDINATOR_WORK_CONTEXT\""
     };
@@ -501,7 +533,11 @@ async fn project_automation_exec_carries_saved_work_links_and_actual_operation_i
         &server,
         "observe-work-context",
         "exec_command",
-        json!({"cmd":command,"login":false,"yield_time_ms":10000}),
+        json!({
+            "cmd": command,
+            "login": false,
+            "yield_time_ms": 10000,
+        }),
     )
     .await?;
     let output = requests[1]
@@ -555,7 +591,7 @@ async fn project_review_worker_uses_fresh_bounded_context_and_keeps_unfinished_j
                     )
                     .expect("test repository writes are authorized");
         })
-        .build_with_auto_env(&server)
+        .build(&server)
         .await?;
     let parent_response = mount_function_call_agent_response(
         &server,
@@ -820,7 +856,7 @@ async fn project_review_worker_reuses_persisted_identity_after_cold_resume_and_r
         .with_config(|config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
         })
-        .build_with_auto_env(&server)
+        .build(&server)
         .await?;
     let project = request_review(&test).await?;
     let job = project.review.as_ref().context("pending review")?;
