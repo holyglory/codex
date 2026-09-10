@@ -989,8 +989,14 @@ async fn handle_response_item_records_tool_result_for_function_call() {
 }
 
 #[tokio::test]
-#[traced_test]
 async fn handle_response_item_records_tool_result_for_exec_command_call() {
+    let buffer: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(Level::TRACE)
+        .with_writer(MockWriter::new(buffer))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
     let server = start_mock_server().await;
 
     mount_sse_once(
@@ -1039,7 +1045,8 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
         .expect("echo command result");
     assert!(output.contains("Process exited with code 0"), "{output}");
 
-    logs_assert(|lines: &[&str]| {
+    let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+    let assert_event = |lines: &[&str]| {
         let start = lines
             .iter()
             .position(|line| {
@@ -1074,7 +1081,8 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
         assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
-    });
+    };
+    assert_event(&logs.lines().collect::<Vec<_>>()).expect("complete tool-result event");
 }
 
 fn tool_decision_assertion<'a>(
