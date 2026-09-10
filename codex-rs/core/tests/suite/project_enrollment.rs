@@ -21,14 +21,15 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call_with_namespace;
-use core_test_support::responses::mount_function_call_agent_response;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::executor_path_uri;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -86,17 +87,28 @@ async fn text_turn(test: &TestCodex, server: &MockServer, prompt: &str) -> Resul
     Ok(())
 }
 
-async fn child_echo(
+async fn child_patch(
     child: &Arc<CodexThread>,
     server: &MockServer,
     call_id: &str,
 ) -> Result<String> {
-    let responses = mount_function_call_agent_response(
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: {call_id}\n+inherited-implementation\n*** End Patch\n"
+    );
+    let mutation = mount_sse_once(
         server,
-        call_id,
-        &json!({"cmd": "echo inherited-implementation", "login": false, "yield_time_ms": 10_000})
-            .to_string(),
-        "exec_command",
+        sse(vec![
+            ev_custom_tool_call(call_id, "apply_patch", &patch),
+            ev_completed("patch-response"),
+        ]),
+    )
+    .await;
+    let completion = mount_sse_once(
+        server,
+        sse(vec![
+            ev_assistant_message("patch-message", "finished"),
+            ev_completed("patch-completion"),
+        ]),
     )
     .await;
     child
@@ -106,11 +118,11 @@ async fn child_echo(
         }]))
         .await?;
     wait_for_event(child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    responses.function_call.single_request();
-    responses
-        .completion
+    mutation.single_request();
+    completion
         .single_request()
-        .function_call_output_text(call_id)
+        .custom_tool_call_output_content_and_success(call_id)
+        .and_then(|(text, _)| text)
         .context("model-visible implementation result")
 }
 
@@ -133,7 +145,7 @@ async fn project_automation_partial_fixture_retains_migrated_state_across_text_t
     assert!(home_lifetime.upgrade().is_some());
     assert!(config.sqlite.queue_db_path().is_file());
     let state = codex.state_db().context("initialized persistent state")?;
-    let project_id = project_automation_id(config.cwd.as_path());
+    let project_id = project_automation_id(&executor_path_uri(config.cwd.as_path())?.to_path_buf());
     let mut projects = Vec::new();
     for prompt in [
         "Analyze the project.",
@@ -196,7 +208,8 @@ async fn project_automation_guardian_turns_do_not_enroll_or_change_project_work(
     let server = start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
     let state = test.codex.state_db().context("persistent state")?;
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     assert_eq!(
         state
             .event_subscriptions()
@@ -282,7 +295,9 @@ async fn project_automation_text_only_enrolls_analysis_and_tracks_existing_speci
     let state = automatic.codex.state_db().context("persistent state")?;
     let project = state
         .event_subscriptions()
-        .project_status(&project_automation_id(automatic.config.cwd.as_path()))
+        .project_status(&project_automation_id(
+            &executor_path_uri(automatic.config.cwd.as_path())?.to_path_buf(),
+        ))
         .await?
         .context("text-only work is enrolled")?;
     assert_eq!(
@@ -333,7 +348,8 @@ async fn project_automation_text_only_enrolls_analysis_and_tracks_existing_speci
         let test = test_codex().build_with_auto_env(&server).await?;
         let state = test.codex.state_db().context("persistent state")?;
         let store = state.event_subscriptions();
-        let project_id = project_automation_id(test.config.cwd.as_path());
+        let project_id =
+            project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
         let before = store
             .project_command(
                 &project_id,
@@ -387,7 +403,8 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
     let owner = test.session_configured.thread_id;
     let state = test.codex.state_db().context("persistent state")?;
     let store = state.event_subscriptions();
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     let bound = store
         .project_command(
             &project_id,
@@ -525,13 +542,20 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
             linked.thread_experiments.get(&owner.to_string())
         )
     );
-    let allowed = child_echo(&child, &server, "child-before-hard-stop").await?;
-    assert!(allowed.contains("Process exited with code 0"), "{allowed}");
+    let allowed = child_patch(&child, &server, "child-before-hard-stop").await?;
     assert!(
-        allowed
-            .lines()
-            .any(|line| line == "inherited-implementation"),
+        allowed.contains("Success. Updated the following files:"),
         "{allowed}"
+    );
+    assert_eq!(
+        test.fs()
+            .read_file_text(
+                &test.workspace_path_uri("child-before-hard-stop")?,
+                Default::default(),
+                None,
+            )
+            .await?,
+        "inherited-implementation\n",
     );
 
     let current = store
@@ -557,9 +581,12 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
         stopped.mode_for_thread(child_id, project_automation_now_ms()),
         ProjectMode::RecoveryOnly
     );
-    let blocked = child_echo(&child, &server, "child-after-hard-stop").await?;
+    let blocked = child_patch(&child, &server, "child-after-hard-stop").await?;
     assert!(blocked.contains("delivery hard-stop deadline"), "{blocked}");
-    assert!(!blocked.contains("Process exited with code 0"), "{blocked}");
+    assert!(
+        !blocked.contains("Success. Updated the following files:"),
+        "{blocked}"
+    );
     child.shutdown_and_wait().await?;
     test.codex.shutdown_and_wait().await?;
     Ok(())
@@ -569,11 +596,12 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
 async fn project_automation_claimed_review_worker_is_exempt_from_parent_enrollment() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    let test = test_codex().build(&server).await?;
     let owner = test.session_configured.thread_id;
     let state = test.codex.state_db().context("persistent state")?;
     let store = state.event_subscriptions();
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     let bound = store
         .project_command(
             &project_id,

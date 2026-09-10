@@ -6,6 +6,7 @@ use codex_event_subscriptions::ProjectAutomationCommand;
 use codex_event_subscriptions::ProjectMode;
 use codex_event_subscriptions::WorkPurpose;
 use codex_features::Feature;
+use core_test_support::is_wine_exec_test_environment;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_custom_tool_call;
@@ -14,6 +15,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::executor_path_uri;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -34,10 +36,34 @@ async fn code_mode_turn(
     call_id: &str,
     source: &str,
 ) -> Result<Value> {
+    let echo = if test
+        .executor_environment()
+        .selection()
+        .cwd
+        .infer_path_convention()
+        == Some(codex_utils_path_uri::PathConvention::Windows)
+    {
+        "Write-Output"
+    } else {
+        "echo"
+    };
+    let mut source = source.to_owned();
+    for marker in ["nested", "resumed"] {
+        let operation = if is_wine_exec_test_environment() {
+            let patch = format!(
+                "*** Begin Patch\n*** Add File: {marker}-marker\n+{marker}-marker\n*** End Patch\n"
+            );
+            format!("tools.apply_patch({})", serde_json::to_string(&patch)?)
+        } else {
+            let arguments = json!({"cmd": format!("{echo} '{marker}-marker'"), "login": false});
+            format!("tools.exec_command({arguments})")
+        };
+        source = source.replace(&format!("__{marker}_operation__"), &operation);
+    }
     mount_sse_once(
         server,
         sse(vec![
-            ev_custom_tool_call(call_id, "exec", source),
+            ev_custom_tool_call(call_id, "exec", &source),
             ev_completed("tool-response"),
         ]),
     )
@@ -60,6 +86,27 @@ async fn code_mode_turn(
     let result = items[1]["text"].as_str().context("JSON result text")?;
     serde_json::from_str(result)
         .with_context(|| format!("Code Mode returned the nested result: {result}"))
+}
+
+async fn assert_mutation_result(test: &TestCodex, result: &Value, marker: &str) -> Result<()> {
+    if is_wine_exec_test_environment() {
+        assert_eq!(result, &json!({}));
+        assert_eq!(
+            test.fs()
+                .read_file_text(&test.workspace_path_uri(marker)?, Default::default(), None,)
+                .await?,
+            format!("{marker}\n"),
+        );
+    } else {
+        assert_eq!(
+            (
+                &result["exit_code"],
+                result["output"].as_str().map(str::trim)
+            ),
+            (&json!(0), Some(marker)),
+        );
+    }
+    Ok(())
 }
 
 #[test_case(ProjectState::Completed; "completed")]
@@ -85,7 +132,8 @@ async fn project_automation_code_mode_preserves_controls_and_nested_admission(
         .await?;
     let state = test.codex.state_db().context("persistent state enabled")?;
     let store = state.event_subscriptions();
-    let project_id = project_automation_id(test.config.cwd.as_path());
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
     let thread_id = test.session_configured.thread_id;
     let now_ms = project_automation_now_ms();
     let elapsed_hours = match scenario {
@@ -147,7 +195,7 @@ async fn project_automation_code_mode_preserves_controls_and_nested_admission(
 const status = JSON.parse(await tools.project_automation({command: {action: "status"}}));
 let execution;
 try {
-    execution = await tools.exec_command({cmd: "echo nested-marker", login: false});
+    execution = await __nested_operation__;
 } catch (error) {
     execution = {error: String(error)};
 }
@@ -176,13 +224,9 @@ text({status, execution});
             assert!(blocked.contains(reason), "{blocked}");
             assert_eq!(observed["execution"]["exit_code"], Value::Null);
         }
-        ProjectState::DeliveryDue => assert_eq!(
-            (
-                &observed["execution"]["exit_code"],
-                observed["execution"]["output"].as_str().map(str::trim),
-            ),
-            (&json!(0), Some("nested-marker"))
-        ),
+        ProjectState::DeliveryDue => {
+            assert_mutation_result(&test, &observed["execution"], "nested-marker").await?;
+        }
     }
     let before_transition = store
         .project_status(&project_id)
@@ -207,20 +251,14 @@ text({status, execution});
             r#"
 const current = JSON.parse(await tools.project_automation({{command: {{action: "status"}}}}));
 const status = JSON.parse(await tools.project_automation({{command: {transition}, expected_revision: current.revision}}));
-const execution = await tools.exec_command({{cmd: "echo resumed-marker", login: false}});
+const execution = await __resumed_operation__;
 text({{status, execution}});
 "#
         ),
     )
     .await?;
-    assert_eq!(
-        (
-            &resumed["status"]["completed"],
-            &resumed["execution"]["exit_code"],
-            resumed["execution"]["output"].as_str().map(str::trim),
-        ),
-        (&json!(false), &json!(0), Some("resumed-marker"))
-    );
+    assert_eq!(resumed["status"]["completed"], json!(false));
+    assert_mutation_result(&test, &resumed["execution"], "resumed-marker").await?;
     let persisted = store
         .project_status(&project_id)
         .await?
