@@ -1040,10 +1040,21 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
     assert!(output.contains("Process exited with code 0"), "{output}");
 
     logs_assert(|lines: &[&str]| {
-        let line = lines
+        let start = lines
             .iter()
-            .find(|line| line.contains("codex.tool_result") && line.contains("call_id=shell-call"))
+            .position(|line| {
+                line.contains("codex.tool_result") && line.contains("call_id=shell-call")
+            })
             .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+        let mut event = String::new();
+        for line in &lines[start..] {
+            event.push_str(line);
+            event.push('\n');
+            if line.contains("event.timestamp=") {
+                break;
+            }
+        }
+        let line = event.as_str();
 
         if !line.contains("tool_name=exec_command") {
             return Err("missing tool_name field".to_string());
