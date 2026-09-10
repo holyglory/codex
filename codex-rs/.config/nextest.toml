@@ -11,6 +11,10 @@ path = "junit.xml"
 [profile.local]
 inherits = "default"
 
+[[profile.default.overrides]]
+filter = 'package(codex-feedback) & test(feedback_upload_delivers_whole_files_or_marked_prefixes)'
+slow-timeout = { period = "1m", terminate-after = 5 }
+
 [test-groups.app_server_protocol_codegen]
 max-threads = 1
 
