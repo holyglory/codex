@@ -36,6 +36,7 @@ use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
 use std::io;
+use std::path::Path;
 use toml::Value as TomlValue;
 use tracing::error;
 
@@ -310,6 +311,26 @@ pub struct LoadedAgentsMd {
 }
 
 impl LoadedAgentsMd {
+    pub(crate) async fn clone_without_focused_core(
+        &self,
+        canonical_policy: &Path,
+        verified_core: &str,
+    ) -> Option<Self> {
+        let instructions = self.user_instructions.as_ref()?;
+        if instructions.text.trim() != verified_core.trim()
+            || tokio::fs::canonicalize(instructions.source.as_path())
+                .await
+                .ok()?
+                .as_path()
+                != canonical_policy
+        {
+            return None;
+        }
+        let mut filtered = self.clone();
+        filtered.user_instructions = None;
+        Some(filtered)
+    }
+
     /// Creates loaded instructions containing one user-level AGENTS.md entry.
     pub fn new_user(contents: String, path: AbsolutePathBuf) -> Self {
         if contents.trim().is_empty() {
@@ -560,3 +581,7 @@ impl InstructionProvenance {
 #[cfg(test)]
 #[path = "agents_md_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "context/world_state/agents_md_focused_policy_dedup_tests.rs"]
+mod focused_policy_dedup_tests;
