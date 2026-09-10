@@ -1357,6 +1357,15 @@ impl UnifiedExecProcessManager {
             context.session.thread_id.to_string(),
         );
         inject_session_id_env(&mut env, context.session.session_id());
+        env.remove("DEVCOORDINATOR_WORK_CONTEXT");
+        if let Ok(Some(work)) = tokio::time::timeout(
+            Duration::from_millis(250),
+            crate::project_work_context::execution_context(context, &cwd),
+        )
+        .await
+        {
+            env.insert("DEVCOORDINATOR_WORK_CONTEXT".into(), work);
+        }
         inject_apply_patch_env(&mut env, &turn.config.features);
         let active_permission_profile = request.turn_environment.active_permission_profile();
         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());

@@ -44,6 +44,18 @@ pub(super) async fn execute(
         UsageStatsAction::TaskTreeSummary => {
             task_tree_summary(store, context, &args, time_range).await
         }
+        UsageStatsAction::PerformanceReview => {
+            let packet = store
+                .performance_review_packet(codex_usage::PerformanceReviewQuery {
+                    repository_id: optional_repository(store, context, args.repository.as_deref())
+                        .await?,
+                    thread_id: optional_thread(context, args.thread_id.as_deref())?,
+                    time_range,
+                })
+                .await
+                .map_err(|_| storage_error())?;
+            serde_json::to_value(packet).map_err(|_| storage_error())
+        }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,
         UsageStatsAction::Tools => query_lists::tools(store, context, &args, time_range).await,
         UsageStatsAction::Activities => {
@@ -68,19 +80,13 @@ async fn task_tree_summary(
     args: &UsageStatsArgs,
     time_range: Option<UtcTimeRange>,
 ) -> Result<Value, FunctionCallError> {
-    let root_thread_id = match args
-        .root_thread_id
-        .as_deref()
-        .ok_or_else(|| tool_error("root_thread_id is required"))?
-    {
+    let root_thread_id = match args.root_thread_id.as_deref().unwrap_or("current") {
         "current" => context.thread_id.clone(),
         value => ThreadId::new(value).map_err(|_| tool_error("root_thread_id is invalid"))?,
     };
-    let include_descendants = args
-        .include_descendants
-        .ok_or_else(|| tool_error("include_descendants is required"))?;
-    let time_range = time_range
-        .ok_or_else(|| tool_error("from_at_ms and to_at_ms are required for task_tree_summary"))?;
+    let include_descendants = args.include_descendants.unwrap_or(true);
+    let time_range =
+        time_range.unwrap_or(UtcTimeRange::new(i64::MIN, i64::MAX).map_err(|_| storage_error())?);
     let summary = store
         .task_tree_summary(codex_usage::TaskTreeSummaryQuery {
             root_thread_id,
@@ -381,10 +387,17 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.limit.is_some()
                 || args.cursor_sort_value.is_some()
                 || args.cursor_id.is_some()
-                || args.root_thread_id.is_none()
-                || args.include_descendants.is_none()
-                || args.from_at_ms.is_none()
-                || args.to_at_ms.is_none()
+        }
+        UsageStatsAction::PerformanceReview => {
+            args.scope.is_some()
+                || args.account.is_some()
+                || args.root_thread_id.is_some()
+                || args.include_descendants.is_some()
+                || args.agent_id.is_some()
+                || args.detail.is_some()
+                || args.limit.is_some()
+                || args.cursor_sort_value.is_some()
+                || args.cursor_id.is_some()
         }
         UsageStatsAction::Repositories => {
             args.scope.is_some()

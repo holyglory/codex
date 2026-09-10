@@ -36,6 +36,7 @@ pub struct UsageStatsHandler;
 enum UsageStatsAction {
     Summary,
     TaskTreeSummary,
+    PerformanceReview,
     Repositories,
     Tools,
     Activities,
@@ -170,6 +171,7 @@ fn usage_stats_spec() -> ToolSpec {
                 vec![
                     json!("summary"),
                     json!("task_tree_summary"),
+                    json!("performance_review"),
                     json!("repositories"),
                     json!("tools"),
                     json!("activities"),
@@ -207,19 +209,20 @@ fn usage_stats_spec() -> ToolSpec {
         (
             "thread_id".to_string(),
             JsonSchema::string(Some(
-                "Thread id or current for detail filtering.".to_string(),
+                "Thread id or current for details or performance_review.".to_string(),
             )),
         ),
         (
             "root_thread_id".to_string(),
             JsonSchema::string(Some(
-                "Root task thread for task_tree_summary; use current for this chat.".to_string(),
+                "Root task for task_tree_summary; defaults to current.".to_string(),
             )),
         ),
         (
             "include_descendants".to_string(),
             JsonSchema::boolean(Some(
-                "For task_tree_summary, include recorded delegated descendants.".to_string(),
+                "For task_tree_summary, include recorded descendants; defaults to true."
+                    .to_string(),
             )),
         ),
         (

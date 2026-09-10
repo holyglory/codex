@@ -44,6 +44,7 @@ use crate::request_processors::McpEventStreams;
 use crate::request_processors::McpRequestProcessor;
 use crate::request_processors::PluginRequestProcessor;
 use crate::request_processors::ProcessExecRequestProcessor;
+use crate::request_processors::ProjectAutomationRequestProcessor;
 use crate::request_processors::ProjectRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
@@ -143,6 +144,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    coordinator_event_bridge: Option<crate::coordinator_event_bridge::CoordinatorEventBridge>,
     outgoing: Arc<OutgoingMessageSender>,
     models_refresh_worker: ModelsRefreshWorker,
     turn_cost_worker: Option<TurnCostWorker>,
@@ -156,6 +158,7 @@ pub(crate) struct MessageProcessor {
     config_processor: ConfigRequestProcessor,
     environment_processor: EnvironmentRequestProcessor,
     event_subscription_processor: EventSubscriptionRequestProcessor,
+    project_automation_processor: ProjectAutomationRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
     fs_processor: FsRequestProcessor,
@@ -361,9 +364,11 @@ impl MessageProcessor {
             }),
             ThreadStoreConfig::InMemory { .. } => None,
         };
-        let event_subscription_store = if config
+        let public_event_subscriptions_enabled = config
             .features
-            .enabled(codex_features::Feature::EventSubscriptions)
+            .enabled(codex_features::Feature::EventSubscriptions);
+        let event_subscription_store = if (public_event_subscriptions_enabled
+            || config.local_control_tools_enabled)
             && matches!(&config.experimental_thread_store, ThreadStoreConfig::Local)
         {
             state_db
@@ -539,7 +544,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_warnings.clone(),
             rpc_transport,
-            event_subscription_service.is_some(),
+            public_event_subscriptions_enabled && event_subscription_service.is_some(),
         );
         let local_usage_processor =
             LocalUsageRequestProcessor::new(config.codex_home.to_path_buf(), outgoing.clone());
@@ -580,7 +585,26 @@ impl MessageProcessor {
             queue_service,
         );
         let event_subscription_processor = EventSubscriptionRequestProcessor::new(
-            event_subscription_service.clone(),
+            event_subscription_service
+                .clone()
+                .filter(|_| public_event_subscriptions_enabled),
+            Arc::clone(&thread_store),
+            Arc::clone(&thread_manager),
+        );
+        let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
+            state_db.as_ref().map(|state| {
+                crate::coordinator_event_bridge::CoordinatorEventBridge::spawn(
+                    Arc::new(state.event_subscriptions().clone()),
+                    Arc::new(service.clone()),
+                )
+            })
+        });
+        let project_automation_processor = ProjectAutomationRequestProcessor::new(
+            config.codex_home.clone(),
+            state_db.clone(),
+            event_subscription_service
+                .clone()
+                .filter(|_| config.local_control_tools_enabled),
             Arc::clone(&thread_store),
             Arc::clone(&thread_manager),
         );
@@ -686,6 +710,8 @@ impl MessageProcessor {
             config_processor,
             environment_processor,
             event_subscription_processor,
+            project_automation_processor,
+            coordinator_event_bridge,
             external_agent_config_processor,
             feedback_processor,
             fs_processor,
@@ -708,6 +734,9 @@ impl MessageProcessor {
     }
 
     pub(crate) fn clear_runtime_references(&self) {
+        if let Some(bridge) = &self.coordinator_event_bridge {
+            bridge.cancel();
+        }
         self.account_processor.clear_external_auth();
         self.apps_processor.shutdown();
         self.models_refresh_worker.shutdown();
@@ -887,6 +916,11 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        if let Some(bridge) = &self.coordinator_event_bridge
+            && let Err(error) = bridge.shutdown().await
+        {
+            tracing::warn!(%error, "Coordinator event source did not shut down cleanly");
+        }
         self.models_refresh_worker.shutdown();
         if let Some(worker) = &self.turn_cost_worker {
             worker.shutdown();
@@ -1348,6 +1382,11 @@ impl MessageProcessor {
             ClientRequest::ThreadQueueStart { params, .. } => self
                 .thread_queue_processor
                 .start(&request_id, params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ProjectAutomationCommand { params, .. } => self
+                .project_automation_processor
+                .command(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::EventSubscriptionCreate { params, .. } => self

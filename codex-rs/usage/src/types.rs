@@ -10,7 +10,7 @@ pub const TAXONOMY_VERSION: i64 = 1;
 #[error("usage identifier is not a bounded non-content identifier")]
 pub struct UsageIdentifierError;
 
-fn valid_non_content_identifier(value: &str) -> bool {
+pub(crate) fn valid_non_content_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && !matches!(value, "." | "..")

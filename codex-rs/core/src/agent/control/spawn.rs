@@ -29,12 +29,12 @@ struct SpawnAgentThreadInheritance {
 /// Initial input delivered after a spawned agent acquires execution capacity.
 ///
 /// V2 communication spawns keep the communication and its context paired so centralized
-/// submission and lifecycle logging cannot receive one without the other. Other spawn sources
-/// provide user input directly, making an uncontextualized inter-agent communication
-/// unrepresentable.
+/// submission and lifecycle logging cannot receive one without the other. User input and
+/// host-annotated context remain distinct so automation does not become new user authorization.
 #[allow(clippy::large_enum_variant)]
 enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
+    Context(ResponseItem),
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
@@ -240,6 +240,23 @@ impl AgentControl {
         ))
         .await?;
         Ok(spawned_agent.thread_id)
+    }
+
+    /// Spawns with host-annotated context rather than relabeling automation as user input.
+    pub(crate) async fn spawn_agent_with_context(
+        &self,
+        config: Config,
+        context: ResponseItem,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_internal(
+            config,
+            SpawnInitialInput::Context(context),
+            session_source,
+            options,
+        ))
+        .await
     }
 
     /// Spawn an agent thread with some metadata.
@@ -590,6 +607,13 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        if options.reserved_thread_id.is_some()
+            && (options.fork_mode.is_some() || session_source.is_none())
+        {
+            return Err(CodexErr::InvalidRequest(
+                "reserved agent IDs require a fresh subagent source".into(),
+            ));
+        }
         let state = self.upgrade()?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
@@ -690,6 +714,7 @@ impl AgentControl {
                     inheritance.environments,
                     inheritance.exec_policy,
                     options.environments.clone(),
+                    options.reserved_thread_id,
                 ))
                 .await?
             }
@@ -753,6 +778,24 @@ impl AgentControl {
             ..Default::default()
         };
         match initial_input {
+            SpawnInitialInput::Context(context) => {
+                let submission = new_thread
+                    .thread
+                    .start_turn_if_idle(
+                        TurnInputRequest::new(codex_protocol::turn_input::TurnInput::ResponseItem(
+                            context,
+                        ))
+                        .on_start(start_options),
+                    )
+                    .await?;
+                if let codex_protocol::turn_input::StartIfIdleSubmission::NotSubmitted { reason } =
+                    submission
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "agent context was not submitted: {reason:?}"
+                    )));
+                }
+            }
             SpawnInitialInput::UserInput(input) => {
                 self.send_input(new_thread.thread_id, input, start_options)
                     .await?;

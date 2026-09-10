@@ -38,6 +38,66 @@ use wiremock::MockServer;
 const YIELD_TIME_MS: u64 = 1_000;
 const TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_automation_code_mode_wait_does_not_poll_the_model() -> Result<()> {
+    use codex_event_subscriptions::EventSubscriptionService;
+    use codex_event_subscriptions::EventSubscriptionStore;
+    use codex_event_subscriptions::PublishedEvent;
+    use codex_event_subscriptions::SourceCursor;
+    use codex_event_subscriptions::SystemClock;
+    use codex_event_subscriptions::WakeBatch;
+    use codex_event_subscriptions::WakeDisposition;
+    use codex_event_subscriptions::WakeSink;
+    use std::collections::BTreeMap;
+
+    skip_if_no_network!(Ok(()));
+    let deadline = codex_core::project_automation_now_ms() + 60_000;
+    let code = format!(
+        "// @exec: {{\"yield_time_ms\": 1000}}\ntext(await tools.await_work({{source: \"build\", event_types: [\"completed\"], after_sequence: 0, deadline_at_ms: {deadline}}}));"
+    );
+    let harness =
+        CodeModeElicitationHarness::start(&code, PermissionProfile::read_only(), |_| {}).await?;
+    let state = harness
+        .test
+        .codex
+        .state_db()
+        .expect("persistent event state");
+    let store = state.event_subscriptions();
+    #[derive(Clone)]
+    struct BusyOwner;
+    impl WakeSink for BusyOwner {
+        async fn wake(&self, _wake: WakeBatch) -> Result<WakeDisposition, String> {
+            Ok(WakeDisposition::DeferredUntilIdle)
+        }
+    }
+    let source_change = store.await_source_change();
+    tokio::pin!(source_change);
+    let _ = futures::poll!(source_change.as_mut());
+    let service = EventSubscriptionService::spawn(store.clone(), BusyOwner, SystemClock);
+    tokio::time::timeout(TURN_COMPLETE_TIMEOUT, source_change).await?;
+    harness.assert_result_held().await;
+    let now_ms = codex_core::project_automation_now_ms();
+    store
+        .publish(
+            PublishedEvent {
+                id: "verified-build-completion".into(),
+                source: "build".into(),
+                event_type: "completed".into(),
+                cursor: SourceCursor {
+                    sequence: 1,
+                    value: None,
+                },
+                labels: BTreeMap::new(),
+                occurred_at_ms: now_ms,
+            },
+            now_ms,
+        )
+        .await?;
+    harness.finish().await;
+    service.shutdown().await;
+    Ok(())
+}
+
 struct CodeModeElicitationHarness {
     _server: MockServer,
     test: TestCodex,

@@ -65,6 +65,68 @@ fn tool_output_rejects_more_than_the_context_safe_bound() {
     assert_eq!(output.log_output(), "content-free local usage operation");
 }
 
+#[tokio::test]
+async fn performance_review_resolves_current_thread_without_optional_arguments() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let context = UsageStatsContext {
+        codex_home: temp.path().to_path_buf(),
+        thread_id: codex_usage::ThreadId::new("spec").expect("thread"),
+        cwd: None,
+    };
+    let request = serde_json::from_value(json!({
+        "action": "performance_review", "thread_id": "current"
+    }))
+    .expect("arguments");
+    let output = query::execute(&store, &context, request)
+        .await
+        .expect("packet");
+    assert_eq!(output["evidence"]["thread_id"], "spec");
+    assert_eq!(output["coverage"]["rawOperations"], 0);
+    assert!(serde_json::to_vec(&output).expect("json").len() <= 12 * 1024);
+    bounded_output(output).expect("bounded result");
+    let request = serde_json::from_value(json!({
+        "action": "performance_review", "scope": "all"
+    }))
+    .expect("arguments");
+    assert!(query::execute(&store, &context, request).await.is_err());
+}
+
+#[tokio::test]
+async fn task_tree_summary_defaults_accept_the_advertised_call() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let context = UsageStatsContext {
+        codex_home: temp.path().to_path_buf(),
+        thread_id: codex_usage::ThreadId::new("spec").expect("thread"),
+        cwd: None,
+    };
+    store
+        .ensure_thread(&codex_usage::NewThread {
+            id: context.thread_id.clone(),
+            parent_thread_id: None,
+            source_kind: codex_usage::ThreadSourceKind::new("test").expect("source"),
+            created_at_ms: 1_000_000,
+        })
+        .await
+        .expect("thread");
+    let request = serde_json::from_value(json!({
+        "action": "task_tree_summary", "root_thread_id": "current", "include_descendants": true
+    }))
+    .expect("arguments");
+    let explicit = query::execute(&store, &context, request)
+        .await
+        .expect("advertised call");
+    let request =
+        serde_json::from_value(json!({ "action": "task_tree_summary" })).expect("arguments");
+    assert_eq!(
+        query::execute(&store, &context, request)
+            .await
+            .expect("defaults"),
+        explicit
+    );
+}
+
 #[test]
 fn all_scope_provider_tokens_aggregate_repository_buckets_without_losing_categories() {
     let tokens = vec![
@@ -153,7 +215,16 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
 
     let home = tempfile::tempdir().expect("home");
     let checkout = tempfile::tempdir().expect("checkout");
-    std::fs::create_dir(checkout.path().join(".git")).expect("git directory");
+    let initialized = tokio::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(checkout.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .status()
+        .await
+        .expect("initialize test repository");
+    assert!(initialized.success(), "initialize test repository");
     let mut account = AccountMetadata::new(
         "primary".parse().expect("alias"),
         AuthMode::Chatgpt,
@@ -170,6 +241,10 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
 
     let store = UsageStore::open(home.path()).await.expect("usage store");
     let workspace = std::fs::canonicalize(checkout.path()).expect("canonical checkout");
+    assert_eq!(
+        codex_git_utils::get_git_repo_root(&workspace),
+        Some(workspace.clone())
+    );
     let repository = store
         .resolve_repository(
             &RepositoryIdentityInput::new(

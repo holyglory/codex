@@ -20,6 +20,7 @@ use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PersistentModeState;
 use crate::context::world_state::PersonalityState;
 use crate::context::world_state::PluginsInstructionsState;
+use crate::context::world_state::ProjectAutomationInstructionsState;
 use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::UsageStatsInstructionsState;
@@ -156,7 +157,47 @@ impl Session {
                 .as_ref()
                 .and_then(|instructions| instructions.end.as_deref()),
         ));
-        world_state.add_section(AgentsMdState::new(step_context.loaded_agents_md.as_deref()));
+        let mut policy_applicability: Vec<&str> = Vec::new();
+        if let Some(project) =
+            crate::project_automation::ensure_project_enrollment(self, step_context)
+                .await
+                .map_err(|error| CodexErr::Fatal(error.to_string()))?
+            && let Some(purpose) = project.threads.get(&self.thread_id().to_string())
+        {
+            policy_applicability.push(match purpose {
+                codex_event_subscriptions::WorkPurpose::Discussion => "discussion",
+                codex_event_subscriptions::WorkPurpose::Specification => "specification",
+                codex_event_subscriptions::WorkPurpose::Analysis => "analysis",
+                codex_event_subscriptions::WorkPurpose::Implementation => "implementation",
+                codex_event_subscriptions::WorkPurpose::Recovery => "recovery",
+            });
+            if matches!(
+                purpose,
+                codex_event_subscriptions::WorkPurpose::Implementation
+                    | codex_event_subscriptions::WorkPurpose::Recovery
+            ) {
+                policy_applicability.push("unclassified-domain");
+            }
+            if !project.delivery.is_empty() {
+                policy_applicability.push("delivery");
+            }
+        }
+        let focused_agents = AgentsMdState::add_focused_policy(
+            &mut world_state,
+            &turn_context.config.codex_home.join("AGENTS.md"),
+            &policy_applicability,
+            step_context.loaded_agents_md.as_deref(),
+        )
+        .await
+        .map_err(|error| {
+            CodexErr::Fatal(format!(
+                "failed to load applicable universal policy: {error}"
+            ))
+        })?;
+        world_state.add_section(
+            focused_agents
+                .unwrap_or_else(|| AgentsMdState::new(step_context.loaded_agents_md.as_deref())),
+        );
         let exec_policy = self
             .services
             .exec_policy
@@ -253,6 +294,9 @@ impl Session {
                     .enabled(Feature::DeferredExecutor),
         ));
         world_state.add_section(UsageStatsInstructionsState::new(
+            turn_context.config.local_control_tools_enabled,
+        ));
+        world_state.add_section(ProjectAutomationInstructionsState(
             turn_context.config.local_control_tools_enabled,
         ));
         let apps_available =

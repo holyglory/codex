@@ -56,6 +56,16 @@ pub enum ServiceError {
 /// atomic, keep acknowledgement revision-aware, and return all due heartbeats
 /// in one collection operation.
 pub trait EventSubscriptionStore: Clone + Send + Sync + 'static {
+    /// Process native-wait creation and cancellation under the existing scheduler's ownership.
+    fn process_wait_requests(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        std::future::ready(Ok(()))
+    }
+    fn restore_project_jobs(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        std::future::ready(Ok(()))
+    }
+    fn wait_for_change(&self) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
     fn create(
         &self,
         subscription: NewSubscription,
@@ -138,11 +148,14 @@ impl Clock for SystemClock {
             .unwrap_or_default()
     }
 
-    fn sleep_until(&self, deadline_ms: i64) -> impl Future<Output = ()> + Send {
-        let delay_ms = deadline_ms.saturating_sub(self.now_ms());
-        async move {
+    async fn sleep_until(&self, deadline_ms: i64) {
+        loop {
+            let delay_ms = deadline_ms.saturating_sub(self.now_ms());
+            if delay_ms <= 0 {
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(
-                u64::try_from(delay_ms).unwrap_or_default(),
+                u64::try_from(delay_ms).unwrap_or_default().min(60_000),
             ))
             .await;
         }
@@ -311,6 +324,10 @@ async fn run_scheduler<S, W, C>(
     let mut ready_threads = HashSet::new();
     let mut retries = HashMap::<ThreadId, RetryState>::new();
     let mut dispatches = JoinSet::<DispatchFinished>::new();
+    let mut wait_request_retry_at = None;
+    if let Err(error) = store.restore_project_jobs().await {
+        tracing::warn!(%error, "failed to restore unfinished project automation jobs");
+    }
     match store.pending_thread_ids().await {
         Ok(thread_ids) => requested_threads.extend(thread_ids),
         Err(error) => tracing::warn!(%error, "failed to restore pending subscription wakes"),
@@ -329,11 +346,10 @@ async fn run_scheduler<S, W, C>(
             .map(|retry| retry.retry_at_ms)
             .filter(|retry_at_ms| *retry_at_ms != i64::MAX)
             .min();
-        let stored_deadline = match (heartbeat_deadline, retry_deadline) {
-            (Some(heartbeat), Some(retry)) => Some(heartbeat.min(retry)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        };
+        let stored_deadline = [heartbeat_deadline, retry_deadline, wait_request_retry_at]
+            .into_iter()
+            .flatten()
+            .min();
         let dispatch_ready = requested_threads.iter().any(|thread_id| {
             !deferred_threads.contains(thread_id)
                 && !in_flight_threads.contains(thread_id)
@@ -360,6 +376,13 @@ async fn run_scheduler<S, W, C>(
         let mut shutdown = false;
         tokio::select! {
             biased;
+            () = store.wait_for_change() => {
+                deferred_threads.clear();
+                match store.pending_thread_ids().await {
+                    Ok(thread_ids) => requested_threads.extend(thread_ids),
+                    Err(error) => tracing::warn!(%error, "failed to reload changed project wakes"),
+                }
+            }
             command = command_rx.recv() => {
                 let Some(command) = command else {
                     break;
@@ -412,6 +435,13 @@ async fn run_scheduler<S, W, C>(
         }
 
         let now_ms = clock.now_ms();
+        wait_request_retry_at = match store.process_wait_requests().await {
+            Ok(()) => None,
+            Err(error) => {
+                tracing::warn!(%error, "failed to process owned event waits");
+                Some(now_ms.saturating_add(RETRY_DELAY_MS))
+            }
+        };
         match store.collect_due_heartbeats(now_ms).await {
             Ok(thread_ids) => requested_threads.extend(thread_ids),
             Err(error) => tracing::warn!(%error, "failed to collect due subscription heartbeats"),
@@ -544,6 +574,9 @@ where
             requested_threads.insert(thread_id);
         }
         Command::Shutdown(response) => {
+            if let Err(error) = store.process_wait_requests().await {
+                tracing::warn!(%error, "owned event wait cleanup failed during shutdown");
+            }
             let _ = response.send(());
             return true;
         }

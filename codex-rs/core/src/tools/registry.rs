@@ -519,6 +519,7 @@ impl ToolRegistry {
         // instead of reporting the thread-wide backend for environment-scoped tools.
         let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;
         let tool = self.tool(&tool_name);
+        crate::project_automation::enforce_project_admission(&invocation).await?;
         let usage_thread_id = invocation.session.thread_id().to_string();
         let usage_parent_thread_id = invocation.turn.parent_thread_id.map(|id| id.to_string());
         let usage_account = usage_account_snapshot(
@@ -844,7 +845,15 @@ impl ToolRegistry {
                 );
                 let usage_terminal = result.result.usage_terminal_outcome();
                 let (usage_status, usage_error) = usage_terminal_status(usage_terminal);
+                let needs_review = !success
+                    || matches!(
+                        usage_status,
+                        codex_usage::TerminalStatus::Failed | codex_usage::TerminalStatus::TimedOut
+                    );
                 usage_attempt.finish(usage_status, usage_error).await;
+                if needs_review {
+                    crate::project_automation::observe_project_bottleneck(&invocation).await;
+                }
                 Ok(result)
             }
             Err(err) => {
@@ -853,6 +862,9 @@ impl ToolRegistry {
                 usage_attempt
                     .finish_error(cancelled, err.usage_terminal_outcome())
                     .await;
+                if !cancelled {
+                    crate::project_automation::observe_project_bottleneck(&invocation).await;
+                }
                 Err(err)
             }
         }
@@ -941,7 +953,7 @@ fn usage_tool_descriptor(
                 descriptor("plugin", "request_plugin_install", "configuration")
             }
             "request_permissions" => descriptor("builtin", "request_permissions", "permissions"),
-            "sleep" | "test_sync" | "test_sync_tool" | "wait_for_environment" => {
+            "sleep" | "test_sync" | "test_sync_tool" | "wait_for_environment" | "await_work" => {
                 UsageToolDescriptor {
                     activity_state: codex_usage::ActivityState::ExternalWait,
                     ..descriptor("builtin", "utility", "control")

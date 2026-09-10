@@ -13,11 +13,13 @@ mod permissions;
 mod persistent_mode;
 mod personality;
 mod plugins_instructions;
+mod project_automation_instructions;
 mod realtime;
 #[cfg(test)]
 mod test_support;
 mod tools;
 mod usage_stats_instructions;
+pub(crate) use project_automation_instructions::ProjectAutomationInstructionsState;
 
 use crate::context::ContextualUserFragment;
 use codex_extension_api::PreviousWorldStateSection;

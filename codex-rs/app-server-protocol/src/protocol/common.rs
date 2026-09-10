@@ -619,6 +619,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueStartResponse,
     },
+    ProjectAutomationCommand => "projectAutomation/command" {
+        params: v2::ProjectAutomationCommandParams,
+        serialization: global("project-automation"),
+        response: v2::ProjectAutomationCommandResponse,
+    },
     #[experimental("eventSubscription/create")]
     EventSubscriptionCreate => "eventSubscription/create" {
         params: v2::EventSubscriptionCreateParams,

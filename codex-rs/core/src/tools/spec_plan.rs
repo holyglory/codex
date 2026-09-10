@@ -9,6 +9,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
 use crate::tools::handlers::AccountManagementHandler;
 use crate::tools::handlers::ApplyPatchHandler;
+use crate::tools::handlers::AwaitWorkHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -21,6 +22,7 @@ use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
+use crate::tools::handlers::ProjectAutomationHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
@@ -1139,6 +1141,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     if turn_context.config.local_control_tools_enabled {
         registry.add(UsageActivityHandler);
         registry.add(UsageStatsHandler);
+        registry.add(ProjectAutomationHandler);
+        registry.add(AwaitWorkHandler);
         registry.add(AccountManagementHandler);
     }
 
