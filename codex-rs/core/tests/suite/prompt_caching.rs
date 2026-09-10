@@ -244,6 +244,8 @@ async fn prompt_tools_are_consistent_across_requests(
         "write_stdin",
         "usage_activity",
         "usage_stats",
+        "project_automation",
+        "await_work",
         "account_management",
     ];
     if expected_update_plan_enabled {

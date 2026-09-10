@@ -31,6 +31,7 @@ use codex_features::Feature;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructionsProvenance;
+use codex_tools::ToolName;
 
 impl Session {
     #[tracing::instrument(name = "world_state.build", level = "info", skip_all)]
@@ -294,10 +295,16 @@ impl Session {
                     .enabled(Feature::DeferredExecutor),
         ));
         world_state.add_section(UsageStatsInstructionsState::new(
-            turn_context.config.local_control_tools_enabled,
+            step_context
+                .tool_router
+                .tool_runtime(&ToolName::plain("usage_stats"))
+                .is_some(),
         ));
         world_state.add_section(ProjectAutomationInstructionsState(
-            turn_context.config.local_control_tools_enabled,
+            step_context
+                .tool_router
+                .tool_runtime(&ToolName::plain("project_automation"))
+                .is_some(),
         ));
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {

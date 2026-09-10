@@ -103,7 +103,7 @@ async fn empty_json_summary_preserves_unknowns_and_formulas() {
     let output = render::summary(&summary, /*json_output*/ true, Some("primary")).expect("render");
     let value: serde_json::Value = serde_json::from_str(&output).expect("json");
     assert_eq!(value["schemaVersion"], 1);
-    assert_eq!(value["databaseSchemaVersion"], 5);
+    assert_eq!(value["databaseSchemaVersion"], 6);
     assert_eq!(value["taxonomyVersion"], 1);
     assert_eq!(value["account"], "primary");
     assert_eq!(value["coverage"]["state"], "unobserved");
@@ -116,8 +116,21 @@ async fn empty_json_summary_preserves_unknowns_and_formulas() {
 async fn current_repository_matches_history_captured_with_less_identity_metadata() {
     let home = tempfile::tempdir().expect("home");
     let checkout = tempfile::tempdir().expect("checkout");
-    std::fs::create_dir(checkout.path().join(".git")).expect("git directory");
+    let initialized = tokio::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(checkout.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .status()
+        .await
+        .expect("initialize test repository");
+    assert!(initialized.success(), "initialize test repository");
     let workspace = std::fs::canonicalize(checkout.path()).expect("canonical checkout");
+    assert_eq!(
+        codex_git_utils::get_git_repo_root(&workspace),
+        Some(workspace.clone())
+    );
     let identity = RepositoryIdentityInput::new(
         CanonicalRepositoryPath::new(workspace.to_string_lossy()).expect("workspace identity"),
     );

@@ -811,6 +811,16 @@ impl TestCodexBuilder {
             }
         };
 
+        let test_env = Arc::new(test_env);
+        new_conversation
+            .thread
+            .thread_extension_data()
+            .insert(TestCodexResources {
+                _home: Arc::clone(&home),
+                _cwd: Arc::clone(&cwd),
+                _test_env: Arc::clone(&test_env),
+            });
+
         Ok(TestCodex {
             home,
             cwd,
@@ -902,6 +912,12 @@ fn ensure_test_model_catalog(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+struct TestCodexResources {
+    _home: Arc<TempDir>,
+    _cwd: Arc<TempDir>,
+    _test_env: Arc<TestEnv>,
+}
+
 pub struct TestCodex {
     pub home: Arc<TempDir>,
     pub cwd: Arc<TempDir>,
@@ -910,7 +926,7 @@ pub struct TestCodex {
     pub config: Config,
     pub thread_manager: Arc<ThreadManager>,
     pub thread_store: Arc<dyn ThreadStore>,
-    _test_env: TestEnv,
+    _test_env: Arc<TestEnv>,
 }
 
 impl TestCodex {

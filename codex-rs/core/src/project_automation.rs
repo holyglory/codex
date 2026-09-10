@@ -46,7 +46,10 @@ pub(crate) async fn ensure_project_enrollment(
     session: &Session,
     step: &StepContext,
 ) -> Result<Option<ProjectAutomation>, FunctionCallError> {
-    if !step.turn.config.local_control_tools_enabled || step.turn.config.ephemeral {
+    if !step.turn.config.local_control_tools_enabled
+        || step.turn.config.ephemeral
+        || crate::guardian::is_basic_session_source(&step.turn.session_source)
+    {
         return Ok(None);
     }
     let Some(state) = session.state_db() else {

@@ -3735,6 +3735,13 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
     wait_for_event(&forked.thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let request = first_forked_request.single_request();
+    let project_instructions = request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("<project_automation_instructions>"))
+        .collect::<Vec<_>>();
+    assert_eq!(project_instructions.len(), 1);
+    assert!(project_instructions[0].len() <= 2_048);
     let snapshot = context_snapshot::format_labeled_requests_snapshot(
         "First request after fork when startup preserves the parent baseline, the fork changes approval policy, and the first forked turn enters plan mode.",
         &[("First Forked Turn Request", &request)],
