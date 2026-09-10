@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionStore;
@@ -25,31 +26,48 @@ use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+mod attention;
+mod await_work;
+mod owned_wait;
+mod project_automation;
+mod project_review_workers;
 mod storage;
+pub use owned_wait::OwnedSubscription;
 use storage::*;
 
 #[derive(Clone)]
 pub struct SqliteEventSubscriptionStore {
     pool: Arc<SqlitePool>,
+    project_changed: Arc<tokio::sync::Notify>,
+    event_changed: Arc<tokio::sync::Notify>,
+    source_changed: Arc<tokio::sync::Notify>,
+    wait_requests: Arc<Mutex<BTreeMap<Uuid, owned_wait::WaitRequest>>>,
 }
 
 impl SqliteEventSubscriptionStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            project_changed: Arc::new(tokio::sync::Notify::new()),
+            event_changed: Arc::new(tokio::sync::Notify::new()),
+            source_changed: Arc::new(tokio::sync::Notify::new()),
+            wait_requests: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     pub(crate) async fn delete_thread(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+        self.detach_project_thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "DELETE FROM event_subscription_pending_wakes
              WHERE subscription_id IN (
-                 SELECT id FROM event_subscriptions WHERE thread_id = ?
+                 SELECT id FROM event_subscriptions WHERE thread_id = ? AND id NOT IN (SELECT subscription_id FROM project_automations)
              )",
         )
         .bind(thread_id.to_string())
         .execute(&mut *tx)
         .await?;
-        let deleted = sqlx::query("DELETE FROM event_subscriptions WHERE thread_id = ?")
+        let deleted = sqlx::query("DELETE FROM event_subscriptions WHERE thread_id = ? AND id NOT IN (SELECT subscription_id FROM project_automations)")
             .bind(thread_id.to_string())
             .execute(&mut *tx)
             .await?
@@ -61,12 +79,25 @@ impl SqliteEventSubscriptionStore {
 }
 
 impl EventSubscriptionStore for SqliteEventSubscriptionStore {
+    async fn process_wait_requests(&self) -> Result<(), StoreError> {
+        self.process_owned_wait_requests().await
+    }
+    async fn restore_project_jobs(&self) -> Result<(), StoreError> {
+        self.restore_unfinished_project_jobs().await
+    }
+    async fn wait_for_change(&self) {
+        self.project_changed.notified().await;
+    }
     async fn create(
         &self,
         subscription: NewSubscription,
         now_ms: i64,
     ) -> Result<Subscription, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(store_error)?;
         let total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM event_subscriptions")
             .fetch_one(&mut *tx)
             .await
@@ -132,6 +163,8 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
         .await
         .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
+        self.project_changed.notify_one();
+        self.source_changed.notify_one();
         Ok(Subscription {
             id,
             thread_id: subscription.thread_id,
@@ -178,6 +211,18 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
     }
 
     async fn cancel(&self, id: Uuid) -> Result<bool, StoreError> {
+        let managed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM project_automations WHERE subscription_id = ?)",
+        )
+        .bind(id.to_string())
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(store_error)?;
+        if managed {
+            return Err(StoreError::Unavailable(
+                "use project pause or completion for a managed project schedule".into(),
+            ));
+        }
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         sqlx::query("DELETE FROM event_subscription_pending_wakes WHERE subscription_id = ?")
             .bind(id.to_string())
@@ -192,6 +237,8 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             .rows_affected()
             != 0;
         tx.commit().await.map_err(store_error)?;
+        self.event_changed.notify_waiters();
+        self.source_changed.notify_one();
         Ok(cancelled)
     }
 
@@ -200,7 +247,21 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
         event: PublishedEvent,
         now_ms: i64,
     ) -> Result<PublishEventOutcome, StoreError> {
+        if event.source == "devcoordinator"
+            && matches!(
+                event.event_type.as_str(),
+                "source.unavailable" | "source.cursor_stale"
+            )
+        {
+            return self.publish_source_attention(event, now_ms).await;
+        }
         let mut tx = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query("INSERT INTO project_event_observations (source, source_sequence, event_json, recorded_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT(source, source_sequence) DO NOTHING")
+            .bind(&event.source).bind(event.cursor.sequence.to_string())
+            .bind(serde_json::to_string(&event).map_err(|_| StoreError::InvalidData)?).bind(now_ms)
+            .execute(&mut *tx).await.map_err(store_error)?;
+        sqlx::query("DELETE FROM project_event_observations WHERE ordinal NOT IN (SELECT ordinal FROM project_event_observations ORDER BY ordinal DESC LIMIT 4096)")
+            .execute(&mut *tx).await.map_err(store_error)?;
         let rows = sqlx::query(
             "SELECT id, thread_id, event_types_json, label_filters_json, cursor_sequence
              FROM event_subscriptions WHERE source = ? ORDER BY created_at_ms, id",
@@ -250,6 +311,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             affected.insert(thread_id);
         }
         tx.commit().await.map_err(store_error)?;
+        self.event_changed.notify_waiters();
         Ok(PublishEventOutcome {
             accepted_subscription_ids: accepted,
             ignored_subscription_ids: ignored,
@@ -297,6 +359,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             affected.insert(*thread_id);
         }
         tx.commit().await.map_err(store_error)?;
+        self.event_changed.notify_waiters();
         Ok(TriggerOutcome {
             triggered_subscription_ids: found.keys().copied().collect(),
             missing_subscription_ids: subscription_ids
@@ -353,11 +416,15 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             affected.insert(thread_id);
         }
         tx.commit().await.map_err(store_error)?;
+        affected.extend(self.collect_project_deadlines(now_ms).await?);
+        if !affected.is_empty() {
+            self.event_changed.notify_waiters();
+        }
         Ok(sorted_thread_ids(affected))
     }
 
     async fn next_heartbeat_deadline(&self) -> Result<Option<i64>, StoreError> {
-        sqlx::query_scalar("SELECT MIN(next_heartbeat_at_ms) FROM event_subscriptions")
+        sqlx::query_scalar("SELECT MIN(deadline) FROM (SELECT next_heartbeat_at_ms AS deadline FROM event_subscriptions UNION ALL SELECT next_deadline_at_ms AS deadline FROM project_automations)")
             .fetch_one(self.pool.as_ref())
             .await
             .map_err(store_error)

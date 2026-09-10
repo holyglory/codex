@@ -251,6 +251,40 @@ The accounting database is stored at `CODEX_HOME/usage/usage.sqlite3`. Its recor
 
 Accounting failures are reported as collection gaps and do not cancel model or tool work. A report with incomplete coverage is not a complete measurement.
 
+## Project reviews and delivery deadlines
+
+Project automation uses the fork's persistent local app-server. Start that server
+with `codex app-server daemon start` if it is not already running; closing a client
+does not remove its saved schedules. `codex project status --json` checks whether
+the connected server supports project automation.
+
+Substantive work is enrolled for performance review. Specification, discussion
+and analysis do not create delivery obligations. When implementation actually
+has an authorized preliminary result, bind its purpose and activate that specific
+delivery target. Worktrees share their Git project identity; workstreams keep
+unrelated delivery obligations separate. Use `codex project --help` for the
+commands and `--thread TASK_ID` to identify the persistent task.
+
+The default delivery deadline is 24 hours: delivery starts while independent
+development continues. Only the separate 36-hour hard stop restricts the affected
+implementation to delivery recovery. User-authorized postponements change the
+effective deadlines without claiming a delivery happened. Explicit pauses and
+completed outcomes retire active scheduling; starting a new specification does
+not revive old delivery alarms.
+
+Performance reviews run independently, including for work with nothing to deploy.
+An inactive window does not invoke the model. A review investigates measured
+bottlenecks, compares remedies, and records a verified keep/revert decision or a
+reasoned inconclusive/no-change result. It may improve workflows inside the
+reviewed repository and existing task scope; specification work never authorizes
+implementing the product. Usage stays in the local collector, and Coordinator
+retains the linked decisions, outcome and verification records.
+
+The agent's `await_work` tool waits on real event publishers instead of repeatedly
+asking the model for status. Coordinator test/deployment waits use the
+`devcoordinator` source with exact repository and run/deployment labels. A missing
+publisher or expired event history is not treated as successful completion.
+
 ## Continue tasks on events or heartbeats
 
 **Experimental, opt-in.** A subscription belongs to an existing persistent task and can match an event source/type, a periodic heartbeat, or both. Waiting itself does not make a model request; a delivered wake can start a new turn and consume usage.
