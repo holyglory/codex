@@ -12,6 +12,7 @@ use sha1::Sha1;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::tools::code_mode::is_exec_tool_name;
 use crate::tools::context::ToolInvocation;
 
 #[path = "project_automation_evidence.rs"]
@@ -91,6 +92,7 @@ pub(crate) async fn enforce_project_admission(
 ) -> Result<(), FunctionCallError> {
     if !invocation.turn.config.local_control_tools_enabled
         || invocation.tool_name.name == "project_automation"
+        || is_exec_tool_name(&invocation.tool_name)
     {
         return Ok(());
     }

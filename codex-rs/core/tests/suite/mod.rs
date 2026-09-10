@@ -124,6 +124,7 @@ mod permissions_messages;
 mod personality;
 mod plugins;
 mod project_automation;
+mod project_automation_code_mode;
 mod project_enrollment;
 mod prompt_cache_key;
 mod prompt_caching;
