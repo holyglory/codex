@@ -141,6 +141,10 @@
         "kind": {
           "$ref": "#/definitions/ProjectAutomationJobKind"
         },
+        "notificationDelivered": {
+          "default": false,
+          "type": "boolean"
+        },
         "notified": {
           "type": "boolean"
         },
