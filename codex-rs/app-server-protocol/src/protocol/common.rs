@@ -674,6 +674,12 @@ client_request_definitions! {
         serialization: global_shared_read("event-subscriptions"),
         response: v2::EventSubscriptionListResponse,
     },
+    #[experimental("eventSubscription/wakePolicy")]
+    EventSubscriptionWakePolicy => "eventSubscription/wakePolicy" {
+        params: v2::EventSubscriptionWakePolicyParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::EventSubscriptionWakePolicyResponse,
+    },
     #[experimental("eventSubscription/cancel")]
     EventSubscriptionCancel => "eventSubscription/cancel" {
         params: v2::EventSubscriptionCancelParams,

@@ -35,11 +35,15 @@ use crate::error_code::invalid_request;
 
 const DEFAULT_LIST_LIMIT: usize = 20;
 
+#[path = "event_subscription_wake_policy.rs"]
+mod wake_policy;
+
 #[derive(Clone)]
 pub(crate) struct EventSubscriptionRequestProcessor {
     service: Option<EventSubscriptionService>,
     thread_store: Arc<dyn ThreadStore>,
     thread_manager: Arc<codex_core::ThreadManager>,
+    state_db: Option<codex_rollout::StateDbHandle>,
 }
 
 impl EventSubscriptionRequestProcessor {
@@ -47,11 +51,13 @@ impl EventSubscriptionRequestProcessor {
         service: Option<EventSubscriptionService>,
         thread_store: Arc<dyn ThreadStore>,
         thread_manager: Arc<codex_core::ThreadManager>,
+        state_db: Option<codex_rollout::StateDbHandle>,
     ) -> Self {
         Self {
             service,
             thread_store,
             thread_manager,
+            state_db,
         }
     }
 
