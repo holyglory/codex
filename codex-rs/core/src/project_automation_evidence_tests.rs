@@ -191,6 +191,7 @@ async fn getter_review_requires_current_project_wide_window() {
         due_at_ms,
         revision: project.revision,
         notified: true,
+        notification_delivered: true,
         decision_ref: None,
     });
     let command = ProjectAutomationCommand::CompleteReview {

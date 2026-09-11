@@ -45,6 +45,9 @@ pub struct AutomationJob {
     pub due_at_ms: i64,
     pub revision: u64,
     pub notified: bool,
+    /// Whether the alarm was delivered; this is not product delivery evidence.
+    #[serde(default)]
+    pub notification_delivered: bool,
     pub decision_ref: Option<String>,
 }
 
@@ -302,6 +305,7 @@ impl ProjectAutomation {
                     },
                     revision: target.revision,
                     notified: false,
+                    notification_delivered: false,
                     decision_ref: None,
                 });
             }
@@ -322,6 +326,7 @@ impl ProjectAutomation {
             due_at_ms,
             revision: self.revision,
             notified: false,
+            notification_delivered: false,
             decision_ref: None,
         }
     }
