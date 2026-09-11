@@ -284,6 +284,23 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.split_off(0)
     }
 
+    pub(crate) async fn take_subscription_wake_inputs_for_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+    ) -> Vec<TurnInput> {
+        use crate::context::ContextualUserFragment;
+        let mut state = turn_state.lock().await;
+        let (alarms, other) = state.pending_input.items.drain(..).partition(|input| {
+            matches!(input, TurnInput::ResponseItem(envelope) if matches!(&envelope.item,
+            ResponseItem::Message { content, .. } if content.iter().any(|content| {
+                matches!(content, codex_protocol::models::ContentItem::InputText { text }
+                    if crate::context::EventSubscriptionWakeContext::matches_text(text))
+            })))
+        });
+        state.pending_input.items = other;
+        alarms
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"

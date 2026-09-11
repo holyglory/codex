@@ -73,6 +73,105 @@ async fn request_review(test: &TestCodex) -> Result<ProjectAutomation> {
         .await?)
 }
 
+async fn allow_background_review(test: &TestCodex, project: &ProjectAutomation) -> Result<()> {
+    let state = test.codex.state_db().context("persistent state")?;
+    let store = state.event_subscriptions();
+    let thread_id = test.session_configured.thread_id;
+    let current = store.read_wake_policy(thread_id).await?;
+    store
+        .set_wake_policy(codex_event_subscriptions::WakePolicyChange {
+            thread_id,
+            scope: codex_event_subscriptions::WakeScope::ProjectReview {
+                project_id: project.project_id.clone(),
+            },
+            policy: codex_event_subscriptions::WakePolicy::AllowBackground,
+            expected_revision: current.revision,
+            authorization_ref: "explicit test review permission".into(),
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stopping_owner_interrupts_review_and_suspends_its_permission() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let project = request_review(&test).await?;
+    allow_background_review(&test, &project).await?;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse(vec![ev_completed("slow-review")]))
+                .set_delay(std::time::Duration::from_secs(60)),
+        )
+        .mount(&server)
+        .await;
+    let mut created = test.thread_manager.subscribe_thread_created();
+    assert_eq!(
+        test.thread_manager
+            .run_project_review_worker(test.session_configured.thread_id, &project.project_id)
+            .await?,
+        WakeDisposition::Started
+    );
+    let worker_id = created.recv().await?;
+    let worker = test.thread_manager.get_thread(worker_id).await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnStarted(_))).await;
+    test.codex
+        .submit(codex_protocol::protocol::Op::Interrupt)
+        .await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    assert_eq!(
+        worker.agent_status().await,
+        codex_protocol::protocol::AgentStatus::Interrupted
+    );
+    assert_eq!(
+        test.thread_manager
+            .run_project_review_worker(test.session_configured.thread_id, &project.project_id)
+            .await?,
+        WakeDisposition::DeferredUntilResume
+    );
+    assert!(created.try_recv().is_err());
+    assert!(
+        test.codex
+            .state_db()
+            .unwrap()
+            .event_subscriptions()
+            .project_status(&project.project_id)
+            .await?
+            .unwrap()
+            .review
+            .is_some()
+    );
+    server.reset().await;
+    let resumed = core_test_support::responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("owner-resumed", "continuing user work"),
+                ev_completed("owner"),
+            ]),
+            sse(vec![
+                ev_assistant_message("review-resumed", "review continued"),
+                ev_completed("review"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_turn("resume the original user work").await?;
+    assert_eq!(
+        test.thread_manager
+            .run_project_review_worker(test.session_configured.thread_id, &project.project_id)
+            .await?,
+        WakeDisposition::Started
+    );
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert_eq!(resumed.requests().len(), 2);
+    assert!(created.try_recv().is_err());
+    Ok(())
+}
+
 async fn tool_turn(
     test: &TestCodex,
     server: &MockServer,
@@ -675,6 +774,14 @@ async fn project_review_worker_uses_fresh_bounded_context_and_keeps_unfinished_j
         test.thread_manager
             .run_project_review_worker(test.session_configured.thread_id, &project.project_id)
             .await?,
+        WakeDisposition::DeferredUntilResume
+    );
+    assert!(created.try_recv().is_err());
+    allow_background_review(&test, &project).await?;
+    assert_eq!(
+        test.thread_manager
+            .run_project_review_worker(test.session_configured.thread_id, &project.project_id)
+            .await?,
         WakeDisposition::Started
     );
     let worker_thread_id = created.recv().await?;
@@ -859,6 +966,7 @@ async fn project_review_worker_reuses_persisted_identity_after_cold_resume_and_r
         .build(&server)
         .await?;
     let project = request_review(&test).await?;
+    allow_background_review(&test, &project).await?;
     let job = project.review.as_ref().context("pending review")?;
     let first_response = mount_sse_once(
         &server,

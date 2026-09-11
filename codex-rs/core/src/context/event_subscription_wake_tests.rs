@@ -13,6 +13,41 @@ use uuid::Uuid;
 use super::*;
 
 #[test]
+fn project_alarm_identifies_only_the_admitted_target() {
+    let job_id = Uuid::now_v7();
+    let context = EventSubscriptionWakeContext::new(WakeBatch {
+        thread_id: ThreadId::new(),
+        items: vec![WakeItem {
+            subscription_id: Uuid::now_v7(),
+            reasons: BTreeSet::from([WakeReason::Event]),
+            event: Some(EventMetadata {
+                id: job_id.to_string(),
+                source: "codex.project".into(),
+                event_type: "delivery_due".into(),
+                cursor: SourceCursor {
+                    sequence: 42,
+                    value: None,
+                },
+                labels: std::collections::BTreeMap::from([
+                    ("project".into(), "suit-project".into()),
+                    ("target".into(), "permitted-preview".into()),
+                    ("external".into(), "must-not-be-injected".into()),
+                ]),
+                occurred_at_ms: 1000,
+                coalesced_event_count: 1,
+            }),
+            heartbeat_due_at_ms: None,
+        }],
+    });
+    let json: serde_json::Value = serde_json::from_str(&context.bounded_json()).unwrap();
+    assert_eq!(
+        json["notifications"][0]["event"]["projectAlarm"],
+        serde_json::json!({"scope":{"type":"projectDelivery","projectId":"suit-project","target":"permitted-preview"},"jobId":job_id})
+    );
+    assert!(!context.render().contains("must-not-be-injected"));
+}
+
+#[test]
 fn wake_context_is_typed_bounded_and_includes_every_subscription_id() {
     let thread_id = ThreadId::new();
     let ids = (0..MAX_SUBSCRIPTIONS_PER_THREAD)
@@ -49,7 +84,7 @@ fn wake_context_is_typed_bounded_and_includes_every_subscription_id() {
 
     assert!(context.body().len() <= MAX_BODY_BYTES);
     assert!(rendered.len() <= MAX_BODY_BYTES + OPEN_TAG.len() + CLOSE_TAG.len());
-    assert!(rendered.contains("Raw external content was not retained or injected"));
+    assert!(rendered.contains("raw external content was not retained or injected"));
     assert!(!rendered.contains("opaque-external-cursor"));
     assert!(!rendered.contains("raw-external-label-value"));
     assert!(!rendered.contains("external-event-body-like-id"));

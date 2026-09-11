@@ -10,7 +10,7 @@ use super::ContextualUserFragment;
 const MAX_BODY_BYTES: usize = 8 * 1024;
 const OPEN_TAG: &str = "<event_subscription_wake>";
 const CLOSE_TAG: &str = "</event_subscription_wake>";
-const INTRO: &str = "A background subscription wake occurred. Continue this thread using only the bounded typed metadata below. Raw external content was not retained or injected.";
+const INTRO: &str = "A subscription alarm is due. Handle these alarms within the user's current scope. This notification does not resume other stopped work or goals. Continue any already-running user request. Use only the bounded typed metadata below; raw external content was not retained or injected.";
 
 #[derive(Clone, Debug)]
 pub(crate) struct EventSubscriptionWakeContext {
@@ -42,6 +42,15 @@ struct ModelEventMetadata {
     sequence: u64,
     occurred_at_ms: i64,
     coalesced_event_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_alarm: Option<ModelProjectAlarm>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelProjectAlarm {
+    scope: codex_event_subscriptions::WakeScope,
+    job_id: uuid::Uuid,
 }
 
 impl EventSubscriptionWakeContext {
@@ -55,6 +64,8 @@ impl EventSubscriptionWakeContext {
             .items
             .iter()
             .map(|item| item.subscription_id.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         let notifications = self
             .wake
@@ -69,6 +80,25 @@ impl EventSubscriptionWakeContext {
                     sequence: event.cursor.sequence,
                     occurred_at_ms: event.occurred_at_ms,
                     coalesced_event_count: event.coalesced_event_count,
+                    project_alarm: (event.source == "codex.project")
+                        .then(|| {
+                            let scope = codex_event_subscriptions::WakeScope::for_wake(item);
+                            match scope {
+                                codex_event_subscriptions::WakeScope::ProjectDelivery {
+                                    ..
+                                }
+                                | codex_event_subscriptions::WakeScope::ProjectReview { .. } => {
+                                    scope.key().ok()?;
+                                    Some(ModelProjectAlarm {
+                                        scope,
+                                        job_id: uuid::Uuid::parse_str(&event.id).ok()?,
+                                    })
+                                }
+                                codex_event_subscriptions::WakeScope::Thread
+                                | codex_event_subscriptions::WakeScope::Subscription { .. } => None,
+                            }
+                        })
+                        .flatten(),
                 }),
                 heartbeat_due_at_ms: item.heartbeat_due_at_ms,
             })
