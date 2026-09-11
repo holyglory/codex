@@ -403,10 +403,11 @@ impl MessageProcessor {
             });
             event_subscription_service = event_subscription_store.map(|store| {
                 EventSubscriptionService::spawn(
-                    store,
+                    store.clone(),
                     AppServerSubscriptionWakeSink::new(
                         thread_manager.clone(),
                         Arc::clone(&background_subscription_loader),
+                        store,
                     ),
                     SystemClock,
                 )
@@ -592,6 +593,7 @@ impl MessageProcessor {
                 .filter(|_| public_event_subscriptions_enabled),
             Arc::clone(&thread_store),
             Arc::clone(&thread_manager),
+            state_db.clone(),
         );
         let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
             state_db.as_ref().map(|state| {
@@ -1416,6 +1418,11 @@ impl MessageProcessor {
             ClientRequest::EventSubscriptionList { params, .. } => self
                 .event_subscription_processor
                 .list(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionWakePolicy { params, .. } => self
+                .event_subscription_processor
+                .wake_policy(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::EventSubscriptionCancel { params, .. } => self
