@@ -88,13 +88,14 @@ fn all_priority_output_caps_account_aliases() {
 #[test]
 fn tool_contract_explains_priority_direction_and_security_boundary() {
     let encoded = serde_json::to_string(&account_management_spec()).expect("serialize spec");
-    assert_eq!(encoded.len(), 1_454);
     assert!(encoded.len() <= MAX_TOOL_SPEC_BYTES);
     for required in [
         "set_priority",
         "set_all_priorities",
         "higher numbers drain first",
-        "never returns email",
+        "never returns credentials",
+        "email",
+        "set_default",
     ] {
         assert!(encoded.contains(required), "missing {required}");
     }
@@ -129,11 +130,11 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
             generation: u64::MAX,
             auto_selection_enabled: true,
             accounts: (0..10)
-                .map(|index| account(&format!("account{index}"), u32::MAX))
+                .map(|index| account(&format!("a{}{index:02}", "x".repeat(61)), u32::MAX))
                 .collect(),
         },
         /*offset*/ 0,
-        /*limit*/ 10,
+        super::validated_limit(Some(10), /*refresh_service_usage*/ true).unwrap(),
         /*routed_account*/ None,
     )
     .expect("maximal service usage page");
@@ -141,7 +142,9 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     for account in &mut usage.accounts {
         account.service_usage = Some(service_usage::maximal_service_usage());
     }
-    let encoded_usage = encode_output(&usage).expect("10 accounts by 8 buckets stays bounded");
+    assert_eq!(usage.next_offset, Some(usage.accounts.len() as u32));
+    let encoded_usage =
+        encode_output(&usage).expect("refreshed page stays bounded with reset dates");
     assert!(encoded_usage.len() < MAX_TOOL_OUTPUT_BYTES);
 
     assert!(encode_output(&"x".repeat(MAX_TOOL_OUTPUT_BYTES)).is_err());

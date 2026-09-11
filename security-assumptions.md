@@ -72,8 +72,14 @@ Last reviewed: 2026-09-03
   outputs, source, commands, or tool payloads.
 - **Authorized in-product agent access:** The operator explicitly authorizes
   Codex agents to read the complete approved content-free usage reports, list
-  nonsecret local account-routing metadata, change account priorities, and
+  nonsecret local account-routing metadata and live limits/reset dates, rename
+  existing profiles, enable/disable profiles, select the default profile,
+  configure automatic selection, change account priorities, and
   append bounded categorical usage-classification corrections.
+  The existing-profile management scope was requested by the owner on
+  2026-09-11 in task `01a09009-b2c6-7fb3-ad93-b364e054107d`; current-turn
+  credential leases and the managed-ChatGPT automatic-selection boundary remain
+  intact. Background-wake permission is separate from account management.
   This does not authorize an agent tool to read credentials, complete login,
   delete profiles or credentials, expose email or opaque service/workspace
   identities, or broaden automatic selection beyond managed ChatGPT OAuth.
