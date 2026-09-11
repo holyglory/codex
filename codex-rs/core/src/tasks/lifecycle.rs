@@ -17,6 +17,32 @@ impl Session {
         token_usage_at_turn_start: Option<&TokenUsage>,
         phase: TurnStartPhase,
     ) {
+        let wake_run = self
+            .services
+            .thread_extension_data
+            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default);
+        wake_run
+            .running
+            .store(/*val*/ true, std::sync::atomic::Ordering::Release);
+        if let Some(origin) = turn_context
+            .extension_data
+            .get::<codex_event_subscriptions::SubscriptionWorkOrigin>()
+        {
+            wake_run.user_work.store(
+                matches!(
+                    *origin,
+                    codex_event_subscriptions::SubscriptionWorkOrigin::UserWork
+                ),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
+        if turn_context
+            .extension_data
+            .get::<codex_event_subscriptions::UserStartedSubscriptionWork>()
+            .is_some()
+        {
+            self.resume_subscription_work().await;
+        }
         let collaboration_mode = turn_context.collaboration_mode();
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             if contributor.turn_start_phase(&self.services.thread_extension_data) != phase {
@@ -52,9 +78,18 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "idle admission state and receipt cleanup must observe the same active turn"
+    )]
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+        let wake_run = self
+            .services
+            .thread_extension_data
+            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default);
+        let dispatch = wake_run.dispatch.lock().await;
+        let active_turn = self.active_turn.lock().await;
         let cause = {
-            let active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return;
             }
@@ -67,6 +102,14 @@ impl Session {
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return;
         }
+        self.services
+            .thread_extension_data
+            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default)
+            .running
+            .store(/*val*/ false, std::sync::atomic::Ordering::Release);
+        self.clear_subscription_wake_inputs().await;
+        drop(active_turn);
+        drop(dispatch);
 
         for contributor in self.services.extensions.thread_lifecycle_contributors() {
             contributor
