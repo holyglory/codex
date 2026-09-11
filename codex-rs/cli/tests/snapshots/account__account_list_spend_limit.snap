@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: "String::from_utf8_lossy(&restricted.get_output().stdout)"
+---
+CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	LIMITS	NEXT RESET
+	beta	ready	api-key	2		unknown (unsupportedAuthentication)	unknown
+*	alpha	ready	chatgpt	1	primary	codex: spend limit reached / workspace owner credits depleted	unknown
