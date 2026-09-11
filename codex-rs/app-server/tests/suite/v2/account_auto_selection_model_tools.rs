@@ -1,4 +1,106 @@
 use super::*;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_management_disable_keeps_current_transport_and_routes_next_user_turn() -> Result<()>
+{
+    let home = TempDir::new()?;
+    let backend = MockServer::start().await;
+    MockResponsesConfig::new(&backend.uri())
+        .with_model("mock-model")
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ncli_auth_credentials_store = \"file\"",
+            backend.uri()
+        ))
+        .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
+        .write(home.path())?;
+    let alpha = persist_managed_chatgpt_profile(home.path(), "alpha", /*priority*/ 10)?;
+    let beta = persist_managed_chatgpt_profile(home.path(), "beta", /*priority*/ 1)?;
+    let mut registry = AccountRegistry {
+        default_account_id: Some(alpha.metadata.id.clone()),
+        accounts: vec![alpha.metadata.clone(), beta.metadata.clone()],
+        ..AccountRegistry::default()
+    };
+    registry.auto_selection.enabled = true;
+    RegistryStore::new(home.path()).create(&registry)?;
+    mount_observed_probe(&backend, &alpha, /*used_percent*/ 10, 1..).await;
+    mount_observed_probe(&backend, &beta, /*used_percent*/ 10, 1..).await;
+    let mut app = fresh_desktop_server(home.path()).await?;
+    let generation = RegistryStore::new(home.path()).read()?.generation;
+    let actions = [
+        ("list", json!({"action":"list"})),
+        (
+            "disable",
+            json!({"action":"disable","account":"alpha","expected_generation":generation}),
+        ),
+        ("check", json!({"action":"list"})),
+    ];
+    let mut events = actions
+        .iter()
+        .map(|(id, args)| {
+            responses::sse(vec![
+                responses::ev_response_created(id),
+                responses::ev_function_call(id, "account_management", &args.to_string()),
+                responses::ev_completed(id),
+            ])
+        })
+        .collect::<Vec<_>>();
+    events.extend([
+        create_final_assistant_message_sse_response("account disabled")?,
+        create_final_assistant_message_sse_response("next user turn")?,
+    ]);
+    let mocked = responses::mount_sse_sequence(&backend, events).await;
+    let thread = app
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".into()),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+    for prompt in [
+        "List accounts, disable alpha, and check the result",
+        "continue on the available account",
+    ] {
+        let completed = app
+            .start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: prompt.into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+    }
+    let requests = mocked.requests();
+    assert_eq!(requests.len(), 5);
+    for (index, request) in requests.iter().enumerate() {
+        let profile = if index < 4 { &alpha } else { &beta };
+        assert_eq!(
+            request.header("authorization"),
+            Some(format!("Bearer {}", profile.access_token))
+        );
+        assert_eq!(
+            request.header("chatgpt-account-id"),
+            Some(profile.workspace_id.clone())
+        );
+    }
+    let disabled: serde_json::Value = serde_json::from_str(
+        &requests[2]
+            .function_call_output_text("disable")
+            .expect("disable result"),
+    )?;
+    assert_eq!(
+        (
+            disabled["changed"].clone(),
+            disabled["routedAccount"].clone(),
+            disabled["defaultAccount"].clone()
+        ),
+        (json!(true), json!("alpha"), json!("beta"))
+    );
+    backend.verify().await;
+    Ok(())
+}
 use app_test_support::write_models_cache_with_models;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
@@ -15,6 +117,75 @@ use pretty_assertions::assert_eq;
 enum CatalogSource {
     Cache,
     Remote,
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_management_tool_reads_live_limits_and_utc_reset_dates() -> Result<()> {
+    let home = TempDir::new()?;
+    let backend = MockServer::start().await;
+    MockResponsesConfig::new(&backend.uri())
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ncli_auth_credentials_store = \"file\"",
+            backend.uri()
+        ))
+        .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
+        .write(home.path())?;
+    let profile =
+        persist_managed_chatgpt_profile(home.path(), "limits-profile", /*priority*/ 1)?;
+    let mut registry = AccountRegistry {
+        default_account_id: Some(profile.metadata.id.clone()),
+        accounts: vec![profile.metadata.clone()],
+        ..AccountRegistry::default()
+    };
+    registry.auto_selection.enabled = true;
+    RegistryStore::new(home.path()).create(&registry)?;
+    mount_observed_probe(&backend, &profile, /*used_percent*/ 42, 1..).await;
+    let mocked = responses::mount_sse_sequence(
+        &backend,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("limits"),
+                responses::ev_function_call(
+                    "limits",
+                    "account_management",
+                    r#"{"action":"list","refresh_service_usage":true}"#,
+                ),
+                responses::ev_completed("limits"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("done"),
+                responses::ev_assistant_message("done-message", "limits read"),
+                responses::ev_completed("done"),
+            ]),
+        ],
+    )
+    .await;
+    let mut app = fresh_desktop_server(home.path()).await?;
+    start_turn(&mut app, "inspect my account limits and reset dates").await?;
+    let requests = mocked.requests();
+    assert_eq!(requests.len(), 2);
+    let result: serde_json::Value = serde_json::from_str(
+        &requests[1]
+            .function_call_output_text("limits")
+            .expect("account tool result"),
+    )?;
+    let usage = &result["accounts"][0]["serviceUsage"];
+    let reset = usage["nextResetAt"].as_i64().expect("next reset timestamp");
+    assert_eq!(usage["state"], "observed");
+    assert_eq!(usage["buckets"][0][1], json!(42.0));
+    assert_eq!(usage["buckets"][0][2], reset);
+    assert_eq!(
+        usage["nextResetAtUtc"],
+        chrono::DateTime::from_timestamp(reset, 0)
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string()
+    );
+    let encoded = result.to_string();
+    assert!(!encoded.contains(&profile.access_token));
+    assert!(!encoded.contains(&profile.workspace_id));
+    backend.verify().await;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

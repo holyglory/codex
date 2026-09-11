@@ -32,6 +32,8 @@ pub(super) struct ServiceUsageOutput {
     pub(super) state: &'static str,
     pub(super) reason: Option<&'static str>,
     pub(super) observed_at: Option<i64>,
+    pub(super) next_reset_at: Option<i64>,
+    pub(super) next_reset_at_utc: Option<String>,
     pub(super) buckets: Vec<ServiceUsageBucket>,
 }
 
@@ -109,6 +111,25 @@ async fn refresh_service_usage(
         return unavailable_usage("invalidResponse");
     }
     let observed_at = Utc::now().timestamp();
+    let next_reset_at = snapshots
+        .iter()
+        .flat_map(|snapshot| {
+            snapshot
+                .primary
+                .iter()
+                .chain(snapshot.secondary.iter())
+                .filter_map(|window| window.resets_at)
+                .chain(
+                    snapshot
+                        .individual_limit
+                        .iter()
+                        .map(|limit| limit.resets_at),
+                )
+        })
+        .filter(|reset| {
+            *reset > observed_at && chrono::DateTime::from_timestamp(*reset, /*nsecs*/ 0).is_some()
+        })
+        .min();
     if let Some(account_id) = account_id {
         let _ = router.record_rate_limits(account_id, observed_at, snapshots.clone());
     }
@@ -116,6 +137,10 @@ async fn refresh_service_usage(
         state: "observed",
         reason: None,
         observed_at: Some(observed_at),
+        next_reset_at,
+        next_reset_at_utc: next_reset_at
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, /*nsecs*/ 0))
+            .map(|reset| reset.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
         buckets: snapshots
             .iter()
             .enumerate()
@@ -185,6 +210,8 @@ fn unavailable_usage(reason: &'static str) -> ServiceUsageOutput {
         state: "unavailable",
         reason: Some(reason),
         observed_at: None,
+        next_reset_at: None,
+        next_reset_at_utc: None,
         buckets: Vec::new(),
     }
 }
@@ -207,6 +234,8 @@ pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
         state: "observed",
         reason: None,
         observed_at: Some(i64::MAX),
+        next_reset_at: Some(i64::MAX),
+        next_reset_at_utc: Some("9999-12-31 23:59:59 UTC".into()),
         buckets: (0..MAX_SERVICE_BUCKETS)
             .map(|index| {
                 ServiceUsageBucket(
