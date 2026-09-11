@@ -476,7 +476,7 @@ fn doctor_reports_safe_health_without_paths() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn limits_preserve_multiple_buckets_partial_unknown_and_unavailable() -> Result<()> {
+async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
@@ -484,6 +484,8 @@ async fn limits_preserve_multiple_buckets_partial_unknown_and_unavailable() -> R
         .and(header("chatgpt-account-id", "workspace-alpha"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "plan_type": "pro",
+            "credits": {"has_credits": true, "unlimited": false, "balance": "9.99"},
+            "spend_control": {"reached": false, "individual_limit": {"limit":"25000", "used":"8000", "remaining":"17000", "used_percent":32, "remaining_percent":68, "reset_after_seconds":0, "reset_at":1893456000}},
             "rate_limit": {
                 "allowed": true,
                 "limit_reached": false,
@@ -491,13 +493,13 @@ async fn limits_preserve_multiple_buckets_partial_unknown_and_unavailable() -> R
                     "used_percent": 42,
                     "limit_window_seconds": 300,
                     "reset_after_seconds": 0,
-                    "reset_at": 123
+                    "reset_at": 1893456000
                 },
                 "secondary_window": {
                     "used_percent": 84,
                     "limit_window_seconds": 3600,
                     "reset_after_seconds": 0,
-                    "reset_at": 456
+                    "reset_at": 1893542400
                 }
             },
             "additional_rate_limits": [{
@@ -510,12 +512,12 @@ async fn limits_preserve_multiple_buckets_partial_unknown_and_unavailable() -> R
                         "used_percent": 70,
                         "limit_window_seconds": 900,
                         "reset_after_seconds": 0,
-                        "reset_at": 789
+                        "reset_at": 1893628800
                     }
                 }
             }]
         })))
-        .expect(1)
+        .expect(3)
         .mount(&server)
         .await;
     let fixture = fixture(/*beta_authenticated*/ true)?;
@@ -557,11 +559,71 @@ async fn limits_preserve_multiple_buckets_partial_unknown_and_unavailable() -> R
         Some(2)
     );
 
+    let listed = stdout_json(
+        codex_command(fixture.home.path())?
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("no_proxy", "127.0.0.1,localhost")
+            .args(["account", "list", "--json"])
+            .assert()
+            .success(),
+    )?;
+    assert_eq!(listed["accounts"][1]["limits"], report["accounts"][1]);
+    assert_eq!(listed["accounts"][1]["limits"]["nextResetAt"], 1893456000);
+    let human = codex_command(fixture.home.path())?
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .args(["account", "list"])
+        .assert()
+        .success();
+    insta::assert_snapshot!(
+        "account_list_limits",
+        String::from_utf8_lossy(&human.get_output().stdout)
+    );
+
     codex_command(fixture.home.path())?
         .args(["account", "limits", "beta", "--json"])
         .assert()
         .code(18)
         .stderr(contains("rateLimitsUnavailable"));
+    server.verify().await;
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let unavailable = stdout_json(
+        codex_command(fixture.home.path())?
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("no_proxy", "127.0.0.1,localhost")
+            .args(["account", "list", "--json"])
+            .assert()
+            .success(),
+    )?;
+    assert_eq!(
+        unavailable["accounts"][1]["limits"]["reason"],
+        "requestFailed"
+    );
+    assert_eq!(
+        unavailable["accounts"][1]["limits"]["nextResetAt"],
+        Value::Null
+    );
+    server.verify().await;
+    server.reset().await;
+    Mock::given(method("GET")).and(path("/api/codex/usage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"plan_type":"pro", "spend_control":{"reached":true}, "rate_limit_reached_type":{"type":"workspace_owner_credits_depleted"}})))
+        .expect(1).mount(&server).await;
+    let restricted = codex_command(fixture.home.path())?
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .args(["account", "list"])
+        .assert()
+        .success();
+    insta::assert_snapshot!(
+        "account_list_spend_limit",
+        String::from_utf8_lossy(&restricted.get_output().stdout)
+    );
     server.verify().await;
     Ok(())
 }
