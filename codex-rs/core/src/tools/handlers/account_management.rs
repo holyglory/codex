@@ -1,20 +1,16 @@
-use std::collections::BTreeMap;
-
 use codex_login::AccountManagementError;
 use codex_login::ManagedAccountPriorityMutation;
 use codex_login::ManagedAccountSnapshot;
 use codex_login::ManagedAccountSummary;
+use codex_login::ManagedAccountUpdate;
 use codex_login::read_managed_accounts;
 use codex_login::set_all_managed_account_priorities;
 use codex_login::set_managed_account_priority;
 use codex_protocol::auth::AuthMode;
-use codex_tools::JsonSchema;
-use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
@@ -28,11 +24,16 @@ use crate::tools::registry::ToolExecutor;
 use self::service_usage::ServiceUsageOutput;
 use self::service_usage::add_service_usage;
 
+use self::spec::account_management_spec;
+
+mod metadata;
 mod service_usage;
+mod spec;
 
 const DEFAULT_PAGE_LIMIT: u32 = 10;
 const MAX_PAGE_LIMIT: u32 = 25;
 const MAX_USAGE_PAGE_LIMIT: u32 = 10;
+const MAX_USAGE_RESULT_LIMIT: u32 = 8;
 const MAX_TOOL_OUTPUT_BYTES: usize = 16 * 1024;
 
 pub struct AccountManagementHandler;
@@ -40,6 +41,27 @@ pub struct AccountManagementHandler;
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum AccountManagementArgs {
+    Rename {
+        account: String,
+        new_alias: String,
+        expected_generation: u64,
+    },
+    Enable {
+        account: String,
+        expected_generation: u64,
+    },
+    Disable {
+        account: String,
+        expected_generation: u64,
+    },
+    SetDefault {
+        account: String,
+        expected_generation: u64,
+    },
+    SetAutoSelection {
+        mode: AutoSelectionMode,
+        expected_generation: u64,
+    },
     List {
         #[serde(default)]
         offset: u32,
@@ -56,6 +78,13 @@ enum AccountManagementArgs {
         priority: u32,
         expected_generation: Option<u64>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AutoSelectionMode {
+    Enabled,
+    Disabled,
 }
 
 #[derive(Serialize)]
@@ -124,6 +153,57 @@ impl ToolExecutor<ToolInvocation> for AccountManagementHandler {
             })?;
             let auth_config = invocation.turn.config.auth_config();
             let value = match args {
+                AccountManagementArgs::Rename {
+                    account,
+                    new_alias,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    ManagedAccountUpdate::Rename {
+                        account,
+                        alias: new_alias,
+                    },
+                    expected_generation,
+                ),
+                AccountManagementArgs::Enable {
+                    account,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    ManagedAccountUpdate::Enable { account },
+                    expected_generation,
+                ),
+                AccountManagementArgs::Disable {
+                    account,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    ManagedAccountUpdate::Disable { account },
+                    expected_generation,
+                ),
+                AccountManagementArgs::SetDefault {
+                    account,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    ManagedAccountUpdate::SetDefault { account },
+                    expected_generation,
+                ),
+                AccountManagementArgs::SetAutoSelection {
+                    mode,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    match mode {
+                        AutoSelectionMode::Enabled => {
+                            ManagedAccountUpdate::EnableAutomaticSelection
+                        }
+                        AutoSelectionMode::Disabled => {
+                            ManagedAccountUpdate::DisableAutomaticSelection
+                        }
+                    },
+                    expected_generation,
+                ),
                 AccountManagementArgs::List {
                     offset,
                     limit,
@@ -295,7 +375,11 @@ fn validated_limit(
     };
     (1..=maximum)
         .contains(&limit)
-        .then_some(limit)
+        .then_some(if refresh_service_usage {
+            limit.min(MAX_USAGE_RESULT_LIMIT)
+        } else {
+            limit
+        })
         .ok_or_else(|| {
             FunctionCallError::RespondToModel(format!(
                 "account_management limit must be between 1 and {maximum}"
@@ -345,71 +429,6 @@ fn auth_mode_label(mode: AuthMode) -> &'static str {
         AuthMode::BedrockApiKey => "bedrock-api-key",
         AuthMode::BedrockAccessKeys => "bedrock-access-keys",
     }
-}
-
-fn account_management_spec() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "action".to_string(),
-            JsonSchema::string_enum(
-                vec![
-                    json!("list"),
-                    json!("set_priority"),
-                    json!("set_all_priorities"),
-                ],
-                Some("Read accounts or change their numeric priority.".to_string()),
-            ),
-        ),
-        (
-            "account".to_string(),
-            JsonSchema::string(Some(
-                "Account alias or local profile ID; required for set_priority.".to_string(),
-            )),
-        ),
-        (
-            "priority".to_string(),
-            JsonSchema::integer(Some(
-                "Unsigned priority; higher numbers drain first and smaller numbers drain last."
-                    .to_string(),
-            )),
-        ),
-        (
-            "expected_generation".to_string(),
-            JsonSchema::integer(Some(
-                "Optional registry generation precondition for a mutation.".to_string(),
-            )),
-        ),
-        (
-            "offset".to_string(),
-            JsonSchema::integer(Some("List offset; defaults to 0.".to_string())),
-        ),
-        (
-            "limit".to_string(),
-            JsonSchema::integer(Some(
-                "List page size; maximum 25, or 10 with service usage refresh.".to_string(),
-            )),
-        ),
-        (
-            "refresh_service_usage".to_string(),
-            JsonSchema::boolean(Some(
-                "For list only, fetch fresh bounded rate-limit usage for eligible managed ChatGPT profiles."
-                    .to_string(),
-            )),
-        ),
-    ]);
-    ToolSpec::Function(ResponsesApiTool {
-        name: "account_management".to_string(),
-        description: "Read credential-free local account metadata, identify the exact profile routed for this turn, and atomically manage automatic-selection priorities. Use list before mutations; pass expected_generation to prevent stale edits. This tool never returns email, credentials, service/workspace identifiers, or account notes, and it cannot add, authorize, rename, activate, or remove profiles. Use refresh_service_usage only when current service rate-limit data is needed."
-            .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["action".to_string()]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-    })
 }
 
 #[cfg(test)]
