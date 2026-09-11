@@ -53,6 +53,39 @@ enum EventSubscriptionsSubcommand {
     Trigger(TriggerArgs),
     /// Publish one typed provider-neutral event.
     Publish(PublishArgs),
+    /// Inspect or explicitly grant background wake permission.
+    WakePolicy(WakePolicyArgs),
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum WakePolicyChoice {
+    RunningOnly,
+    AllowBackground,
+}
+
+#[derive(Debug, Args)]
+struct WakePolicyArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long, requires_all = ["expected_revision", "authorization_ref"])]
+    policy: Option<WakePolicyChoice>,
+    #[arg(long, conflicts_with = "project")]
+    subscription: Option<String>,
+    #[arg(long, conflicts_with = "subscription")]
+    project: Option<String>,
+    #[arg(long, requires = "project", conflicts_with = "review")]
+    target: Option<String>,
+    #[arg(long, requires = "project", conflicts_with = "target")]
+    review: bool,
+    #[arg(long, requires = "policy")]
+    expected_revision: Option<i64>,
+    /// Reference to the explicit user request authorizing this change.
+    #[arg(long, requires = "policy")]
+    authorization_ref: Option<String>,
+    #[arg(long)]
+    cursor: Option<String>,
+    #[arg(long)]
+    limit: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -159,6 +192,56 @@ pub(crate) async fn run_event_subscriptions_command(
         remote.remote_auth_token_env.or(root_remote_auth_token_env),
     )?;
     let action = match action {
+        EventSubscriptionsSubcommand::WakePolicy(args) => {
+            use codex_app_server_protocol::EventSubscriptionWakePolicyParams;
+            use codex_app_server_protocol::EventWakePolicy;
+            use codex_app_server_protocol::EventWakePolicyCommand;
+            use codex_app_server_protocol::EventWakeScope;
+            let command = match args.policy {
+                None => {
+                    if args.subscription.is_some() || args.project.is_some() {
+                        anyhow::bail!("a permission scope requires --policy");
+                    }
+                    EventWakePolicyCommand::Read
+                }
+                Some(policy) => {
+                    let scope = match (args.subscription, args.project, args.target, args.review) {
+                        (Some(subscription_id), None, None, false) => {
+                            EventWakeScope::Subscription { subscription_id }
+                        }
+                        (None, Some(project_id), Some(target), false) => {
+                            EventWakeScope::ProjectDelivery { project_id, target }
+                        }
+                        (None, Some(project_id), None, true) => {
+                            EventWakeScope::ProjectReview { project_id }
+                        }
+                        (None, None, None, false) => EventWakeScope::Thread,
+                        _ => anyhow::bail!(
+                            "choose one subscription, a project delivery target, a project review, or the whole task"
+                        ),
+                    };
+                    EventWakePolicyCommand::Set {
+                        scope,
+                        policy: match policy {
+                            WakePolicyChoice::RunningOnly => EventWakePolicy::RunningOnly,
+                            WakePolicyChoice::AllowBackground => EventWakePolicy::AllowBackground,
+                        },
+                        expected_revision: args
+                            .expected_revision
+                            .ok_or_else(|| anyhow::anyhow!("--expected-revision is required"))?,
+                        authorization_ref: args
+                            .authorization_ref
+                            .ok_or_else(|| anyhow::anyhow!("--authorization-ref is required"))?,
+                    }
+                }
+            };
+            EventSubscriptionAction::WakePolicy(EventSubscriptionWakePolicyParams {
+                thread_id: args.thread,
+                command: Some(command),
+                cursor: args.cursor,
+                limit: args.limit,
+            })
+        }
         EventSubscriptionsSubcommand::Create(args) => {
             EventSubscriptionAction::Create(EventSubscriptionCreateParams {
                 thread_id: args.thread,

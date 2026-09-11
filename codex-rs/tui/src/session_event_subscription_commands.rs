@@ -24,6 +24,7 @@ pub enum EventSubscriptionAction {
     Cancel(EventSubscriptionCancelParams),
     Trigger(EventSubscriptionTriggerParams),
     Publish(EventPublishParams),
+    WakePolicy(codex_app_server_protocol::EventSubscriptionWakePolicyParams),
 }
 
 pub async fn run_event_subscription_command(
@@ -47,6 +48,22 @@ pub async fn run_event_subscription_command(
     }
 
     match action {
+        EventSubscriptionAction::WakePolicy(params) => {
+            let request_id = app_server.next_request_id();
+            let response: codex_app_server_protocol::EventSubscriptionWakePolicyResponse =
+                app_server
+                    .request_handle()
+                    .request_typed(ClientRequest::EventSubscriptionWakePolicy {
+                        request_id,
+                        params,
+                    })
+                    .await
+                    .wrap_err("failed to read or change wake permissions")?;
+            if json {
+                return pretty_json(&response);
+            }
+            Ok(format_wake_policy(&response))
+        }
         EventSubscriptionAction::Create(params) => {
             let request_id = app_server.next_request_id();
             let response: EventSubscriptionCreateResponse = app_server
@@ -137,3 +154,37 @@ pub async fn run_event_subscription_command(
 fn pretty_json(value: &impl serde::Serialize) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(Into::into)
 }
+
+fn format_wake_policy(
+    response: &codex_app_server_protocol::EventSubscriptionWakePolicyResponse,
+) -> String {
+    let mut lines = vec![
+        format!("Revision: {}", response.revision),
+        format!("Running: {}", if response.running { "yes" } else { "no" }),
+        format!("Pending alarms: {}", response.pending_alarm_count),
+        "Default: running only".to_string(),
+    ];
+    for entry in &response.data {
+        let scope = serde_json::to_string(&entry.scope).unwrap_or_default();
+        let policy = match &entry.policy {
+            codex_app_server_protocol::EventWakePolicy::RunningOnly => "running only",
+            codex_app_server_protocol::EventWakePolicy::AllowBackground => "allow background",
+        };
+        lines.push(format!(
+            "{scope}\t{policy}{}",
+            if entry.suspended {
+                " (suspended until user resume)"
+            } else {
+                ""
+            }
+        ));
+    }
+    if let Some(cursor) = &response.next_cursor {
+        lines.push(format!("Next page: --cursor {cursor}"));
+    }
+    lines.join("\n")
+}
+
+#[cfg(test)]
+#[path = "session_event_subscription_commands_tests.rs"]
+mod tests;
