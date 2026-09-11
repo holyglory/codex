@@ -84,7 +84,12 @@ impl RecordingWakeSink {
         Self {
             disposition: Arc::new(AtomicU8::new(match disposition {
                 WakeDisposition::Started => STARTED,
-                WakeDisposition::DeferredUntilIdle => DEFERRED,
+                WakeDisposition::DeferredUntilIdle | WakeDisposition::DeferredUntilResume => {
+                    DEFERRED
+                }
+                WakeDisposition::Queued | WakeDisposition::Handled { .. } => {
+                    panic!("use a selective sink for partial delivery")
+                }
             })),
             batches: Arc::new(Mutex::new(Vec::new())),
             count: watch::channel(0).0,
@@ -95,7 +100,12 @@ impl RecordingWakeSink {
         self.disposition.store(
             match disposition {
                 WakeDisposition::Started => STARTED,
-                WakeDisposition::DeferredUntilIdle => DEFERRED,
+                WakeDisposition::DeferredUntilIdle | WakeDisposition::DeferredUntilResume => {
+                    DEFERRED
+                }
+                WakeDisposition::Queued | WakeDisposition::Handled { .. } => {
+                    panic!("use a selective sink for partial delivery")
+                }
             },
             Ordering::Release,
         );

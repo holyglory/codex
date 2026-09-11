@@ -219,6 +219,7 @@ fn store_error(error: native::StoreError) -> api::JSONRPCErrorError {
         native::StoreError::TotalCapacity | native::StoreError::ThreadCapacity => {
             invalid_request(error.to_string())
         }
+        native::StoreError::RevisionConflict { .. } => invalid_request(error.to_string()),
         native::StoreError::Unavailable(_) | native::StoreError::InvalidData => {
             internal_error("project automation storage is unavailable")
         }

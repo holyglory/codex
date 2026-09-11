@@ -31,13 +31,24 @@ pub(super) async fn upsert_event_wake(
     event: &PublishedEvent,
     now_ms: i64,
 ) -> Result<(), StoreError> {
+    upsert_alarm_wake(tx, subscription_id, "", revision, event, now_ms).await
+}
+
+pub(super) async fn upsert_alarm_wake(
+    tx: &mut Transaction<'_, Sqlite>,
+    subscription_id: Uuid,
+    alarm_key: &str,
+    revision: i64,
+    event: &PublishedEvent,
+    now_ms: i64,
+) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO event_subscription_pending_wakes (
-            subscription_id, revision, event_pending, event_id, event_source,
+            subscription_id, alarm_key, revision, event_pending, event_id, event_source,
             event_type, event_sequence, event_cursor, event_labels_json,
             event_occurred_at_ms, event_count, updated_at_ms
-         ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(subscription_id) DO UPDATE SET
+         ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(subscription_id, alarm_key) DO UPDATE SET
             revision = excluded.revision,
             event_pending = 1,
             event_id = excluded.event_id,
@@ -51,6 +62,7 @@ pub(super) async fn upsert_event_wake(
             updated_at_ms = excluded.updated_at_ms",
     )
     .bind(subscription_id.to_string())
+    .bind(alarm_key)
     .bind(revision)
     .bind(&event.id)
     .bind(&event.source)
@@ -84,7 +96,7 @@ pub(super) async fn upsert_reason_wake(
             subscription_id, revision, heartbeat_pending, manual_pending,
             heartbeat_due_at_ms, updated_at_ms
          ) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(subscription_id) DO UPDATE SET
+         ON CONFLICT(subscription_id, alarm_key) DO UPDATE SET
             revision = excluded.revision,
             heartbeat_pending = MAX(
                 event_subscription_pending_wakes.heartbeat_pending,

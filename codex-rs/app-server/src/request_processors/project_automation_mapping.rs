@@ -205,6 +205,7 @@ fn api_job(job: native::AutomationJob) -> api::ProjectAutomationJob {
         due_at_ms: job.due_at_ms,
         revision: job.revision,
         notified: job.notified,
+        notification_delivered: job.notification_delivered,
         decision_ref: job.decision_ref,
     }
 }

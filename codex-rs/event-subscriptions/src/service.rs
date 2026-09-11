@@ -22,6 +22,7 @@ use crate::SubscriptionPage;
 use crate::TriggerOutcome;
 use crate::ValidationError;
 use crate::WakeBatch;
+use crate::WakeItem;
 use crate::types::validate_trigger_ids;
 
 const COMMAND_CAPACITY: usize = 256;
@@ -38,6 +39,8 @@ pub enum StoreError {
     ThreadCapacity,
     #[error("stored event subscription data is invalid")]
     InvalidData,
+    #[error("wake policy changed: expected revision {expected}, current revision {actual}")]
+    RevisionConflict { expected: i64, actual: i64 },
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -112,18 +115,34 @@ pub trait EventSubscriptionStore: Clone + Send + Sync + 'static {
         thread_id: ThreadId,
         through_revision: i64,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Acknowledge only the delivered alarms; retain the rest of a mixed batch.
+    fn complete_wake_delivery(
+        &self,
+        thread_id: ThreadId,
+        through_revision: i64,
+        delivered: &[WakeItem],
+        discarded: &[WakeItem],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WakeDisposition {
     Started,
+    /// Input was admitted; the consumer acknowledges it after durable recording.
+    Queued,
     DeferredUntilIdle,
+    DeferredUntilResume,
+    Handled {
+        delivered: Vec<WakeItem>,
+        discarded: Vec<WakeItem>,
+    },
 }
 
 /// Host bridge that resolves the target thread and submits one automatic turn.
 ///
-/// Implementations return `DeferredUntilIdle` when the thread is already active;
-/// they must not steer an event notification into the active model call.
+/// Active work accepts bounded input at its next model boundary. `Queued` keeps
+/// newer alarms eligible while the consumer retains durable delivery ownership.
 pub trait WakeSink: Clone + Send + Sync + 'static {
     fn wake(&self, wake: WakeBatch)
     -> impl Future<Output = Result<WakeDisposition, String>> + Send;
@@ -189,6 +208,10 @@ enum Command {
         response: oneshot::Sender<Result<TriggerOutcome, ServiceError>>,
     },
     ThreadReady(ThreadId),
+    UserStarted {
+        thread_id: ThreadId,
+        response: oneshot::Sender<()>,
+    },
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -288,6 +311,20 @@ impl EventSubscriptionService {
         }
     }
 
+    /// Finish one pending-alarm dispatch attempt before the user's first model request.
+    pub async fn notify_user_started(&self, thread_id: ThreadId) -> Result<(), ServiceError> {
+        let (response, receiver) = oneshot::channel();
+        self.send(Command::UserStarted {
+            thread_id,
+            response,
+        })
+        .await?;
+        tokio::time::timeout(Duration::from_secs(30), receiver)
+            .await
+            .map_err(|_| ServiceError::SchedulerUnavailable)?
+            .map_err(|_| ServiceError::SchedulerUnavailable)
+    }
+
     pub async fn shutdown(&self) {
         let (response, receiver) = oneshot::channel();
         if self
@@ -322,6 +359,7 @@ async fn run_scheduler<S, W, C>(
     let mut deferred_threads = HashSet::new();
     let mut in_flight_threads = HashSet::new();
     let mut ready_threads = HashSet::new();
+    let mut ready_waiters = HashMap::<ThreadId, Vec<oneshot::Sender<()>>>::new();
     let mut retries = HashMap::<ThreadId, RetryState>::new();
     let mut dispatches = JoinSet::<DispatchFinished>::new();
     let mut wait_request_retry_at = None;
@@ -395,10 +433,13 @@ async fn run_scheduler<S, W, C>(
                     &mut deferred_threads,
                     &mut retries,
                     &mut ready_threads,
+                    &mut ready_waiters,
                 ).await;
             }
             completion = dispatches.join_next(), if !dispatches.is_empty() => {
                 if let Some(Ok(completion)) = completion {
+                    let thread_id = completion.thread_id;
+                    let succeeded = completion.result.is_ok();
                     in_flight_threads.remove(&completion.thread_id);
                     handle_dispatch_finished(
                         &store,
@@ -409,6 +450,9 @@ async fn run_scheduler<S, W, C>(
                         &mut retries,
                         &mut ready_threads,
                     ).await;
+                    if !succeeded || !requested_threads.contains(&thread_id) {
+                        finish_ready_waiters(&mut ready_waiters, thread_id);
+                    }
                 }
             }
             () = &mut timer => {}
@@ -426,6 +470,7 @@ async fn run_scheduler<S, W, C>(
                 &mut deferred_threads,
                 &mut retries,
                 &mut ready_threads,
+                &mut ready_waiters,
             )
             .await;
         }
@@ -472,10 +517,14 @@ async fn run_scheduler<S, W, C>(
             requested_threads.remove(&thread_id);
             let batch = match store.pending_wake(thread_id).await {
                 Ok(Some(batch)) => batch,
-                Ok(None) => continue,
+                Ok(None) => {
+                    finish_ready_waiters(&mut ready_waiters, thread_id);
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%thread_id, %error, "failed to load pending subscription wake");
                     schedule_retry(&mut retries, thread_id, now_ms);
+                    finish_ready_waiters(&mut ready_waiters, thread_id);
                     continue;
                 }
             };
@@ -494,6 +543,10 @@ async fn run_scheduler<S, W, C>(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scheduler owns these coordinated request, retry and user-start waiter sets"
+)]
 async fn handle_command<S, C>(
     store: &S,
     clock: &C,
@@ -502,6 +555,7 @@ async fn handle_command<S, C>(
     deferred_threads: &mut HashSet<ThreadId>,
     retries: &mut HashMap<ThreadId, RetryState>,
     ready_threads: &mut HashSet<ThreadId>,
+    ready_waiters: &mut HashMap<ThreadId, Vec<oneshot::Sender<()>>>,
 ) -> bool
 where
     S: EventSubscriptionStore,
@@ -564,10 +618,23 @@ where
             };
             if let Ok(outcome) = &result {
                 requested_threads.extend(outcome.affected_thread_ids.iter().copied());
+                for thread_id in &outcome.affected_thread_ids {
+                    deferred_threads.remove(thread_id);
+                }
             }
             let _ = response.send(result);
         }
         Command::ThreadReady(thread_id) => {
+            ready_threads.insert(thread_id);
+            deferred_threads.remove(&thread_id);
+            retries.remove(&thread_id);
+            requested_threads.insert(thread_id);
+        }
+        Command::UserStarted {
+            thread_id,
+            response,
+        } => {
+            ready_waiters.entry(thread_id).or_default().push(response);
             ready_threads.insert(thread_id);
             deferred_threads.remove(&thread_id);
             retries.remove(&thread_id);
@@ -582,6 +649,17 @@ where
         }
     }
     false
+}
+
+fn finish_ready_waiters(
+    waiters: &mut HashMap<ThreadId, Vec<oneshot::Sender<()>>>,
+    thread_id: ThreadId,
+) {
+    if let Some(waiters) = waiters.remove(&thread_id) {
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+    }
 }
 
 async fn handle_dispatch_finished<S, C>(
@@ -612,7 +690,48 @@ async fn handle_dispatch_finished<S, C>(
                 requested_threads.insert(thread_id);
             }
         }
-        Ok(WakeDisposition::DeferredUntilIdle) => {
+        Ok(WakeDisposition::Handled {
+            delivered,
+            discarded,
+        }) => {
+            if let Err(error) = store
+                .complete_wake_delivery(thread_id, through_revision, &delivered, &discarded)
+                .await
+            {
+                tracing::warn!(%thread_id, %error, "failed to acknowledge delivered alarms");
+                schedule_retry(retries, thread_id, clock.now_ms());
+            } else {
+                retries.remove(&thread_id);
+                let newer_pending = store
+                    .pending_wake(thread_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|pending| pending.through_revision > through_revision);
+                if ready_threads.remove(&thread_id) || newer_pending {
+                    requested_threads.insert(thread_id);
+                } else {
+                    deferred_threads.remove(&thread_id);
+                    requested_threads.remove(&thread_id);
+                }
+            }
+        }
+        Ok(WakeDisposition::Queued) => {
+            retries.remove(&thread_id);
+            deferred_threads.remove(&thread_id);
+            let newer_pending = store
+                .pending_wake(thread_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|pending| pending.through_revision > through_revision);
+            if ready_threads.remove(&thread_id) || newer_pending {
+                requested_threads.insert(thread_id);
+            } else {
+                requested_threads.remove(&thread_id);
+            }
+        }
+        Ok(WakeDisposition::DeferredUntilIdle | WakeDisposition::DeferredUntilResume) => {
             retries.remove(&thread_id);
             if ready_threads.remove(&thread_id) {
                 requested_threads.insert(thread_id);
