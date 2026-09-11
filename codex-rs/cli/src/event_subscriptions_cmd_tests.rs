@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn wake_policy_scopes_require_explicit_permission_and_revision() {
+    assert!(
+        EventSubscriptionsCommand::try_parse_from([
+            "subscriptions",
+            "wake-policy",
+            "--thread",
+            "task"
+        ])
+        .is_ok()
+    );
+    assert!(
+        EventSubscriptionsCommand::try_parse_from([
+            "subscriptions",
+            "wake-policy",
+            "--thread",
+            "task",
+            "--policy",
+            "allow-background"
+        ])
+        .is_err()
+    );
+    for scope in [
+        vec![],
+        vec!["--subscription", "alarm"],
+        vec!["--project", "project", "--target", "preview"],
+        vec!["--project", "project", "--review"],
+    ] {
+        let mut args = vec![
+            "subscriptions",
+            "wake-policy",
+            "--thread",
+            "task",
+            "--policy",
+            "allow-background",
+            "--expected-revision",
+            "1",
+            "--authorization-ref",
+            "user-request",
+        ];
+        args.extend(scope);
+        assert!(EventSubscriptionsCommand::try_parse_from(args).is_ok());
+    }
+}
+
+#[test]
 fn labels_are_structured_and_duplicates_are_rejected() {
     assert_eq!(
         parse_labels(vec!["repo=codex".to_string(), "state=ready".to_string()]).unwrap(),
