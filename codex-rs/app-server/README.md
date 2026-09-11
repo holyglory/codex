@@ -206,6 +206,7 @@ Example with notification opt-out:
 - `thread/queue/changed` — experimental notification emitted with the changed `threadId`.
 - `eventSubscription/create` — experimental; create a durable event and/or heartbeat subscription for one persistent thread.
 - `eventSubscription/list` — experimental; page through subscriptions, optionally filtered by `threadId`.
+- `eventSubscription/wakePolicy` — experimental; read or change explicit background-wake permissions for a task, subscription, project delivery target or project review.
 - `eventSubscription/cancel` — experimental; cancel one subscription and discard its undelivered wake metadata.
 - `eventSubscription/trigger` — experimental; directly trigger one or more subscription IDs.
 - `event/publish` — experimental; publish one bounded provider-neutral event for filter matching and cursor advancement.
@@ -1042,15 +1043,55 @@ credentials are not accepted or stored.
 } } }
 ```
 
-One process-wide deadline scheduler serves every heartbeat. On a deadline it
-collects all due subscriptions, groups them by thread, and submits at most one
-automatic continuation per affected thread. A real event processed at the same
-deadline is included in that batch. Active threads retain and coalesce pending
-wakes until their normal idle boundary; unloaded threads are resumed from their
-durable history before delivery. The model-visible developer message always
-contains every due subscription ID and bounded typed metadata, never raw
-external content. Opaque cursor values, label values, and publisher event IDs
-remain outside model context. Waiting itself makes no model request.
+One process-wide scheduler collects and coalesces due alarms. During ordinary
+user work, it injects alarm context at a safe input boundary. Inactive tasks retain
+pending alarms unless the user has explicitly permitted background wakes.
+Opening or passively resuming a thread does not restore permission. A user work
+start or steer restores suspended grants and releases applicable missed alarms
+without resetting deadlines. Stop suspends grants and stops owned review work.
+A permitted alarm-only turn does not release unrelated stopped work or goals.
+
+Use `eventSubscription/wakePolicy` to inspect or change permissions:
+
+```json
+{ "method": "eventSubscription/wakePolicy", "id": 52, "params": {
+    "threadId": "019faba0-0000-7000-8000-000000000001",
+    "command": { "action": "read" }, "limit": 8
+} }
+```
+
+The response contains `revision`, `running` (ordinary user work),
+`pendingAlarmCount`, paginated `data`, and `nextCursor`. Each policy entry reports
+its scope, policy, suspension and authorization reference. Read pages default to
+8 entries, with a maximum of 16. Only after an explicit user request, submit a
+generation-checked change using the returned revision:
+
+```json
+{ "method": "eventSubscription/wakePolicy", "id": 53, "params": {
+    "threadId": "019faba0-0000-7000-8000-000000000001",
+    "command": { "action": "set", "scope": { "type": "thread" },
+        "policy": "allowBackground", "expectedRevision": 0,
+        "authorizationRef": "example-explicit-user-request" }
+} }
+```
+
+Other scopes are `subscription` with `subscriptionId`, `projectDelivery` with
+`projectId` and `target`, and `projectReview` with `projectId`. Specific policies
+override the thread-wide policy. `runningOnly` restricts a scope to ordinary user
+work. A set response returns the affected entry. Fresh permission after Stop
+enables only its scope; existing grants stay suspended until user work resumes.
+Explicit project pauses and other work-admission controls remain effective.
+
+Project job `notificationDelivered` records delivered alarm input separately from
+qualified product-delivery evidence. Restart preserves pending alarms and avoids
+repeating delivered delivery alarms; unfinished reviews reuse their recorded
+worker identity. Immediate `eventSubscription/trigger` requests authorize one
+handling of their subscriptions and are cancelled by Stop.
+
+Model-visible messages contain bounded typed metadata and unique subscription
+IDs. Trusted `codex.project` notifications identify the admitted project, target
+and job. Raw external content, opaque cursors, external label values and publisher
+event IDs remain outside model context. Waiting itself makes no model request.
 
 The CLI uses the same RPCs, for example:
 
