@@ -12,6 +12,8 @@ use serde::Serialize;
 use super::AccountCommandError;
 use super::AccountErrorKind;
 use super::JSON_SCHEMA_VERSION;
+use super::limits;
+use super::limits::AccountLimitsJson;
 use super::read_or_empty;
 use super::read_registry;
 use super::resolve_account;
@@ -72,12 +74,20 @@ impl AccountView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AccountListJson {
+struct AccountListJson<'a> {
     schema_version: u32,
     generation: u64,
     active_account: Option<AccountAlias>,
     priority_order: &'static str,
-    accounts: Vec<AccountView>,
+    accounts: Vec<AccountListEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct AccountListEntry<'a> {
+    #[serde(flatten)]
+    account: AccountView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<&'a AccountLimitsJson>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +114,33 @@ pub(super) fn list(
     json: bool,
 ) -> Result<(), AccountCommandError> {
     let registry = read_or_empty(store)?;
+    render_list(config, &registry, json, &[])
+}
+
+pub(super) async fn list_with_limits(
+    config: &Config,
+    store: &RegistryStore,
+    json: bool,
+) -> Result<(), AccountCommandError> {
+    let registry = read_or_empty(store)?;
+    let limits = limits::fetch_all(config, &registry.accounts)
+        .await
+        .unwrap_or_else(|_| {
+            registry
+                .accounts
+                .iter()
+                .map(|account| limits::unknown(account, "credentialUnavailable"))
+                .collect()
+        });
+    render_list(config, &registry, json, &limits)
+}
+
+fn render_list(
+    config: &Config,
+    registry: &AccountRegistry,
+    json: bool,
+    limits: &[AccountLimitsJson],
+) -> Result<(), AccountCommandError> {
     let mut accounts = registry.accounts.iter().collect::<Vec<_>>();
     accounts.sort_by(|left, right| {
         right
@@ -114,7 +151,14 @@ pub(super) fn list(
     });
     let views = accounts
         .into_iter()
-        .map(|account| AccountView::load(config, &registry, account))
+        .map(|account| -> Result<_, AccountCommandError> {
+            Ok(AccountListEntry {
+                account: AccountView::load(config, registry, account)?,
+                limits: limits
+                    .iter()
+                    .find(|limit| limit.id == account.id.to_string()),
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let active_account = registry
         .default_account_id
@@ -134,16 +178,51 @@ pub(super) fn list(
             println!("No account profiles configured.");
             return Ok(());
         }
-        println!("CURRENT\tALIAS\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE");
-        for account in views {
+        let limits_header = if limits.is_empty() {
+            ""
+        } else {
+            "\tLIMITS\tNEXT RESET"
+        };
+        println!(
+            "CURRENT\tALIAS\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE{limits_header}"
+        );
+        for entry in views {
+            let account = entry.account;
             let current = if account.current { "*" } else { "" };
             let status = match (account.enabled, account.authenticated) {
                 (false, _) => "disabled",
                 (true, false) => "logged-out",
                 (true, true) => "ready",
             };
+            let limits_columns = match entry.limits {
+                Some(limits) => {
+                    let summary = if limits.state == "observed" {
+                        limits
+                            .buckets
+                            .iter()
+                            .map(|bucket| {
+                                let name = bucket
+                                    .limit_name
+                                    .as_deref()
+                                    .or(bucket.limit_id.as_deref())
+                                    .unwrap_or("codex");
+                                format!(
+                                    "{}: {}",
+                                    safe_human_text(name),
+                                    limits::bucket_summary(bucket)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    } else {
+                        format!("unknown ({})", limits.reason.unwrap_or("unavailable"))
+                    };
+                    format!("\t{summary}\t{}", limits::reset_label(limits.next_reset_at))
+                }
+                None => String::new(),
+            };
             println!(
-                "{current}\t{}\t{status}\t{}\t{}\t{}",
+                "{current}\t{}\t{status}\t{}\t{}\t{}{limits_columns}",
                 account.alias,
                 auth_mode_label(account.auth_mode),
                 account.priority,
@@ -272,7 +351,7 @@ fn auth_mode_label(mode: AuthMode) -> &'static str {
     }
 }
 
-fn safe_human_text(value: &str) -> String {
+pub(super) fn safe_human_text(value: &str) -> String {
     value
         .chars()
         .map(|character| {

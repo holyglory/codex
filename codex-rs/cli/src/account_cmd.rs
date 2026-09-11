@@ -51,7 +51,7 @@ pub(crate) struct AccountCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum AccountAction {
-    /// List configured account profiles.
+    /// List account profiles with service limits and reset times.
     List,
     /// Show the current default account profile.
     Current,
@@ -274,7 +274,7 @@ async fn execute(
 ) -> Result<(), AccountCommandError> {
     let store = RegistryStore::new(&config.codex_home);
     match action {
-        AccountAction::List => view::list(config, &store, json),
+        AccountAction::List => view::list_with_limits(config, &store, json).await,
         AccountAction::Current => view::current(config, &store, json),
         AccountAction::Show(reference) => view::show(config, &store, &reference.account, json),
         AccountAction::Add(args) => add::run(config, &store, args, json).await,
