@@ -10,10 +10,12 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use super::AccountManagementError;
+use super::ManagedAccountUpdate;
 use super::ProfileAuthStorage;
 use super::read_managed_accounts;
 use super::set_all_managed_account_priorities;
 use super::set_managed_account_priority;
+use super::update_managed_account;
 use crate::AuthConfig;
 use crate::AuthDotJson;
 use crate::AuthKeyringBackendKind;
@@ -103,6 +105,113 @@ fn snapshots_are_higher_first_and_credential_free() {
         ]
     );
     assert!(!format!("{snapshot:?}").contains("must-not-appear"));
+}
+
+#[test]
+fn existing_profile_changes_are_atomic_and_preserve_credentials() {
+    let (_home, config) = fixture();
+    let initial = read_managed_accounts(&config).unwrap();
+    let renamed = update_managed_account(
+        &config,
+        ManagedAccountUpdate::Rename {
+            account: "alpha".into(),
+            alias: "primary".into(),
+        },
+        initial.generation,
+    )
+    .unwrap();
+    let mut expected = initial.clone();
+    expected.generation += 1;
+    expected.accounts[1].alias = "primary".into();
+    assert_eq!(renamed.snapshot, expected);
+    assert_eq!(
+        update_managed_account(
+            &config,
+            ManagedAccountUpdate::Enable {
+                account: "beta".into()
+            },
+            initial.generation
+        )
+        .unwrap_err(),
+        AccountManagementError::GenerationConflict
+    );
+    let enabled = update_managed_account(
+        &config,
+        ManagedAccountUpdate::Enable {
+            account: "beta".into(),
+        },
+        expected.generation,
+    )
+    .unwrap();
+    assert_eq!(
+        update_managed_account(
+            &config,
+            ManagedAccountUpdate::SetDefault {
+                account: "beta".into()
+            },
+            enabled.snapshot.generation
+        )
+        .unwrap_err(),
+        AccountManagementError::AccountUnavailable
+    );
+    assert_eq!(read_managed_accounts(&config).unwrap(), enabled.snapshot);
+    let disabled = update_managed_account(
+        &config,
+        ManagedAccountUpdate::Disable {
+            account: "primary".into(),
+        },
+        enabled.snapshot.generation,
+    )
+    .unwrap();
+    assert!(
+        disabled
+            .snapshot
+            .accounts
+            .iter()
+            .all(|account| !account.is_default)
+    );
+    let restored = update_managed_account(
+        &config,
+        ManagedAccountUpdate::Enable {
+            account: "primary".into(),
+        },
+        disabled.snapshot.generation,
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .snapshot
+            .accounts
+            .iter()
+            .filter(|account| account.is_default)
+            .map(|account| account.alias.as_str())
+            .collect::<Vec<_>>(),
+        ["primary"]
+    );
+    let unchanged = update_managed_account(
+        &config,
+        ManagedAccountUpdate::SetDefault {
+            account: "primary".into(),
+        },
+        restored.snapshot.generation,
+    )
+    .unwrap();
+    assert!(!unchanged.changed);
+    assert_eq!(unchanged.snapshot, restored.snapshot);
+    assert_eq!(
+        update_managed_account(
+            &config,
+            ManagedAccountUpdate::Rename {
+                account: "primary".into(),
+                alias: "beta".into()
+            },
+            restored.snapshot.generation
+        )
+        .unwrap_err(),
+        AccountManagementError::InvalidUpdate
+    );
+    assert_eq!(read_managed_accounts(&config).unwrap(), restored.snapshot);
+    assert!(!format!("{restored:?}").contains("must-not-appear"));
 }
 
 #[test]
