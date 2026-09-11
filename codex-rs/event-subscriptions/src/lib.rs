@@ -3,6 +3,17 @@
 mod project;
 mod service;
 mod types;
+mod wake_policy;
+
+pub use wake_policy::ScopedWakePolicy;
+pub use wake_policy::SubscriptionRunState;
+pub use wake_policy::SubscriptionWorkOrigin;
+pub use wake_policy::ThreadWakePolicy;
+pub use wake_policy::UserStartedSubscriptionWork;
+pub use wake_policy::WakeLifecycle;
+pub use wake_policy::WakePolicy;
+pub use wake_policy::WakePolicyChange;
+pub use wake_policy::WakeScope;
 
 pub use project::AutomationJob;
 pub use project::AutomationJobKind;
