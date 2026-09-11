@@ -720,8 +720,9 @@ pub(crate) async fn record_pending_input(
             .await;
         }
         TurnInput::ResponseItem(item) => {
-            sess.record_annotated_conversation_items(turn_context, vec![item])
+            sess.record_annotated_conversation_items(turn_context, vec![item.clone()])
                 .await;
+            sess.record_subscription_wake_delivery(&item.item).await;
         }
         TurnInput::FunctionCallOutput(item) => {
             sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
