@@ -326,6 +326,12 @@ impl Session {
             .await;
         self.emit_turn_start_lifecycle(turn_context.as_ref(), &token_usage_at_turn_start)
             .await;
+        let mut input = input;
+        input.extend(
+            self.input_queue
+                .take_subscription_wake_inputs_for_turn_state(turn_state.as_ref())
+                .await,
+        );
 
         let mut active = self.active_turn.lock().await;
         let turn = active.get_or_insert_with(ActiveTurn::default);
@@ -564,7 +570,6 @@ impl Session {
         let Some(mut active_turn) = active_turn else {
             return false;
         };
-
         let task = active_turn.task.take();
         let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
         if let Some(task) = task {
