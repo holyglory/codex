@@ -251,8 +251,11 @@ impl BlockingTerminateExecProcess {
     }
 
     async fn terminate(&self) -> Result<(), codex_exec_server::ExecServerError> {
+        let permitted = self.allow_terminate.notified();
+        tokio::pin!(permitted);
+        permitted.as_mut().enable();
         let _ = self.terminate_started.send(true);
-        self.allow_terminate.notified().await;
+        permitted.await;
         Ok(())
     }
 }
