@@ -98,6 +98,11 @@ codex account list
 codex account current
 ```
 
+`codex account list` refreshes available service limits for every profile and shows
+the next reset date and time in UTC. JSON output includes the original limit
+windows and `nextResetAt` on each account's `limits` object. Disabled, signed-out,
+unsupported or unavailable profiles retain an explicit unknown state.
+
 Configuration and authentication profiles are different concepts: `--profile` selects a configuration profile; `--account` selects a signed-in account.
 
 ## Use multiple accounts
@@ -170,6 +175,22 @@ codex account priority set-all 1000
 | `codex account doctor`                          | Diagnose registry and credential-storage problems.                |
 
 These are independent examples: after renaming an account, use its new alias. Removal can be rejected while a turn or process is using that profile. Use `--json` for structured account-command output, and consult each subcommand's `--help` before scripting mutations.
+
+### Manage existing accounts from an agent
+
+Running Codex agents have the native `account_management` tool. It supports
+`list`, `set_priority`, `set_all_priorities`, `rename`, `enable`, `disable`,
+`set_default` and `set_auto_selection`. Read `list` first and supply its
+`generation` as `expected_generation` when changing profiles. Automatic selection
+uses `mode: "enabled"` or `mode: "disabled"`; rename uses `new_alias`.
+
+For live limits, call `list` with `refresh_service_usage: true` and follow
+`nextOffset` to inspect every account. Each `serviceUsage` includes service reset
+timestamps, `nextResetAt` and a readable `nextResetAtUtc`. The accompanying
+`serviceUsageBucketFields` identifies the compact bucket columns. Responses omit
+credentials, email, service/workspace identifiers and notes. Profile changes keep
+the running turn's credential lease; subsequent routing uses the saved changes.
+Login and profile removal remain in the owner-controlled account flows.
 
 ### Manage accounts inside the terminal UI
 
@@ -280,6 +301,11 @@ reviewed repository and existing task scope; specification work never authorizes
 implementing the product. Usage stays in the local collector, and Coordinator
 retains the linked decisions, outcome and verification records.
 
+Delivery and review alarms normally run only during user work. Stop defers pending
+alarms and suspends existing background-wake permissions. Starting or resuming work
+releases applicable missed alarms with their original deadlines. Opening or reading
+a task is passive. Explicit project pauses continue to control the project clocks.
+
 The agent's `await_work` tool waits on real event publishers instead of repeatedly
 asking the model for status. Coordinator test/deployment waits use the
 `devcoordinator` source with exact repository and run/deployment labels. A missing
@@ -287,7 +313,7 @@ publisher or expired event history is not treated as successful completion.
 
 ## Continue tasks on events or heartbeats
 
-**Experimental, opt-in.** A subscription belongs to an existing persistent task and can match an event source/type, a periodic heartbeat, or both. Waiting itself does not make a model request; a delivered wake can start a new turn and consume usage.
+**Experimental, opt-in.** A subscription belongs to an existing persistent task and can match an event source/type, a periodic heartbeat, or both. Registration defaults to delivery during running user work. Starting an inactive task requires explicit background-wake permission; that turn consumes usage.
 
 Enable the feature in the Codex home used by your server:
 
@@ -310,6 +336,31 @@ codex subscriptions create --thread THREAD_ID --source build --event-type comple
 codex subscriptions list --thread THREAD_ID
 ```
 
+Inspect wake permissions and pending alarms with:
+
+```sh
+codex subscriptions wake-policy --thread THREAD_ID
+```
+
+Only following an explicit user request, use the returned revision to allow a
+particular subscription to wake an inactive task:
+
+```sh
+codex subscriptions wake-policy --thread THREAD_ID --subscription SUBSCRIPTION_ID --policy allow-background --expected-revision REVISION --authorization-ref USER_REQUEST
+```
+
+Omit `--subscription` for a task-wide grant. Project alarms can instead use
+`--project PROJECT_ID --target TARGET` for one delivery target, or
+`--project PROJECT_ID --review` for its review timer. Specific policies take
+precedence over the task-wide policy. `--policy running-only` restricts a scope
+to running user work. Ordinary clock registration and standing review/delivery
+cadences do not authorize background grants.
+
+Stop suspends existing grants until the user resumes work. Fresh permission while
+stopped enables its requested scope. Handling one permitted alarm keeps unrelated
+stopped work and alarms deferred. Pending alarms and permissions survive restart;
+missed intervals coalesce, and obsolete or already delivered alarms are retired.
+
 Your build integration must publish an event after the build actually completes; creating a subscription does not connect a build service automatically:
 
 ```sh
@@ -325,7 +376,11 @@ codex subscriptions trigger --id SUBSCRIPTION_ID
 codex subscriptions cancel --id SUBSCRIPTION_ID
 ```
 
-Due wakes for the same task are combined, and a busy task receives pending wakes at an idle boundary. Event ingress uses the existing app-server connection and bounded typed metadata, not a new public webhook endpoint. See the [event and heartbeat API example](codex-rs/app-server/README.md#example-subscribe-a-thread-to-events-and-heartbeats-experimental) for authenticated remote integrations.
+Due alarms are combined and join running user work at a safe input boundary.
+An explicit `trigger` authorizes immediate handling of the selected subscriptions;
+Stop cancels pending immediate triggers while preserving timed/event alarms.
+Event ingress uses the existing app-server connection and bounded typed metadata.
+See the [event and heartbeat API example](codex-rs/app-server/README.md#example-subscribe-a-thread-to-events-and-heartbeats-experimental) for authenticated remote integrations.
 
 ## Update Codex Multi
 

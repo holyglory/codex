@@ -43,7 +43,7 @@ impl ToolExecutor<ToolInvocation> for AwaitWorkHandler {
     fn spec(&self) -> ToolSpec {
         ToolSpec::Function(ResponsesApiTool {
             name: "await_work".into(),
-            description: "Wait without model polling for a real provider-neutral event or an expected-event deadline. The publisher must already be connected to this Codex app-server's event ingress; naming a source does not create an integration. Use exact operation labels/cursor and inspect existing status before waiting. No model requests run during this wait. The subscription survives server interruption so a pending event can resume this task. Cancellation removes the wait; timeout reports deadline_reached, never success. No raw event content is returned. Do independent work first when appropriate.".into(),
+            description: "Wait without model polling for a real provider-neutral event or an expected-event deadline. The publisher must already be connected to this Codex app-server's event ingress; naming a source does not create an integration. Use exact operation labels/cursor and inspect existing status before waiting. No model requests run during this wait. The subscription survives server interruption; delivery to an inactive task follows its wake policy and otherwise waits for user resumption. Cancellation removes the wait; timeout reports deadline_reached, never success. No raw event content is returned. Do independent work first when appropriate.".into(),
             strict: false, defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
                 ("source".into(), JsonSchema::string(Some("Existing event publisher name.".into()))),
