@@ -308,6 +308,9 @@ fn service_error(error: ServiceError) -> JSONRPCErrorError {
         ServiceError::Store(StoreError::InvalidData) => {
             internal_error("stored event subscription data is invalid")
         }
+        ServiceError::Store(StoreError::RevisionConflict { .. }) => {
+            invalid_request(error.to_string())
+        }
         ServiceError::Store(StoreError::Unavailable(_)) => {
             internal_error("event subscription storage is unavailable")
         }

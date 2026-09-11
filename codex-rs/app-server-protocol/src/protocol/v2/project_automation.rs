@@ -174,6 +174,8 @@ pub struct ProjectAutomationJob {
     #[ts(type = "number")]
     pub revision: u64,
     pub notified: bool,
+    #[serde(default)]
+    pub notification_delivered: bool,
     pub decision_ref: Option<String>,
 }
 

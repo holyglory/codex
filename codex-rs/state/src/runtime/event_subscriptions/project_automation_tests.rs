@@ -24,6 +24,12 @@ async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0005_wake_permissions.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     (
         SqliteEventSubscriptionStore::new(std::sync::Arc::new(pool)),
         directory,
@@ -243,7 +249,7 @@ async fn specification_has_no_delivery_and_postponement_is_atomic() {
 }
 
 #[tokio::test]
-async fn interrupted_project_job_is_restored_and_explicit_postponement_retires_stale_wake() {
+async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
     let project = store
@@ -276,6 +282,11 @@ async fn interrupted_project_job_is_restored_and_explicit_postponement_retires_s
         .await
         .unwrap();
     store.collect_due_heartbeats(1100).await.unwrap();
+    store.restore_project_jobs().await.unwrap();
+    assert_eq!(
+        store.collect_due_heartbeats(1200).await.unwrap(),
+        vec![owner]
+    );
     let pending = store.pending_wake(owner).await.unwrap().unwrap();
     store
         .acknowledge_wake(owner, pending.through_revision)
@@ -283,8 +294,9 @@ async fn interrupted_project_job_is_restored_and_explicit_postponement_retires_s
         .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
     store.restore_project_jobs().await.unwrap();
+    assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
     assert_eq!(
-        store.collect_due_heartbeats(1200).await.unwrap(),
+        store.collect_due_heartbeats(2100).await.unwrap(),
         vec![owner]
     );
     store
@@ -298,12 +310,12 @@ async fn interrupted_project_job_is_restored_and_explicit_postponement_retires_s
                 hard_stop_at_ms: 4100,
                 authorization_ref: "owner postponed".into(),
             },
-            1200,
+            2200,
         )
         .await
         .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
-    assert!(store.collect_due_heartbeats(2100).await.unwrap().is_empty());
+    assert!(store.collect_due_heartbeats(2500).await.unwrap().is_empty());
 }
 
 #[tokio::test]

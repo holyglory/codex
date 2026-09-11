@@ -8,6 +8,15 @@ use super::storage::parse_thread_id;
 use super::storage::store_error;
 
 impl SqliteEventSubscriptionStore {
+    pub async fn project_review_workers_for_owner(
+        &self,
+        owner: ThreadId,
+    ) -> Result<Vec<ThreadId>, StoreError> {
+        let rows = sqlx::query_scalar::<_, String>("SELECT workers.worker_thread_id FROM project_review_workers AS workers JOIN project_automations AS projects ON projects.project_id = workers.project_id WHERE json_extract(projects.state_json, '$.ownerThreadId') = ? AND workers.job_id = json_extract(projects.state_json, '$.review.id')")
+            .bind(owner.to_string()).fetch_all(self.pool.as_ref()).await.map_err(store_error)?;
+        rows.into_iter().map(parse_thread_id).collect()
+    }
+
     pub async fn claim_project_review_worker(
         &self,
         project_id: &str,

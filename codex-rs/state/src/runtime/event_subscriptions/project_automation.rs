@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::SqliteEventSubscriptionStore;
 use super::storage::next_revision;
 use super::storage::parse_uuid;
-use super::storage::upsert_event_wake;
+use super::storage::upsert_alarm_wake;
 
 fn store_error(error: impl std::fmt::Display) -> StoreError {
     StoreError::Unavailable(error.to_string())
@@ -112,7 +112,9 @@ impl SqliteEventSubscriptionStore {
                 job.notified = false;
             }
             for target in project.delivery.values_mut() {
-                if let Some(job) = &mut target.job {
+                if let Some(job) = &mut target.job
+                    && !job.notification_delivered
+                {
                     job.notified = false;
                 }
             }
@@ -404,33 +406,66 @@ impl SqliteEventSubscriptionStore {
             .map_err(store_error)?;
             let jobs = project.collect_due(now_ms);
             if !jobs.is_empty() {
-                let revision = next_revision(&mut transaction).await?;
-                let event_type = if jobs
-                    .iter()
-                    .any(|job| job.kind == AutomationJobKind::DeliveryRecovery)
-                {
-                    "delivery_recovery_due"
-                } else if jobs
-                    .iter()
-                    .any(|job| job.kind == AutomationJobKind::Delivery)
-                {
-                    "delivery_due"
-                } else {
-                    "performance_review_due"
-                };
-                let event = PublishedEvent {
-                    id: jobs[0].id.to_string(),
-                    source: "codex.project".into(),
-                    event_type: event_type.into(),
-                    cursor: SourceCursor {
-                        sequence: revision as u64,
-                        value: None,
-                    },
-                    labels: BTreeMap::from([("project".into(), project_id.clone())]),
-                    occurred_at_ms: now_ms,
-                };
-                upsert_event_wake(&mut transaction, subscription_id, revision, &event, now_ms)
+                // Legacy project batches did not retain each alarm separately.
+                // Current durable jobs replace that aggregate when re-enqueued.
+                sqlx::query("DELETE FROM event_subscription_pending_wakes WHERE subscription_id = ? AND alarm_key = '' AND event_source = 'codex.project'")
+                    .bind(subscription_id.to_string()).execute(&mut *transaction).await.map_err(store_error)?;
+                for job in jobs {
+                    let revision = next_revision(&mut transaction).await?;
+                    let mut labels = BTreeMap::from([("project".into(), project_id.clone())]);
+                    let (event_type, scope) = match job.kind {
+                        AutomationJobKind::PerformanceReview => (
+                            "performance_review_due",
+                            codex_event_subscriptions::WakeScope::ProjectReview {
+                                project_id: project_id.clone(),
+                            },
+                        ),
+                        AutomationJobKind::Delivery | AutomationJobKind::DeliveryRecovery => {
+                            let target = project
+                                .delivery
+                                .values()
+                                .find(|target| {
+                                    target
+                                        .job
+                                        .as_ref()
+                                        .is_some_and(|current| current.id == job.id)
+                                })
+                                .ok_or(StoreError::InvalidData)?;
+                            labels.insert("target".into(), target.target.clone());
+                            (
+                                if job.kind == AutomationJobKind::Delivery {
+                                    "delivery_due"
+                                } else {
+                                    "delivery_recovery_due"
+                                },
+                                codex_event_subscriptions::WakeScope::ProjectDelivery {
+                                    project_id: project_id.clone(),
+                                    target: target.target.clone(),
+                                },
+                            )
+                        }
+                    };
+                    let event = PublishedEvent {
+                        id: job.id.to_string(),
+                        source: "codex.project".into(),
+                        event_type: event_type.into(),
+                        cursor: SourceCursor {
+                            sequence: revision as u64,
+                            value: None,
+                        },
+                        labels,
+                        occurred_at_ms: now_ms,
+                    };
+                    upsert_alarm_wake(
+                        &mut transaction,
+                        subscription_id,
+                        &scope.key()?,
+                        revision,
+                        &event,
+                        now_ms,
+                    )
                     .await?;
+                }
                 affected.push(project.owner_thread_id);
             }
             sqlx::query("UPDATE project_automations SET next_deadline_at_ms = ?, state_json = ? WHERE project_id = ?")
