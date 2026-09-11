@@ -82,10 +82,15 @@ where
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
     }
-    if let Some(service) = event_subscription_service {
-        builder.thread_lifecycle_contributor(Arc::new(
-            crate::event_subscriptions::EventSubscriptionLifecycle::new(service),
+    if let Some(service) = event_subscription_service
+        && let Some(state) = state_db.as_ref()
+    {
+        let lifecycle = Arc::new(crate::event_subscriptions::EventSubscriptionLifecycle::new(
+            service,
+            state.event_subscriptions().clone(),
         ));
+        builder.thread_lifecycle_contributor(lifecycle.clone());
+        builder.turn_lifecycle_contributor(lifecycle);
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     if let Some(state_db) = state_db {
