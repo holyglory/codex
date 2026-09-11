@@ -5,6 +5,109 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AccountAutoSelectionPolicy": {
+      "enum": [
+        "priority"
+      ],
+      "type": "string"
+    },
+    "AccountProfileLoginMethodParams": {
+      "oneOf": [
+        {
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "apiKey"
+              ],
+              "title": "ApiKeyAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiKey",
+            "type"
+          ],
+          "title": "ApiKeyAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "appBrand": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LoginAppBrand"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "codexStreamlinedLogin": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "chatgpt"
+              ],
+              "title": "ChatgptAccountProfileLoginMethodParamsType",
+              "type": "string"
+            },
+            "useHostedLoginSuccessPage": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChatgptAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "chatgptDeviceCode"
+              ],
+              "title": "ChatgptDeviceCodeAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChatgptDeviceCodeAccountProfileLoginMethodParams",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "amazonBedrock"
+              ],
+              "title": "AmazonBedrockAccountProfileLoginMethodParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiKey",
+            "region",
+            "type"
+          ],
+          "title": "AmazonBedrockAccountProfileLoginMethodParams",
+          "type": "object"
+        }
+      ]
+    },
     "AddCreditsNudgeCreditType": {
       "enum": [
         "credits",
@@ -606,18 +709,6 @@
       ],
       "type": "object"
     },
-    "ConfigurationReasoning": {
-      "description": "Reasoning settings interpreted by the backend for the routed model.",
-      "properties": {
-        "effort": {
-          "$ref": "#/definitions/ReasoningEffort"
-        }
-      },
-      "required": [
-        "effort"
-      ],
-      "type": "object"
-    },
     "ConsumeAccountRateLimitResetCreditParams": {
       "properties": {
         "creditId": {
@@ -863,6 +954,221 @@
             "type"
           ],
           "title": "NamespaceDynamicToolSpec",
+          "type": "object"
+        }
+      ]
+    },
+    "EventSourceCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionFilter": {
+      "additionalProperties": false,
+      "properties": {
+        "eventTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventTypes",
+        "labels",
+        "source"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionHeartbeat": {
+      "additionalProperties": false,
+      "properties": {
+        "firstDeadlineAt": {
+          "description": "Nullable first deadline as whole Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intervalSeconds": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intervalSeconds"
+      ],
+      "type": "object"
+    },
+    "EventWakePolicy": {
+      "enum": [
+        "runningOnly",
+        "allowBackground"
+      ],
+      "type": "string"
+    },
+    "EventWakePolicyCommand": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "read"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ReadEventWakePolicyCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "set"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "expectedRevision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "policy": {
+              "$ref": "#/definitions/EventWakePolicy"
+            },
+            "scope": {
+              "$ref": "#/definitions/EventWakeScope"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "expectedRevision",
+            "policy",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EventWakeScope": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "thread"
+              ],
+              "title": "ThreadEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ThreadEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "subscriptionId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "subscription"
+              ],
+              "title": "SubscriptionEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "subscriptionId",
+            "type"
+          ],
+          "title": "SubscriptionEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "projectId": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "projectDelivery"
+              ],
+              "title": "ProjectDeliveryEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "projectId",
+            "target",
+            "type"
+          ],
+          "title": "ProjectDeliveryEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "projectId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "projectReview"
+              ],
+              "title": "ProjectReviewEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "projectId",
+            "type"
+          ],
+          "title": "ProjectReviewEventWakeScope",
           "type": "object"
         }
       ]
@@ -1568,20 +1874,6 @@
       },
       "type": "object"
     },
-    "GetAccountRateLimitsParams": {
-      "description": "Usage-read capabilities of the requesting client, never inferred from its experiment arm.",
-      "properties": {
-        "excludeResetCreditDetails": {
-          "description": "Skip the separate reset-credit detail lookup for background usage polls. The usage response still includes the available count; omitted/false preserves detailed reads.",
-          "type": "boolean"
-        },
-        "supportsLunaReserve": {
-          "description": "The client supports automatic Luna Reserve fallback. For eligible ChatGPT CLI users, allow the backend to record experiment exposure after ordinary usage is blocked.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "GetAccountTokenUsageParams": {
       "properties": {
         "threadId": {
@@ -1625,6 +1917,44 @@
         "original"
       ],
       "type": "string"
+    },
+    "IngressEvent": {
+      "additionalProperties": false,
+      "description": "Security boundary from `security-assumptions.md`: only these bounded metadata fields cross ingress; unknown publisher payload fields are rejected rather than retained or injected.",
+      "properties": {
+        "cursor": {
+          "$ref": "#/definitions/EventSourceCursor"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "occurredAt": {
+          "description": "Event occurrence time as whole Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "eventType",
+        "id",
+        "labels",
+        "occurredAt",
+        "source"
+      ],
+      "type": "object"
     },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
@@ -1799,6 +2129,76 @@
         "completed",
         "in_progress",
         "incomplete"
+      ],
+      "type": "string"
+    },
+    "LocalUsageActivityKind": {
+      "enum": [
+        "requirements",
+        "specification",
+        "repositoryAnalysis",
+        "research",
+        "diagnosis",
+        "architectureDesign",
+        "workPlanning",
+        "coding",
+        "configuration",
+        "refactoring",
+        "dependencyOrBuildChange",
+        "testAuthoring",
+        "documentationAuthoring",
+        "dataOrSchemaChange",
+        "buildValidation",
+        "unitTesting",
+        "integrationTesting",
+        "browserQa",
+        "compatibilityTesting",
+        "migrationRehearsal",
+        "verificationReview",
+        "packaging",
+        "deployment",
+        "rollback",
+        "runtimeOperations",
+        "monitoring",
+        "userElaboration",
+        "statusUpdate",
+        "completionHandoff",
+        "reviewFeedback",
+        "coordination",
+        "accountingOverhead",
+        "mixed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "LocalUsageEventKind": {
+      "enum": [
+        "modelRequestStarted",
+        "modelRequestCompleted",
+        "toolStarted",
+        "toolCompleted",
+        "activityChanged",
+        "classificationCorrected",
+        "coverageGap"
+      ],
+      "type": "string"
+    },
+    "LocalUsageExportFormat": {
+      "enum": [
+        "json",
+        "jsonl",
+        "csv"
+      ],
+      "type": "string"
+    },
+    "LocalUsagePhase": {
+      "enum": [
+        "planning",
+        "implementation",
+        "testing",
+        "deployment",
+        "reporting",
+        "unattributed"
       ],
       "type": "string"
     },
@@ -3878,27 +4278,6 @@
           "type": "object"
         },
         {
-          "description": "A durable input control interpreted by the backend at its position in history.",
-          "properties": {
-            "reasoning": {
-              "$ref": "#/definitions/ConfigurationReasoning"
-            },
-            "type": {
-              "enum": [
-                "configuration_update"
-              ],
-              "title": "ConfigurationUpdateResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "reasoning",
-            "type"
-          ],
-          "title": "ConfigurationUpdateResponseItem",
-          "type": "object"
-        },
-        {
           "properties": {
             "type": {
               "enum": [
@@ -4090,7 +4469,7 @@
             }
           ],
           "default": null,
-          "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`). Detached delivery is deprecated and emits `deprecationNotice`. Use `thread/start` followed by an inline review for a separate review thread."
+          "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`)."
         },
         "target": {
           "$ref": "#/definitions/ReviewTarget"
@@ -4911,16 +5290,6 @@
         },
         "modelProviders": {
           "description": "Optional provider filter; when set, only sessions recorded under these providers are returned. When present but empty, includes all providers.",
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "originators": {
-          "description": "Optional originator allowlist, matching any supplied value exactly. Supported by hosted backends only; the local app-server rejects a nonempty list. Omitted or empty lists leave originators unrestricted.",
           "items": {
             "type": "string"
           },
@@ -8232,14 +8601,7 @@
           "type": "string"
         },
         "params": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/GetAccountRateLimitsParams"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": "null"
         }
       },
       "required": [
