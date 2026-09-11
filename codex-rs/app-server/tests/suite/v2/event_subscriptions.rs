@@ -46,6 +46,9 @@ use wiremock::MockServer;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 
+#[path = "event_subscriptions_wake_policy.rs"]
+mod wake_policy;
+
 #[tokio::test]
 async fn capability_and_crud_are_feature_gated() -> Result<()> {
     let server = create_mock_responses_server_sequence(Vec::new()).await;
@@ -125,6 +128,7 @@ async fn typed_event_wakes_one_thread_and_duplicate_cursor_does_not_wake_again()
         .thread
         .id;
     let created = create_subscription(&mut app, &thread_id).await?;
+    wake_policy::allow_subscription(&mut app, &thread_id, &created.subscription.id).await?;
 
     let rejected_id = app
         .send_raw_request(
@@ -243,7 +247,7 @@ async fn pending_subscription_resumes_the_correct_thread_after_process_restart()
 }
 
 #[tokio::test]
-async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -> Result<()> {
+async fn event_arriving_during_an_active_turn_joins_that_turn() -> Result<()> {
     let responses = vec![
         responses::sse(vec![
             responses::ev_response_created("blocked-response"),
@@ -251,7 +255,6 @@ async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -
             responses::ev_completed("blocked-response"),
         ]),
         create_final_assistant_message_sse_response("active turn done")?,
-        create_final_assistant_message_sse_response("event follow-up done")?,
     ];
     let (mut app, _home, server) = event_app(responses).await?;
     let thread_id = app
@@ -274,7 +277,7 @@ async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -
     let subscription = create_subscription(&mut app, &thread_id)
         .await?
         .subscription;
-    let tool_request_id = start_blocked_turn(&mut app, &thread_id).await?;
+    let (tool_request_id, _) = start_blocked_turn(&mut app, &thread_id).await?;
 
     let triggered: EventSubscriptionTriggerResponse = app
         .request(|request_id| ClientRequest::EventSubscriptionTrigger {
@@ -308,13 +311,13 @@ async fn event_arriving_during_an_active_turn_waits_and_starts_one_follow_up() -
         })?,
     )
     .await?;
-    wait_for_requests(&server, /*expected*/ 3).await?;
+    wait_for_requests(&server, /*expected*/ 2).await?;
     let requests = server
         .received_requests()
         .await
         .context("recorded model requests")?;
-    assert_eq!(requests.len(), 3);
-    let follow_up = String::from_utf8_lossy(&requests[2].body);
+    assert_eq!(requests.len(), 2);
+    let follow_up = String::from_utf8_lossy(&requests[1].body);
     assert!(follow_up.contains("<event_subscription_wake>"));
     assert!(follow_up.contains(&subscription.id));
     Ok(())
@@ -347,6 +350,12 @@ async fn clock_only_subscription_wakes_without_an_external_publisher() -> Result
         })
         .await?;
 
+    wake_policy::allow_subscription(
+        &mut app,
+        &created.subscription.thread_id,
+        &created.subscription.id,
+    )
+    .await?;
     wait_for_requests(&server, /*expected*/ 1).await?;
     let requests = server
         .received_requests()
@@ -451,8 +460,11 @@ fn current_unix_seconds() -> i64 {
         .unwrap_or_default()
 }
 
-async fn start_blocked_turn(app: &mut TestAppServer, thread_id: &str) -> Result<RequestId> {
-    let _: TurnStartResponse = app
+async fn start_blocked_turn(
+    app: &mut TestAppServer,
+    thread_id: &str,
+) -> Result<(RequestId, String)> {
+    let started: TurnStartResponse = app
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
@@ -470,5 +482,5 @@ async fn start_blocked_turn(app: &mut TestAppServer, thread_id: &str) -> Result<
         anyhow::bail!("active turn did not request the test tool")
     };
     assert_eq!(params.tool, "wait_for_test");
-    Ok(request_id)
+    Ok((request_id, started.turn.id))
 }
