@@ -32,6 +32,7 @@ mod owned_wait;
 mod project_automation;
 mod project_review_workers;
 mod storage;
+mod wake_policy;
 pub use owned_wait::OwnedSubscription;
 use storage::*;
 
@@ -58,6 +59,10 @@ impl SqliteEventSubscriptionStore {
     pub(crate) async fn delete_thread(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
         self.detach_project_thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM thread_wake_policy_state WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "DELETE FROM event_subscription_pending_wakes
              WHERE subscription_id IN (
@@ -223,7 +228,11 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
                 "use project pause or completion for a managed project schedule".into(),
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(store_error)?;
         sqlx::query("DELETE FROM event_subscription_pending_wakes WHERE subscription_id = ?")
             .bind(id.to_string())
             .execute(&mut *tx)
@@ -236,7 +245,28 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             .map_err(store_error)?
             .rows_affected()
             != 0;
+        let scope = codex_event_subscriptions::WakeScope::Subscription {
+            subscription_id: id,
+        }
+        .key()?;
+        let owner: Option<String> = sqlx::query_scalar(
+            "DELETE FROM thread_wake_policies WHERE scope_json = ? RETURNING thread_id",
+        )
+        .bind(scope)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(owner) = owner {
+            let revision = next_revision(&mut tx).await?;
+            sqlx::query("UPDATE thread_wake_policy_state SET revision = ? WHERE thread_id = ?")
+                .bind(revision)
+                .bind(owner)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+        }
         tx.commit().await.map_err(store_error)?;
+        self.project_changed.notify_one();
         self.event_changed.notify_waiters();
         self.source_changed.notify_one();
         Ok(cancelled)
@@ -495,18 +525,22 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
         thread_id: ThreadId,
         through_revision: i64,
     ) -> Result<(), StoreError> {
-        sqlx::query(
-            "DELETE FROM event_subscription_pending_wakes
-             WHERE revision <= ? AND subscription_id IN (
-                 SELECT id FROM event_subscriptions WHERE thread_id = ?
-             )",
-        )
-        .bind(through_revision)
-        .bind(thread_id.to_string())
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(store_error)?;
+        if let Some(pending) = self.pending_wake(thread_id).await? {
+            self.complete_delivery(thread_id, through_revision, &pending.wake.items, &[])
+                .await?;
+        }
         Ok(())
+    }
+
+    async fn complete_wake_delivery(
+        &self,
+        thread_id: ThreadId,
+        through_revision: i64,
+        delivered: &[WakeItem],
+        discarded: &[WakeItem],
+    ) -> Result<(), StoreError> {
+        self.complete_delivery(thread_id, through_revision, delivered, discarded)
+            .await
     }
 }
 
