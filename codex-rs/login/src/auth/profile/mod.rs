@@ -34,12 +34,15 @@ mod router;
 mod use_lock;
 
 pub use management::AccountManagementError;
+pub use management::ManagedAccountMetadataMutation;
 pub use management::ManagedAccountPriorityMutation;
 pub use management::ManagedAccountSnapshot;
 pub use management::ManagedAccountSummary;
+pub use management::ManagedAccountUpdate;
 pub use management::read_managed_accounts;
 pub use management::set_all_managed_account_priorities;
 pub use management::set_managed_account_priority;
+pub use management::update_managed_account;
 pub use pending::PendingProfileLogin;
 pub use pending::PendingProfileLoginError;
 pub use router::AccountLease;

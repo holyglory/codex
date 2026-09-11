@@ -11,6 +11,11 @@ use crate::AuthConfig;
 
 const MAX_MUTATION_ATTEMPTS: usize = 3;
 
+mod metadata;
+pub use metadata::ManagedAccountMetadataMutation;
+pub use metadata::ManagedAccountUpdate;
+pub use metadata::update_managed_account;
+
 /// Credential-free account metadata intended for local management surfaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedAccountSummary {
@@ -42,6 +47,10 @@ pub struct ManagedAccountPriorityMutation {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AccountManagementError {
+    #[error("account metadata change is invalid or the alias is already in use")]
+    InvalidUpdate,
+    #[error("the account must be enabled and authenticated before it can be the default")]
+    AccountUnavailable,
     #[error("account registry is unavailable")]
     RegistryUnavailable,
     #[error("account credential backend is unavailable")]
