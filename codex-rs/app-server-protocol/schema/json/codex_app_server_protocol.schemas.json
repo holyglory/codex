@@ -2183,14 +2183,7 @@
               "type": "string"
             },
             "params": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/v2/GetAccountRateLimitsParams"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "type": "null"
             }
           },
           "required": [
@@ -2936,6 +2929,27 @@
       "title": "DynamicToolCallResponse",
       "type": "object"
     },
+    "EventSubscriptionsCapability": {
+      "properties": {
+        "supportsEventIngress": {
+          "type": "boolean"
+        },
+        "supportsHeartbeats": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsEventIngress",
+        "supportsHeartbeats",
+        "version"
+      ],
+      "type": "object"
+    },
     "ExecCommandApprovalParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -3378,6 +3392,42 @@
           ],
           "description": "Absolute path to the server's $CODEX_HOME directory."
         },
+        "eventSubscriptions": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventSubscriptionsCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advertises the additive provider-neutral event-subscription extension."
+        },
+        "localUsageAccounting": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageAccountingCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advertises the additive local usage-accounting extension."
+        },
+        "multiAccount": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MultiAccountCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advertises the additive multi-account profile extension."
+        },
         "platformFamily": {
           "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",
           "type": "string"
@@ -3514,6 +3564,19 @@
         "result"
       ],
       "title": "JSONRPCResponse",
+      "type": "object"
+    },
+    "LocalUsageAccountingCapability": {
+      "properties": {
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
       "type": "object"
     },
     "McpElicitationArrayType": {
@@ -4192,6 +4255,27 @@
       "title": "McpServerElicitationRequestResponse",
       "type": "object"
     },
+    "MultiAccountCapability": {
+      "properties": {
+        "supportsAutoSelection": {
+          "type": "boolean"
+        },
+        "supportsManagedLogin": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsAutoSelection",
+        "supportsManagedLogin",
+        "version"
+      ],
+      "type": "object"
+    },
     "NetworkApprovalContext": {
       "properties": {
         "host": {
@@ -4351,7 +4435,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "cwd": {
-          "$ref": "#/definitions/v2/LegacyAppPathString"
+          "$ref": "#/definitions/v2/AbsolutePathBuf"
         },
         "environmentId": {
           "default": null,
@@ -5493,6 +5577,46 @@
             "params"
           ],
           "title": "Account/rateLimits/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "accountProfile/activeChanged"
+              ],
+              "title": "AccountProfile/activeChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AccountProfileActiveChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "AccountProfile/activeChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "localUsage/updated"
+              ],
+              "title": "LocalUsage/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/updatedNotification",
           "type": "object"
         },
         {
@@ -6680,6 +6804,31 @@
           }
         ]
       },
+      "AccountAutoSelection": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "policy": {
+            "$ref": "#/definitions/v2/AccountAutoSelectionPolicy"
+          },
+          "priorityOrder": {
+            "$ref": "#/definitions/v2/AccountPriorityOrder"
+          }
+        },
+        "required": [
+          "enabled",
+          "policy",
+          "priorityOrder"
+        ],
+        "type": "object"
+      },
+      "AccountAutoSelectionPolicy": {
+        "enum": [
+          "priority"
+        ],
+        "type": "string"
+      },
       "AccountLoginCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -6714,6 +6863,303 @@
         ],
         "title": "AccountLoginCompletedNotification",
         "type": "object"
+      },
+      "AccountPriorityOrder": {
+        "enum": [
+          "higherFirst"
+        ],
+        "type": "string"
+      },
+      "AccountProfile": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "authMode": {
+            "$ref": "#/definitions/v2/AuthMode"
+          },
+          "authenticated": {
+            "description": "Whether this profile currently has locally managed credentials. Credential values are never returned.",
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "lastUsedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PlanType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias",
+          "authMode",
+          "authenticated",
+          "createdAt",
+          "enabled",
+          "id",
+          "isActive",
+          "isDefault",
+          "priority"
+        ],
+        "type": "object"
+      },
+      "AccountProfileActiveChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "changedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "previousAccountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accountId",
+          "changedAt",
+          "generation"
+        ],
+        "title": "AccountProfileActiveChangedNotification",
+        "type": "object"
+      },
+      "AccountProfileLogin": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authUrl": {
+                "type": "string"
+              },
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "authUrl",
+              "loginId",
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginType",
+                "type": "string"
+              },
+              "userCode": {
+                "type": "string"
+              },
+              "verificationUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "loginId",
+              "type",
+              "userCode",
+              "verificationUrl"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLogin",
+            "type": "object"
+          }
+        ]
+      },
+      "AccountProfileLoginMethodParams": {
+        "oneOf": [
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "appBrand": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/LoginAppBrand"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "codexStreamlinedLogin": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginMethodParamsType",
+                "type": "string"
+              },
+              "useHostedLoginSuccessPage": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "region",
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLoginMethodParams",
+            "type": "object"
+          }
+        ]
       },
       "AccountRateLimitsUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -7593,40 +8039,6 @@
       "AppToolsConfig": {
         "type": "object"
       },
-      "ApplicationNetworkRequirements": {
-        "properties": {
-          "domains": {
-            "additionalProperties": {
-              "$ref": "#/definitions/v2/NetworkDomainPermission"
-            },
-            "type": "object"
-          },
-          "enabled": {
-            "description": "When enabled, only explicitly allowed exact domains may be contacted.",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "domains",
-          "enabled"
-        ],
-        "type": "object"
-      },
-      "ApplicationRequirements": {
-        "properties": {
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/v2/ApplicationNetworkRequirements"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
       "ApprovalsReviewer": {
         "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
         "enum": [
@@ -8204,12 +8616,6 @@
             ]
           },
           "allowHistoryAccess": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "allowWebmcp": {
             "type": [
               "boolean",
               "null"
@@ -10185,18 +10591,6 @@
         "title": "ConfigWriteResponse",
         "type": "object"
       },
-      "ConfigurationReasoning": {
-        "description": "Reasoning settings interpreted by the backend for the routed model.",
-        "properties": {
-          "effort": {
-            "$ref": "#/definitions/v2/ReasoningEffort"
-          }
-        },
-        "required": [
-          "effort"
-        ],
-        "type": "object"
-      },
       "ConfiguredHookHandler": {
         "oneOf": [
           {
@@ -10886,6 +11280,304 @@
         ],
         "title": "ErrorNotification",
         "type": "object"
+      },
+      "EventSourceCursor": {
+        "additionalProperties": false,
+        "properties": {
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "EventSubscription": {
+        "properties": {
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/EventSubscriptionFilter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "heartbeatIntervalSeconds": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "nextHeartbeatAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sourceCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/EventSourceCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "createdAt",
+          "id",
+          "threadId",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "EventSubscriptionFilter": {
+        "additionalProperties": false,
+        "properties": {
+          "eventTypes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventTypes",
+          "labels",
+          "source"
+        ],
+        "type": "object"
+      },
+      "EventSubscriptionHeartbeat": {
+        "additionalProperties": false,
+        "properties": {
+          "firstDeadlineAt": {
+            "description": "Nullable first deadline as whole Unix seconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "intervalSeconds": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intervalSeconds"
+        ],
+        "type": "object"
+      },
+      "EventWakePolicy": {
+        "enum": [
+          "runningOnly",
+          "allowBackground"
+        ],
+        "type": "string"
+      },
+      "EventWakePolicyCommand": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "read"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "title": "ReadEventWakePolicyCommand",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "set"
+                ],
+                "type": "string"
+              },
+              "authorizationRef": {
+                "type": "string"
+              },
+              "expectedRevision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "policy": {
+                "$ref": "#/definitions/v2/EventWakePolicy"
+              },
+              "scope": {
+                "$ref": "#/definitions/v2/EventWakeScope"
+              }
+            },
+            "required": [
+              "action",
+              "authorizationRef",
+              "expectedRevision",
+              "policy",
+              "scope"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "EventWakePolicyEntry": {
+        "properties": {
+          "authorizationRef": {
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/definitions/v2/EventWakePolicy"
+          },
+          "scope": {
+            "$ref": "#/definitions/v2/EventWakeScope"
+          },
+          "suspended": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "authorizationRef",
+          "policy",
+          "scope",
+          "suspended"
+        ],
+        "type": "object"
+      },
+      "EventWakeScope": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "thread"
+                ],
+                "title": "ThreadEventWakeScopeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ThreadEventWakeScope",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "subscriptionId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "subscription"
+                ],
+                "title": "SubscriptionEventWakeScopeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "subscriptionId",
+              "type"
+            ],
+            "title": "SubscriptionEventWakeScope",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "projectId": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "projectDelivery"
+                ],
+                "title": "ProjectDeliveryEventWakeScopeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "projectId",
+              "target",
+              "type"
+            ],
+            "title": "ProjectDeliveryEventWakeScope",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "projectId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "projectReview"
+                ],
+                "title": "ProjectReviewEventWakeScopeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "projectId",
+              "type"
+            ],
+            "title": "ProjectReviewEventWakeScope",
+            "type": "object"
+          }
+        ]
       },
       "ExperimentalFeature": {
         "properties": {
@@ -12487,20 +13179,6 @@
         "title": "GetAccountParams",
         "type": "object"
       },
-      "GetAccountRateLimitsParams": {
-        "description": "Usage-read capabilities of the requesting client, never inferred from its experiment arm.",
-        "properties": {
-          "excludeResetCreditDetails": {
-            "description": "Skip the separate reset-credit detail lookup for background usage polls. The usage response still includes the available count; omitted/false preserves detailed reads.",
-            "type": "boolean"
-          },
-          "supportsLunaReserve": {
-            "description": "The client supports automatic Luna Reserve fallback. For eligible ChatGPT CLI users, allow the backend to record experiment exposure after ordinary usage is blocked.",
-            "type": "boolean"
-          }
-        },
-        "type": "object"
-      },
       "GetAccountRateLimitsResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -12508,13 +13186,6 @@
             "description": "Account associated with this usage snapshot, when supplied by the backend.",
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "ordinaryUsageAllowed": {
-            "description": "Backend permission for ordinary included usage, validated against the active account. Null means unavailable; clients must not infer recovery from percentages or reset times.",
-            "type": [
-              "boolean",
               "null"
             ]
           },
@@ -12716,7 +13387,7 @@
                 "type": "string"
               },
               "cwd": {
-                "$ref": "#/definitions/v2/LegacyAppPathString"
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
               },
               "source": {
                 "$ref": "#/definitions/v2/GuardianCommandSource"
@@ -12809,11 +13480,11 @@
           {
             "properties": {
               "cwd": {
-                "$ref": "#/definitions/v2/LegacyAppPathString"
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
               },
               "files": {
                 "items": {
-                  "$ref": "#/definitions/v2/LegacyAppPathString"
+                  "$ref": "#/definitions/v2/AbsolutePathBuf"
                 },
                 "type": "array"
               },
@@ -13527,6 +14198,44 @@
         },
         "type": "object"
       },
+      "IngressEvent": {
+        "additionalProperties": false,
+        "description": "Security boundary from `security-assumptions.md`: only these bounded metadata fields cross ingress; unknown publisher payload fields are rejected rather than retained or injected.",
+        "properties": {
+          "cursor": {
+            "$ref": "#/definitions/v2/EventSourceCursor"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "occurredAt": {
+            "description": "Event occurrence time as whole Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cursor",
+          "eventType",
+          "id",
+          "labels",
+          "occurredAt",
+          "source"
+        ],
+        "type": "object"
+      },
       "InputModality": {
         "description": "Canonical user-input modality tags advertised by a model.",
         "oneOf": [
@@ -13875,6 +14584,928 @@
           "incomplete"
         ],
         "type": "string"
+      },
+      "LocalUsageActivity": {
+        "properties": {
+          "activity": {
+            "$ref": "#/definitions/v2/LocalUsageActivityKind"
+          },
+          "activityId": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "endedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "phase": {
+            "$ref": "#/definitions/v2/LocalUsagePhase"
+          },
+          "provenance": {
+            "$ref": "#/definitions/v2/LocalUsageProvenance"
+          },
+          "startedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/definitions/v2/LocalUsageActivityState"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity",
+          "activityId",
+          "agentId",
+          "phase",
+          "provenance",
+          "startedAt",
+          "state",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "LocalUsageActivityKind": {
+        "enum": [
+          "requirements",
+          "specification",
+          "repositoryAnalysis",
+          "research",
+          "diagnosis",
+          "architectureDesign",
+          "workPlanning",
+          "coding",
+          "configuration",
+          "refactoring",
+          "dependencyOrBuildChange",
+          "testAuthoring",
+          "documentationAuthoring",
+          "dataOrSchemaChange",
+          "buildValidation",
+          "unitTesting",
+          "integrationTesting",
+          "browserQa",
+          "compatibilityTesting",
+          "migrationRehearsal",
+          "verificationReview",
+          "packaging",
+          "deployment",
+          "rollback",
+          "runtimeOperations",
+          "monitoring",
+          "userElaboration",
+          "statusUpdate",
+          "completionHandoff",
+          "reviewFeedback",
+          "coordination",
+          "accountingOverhead",
+          "mixed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "LocalUsageActivityState": {
+        "enum": [
+          "modelActive",
+          "toolActive",
+          "externalWait",
+          "userWait",
+          "blockedWait"
+        ],
+        "type": "string"
+      },
+      "LocalUsageAggregate": {
+        "properties": {
+          "cacheWriteInputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cachedInputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "coverage": {
+            "$ref": "#/definitions/v2/LocalUsageCoverage"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "inputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "modelRequests": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoningOutputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "toolCalls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "coverage",
+          "durationMs",
+          "modelRequests",
+          "toolCalls"
+        ],
+        "type": "object"
+      },
+      "LocalUsageCoverage": {
+        "enum": [
+          "complete",
+          "partial",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "LocalUsageEvent": {
+        "properties": {
+          "coverage": {
+            "$ref": "#/definitions/v2/LocalUsageCoverage"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/v2/LocalUsageEventKind"
+          },
+          "occurredAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "provenance": {
+            "$ref": "#/definitions/v2/LocalUsageProvenance"
+          },
+          "repositoryKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "coverage",
+          "eventId",
+          "kind",
+          "occurredAt",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "LocalUsageEventKind": {
+        "enum": [
+          "modelRequestStarted",
+          "modelRequestCompleted",
+          "toolStarted",
+          "toolCompleted",
+          "activityChanged",
+          "classificationCorrected",
+          "coverageGap"
+        ],
+        "type": "string"
+      },
+      "LocalUsageExportFormat": {
+        "enum": [
+          "json",
+          "jsonl",
+          "csv"
+        ],
+        "type": "string"
+      },
+      "LocalUsagePhase": {
+        "enum": [
+          "planning",
+          "implementation",
+          "testing",
+          "deployment",
+          "reporting",
+          "unattributed"
+        ],
+        "type": "string"
+      },
+      "LocalUsageProvenance": {
+        "enum": [
+          "providerReported",
+          "runtimeObserved",
+          "agentDeclared",
+          "deterministicClassification",
+          "inferredClassification",
+          "userCorrected",
+          "imported",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "LocalUsageReport": {
+        "description": "Versioned, full-fidelity local usage report.\n\nThe report preserves provider-native token categories and keeps coverage, measurement, attribution, and timing facts separate so clients do not need to infer unsupported totals.",
+        "properties": {
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "classifications": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportClassificationCount"
+            },
+            "type": "array"
+          },
+          "counts": {
+            "$ref": "#/definitions/v2/LocalUsageReportCounts"
+          },
+          "coverage": {
+            "$ref": "#/definitions/v2/LocalUsageReportCoverage"
+          },
+          "databaseSchemaVersion": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "formulas": {
+            "$ref": "#/definitions/v2/LocalUsageReportFormulas"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "providerTokens": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportTokenAggregate"
+            },
+            "type": "array"
+          },
+          "providerTokensByActivity": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportActivityTokenAggregate"
+            },
+            "type": "array"
+          },
+          "repositoryParticipation": {
+            "$ref": "#/definitions/v2/LocalUsageReportRepositoryParticipation"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scope": {
+            "$ref": "#/definitions/v2/LocalUsageReportScope"
+          },
+          "taxonomyVersion": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "time": {
+            "$ref": "#/definitions/v2/LocalUsageReportTimeMetrics"
+          },
+          "timeRange": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageReportTimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "$ref": "#/definitions/v2/LocalUsageReportToolMetrics"
+          }
+        },
+        "required": [
+          "classifications",
+          "counts",
+          "coverage",
+          "databaseSchemaVersion",
+          "formulas",
+          "kind",
+          "providerTokens",
+          "providerTokensByActivity",
+          "repositoryParticipation",
+          "schemaVersion",
+          "scope",
+          "taxonomyVersion",
+          "time",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportActivityTokenAggregate": {
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "attributionProvenance": {
+            "type": "string"
+          },
+          "exactTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "measuredTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "unknownObservations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activity",
+          "attributionProvenance",
+          "measuredTokens",
+          "phase",
+          "unknownObservations"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportClassificationCount": {
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity",
+          "count",
+          "phase",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportCounts": {
+        "properties": {
+          "modelRequests": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "operations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tools": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "modelRequests",
+          "operations",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportCoverage": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportCoverageCount"
+            },
+            "type": "array"
+          },
+          "hasGaps": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tokenObservations": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportCoverageCount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events",
+          "hasGaps",
+          "state",
+          "tokenObservations"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportCoverageCount": {
+        "properties": {
+          "count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "state"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportDuration": {
+        "properties": {
+          "exactNs": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "measuredNs": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "unknownIntervals": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "measuredNs",
+          "unknownIntervals"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportFormulas": {
+        "properties": {
+          "concurrency": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "tokens": {
+            "type": "string"
+          },
+          "wallTime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "concurrency",
+          "repository",
+          "tokens",
+          "wallTime"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportNamedDuration": {
+        "properties": {
+          "duration": {
+            "$ref": "#/definitions/v2/LocalUsageReportDuration"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "duration",
+          "name"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportRepositoryParticipation": {
+        "properties": {
+          "additive": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "operationCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "toolCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "additive",
+          "label",
+          "operationCount",
+          "toolCount"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportScope": {
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportTimeMetrics": {
+        "properties": {
+          "activityStateIntervalUnions": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportNamedDuration"
+            },
+            "type": "array"
+          },
+          "executionWallUnion": {
+            "$ref": "#/definitions/v2/LocalUsageReportDuration"
+          },
+          "phaseIntervalUnions": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportNamedDuration"
+            },
+            "type": "array"
+          },
+          "requestToDeliveryWall": {
+            "$ref": "#/definitions/v2/LocalUsageReportDuration"
+          },
+          "summedPerAgentActive": {
+            "$ref": "#/definitions/v2/LocalUsageReportDuration"
+          }
+        },
+        "required": [
+          "activityStateIntervalUnions",
+          "executionWallUnion",
+          "phaseIntervalUnions",
+          "requestToDeliveryWall",
+          "summedPerAgentActive"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportTimeRange": {
+        "properties": {
+          "endMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "startMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endMs",
+          "startMs"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportTokenAggregate": {
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "exactTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "measuredTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "measurementProvenance": {
+            "type": "string"
+          },
+          "observationCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "repositoryBucket": {
+            "type": "string"
+          },
+          "repositoryLabel": {
+            "description": "Safe display label resolved at read time. Machine clients can continue to use `repository_bucket` as the stable privacy-preserving key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unknownObservations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "measuredTokens",
+          "measurementProvenance",
+          "observationCount",
+          "repositoryBucket",
+          "unknownObservations"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportToolMetrics": {
+        "properties": {
+          "count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "duration": {
+            "$ref": "#/definitions/v2/LocalUsageReportDuration"
+          },
+          "durationBasis": {
+            "type": "string"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageReportToolOutcome"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "duration",
+          "durationBasis",
+          "outcomes"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportToolOutcome": {
+        "properties": {
+          "count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "LocalUsageRepository": {
+        "properties": {
+          "aggregate": {
+            "$ref": "#/definitions/v2/LocalUsageAggregate"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "repositoryKey": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "aggregate",
+          "createdAt",
+          "label",
+          "repositoryKey",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "LocalUsageThread": {
+        "properties": {
+          "accountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "aggregate": {
+            "$ref": "#/definitions/v2/LocalUsageAggregate"
+          },
+          "repositoryKeys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "startedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "aggregate",
+          "repositoryKeys",
+          "startedAt",
+          "threadId",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "LocalUsageTokenCategory": {
+        "properties": {
+          "categoryKey": {
+            "type": "string"
+          },
+          "count": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "coverage": {
+            "$ref": "#/definitions/v2/LocalUsageCoverage"
+          },
+          "provenance": {
+            "$ref": "#/definitions/v2/LocalUsageProvenance"
+          }
+        },
+        "required": [
+          "categoryKey",
+          "coverage",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "LocalUsageTool": {
+        "properties": {
+          "completedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operationFamily": {
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/definitions/v2/LocalUsageProvenance"
+          },
+          "repositoryKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/LocalUsageToolStatus"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "toolCallId": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operationFamily",
+          "provenance",
+          "startedAt",
+          "status",
+          "threadId",
+          "toolCallId",
+          "toolName"
+        ],
+        "type": "object"
+      },
+      "LocalUsageToolStatus": {
+        "enum": [
+          "completed",
+          "failed",
+          "interrupted",
+          "rejected",
+          "unsupported",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "LocalUsageUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "repositoryKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generation",
+          "updatedAt"
+        ],
+        "title": "LocalUsageUpdatedNotification",
+        "type": "object"
       },
       "LoginAccountParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14795,13 +16426,6 @@
               "$ref": "#/definitions/v2/Tool"
             },
             "type": "object"
-          },
-          "toolsError": {
-            "description": "Tool discovery failed and no catalog was returned. Null when a catalog is returned, including cached or empty catalogs.",
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
@@ -15808,18 +17432,6 @@
           "compact"
         ],
         "type": "string"
-      },
-      "NullableGetAccountRateLimitsParams": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "anyOf": [
-          {
-            "$ref": "#/definitions/v2/GetAccountRateLimitsParams"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "title": "Nullable_GetAccountRateLimitsParams"
       },
       "NullableGetAccountTokenUsageParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -18101,6 +19713,10 @@
           "kind": {
             "$ref": "#/definitions/v2/ProjectAutomationJobKind"
           },
+          "notificationDelivered": {
+            "default": false,
+            "type": "boolean"
+          },
           "notified": {
             "type": "boolean"
           },
@@ -18418,13 +20034,6 @@
             ]
           },
           "limitName": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "normalModelSlug": {
-            "description": "Normal model whose display name and reasoning options describe this quota alias.",
             "type": [
               "string",
               "null"
@@ -19715,27 +21324,6 @@
             "type": "object"
           },
           {
-            "description": "A durable input control interpreted by the backend at its position in history.",
-            "properties": {
-              "reasoning": {
-                "$ref": "#/definitions/v2/ConfigurationReasoning"
-              },
-              "type": {
-                "enum": [
-                  "configuration_update"
-                ],
-                "title": "ConfigurationUpdateResponseItemType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "reasoning",
-              "type"
-            ],
-            "title": "ConfigurationUpdateResponseItem",
-            "type": "object"
-          },
-          {
             "properties": {
               "type": {
                 "enum": [
@@ -19941,7 +21529,7 @@
               }
             ],
             "default": null,
-            "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`). Detached delivery is deprecated and emits `deprecationNotice`. Use `thread/start` followed by an inline review for a separate review thread."
+            "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`)."
           },
           "target": {
             "$ref": "#/definitions/v2/ReviewTarget"
@@ -21246,13 +22834,6 @@
               "null"
             ]
           },
-          "originator": {
-            "description": "Originator recorded when the thread was created, independent of its current client or executor. Null when the recorded originator is unavailable.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "parentThreadId": {
             "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
             "type": [
@@ -21693,29 +23274,6 @@
           "threadId"
         ],
         "title": "ThreadDeletedNotification",
-        "type": "object"
-      },
-      "ThreadEnvironment": {
-        "description": "An environment selected by a loaded thread, independent of connection status.",
-        "properties": {
-          "cwd": {
-            "$ref": "#/definitions/v2/LegacyAppPathString"
-          },
-          "environmentId": {
-            "type": "string"
-          },
-          "runtimeWorkspaceRoots": {
-            "items": {
-              "$ref": "#/definitions/v2/LegacyAppPathString"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "cwd",
-          "environmentId",
-          "runtimeWorkspaceRoots"
-        ],
         "type": "object"
       },
       "ThreadExtra": {
@@ -23149,16 +24707,6 @@
           },
           "modelProviders": {
             "description": "Optional provider filter; when set, only sessions recorded under these providers are returned. When present but empty, includes all providers.",
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "originators": {
-            "description": "Optional originator allowlist, matching any supplied value exactly. Supported by hosted backends only; the local app-server rejects a nonempty list. Omitted or empty lists leave originators unrestricted.",
             "items": {
               "type": "string"
             },
