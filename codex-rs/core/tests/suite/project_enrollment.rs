@@ -656,6 +656,18 @@ async fn project_automation_claimed_review_worker_is_exempt_from_parent_enrollme
     )
     .await;
     let mut created = test.thread_manager.subscribe_thread_created();
+    let wake_policy = store.read_wake_policy(owner).await?;
+    store
+        .set_wake_policy(codex_event_subscriptions::WakePolicyChange {
+            thread_id: owner,
+            scope: codex_event_subscriptions::WakeScope::ProjectReview {
+                project_id: project_id.clone(),
+            },
+            policy: codex_event_subscriptions::WakePolicy::AllowBackground,
+            expected_revision: wake_policy.revision,
+            authorization_ref: "explicit review fixture permission".into(),
+        })
+        .await?;
     assert_eq!(
         test.thread_manager
             .run_project_review_worker(owner, &project_id)

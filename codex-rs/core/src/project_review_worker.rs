@@ -43,12 +43,24 @@ struct ReviewWorkerLifecycle {
 
 impl ThreadManager {
     /// Starts or resumes one persisted review worker without waiting for its review to finish.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "review admission must stay serialized with the owning task's Stop request"
+    )]
     pub async fn run_project_review_worker(
         &self,
         owner_thread_id: ThreadId,
         project_id: &str,
     ) -> CodexResult<WakeDisposition> {
         let owner = self.get_thread(owner_thread_id).await?;
+        let wake_run = owner.subscription_run_state();
+        let _dispatch = wake_run.dispatch.lock().await;
+        if wake_run
+            .stop_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(WakeDisposition::DeferredUntilResume);
+        }
         let config = owner.config().await;
         let snapshot = owner.config_snapshot().await;
         if !config.local_control_tools_enabled
@@ -74,6 +86,14 @@ impl ThreadManager {
         };
         if project.paused || project.owner_thread_id != owner_thread_id {
             return Ok(WakeDisposition::DeferredUntilIdle);
+        }
+        if !owner.has_running_user_work().await
+            && !store
+                .project_review_background_allowed(owner_thread_id, project_id)
+                .await
+                .map_err(review_error)?
+        {
+            return Ok(WakeDisposition::DeferredUntilResume);
         }
         let review = ProjectPerformanceReview::new(&project).map_err(CodexErr::InvalidRequest)?;
         let Some(worker_thread_id) = store
@@ -199,7 +219,13 @@ impl ThreadManager {
                 matches!(item, ContentItem::InputText { text } if ProjectPerformanceReview::matches_text(text))
             }))
         });
-        if !submitted && !previous_input.is_some_and(|item| review.matches_signal(item)) {
+        let worker_status = worker.agent_status().await;
+        if !submitted
+            && (matches!(
+                worker_status,
+                AgentStatus::Interrupted | AgentStatus::Errored(_)
+            ) || !previous_input.is_some_and(|item| review.matches_signal(item)))
+        {
             if matches!(worker.agent_status().await, AgentStatus::Running) {
                 return Ok(WakeDisposition::DeferredUntilIdle);
             }
