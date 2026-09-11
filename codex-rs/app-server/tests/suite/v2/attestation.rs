@@ -101,14 +101,16 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
     let thread_request_id = mcp
         .send_thread_start_request_with_auto_env(thread_start_params)
         .await?;
-    let mut turn_request_id = None;
-    let mut turn_started = false;
-    let mut turn_completed = false;
+    // Prewarm can ask for attestation before either startup response. Service it
+    // immediately instead of buffering it past the provider's response deadline.
     let mut attestation_requests = 0;
     // Prewarming can request attestation before thread/start or turn/start responds.
     // Service those requests immediately instead of buffering them behind RPC responses.
     timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
+        let mut turn_request_id = None;
+        let mut turn_started = false;
+        let mut completed = false;
+        while !turn_started || !completed {
             match mcp.read_next_message().await? {
                 JSONRPCMessage::Response(response)
                     if response.id == RequestId::Integer(thread_request_id) =>
@@ -147,10 +149,33 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     )
                     .await?;
                 }
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(thread_request_id) =>
+                {
+                    let ThreadStartResponse { thread, .. } = to_response(response)?;
+                    let id = mcp
+                        .send_turn_start_request(TurnStartParams {
+                            thread_id: thread.id,
+                            client_user_message_id: None,
+                            input: vec![V2UserInput::Text {
+                                text: "Hello".to_string(),
+                                text_elements: Vec::new(),
+                            }],
+                            ..Default::default()
+                        })
+                        .await?;
+                    turn_request_id = Some(RequestId::Integer(id));
+                }
+                JSONRPCMessage::Response(response)
+                    if Some(&response.id) == turn_request_id.as_ref() =>
+                {
+                    let _: TurnStartResponse = to_response(response)?;
+                    turn_started = true;
+                }
                 JSONRPCMessage::Notification(notification)
                     if notification.method == "turn/completed" =>
                 {
-                    turn_completed = true;
+                    completed = true;
                 }
                 _ => {}
             }
@@ -158,6 +183,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 break Ok(());
             }
         }
+        Ok::<(), anyhow::Error>(())
     })
     .await??;
     assert!(attestation_requests > 0);
