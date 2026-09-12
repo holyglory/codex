@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
+use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageDetailListQuery;
 use codex_usage::UsageDetailRecord;
@@ -180,6 +181,9 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
+        .with_model_info_override("gpt-5.5", |model_info| {
+            model_info.truncation_policy = TruncationPolicyConfig::bytes(/*limit*/ 1_000);
+        })
         .with_workspace_setup(|cwd, fs| async move {
             let auxiliary_output = cwd.join("auxiliary-output");
             for root in [&cwd, &auxiliary_output] {
@@ -369,6 +373,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
                 .any(|tool| tool["name"].as_str() == Some("usage_stats")))
     );
     let summary = tool_output(&first_requests[1], "read-usage");
+    assert!(summary.to_string().len() > 1_200);
     assert_eq!(summary["kind"], "usageSummary");
     assert_eq!(summary["scope"]["type"], "repository");
     assert_eq!(summary["reportingOperationInProgress"], true);
