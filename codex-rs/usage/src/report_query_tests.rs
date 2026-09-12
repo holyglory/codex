@@ -3,6 +3,32 @@ use pretty_assertions::assert_eq;
 
 #[cfg(unix)]
 #[tokio::test]
+async fn completed_model_without_usage_keeps_a_gap_until_facts_arrive() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let process = ProcessId::new();
+    store.register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 900).await.expect("process");
+    insert_thread(&store, "complete").await;
+    let mut requests = Vec::new();
+    for _ in 0..2 {
+        let op = operation(process, "complete", OperationKind::ModelRequest);
+        requests.push(record_request(&store, &op).await);
+        store.record_coverage(&NewCoverageEvent {event_id:FactEventId::new(),operation_id:Some(op.id),
+            scope_kind:CoverageScopeKind::new("model_attempt").expect("scope"),state:CoverageState::Partial,
+            reason_code:None,occurred_at_ms:1_100}).await.expect("capture");
+        store.finish_operation(&TerminalOperation {operation_id:op.id,status:TerminalStatus::Completed,
+            occurred_at_ms:1_100,duration_ns:100_000_000,error_category:None}).await.expect("terminal");
+    }
+    store.record_token_observation(&token(requests[0], RepositoryBucket::Unknown, Some(25), CoverageState::Complete)).await.expect("first usage");
+    let missing = store.usage_summary(UsageSummaryScope::All).await.expect("missing summary");
+    store.record_token_observation(&token(requests[1], RepositoryBucket::Unknown, Some(25), CoverageState::Complete)).await.expect("late usage");
+    let complete = store.usage_summary(UsageSummaryScope::All).await.expect("complete summary");
+    assert_eq!((missing.coverage.has_gaps, complete.coverage.has_gaps), (true, false));
+    assert_eq!((missing.tokens[0].measured_tokens, complete.tokens[0].measured_tokens), (25, 50));
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn scoped_reports_preserve_results_when_unrelated_history_grows() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");
