@@ -141,10 +141,15 @@ async fn validate_with_reader(
                 let repository = catalogue
                     .get("repositories")
                     .and_then(Value::as_array)
-                    .and_then(|repositories| repositories.iter().find(|repository| {
-                        repository.get("repository_id").and_then(Value::as_str) == Some(repository_id)
-                    }))
-                    .ok_or("Coordinator catalogue does not contain the linked outcome's repository")?;
+                    .and_then(|repositories| {
+                        repositories.iter().find(|repository| {
+                            repository.get("repository_id").and_then(Value::as_str)
+                                == Some(repository_id)
+                        })
+                    })
+                    .ok_or(
+                        "Coordinator catalogue does not contain the linked outcome's repository",
+                    )?;
                 let directory = std::fs::canonicalize(cwd)
                     .map_err(|_| "cannot resolve the task directory for repository verification")?;
                 let within_directory = repository
