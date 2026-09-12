@@ -66,14 +66,25 @@ impl StructuredUsageSummary {
             }),
             coverage: StructuredCoverage {
                 dimensions: StructuredCoverageDimensions {
-                    recorded_tokens: if summary.tokens.is_empty() { "unobserved" }
-                        else if summary.tokens.iter().any(|token| token.exact_tokens.is_none()) { "partial" }
-                        else { "complete" },
+                    recorded_tokens: if summary.tokens.is_empty() {
+                        "unobserved"
+                    } else if summary
+                        .tokens
+                        .iter()
+                        .any(|token| token.exact_tokens.is_none())
+                    {
+                        "partial"
+                    } else {
+                        "complete"
+                    },
                     unfinished_operations: summary.coverage.unfinished_operations,
                     timing_unknown_intervals: summary.timing.execution_wall_union.unknown_intervals,
-                    activity_unattributed_operations: summary.classifications.iter()
+                    activity_unattributed_operations: summary
+                        .classifications
+                        .iter()
                         .filter(|classification| classification.provenance == "unknown")
-                        .map(|classification| classification.count).sum(),
+                        .map(|classification| classification.count)
+                        .sum(),
                     context: "use task_tree_summary for measured and unknown context requests",
                 },
                 state: summary.coverage.overall_state.clone(),
