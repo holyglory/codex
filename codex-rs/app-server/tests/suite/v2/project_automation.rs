@@ -281,7 +281,7 @@ async fn project_automation_parent_directory_receipt_preserves_project_and_clock
 if [ "${DEVCOORDINATOR_WORK_CONTEXT+x}" ]; then exit 31; fi
 case "$1:$2:$3" in
   repository:status:--format) /bin/cat repository.json ;;
-  repository:status:repo) /bin/cat selected-repository.json ;;
+  repository:list:--format) /bin/cat selected-repository.json ;;
   task:history:owner) /bin/cat owner.json ;;
   release:evidence:delivery-test) /bin/cat delivery.json ;;
   *) exit 32 ;;
@@ -296,7 +296,7 @@ esac
         ),
         (
             "selected-repository.json",
-            json!({"ok":true,"data":{"repository_id":"repo","worktrees":[{"worktree_path":application}]}}),
+            json!({"ok":true,"data":{"repositories":[{"repository_id":"repo","worktrees":[{"worktree_path":application}]}]}}),
         ),
         (
             "owner.json",

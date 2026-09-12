@@ -131,13 +131,20 @@ async fn validate_with_reader(
                     .and_then(Value::as_str)
                     .ok_or("Coordinator did not identify the linked outcome's repository")?;
                 validate_reference(repository_id)?;
-                let repository = coordinator_json(
+                let catalogue = coordinator_json(
                     cwd,
-                    &["repository", "status", repository_id, "--format", "json"],
+                    &["repository", "list", "--format", "json"],
                     reader(),
                     deadline,
                 )
                 .await?;
+                let repository = catalogue
+                    .get("repositories")
+                    .and_then(Value::as_array)
+                    .and_then(|repositories| repositories.iter().find(|repository| {
+                        repository.get("repository_id").and_then(Value::as_str) == Some(repository_id)
+                    }))
+                    .ok_or("Coordinator catalogue does not contain the linked outcome's repository")?;
                 let directory = std::fs::canonicalize(cwd)
                     .map_err(|_| "cannot resolve the task directory for repository verification")?;
                 let within_directory = repository
@@ -157,7 +164,7 @@ async fn validate_with_reader(
                 {
                     return Err("the linked outcome must identify a registered repository within the task directory".into());
                 }
-                repository
+                repository.clone()
             }
             Err(error) => return Err(error.into()),
         };
@@ -314,15 +321,22 @@ async fn coordinator_json(
         .spawn()
         .map_err(|_| "Coordinator evidence reader is unavailable")?;
     let mut output = Vec::new();
+    // The catalogue is private verifier input, never model context. Ordinary evidence
+    // receipts retain their smaller bound; the catalogue needs room for registered worktrees.
+    let max_response_bytes = if args.starts_with(&["repository", "list"]) {
+        256 * 1_024
+    } else {
+        MAX_RESPONSE_BYTES
+    };
     process
         .stdout
         .take()
         .ok_or("missing evidence output")?
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
+        .take((max_response_bytes + 1) as u64)
         .read_to_end(&mut output)
         .await
         .map_err(|_| "cannot read evidence")?;
-    if output.len() > MAX_RESPONSE_BYTES {
+    if output.len() > max_response_bytes {
         return Err("Coordinator evidence exceeds the bounded response size".into());
     }
     let status = process.wait().await.map_err(|_| "evidence reader failed")?;
