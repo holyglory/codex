@@ -3060,6 +3060,14 @@ Field notes:
 - The backend may cap `rateLimitResetCredits.credits`, so `availableCount` is the authoritative total and can be greater than the number of detail rows.
 - Refetch `account/rateLimits/read` after consuming a reset.
 
+The agent's `account_management` tool can inspect limits for existing managed profiles
+with `action: "list", refresh_service_usage: true`. Its `serviceUsage.nextResetAt`
+and `nextResetAtUtc` summarize the main Codex quota, with `nextResetScope` identifying
+`codex.primary`, `codex.secondary`, or `codex.individual`. Exhausted windows take
+priority over used windows, then unused windows; the next reported future reset
+within that class is selected. Missing reset evidence remains unavailable. Auxiliary
+model quotas remain in the detailed buckets but cannot determine this summary.
+
 ### 8) Earned rate-limit resets (ChatGPT)
 
 ```json
