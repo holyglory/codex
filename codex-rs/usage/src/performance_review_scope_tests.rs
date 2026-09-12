@@ -18,7 +18,7 @@ async fn scoped_review_keeps_covered_facts_and_excludes_other_token_owners() {
     let query = PerformanceReviewQuery {
         thread_id: Some(ThreadId::new("spec").expect("thread")),
         repository_id: Some(fixture.repository.clone()),
-        time_range: Some(UtcTimeRange::new(1_000_000, 1_001_000).expect("range")),
+        time_range: Some(UtcTimeRange::new(/*start_ms*/ 1_000_000, /*end_ms*/ 1_001_000).expect("range")),
     };
     let expected = fixture.store.performance_review_packet(query.clone()).await.expect("review");
     assert_eq!(
