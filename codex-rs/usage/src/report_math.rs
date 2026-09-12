@@ -418,10 +418,6 @@ fn tool_metrics(selection: &ReportSelection) -> Result<ToolMetrics, UsageStoreEr
     })
 }
 
-fn interval_may_overlap(start: i64, end: Option<i64>, range: Option<UtcTimeRange>) -> bool {
-    range.is_none_or(|range| start < range.end_ms && end.is_none_or(|end| end > range.start_ms))
-}
-
 fn completed_interval(
     operation: &OperationLifecycle,
     range: Option<UtcTimeRange>,
