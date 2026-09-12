@@ -139,7 +139,21 @@ async fn account_management_tool_reads_live_limits_and_utc_reset_dates() -> Resu
     };
     registry.auto_selection.enabled = true;
     RegistryStore::new(home.path()).create(&registry)?;
-    mount_observed_probe(&backend, &profile, /*used_percent*/ 42, 1..).await;
+    let now = chrono::Utc::now().timestamp();
+    let weekly_reset = now + 5 * 86400;
+    Mock::given(method("GET"))
+        .and(path(RATE_LIMIT_PATH))
+        .and(header("authorization", format!("Bearer {}", profile.access_token)))
+        .and(header("chatgpt-account-id", profile.workspace_id.as_str()))
+        .respond_with(ResponseTemplate::new(/*status*/ 200).set_body_json(json!({
+            "plan_type": "pro",
+            "rate_limit": {"allowed": true, "limit_reached": false,
+                "primary_window": {"used_percent": 42, "limit_window_seconds": 604800, "reset_after_seconds": 0, "reset_at": weekly_reset}},
+            "additional_rate_limits": [{"limit_name": "GPT-5.3-Codex-Spark", "metered_feature": "codex_bengalfox",
+                "rate_limit": {"allowed": true, "limit_reached": false,
+                    "primary_window": {"used_percent": 0, "limit_window_seconds": 18000, "reset_after_seconds": 0, "reset_at": now + 18000}}}]
+        })))
+        .expect(1..).mount(&backend).await;
     let mocked = responses::mount_sse_sequence(
         &backend,
         vec![
@@ -172,6 +186,8 @@ async fn account_management_tool_reads_live_limits_and_utc_reset_dates() -> Resu
     let usage = &result["accounts"][0]["serviceUsage"];
     let reset = usage["nextResetAt"].as_i64().expect("next reset timestamp");
     assert_eq!(usage["state"], "observed");
+    assert_eq!(reset, weekly_reset);
+    assert_eq!(usage["nextResetScope"], "codex.primary");
     assert_eq!(usage["buckets"][0][1], json!(42.0));
     assert_eq!(usage["buckets"][0][2], reset);
     assert_eq!(

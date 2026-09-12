@@ -1,8 +1,7 @@
 ---
 source: cli/tests/account.rs
-assertion_line: 579
-expression: "String::from_utf8_lossy(&human.get_output().stdout)"
+expression: "human.replace(countdown, \"[Codex reset countdown]\")"
 ---
-CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	LIMITS	NEXT RESET
+CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	LIMITS	RESET IN
 	beta	ready	api-key	2		unknown (unsupportedAuthentication)	unknown
-*	alpha	ready	chatgpt	1	primary	codex: 5m 42.0% used / 1h 84.0% used / individual 8000 / 25000 used (68% left) / 9.99 credits; codex_other: 15m 70.0% used	2030-01-01 00:00:00 UTC
+*	alpha	ready	chatgpt	1	primary	codex: 5m 42% used / 1h 84% used / individual 32% used	[Codex reset countdown]

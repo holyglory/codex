@@ -51,22 +51,22 @@ fn auth() -> AuthDotJson {
     }
 }
 
-fn chatgpt_auth() -> Result<AuthDotJson> {
+fn chatgpt_auth(alias: &str) -> Result<AuthDotJson> {
     let token = encode_id_token(
         &ChatGptIdTokenClaims::new()
-            .email("alpha@example.test")
+            .email(format!("{alias}@example.test"))
             .plan_type("pro")
-            .chatgpt_user_id("user-alpha")
-            .chatgpt_account_id("workspace-alpha"),
+            .chatgpt_user_id(format!("user-{alias}"))
+            .chatgpt_account_id(format!("workspace-{alias}")),
     )?;
     Ok(AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(TokenData {
             id_token: parse_chatgpt_jwt_claims(&token)?,
-            access_token: "access-alpha".to_string(),
-            refresh_token: "refresh-alpha".to_string(),
-            account_id: Some("workspace-alpha".to_string()),
+            access_token: format!("access-{alias}"),
+            refresh_token: format!("refresh-{alias}"),
+            account_id: Some(format!("workspace-{alias}")),
         }),
         last_refresh: Some(chrono::Utc::now()),
         agent_identity: None,
@@ -503,16 +503,16 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
                 }
             },
             "additional_rate_limits": [{
-                "limit_name": "codex_other",
-                "metered_feature": "codex_other",
+                "limit_name": "GPT-5.3-Codex-Spark",
+                "metered_feature": "codex_bengalfox",
                 "rate_limit": {
                     "allowed": true,
                     "limit_reached": false,
                     "primary_window": {
-                        "used_percent": 70,
-                        "limit_window_seconds": 900,
+                        "used_percent": 0,
+                        "limit_window_seconds": 18000,
                         "reset_after_seconds": 0,
-                        "reset_at": 1893628800
+                        "reset_at": 1893369600
                     }
                 }
             }]
@@ -534,7 +534,7 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?
-    .save(&chatgpt_auth()?)?;
+    .save(&chatgpt_auth("alpha")?)?;
     let store = RegistryStore::new(fixture.home.path());
     store.compare_and_swap(/*expected_generation*/ 0, |registry| {
         registry.accounts[0].auth_mode = AuthMode::Chatgpt;
@@ -569,15 +569,29 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     )?;
     assert_eq!(listed["accounts"][1]["limits"], report["accounts"][1]);
     assert_eq!(listed["accounts"][1]["limits"]["nextResetAt"], 1893456000);
+    assert_eq!(
+        listed["accounts"][1]["limits"]["nextResetScope"],
+        "codex.primary"
+    );
+    let before = chrono::Utc::now().timestamp();
     let human = codex_command(fixture.home.path())?
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
         .args(["account", "list"])
         .assert()
         .success();
+    let human = String::from_utf8(human.get_output().stdout.clone())?;
+    let countdown = human
+        .lines()
+        .last()
+        .unwrap()
+        .split('\t')
+        .next_back()
+        .unwrap();
+    assert_reset_countdown(countdown, /*reset*/ 1893456000, before);
     insta::assert_snapshot!(
         "account_list_limits",
-        String::from_utf8_lossy(&human.get_output().stdout)
+        human.replace(countdown, "[Codex reset countdown]")
     );
 
     codex_command(fixture.home.path())?
@@ -624,6 +638,113 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         "account_list_spend_limit",
         String::from_utf8_lossy(&restricted.get_output().stdout)
     );
+    server.verify().await;
+    Ok(())
+}
+
+fn assert_reset_countdown(countdown: &str, reset: i64, before: i64) {
+    let seconds: i64 = countdown
+        .split_whitespace()
+        .map(|part| {
+            let (number, unit) = part.split_at(part.len() - 1);
+            let scale = match unit {
+                "d" => 86400,
+                "h" => 3600,
+                "m" => 60,
+                _ => panic!("invalid countdown: {countdown}"),
+            };
+            number.parse::<i64>().expect("numeric countdown component") * scale
+        })
+        .sum();
+    let after = chrono::Utc::now().timestamp();
+    assert!(
+        ((reset - after) / 60 * 60..=(reset - before) / 60 * 60).contains(&seconds),
+        "{countdown} does not match main Codex reset {reset}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_list_keeps_each_accounts_weekly_reset_with_identical_unused_spark_limits()
+-> Result<()> {
+    let server = MockServer::start().await;
+    let fixture = fixture(/*beta_authenticated*/ true)?;
+    let now = chrono::Utc::now().timestamp();
+    std::fs::write(
+        fixture.home.path().join("config.toml"),
+        format!(
+            "cli_auth_credentials_store = \"file\"\nchatgpt_base_url = \"{}\"\n",
+            server.uri()
+        ),
+    )?;
+    let accounts = [
+        (&fixture.alpha, 100, now + 5 * 86400),
+        (&fixture.beta, 61, now + 6 * 86400),
+    ];
+    for (account, used, reset) in accounts {
+        ProfileAuthStorage::new(
+            fixture.home.path(),
+            account.id.clone(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::Direct,
+        )?
+        .save(&chatgpt_auth(account.alias.as_str())?)?;
+        Mock::given(method("GET")).and(path("/api/codex/usage"))
+            .and(header("authorization", format!("Bearer access-{}", account.alias)))
+            .and(header("chatgpt-account-id", format!("workspace-{}", account.alias)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plan_type": "pro",
+                "credits": {"has_credits": false, "unlimited": false, "balance": "0"},
+                "rate_limit": {"allowed": used < 100, "limit_reached": used == 100,
+                    "primary_window": {"used_percent": used, "limit_window_seconds": 604800, "reset_after_seconds": 0, "reset_at": reset}},
+                "additional_rate_limits": [{"limit_name": "GPT-5.3-Codex-Spark", "metered_feature": "codex_bengalfox",
+                    "rate_limit": {"allowed": true, "limit_reached": false,
+                        "primary_window": {"used_percent": 0, "limit_window_seconds": 18000, "reset_after_seconds": 0, "reset_at": now + 18000}}}]
+            }))).expect(2).mount(&server).await;
+    }
+    RegistryStore::new(fixture.home.path()).compare_and_swap(
+        /*expected_generation*/ 0,
+        |registry| {
+            for account in &mut registry.accounts {
+                account.auth_mode = AuthMode::Chatgpt;
+            }
+        },
+    )?;
+    let report = stdout_json(
+        codex_command(fixture.home.path())?
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("no_proxy", "127.0.0.1,localhost")
+            .args(["account", "list", "--json"])
+            .assert()
+            .success(),
+    )?;
+    let before = chrono::Utc::now().timestamp();
+    let output = codex_command(fixture.home.path())?
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .args(["account", "list"])
+        .assert()
+        .success();
+    let human = String::from_utf8(output.get_output().stdout.clone())?;
+    let mut normalized = human.clone();
+    for (account, _, reset) in accounts {
+        let data = report["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["alias"] == account.alias.as_str())
+            .unwrap();
+        assert_eq!(data["limits"]["nextResetAt"], reset);
+        assert_eq!(data["limits"]["nextResetScope"], "codex.primary");
+        assert_eq!(data["limits"]["buckets"].as_array().unwrap().len(), 2);
+        let line = human
+            .lines()
+            .find(|line| line.split('\t').nth(1) == Some(account.alias.as_str()))
+            .unwrap();
+        let countdown = line.split('\t').next_back().unwrap();
+        assert_reset_countdown(countdown, reset, before);
+        normalized = normalized.replace(countdown, "[Codex reset countdown]");
+    }
+    insta::assert_snapshot!("account_list_weekly_resets", normalized);
     server.verify().await;
     Ok(())
 }
