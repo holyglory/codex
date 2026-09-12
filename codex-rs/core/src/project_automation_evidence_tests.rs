@@ -28,7 +28,9 @@ if [ "${DEVCOORDINATOR_WORK_CONTEXT+x}" ]; then exit 31; fi
 printf '%s %s %s\n' "$1" "$2" "${3-}" >> calls.log
 if [ -f fail ]; then /bin/cat failure.json; exit 9; fi
 case "$1:$2" in
-  repository:status) /bin/cat repository.json ;;
+  repository:status)
+    if [ "$3" = "--format" ]; then /bin/cat repository.json
+    else /bin/cat "repository-$3.json"; fi ;;
   release:evidence) /bin/cat delivery.json ;;
   review:show) /bin/cat review.json ;;
   task:history) /bin/cat "task-$3.json" ;;
@@ -49,7 +51,11 @@ if "%~1"=="review" goto review
 if "%~1"=="task" goto task
 exit /b 32
 :repository
+if not "%~3"=="--format" goto selected_repository
 type repository.json
+exit /b
+:selected_repository
+type repository-%~3.json
 exit /b
 :delivery
 type delivery.json
@@ -88,6 +94,21 @@ exit /b 9
             &format!("task-{reference}.json"),
             json!({"task":{"task_id":reference,"status":status,"repository_id":repository}}),
         );
+    }
+
+    fn parent_repository(&self) -> PathBuf {
+        let root = self.directory.path().join("application");
+        std::fs::create_dir(&root).expect("nested worktree");
+        self.raw(
+            "repository.json",
+            r#"{"ok":false,"error":{"code":"repository_not_found"}}"#,
+        );
+        self.task("owner", "in_progress", "repo");
+        self.reply(
+            "repository-repo.json",
+            json!({"repository_id":"repo","root_path":root,"worktrees":[{"worktree_path":root}]}),
+        );
+        root
     }
 
     fn command(&self) -> Command {
@@ -181,51 +202,183 @@ async fn getter_delivery_accepts_verified_data_and_rejects_mismatches() {
 
 #[tokio::test]
 async fn getter_review_requires_current_project_wide_window() {
+    for parent_directory in [false, true] {
+        let fixture = Getter::new();
+        if parent_directory {
+            fixture.parent_repository();
+        }
+        let mut project = project();
+        let job_id = Uuid::now_v7();
+        let due_at_ms = START_MS + 1_000;
+        project.review = Some(AutomationJob {
+            id: job_id,
+            kind: AutomationJobKind::PerformanceReview,
+            due_at_ms,
+            revision: project.revision,
+            notified: true,
+            notification_delivered: true,
+            decision_ref: None,
+        });
+        let command = ProjectAutomationCommand::CompleteReview {
+            job_id,
+            decision_ref: "review@1".into(),
+        };
+        let valid = json!({"completed":true,"record":{"repositoryId":"repo","projectId":"repo","workstreamId":null,"windowStartMs":START_MS,"windowEndMs":due_at_ms,"experiment":{"scopeRepoId":"repo","disposition":"unchanged"}}});
+        fixture.reply("review.json", valid.clone());
+        assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
+        let mut absent_scope = valid.clone();
+        absent_scope["record"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workstreamId");
+        fixture.reply("review.json", absent_scope);
+        assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
+        for (field, value) in [
+            ("windowStartMs", json!(START_MS - 1)),
+            ("windowEndMs", json!(due_at_ms + 1)),
+            ("repositoryId", json!("foreign")),
+            ("workstreamId", json!("implementation")),
+            ("workstreamId", json!("")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["record"][field] = value;
+            fixture.reply("review.json", invalid);
+            assert!(fixture.validate(&command, Some(&project)).await.is_err());
+        }
+        fixture.reply("review.json", valid);
+        let stale_job = ProjectAutomationCommand::CompleteReview {
+            job_id: Uuid::now_v7(),
+            decision_ref: "review@1".into(),
+        };
+        assert!(fixture.validate(&stale_job, Some(&project)).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn getter_parent_directory_uses_linked_outcome_not_submitted_receipt() {
     let fixture = Getter::new();
-    let mut project = project();
-    let job_id = Uuid::now_v7();
-    let due_at_ms = START_MS + 1_000;
-    project.review = Some(AutomationJob {
-        id: job_id,
-        kind: AutomationJobKind::PerformanceReview,
-        due_at_ms,
-        revision: project.revision,
-        notified: true,
-        notification_delivered: true,
-        decision_ref: None,
-    });
-    let command = ProjectAutomationCommand::CompleteReview {
-        job_id,
-        decision_ref: "review@1".into(),
+    fixture.parent_repository();
+    let project = project();
+    let command = ProjectAutomationCommand::RecordDelivery {
+        target: "linux".into(),
+        delivered_at_ms: 100,
+        evidence_ref: "delivery-test".into(),
     };
-    let valid = json!({"completed":true,"record":{"repositoryId":"repo","projectId":"repo","workstreamId":null,"windowStartMs":START_MS,"windowEndMs":due_at_ms,"experiment":{"scopeRepoId":"repo","disposition":"unchanged"}}});
-    fixture.reply("review.json", valid.clone());
+    fixture.reply("delivery.json", delivery());
     assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
-    let mut absent_scope = valid.clone();
-    absent_scope["record"]
-        .as_object_mut()
-        .unwrap()
-        .remove("workstreamId");
-    fixture.reply("review.json", absent_scope);
-    assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
-    for (field, value) in [
-        ("windowStartMs", json!(START_MS - 1)),
-        ("windowEndMs", json!(due_at_ms + 1)),
-        ("repositoryId", json!("foreign")),
-        ("workstreamId", json!("implementation")),
-        ("workstreamId", json!("")),
+    assert_eq!(
+        fixture.calls(),
+        vec![
+            "repository status --format",
+            "task history owner",
+            "repository status repo",
+            "release evidence delivery-test",
+        ]
+    );
+    let mut foreign = delivery();
+    foreign["repository_id"] = json!("other");
+    fixture.reply("delivery.json", foreign);
+    assert!(fixture.validate(&command, Some(&project)).await.is_err());
+}
+
+#[tokio::test]
+async fn getter_parent_directory_requires_bound_owner_and_matching_repository() {
+    let fixture = Getter::new();
+    fixture.parent_repository();
+    let mut project = project();
+    let command = ProjectAutomationCommand::RecordDelivery {
+        target: "linux".into(),
+        delivered_at_ms: 100,
+        evidence_ref: "delivery-test".into(),
+    };
+    fixture.reply("delivery.json", delivery());
+    assert!(fixture.validate(&command, /*expected*/ None).await.is_err());
+    project.thread_outcomes.clear();
+    assert!(fixture.validate(&command, Some(&project)).await.is_err());
+    project
+        .thread_outcomes
+        .insert(project.owner_thread_id.to_string(), "owner".into());
+    for task in [
+        json!({"task_id":"different","repository_id":"repo"}),
+        json!({"task_id":"owner","repository_id":"--all"}),
+        json!({"task_id":"owner"}),
     ] {
-        let mut invalid = valid.clone();
-        invalid["record"][field] = value;
-        fixture.reply("review.json", invalid);
+        fixture.reply("task-owner.json", json!({"task":task}));
         assert!(fixture.validate(&command, Some(&project)).await.is_err());
     }
-    fixture.reply("review.json", valid);
-    let stale_job = ProjectAutomationCommand::CompleteReview {
-        job_id: Uuid::now_v7(),
-        decision_ref: "review@1".into(),
+    fixture.task("owner", "in_progress", "repo");
+    fixture.reply(
+        "repository-repo.json",
+        json!({"repository_id":"different","worktrees":[{"worktree_path":fixture.directory.path()}]}),
+    );
+    assert!(fixture.validate(&command, Some(&project)).await.is_err());
+    assert!(
+        !fixture
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("release"))
+    );
+}
+
+#[tokio::test]
+async fn getter_parent_directory_rejects_outside_and_missing_worktrees() {
+    let fixture = Getter::new();
+    fixture.parent_repository();
+    let outside = tempfile::tempdir().expect("unrelated worktree");
+    let project = project();
+    let command = ProjectAutomationCommand::Complete {
+        outcome_ref: "owner".into(),
     };
-    assert!(fixture.validate(&stale_job, Some(&project)).await.is_err());
+    fixture.task("owner", "done", "repo");
+    for root in [
+        outside.path().to_path_buf(),
+        fixture.directory.path().join("missing"),
+    ] {
+        fixture.reply(
+            "repository-repo.json",
+            json!({"repository_id":"repo","root_path":fixture.directory.path(),"worktrees":[{"worktree_path":root}]}),
+        );
+        assert!(fixture.validate(&command, Some(&project)).await.is_err());
+    }
+    fixture.reply(
+        "repository-repo.json",
+        json!({"repository_id":"repo","worktrees":[{"worktree_path":fixture.directory.path().join("application")}]}),
+    );
+    assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn getter_parent_directory_rejects_symlink_escape() {
+    let fixture = Getter::new();
+    fixture.parent_repository();
+    let outside = tempfile::tempdir().expect("unrelated worktree");
+    let link = fixture.directory.path().join("escaped-worktree");
+    std::os::unix::fs::symlink(outside.path(), &link).expect("worktree link");
+    fixture.reply(
+        "repository-repo.json",
+        json!({"repository_id":"repo","worktrees":[{"worktree_path":link}]}),
+    );
+    let command = ProjectAutomationCommand::Complete {
+        outcome_ref: "owner".into(),
+    };
+    fixture.task("owner", "done", "repo");
+    assert!(fixture.validate(&command, Some(&project())).await.is_err());
+}
+
+#[tokio::test]
+async fn getter_parent_directory_does_not_mask_other_lookup_failures() {
+    let fixture = Getter::new();
+    fixture.parent_repository();
+    fixture.raw(
+        "repository.json",
+        r#"{"ok":false,"error":{"code":"permission_denied"}}"#,
+    );
+    let command = ProjectAutomationCommand::Complete {
+        outcome_ref: "owner".into(),
+    };
+    assert!(fixture.validate(&command, Some(&project())).await.is_err());
+    assert_eq!(fixture.calls(), vec!["repository status --format"]);
 }
 
 #[tokio::test]
