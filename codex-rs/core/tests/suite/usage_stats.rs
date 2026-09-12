@@ -523,6 +523,7 @@ text(JSON.stringify(result));
                         "action": "task_tree_summary",
                         "root_thread_id": "current",
                         "include_descendants": true,
+                        "limit": 1,
                         "from_at_ms": 0,
                         "to_at_ms": 4_000_000_000_000_i64
                     })
@@ -564,6 +565,8 @@ text(JSON.stringify(result));
     let summary = tool_output(&requests[2], "read-tree");
     assert_eq!(summary["kind"], "taskTreeSummary");
     assert_eq!(summary["includeDescendants"], true);
+    assert_eq!(summary["pagination"]["totalsRepeated"], true);
+    assert_eq!(summary["pagination"]["returnedRows"], 1);
     assert_eq!(summary["counts"]["wrapperToolOperations"], 1);
     assert_eq!(
         summary["counts"]["nestedToolOperations"],

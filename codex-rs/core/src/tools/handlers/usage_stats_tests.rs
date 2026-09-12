@@ -1,6 +1,9 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[path = "usage_stats_pagination_tests.rs"]
+mod pagination_tests;
+
 fn args() -> UsageStatsArgs {
     UsageStatsArgs {
         action: UsageStatsAction::Repositories,

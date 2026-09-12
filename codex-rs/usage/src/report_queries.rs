@@ -135,4 +135,41 @@ impl UsageStore {
         query.push(" GROUP BY coverage_state");
         query.build().fetch_all(&self.pool).await.map_err(UsageStoreError::Database)
     }
+
+    pub(crate) async fn unresolved_report_coverage(
+        &self,
+        selection: &ReportSelection,
+        include_global: bool,
+    ) -> Result<bool, UsageStoreError> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT EXISTS(SELECT 1 FROM coverage_events AS coverage WHERE (operation_id IN (SELECT value FROM json_each(",
+        );
+        query.push_bind(selection.operation_ids()).push("))");
+        if include_global {
+            query.push(" OR operation_id IS NULL");
+        }
+        query.push(") AND coverage_state <> 'complete'");
+        if let Some(range) = selection.time_range {
+            query.push(" AND occurred_at_ms >= ").push_bind(range.start_ms());
+            query.push(" AND occurred_at_ms < ").push_bind(range.end_ms());
+        }
+        // Lifecycle start events and the legacy conservative partial marker do not
+        // erase a terminal receipt. Explicit unknown/error coverage remains visible.
+        query.push(r#" AND NOT (
+            scope_kind IN ('model_attempt', 'tool_attempt')
+            AND coverage_state IN ('capture_started', 'partial') AND reason_code IS NULL
+            AND EXISTS (SELECT 1 FROM operation_events AS terminal
+                        WHERE terminal.operation_id = coverage.operation_id AND terminal.terminal = 1)
+        ) AND NOT EXISTS (
+            SELECT 1 FROM coverage_events AS later
+            WHERE later.operation_id = coverage.operation_id AND later.scope_kind = coverage.scope_kind
+              AND (later.occurred_at_ms > coverage.occurred_at_ms
+                   OR (later.occurred_at_ms = coverage.occurred_at_ms AND later.event_id > coverage.event_id))
+        "#);
+        if let Some(range) = selection.time_range {
+            query.push(" AND later.occurred_at_ms < ").push_bind(range.end_ms());
+        }
+        query.push("))");
+        query.build_query_scalar().fetch_one(&self.pool).await.map_err(UsageStoreError::Database)
+    }
 }

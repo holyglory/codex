@@ -64,6 +64,9 @@ pub(super) async fn execute(
         UsageStatsAction::Events => query_lists::events(store, context, &args, time_range).await,
         UsageStatsAction::Details => details(store, context, &args, time_range).await,
     }?;
+    if matches!(args.action, UsageStatsAction::Summary | UsageStatsAction::TaskTreeSummary) {
+        super::pagination::paginate(&mut value, &args)?;
+    }
     if let Some(object) = value.as_object_mut() {
         object.insert("reportingOperationInProgress".to_string(), json!(true));
         object.insert(
@@ -371,9 +374,6 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.include_descendants.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
-                || args.limit.is_some()
-                || args.cursor_sort_value.is_some()
-                || args.cursor_id.is_some()
                 || (args.repository.is_some()
                     && !matches!(args.scope, Some(UsageStatsScope::Repository)))
         }
@@ -384,9 +384,6 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.thread_id.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
-                || args.limit.is_some()
-                || args.cursor_sort_value.is_some()
-                || args.cursor_id.is_some()
         }
         UsageStatsAction::PerformanceReview => {
             args.scope.is_some()
