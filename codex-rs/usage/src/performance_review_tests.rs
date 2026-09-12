@@ -6,6 +6,9 @@ use std::time::Instant;
 #[path = "performance_review_work_tests.rs"]
 mod work;
 
+#[path = "performance_review_scope_tests.rs"]
+mod scope;
+
 struct Fixture {
     store: UsageStore,
     process: ProcessId,
