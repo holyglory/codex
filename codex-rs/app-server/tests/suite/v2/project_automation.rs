@@ -319,14 +319,16 @@ esac
         .with_env_overrides(&[("PATH", Some(&path))])
         .build_initialized()
         .await?;
-    let thread = app
-        .start_thread(api::ThreadStartParams {
+    let request_id = app
+        .send_thread_start_request(api::ThreadStartParams {
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
             ..Default::default()
         })
-        .await?
-        .thread
-        .id;
+        .await?;
+    let response = app
+        .read_stream_until_response_message(api::RequestId::Integer(request_id))
+        .await?;
+    let thread = serde_json::from_value::<api::ThreadStartResponse>(response.result)?.thread.id;
     let completed = app
         .start_turn_and_wait_for_completion(api::TurnStartParams {
             thread_id: thread.clone(),
