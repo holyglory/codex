@@ -423,7 +423,8 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
     assert_eq!(unknown.exact_tokens, None);
     assert_eq!(unknown.unknown_observations, 1);
     assert!(all.coverage.has_gaps);
-    assert!(!thread_two.coverage.has_gaps);
+    // Exact recorded tokens do not imply an unfinished operation has a terminal receipt.
+    assert_eq!((thread_two.coverage.has_gaps, thread_two.coverage.unfinished_operations), (true, 1));
     assert_eq!(all.operation_count, 4);
     assert_eq!(all.tool_count, 1);
     assert_eq!(all.database_schema_version, 6);
