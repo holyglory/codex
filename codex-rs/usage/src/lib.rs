@@ -99,6 +99,7 @@ pub use structured::StructuredClassificationCount;
 pub use structured::StructuredCounts;
 pub use structured::StructuredCoverage;
 pub use structured::StructuredCoverageCount;
+pub use structured::StructuredCoverageDimensions;
 pub use structured::StructuredDuration;
 pub use structured::StructuredNamedDuration;
 pub use structured::StructuredRepositoryParticipation;

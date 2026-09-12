@@ -175,6 +175,18 @@ pub struct LocalUsageReportCoverage {
     pub has_gaps: bool,
     pub events: Vec<LocalUsageReportCoverageCount>,
     pub token_observations: Vec<LocalUsageReportCoverageCount>,
+    pub dimensions: Option<LocalUsageReportCoverageDimensions>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportCoverageDimensions {
+    pub recorded_tokens: String,
+    pub unfinished_operations: u64,
+    pub timing_unknown_intervals: u64,
+    pub activity_unattributed_operations: u64,
+    pub context: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
