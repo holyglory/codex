@@ -11,6 +11,9 @@ use codex_protocol::protocol::SpendControlLimitSnapshot;
 use pretty_assertions::assert_eq;
 use std::str::FromStr;
 
+#[path = "priority_tests.rs"]
+mod priority_tests;
+
 fn account(alias: &str, priority: u32) -> AccountMetadata {
     account_with_mode(alias, priority, AuthMode::Chatgpt)
 }
@@ -904,7 +907,7 @@ fn automatic_candidates_skip_disabled_unauthenticated_and_deleted_accounts() {
 }
 
 #[test]
-fn equal_priority_uses_id_order_without_displacing_an_eligible_current() {
+fn equal_priority_and_reset_use_id_order_without_displacing_an_eligible_current() {
     let first = account("first", /*priority*/ 1_000);
     let second = account("second", /*priority*/ 1_000);
     let mut registry = AccountRegistry::default();

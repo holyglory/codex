@@ -139,7 +139,7 @@ A pin applies to that process without changing the saved default. It also preven
 
 ### Set automatic-selection priorities
 
-Automatic selection is off by default. Higher numbers are used first; smaller numbers are kept for later. New profiles start at priority `1000`.
+Automatic selection is off by default. Higher numbers are used first; smaller numbers are kept for later. Among eligible accounts with the same priority, the account with the most time left until its main Codex quota resets is used first. The current account stays unless another account resets at least 10 minutes later. New profiles start at priority `1000`.
 
 ```sh
 codex account priority set work 2000
