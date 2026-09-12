@@ -259,3 +259,117 @@ async fn project_automation_capability_requires_local_controls() -> Result<()> {
     assert_eq!(unavailable.code, -32600);
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn project_automation_parent_directory_receipt_preserves_project_and_clock() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "Saved parent-directory task.",
+        )?])
+        .await;
+    let home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let application = workspace.path().join("application");
+    std::fs::create_dir(&application)?;
+    let getter = workspace.path().join("devcoordinator2");
+    std::fs::write(
+        &getter,
+        r#"#!/bin/sh
+if [ "${DEVCOORDINATOR_WORK_CONTEXT+x}" ]; then exit 31; fi
+case "$1:$2:$3" in
+  repository:status:--format) /bin/cat repository.json ;;
+  repository:status:repo) /bin/cat selected-repository.json ;;
+  task:history:owner) /bin/cat owner.json ;;
+  release:evidence:delivery-test) /bin/cat delivery.json ;;
+  *) exit 32 ;;
+esac
+"#,
+    )?;
+    std::fs::set_permissions(&getter, std::fs::Permissions::from_mode(0o700))?;
+    for (file, response) in [
+        (
+            "repository.json",
+            json!({"ok":false,"error":{"code":"repository_not_found"}}),
+        ),
+        (
+            "selected-repository.json",
+            json!({"ok":true,"data":{"repository_id":"repo","worktrees":[{"worktree_path":application}]}}),
+        ),
+        (
+            "owner.json",
+            json!({"ok":true,"data":{"task":{"task_id":"owner","repository_id":"repo","status":"in_progress"}}}),
+        ),
+    ] {
+        std::fs::write(workspace.path().join(file), response.to_string())?;
+    }
+    let path = std::env::join_paths(
+        std::iter::once(workspace.path().to_path_buf()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )),
+    )?;
+    let path = path.to_string_lossy();
+    MockResponsesConfig::new(&server.uri()).write(home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .without_auto_env()
+        .without_managed_config()
+        .with_env_overrides(&[("PATH", Some(&path))])
+        .build_initialized()
+        .await?;
+    let thread = app
+        .start_thread(api::ThreadStartParams {
+            cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await?
+        .thread
+        .id;
+    let completed = app
+        .start_turn_and_wait_for_completion(api::TurnStartParams {
+            thread_id: thread.clone(),
+            input: vec![api::UserInput::Text {
+                text: "Save this task.".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(completed.turn.status, api::TurnStatus::Completed);
+    let bound = command(&mut app, json!({"threadId":thread,"command":{"action":"bind","purpose":"implementation"}}))
+        .await?.project.context("bound project")?;
+    let linked = command(&mut app, json!({"threadId":thread,"expectedRevision":bound.revision,
+        "command":{"action":"linkWork","outcomeId":"owner"}}))
+        .await?.project.context("linked outcome")?;
+    let activated = command(&mut app, json!({"threadId":thread,"expectedRevision":linked.revision,
+        "command":{"action":"activateDelivery","target":"preview","surface":"local preview","acceptance":"real receipt"}}))
+        .await?.project.context("activated target")?;
+    let observed = activated.delivery["preview"].started_at_ms;
+    let request = json!({"threadId":thread,"expectedRevision":activated.revision,
+        "command":{"action":"recordDelivery","target":"preview","deliveredAtMs":observed,"evidenceRef":"delivery-test"}});
+    let mut receipt = json!({"ok":true,"data":{"qualified":true,"qualification":"qualified",
+        "repository_id":"foreign","target":"preview","delivered_at_ms":observed,
+        "access":"https://example.invalid/preview","verification_sha256":"a".repeat(64)}});
+    std::fs::write(workspace.path().join("delivery.json"), receipt.to_string())?;
+    let error = rejected(&mut app, request.clone()).await?;
+    assert_eq!(error.code, -32602);
+    assert!(error.message.contains("same-repository/target"));
+    assert_eq!(
+        command(&mut app, json!({"threadId":thread})).await?.project,
+        Some(activated.clone())
+    );
+    receipt["data"]["repository_id"] = json!("repo");
+    std::fs::write(workspace.path().join("delivery.json"), receipt.to_string())?;
+    let delivered = command(&mut app, request).await?.project.context("recorded delivery")?;
+    assert_eq!(delivered.project_id, activated.project_id);
+    assert_eq!(delivered.started_at_ms, activated.started_at_ms);
+    assert_eq!(delivered.thread_outcomes, activated.thread_outcomes);
+    assert_eq!(delivered.delivery["preview"].delivered_at_ms, Some(observed));
+    assert_eq!(
+        command(&mut app, json!({"threadId":thread})).await?.project,
+        Some(delivered)
+    );
+    Ok(())
+}
