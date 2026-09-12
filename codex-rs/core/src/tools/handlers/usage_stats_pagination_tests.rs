@@ -22,7 +22,9 @@ fn task_tree_pages_preserve_totals_and_every_agent() {
         assert_eq!(page["counts"], original["counts"]);
         restored.extend(page["agents"].as_array().expect("agents").iter().cloned());
         let next = &page["pagination"]["nextCursor"];
-        if next.is_null() { break; }
+        if next.is_null() {
+            break;
+        }
         request.cursor_id = Some(next["id"].as_str().expect("cursor id").to_string());
         request.cursor_sort_value = next["sortValue"].as_i64();
     }
@@ -39,9 +41,17 @@ fn summary_pages_cross_dimension_boundaries_and_reject_foreign_cursors() {
     request.limit = Some(3);
     let mut first = original.clone();
     pagination::paginate(&mut first, &request).expect("first page");
-    assert_eq!(first["providerTokensByActivity"], original["providerTokensByActivity"]);
+    assert_eq!(
+        first["providerTokensByActivity"],
+        original["providerTokensByActivity"]
+    );
     assert_eq!(first["classifications"], json!([{"activity":"coding"}]));
-    request.cursor_id = Some(first["pagination"]["nextCursor"]["id"].as_str().expect("id").to_string());
+    request.cursor_id = Some(
+        first["pagination"]["nextCursor"]["id"]
+            .as_str()
+            .expect("id")
+            .to_string(),
+    );
     request.cursor_sort_value = first["pagination"]["nextCursor"]["sortValue"].as_i64();
     let mut second = original.clone();
     pagination::paginate(&mut second, &request).expect("second page");

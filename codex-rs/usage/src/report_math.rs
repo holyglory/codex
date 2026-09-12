@@ -126,7 +126,12 @@ pub(crate) struct ReportSelection {
 
 impl ReportSelection {
     pub(crate) fn operation_ids(&self) -> sqlx::types::Json<Vec<&str>> {
-        sqlx::types::Json(self.operations.iter().map(|operation| operation.id.as_str()).collect())
+        sqlx::types::Json(
+            self.operations
+                .iter()
+                .map(|operation| operation.id.as_str())
+                .collect(),
+        )
     }
 
     fn new(
@@ -376,8 +381,6 @@ impl UsageStore {
         let tools = tool_metrics(selection)?;
         Ok((metrics, tools))
     }
-
-
 }
 
 fn tool_metrics(selection: &ReportSelection) -> Result<ToolMetrics, UsageStoreError> {
