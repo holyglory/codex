@@ -169,6 +169,13 @@ fn report_time_range(value: StructuredTimeRange) -> protocol::LocalUsageReportTi
 
 fn report_coverage(value: StructuredCoverage) -> protocol::LocalUsageReportCoverage {
     protocol::LocalUsageReportCoverage {
+        dimensions: Some(protocol::LocalUsageReportCoverageDimensions {
+            recorded_tokens: value.dimensions.recorded_tokens.to_string(),
+            unfinished_operations: value.dimensions.unfinished_operations,
+            timing_unknown_intervals: value.dimensions.timing_unknown_intervals,
+            activity_unattributed_operations: value.dimensions.activity_unattributed_operations,
+            context: value.dimensions.context.to_string(),
+        }),
         state: value.state,
         has_gaps: value.has_gaps,
         events: value
