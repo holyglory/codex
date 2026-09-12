@@ -1,4 +1,5 @@
 use chrono::Utc;
+use codex_backend_client::next_codex_limit_reset;
 use codex_protocol::protocol::RateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
@@ -34,6 +35,7 @@ pub(super) struct ServiceUsageOutput {
     pub(super) observed_at: Option<i64>,
     pub(super) next_reset_at: Option<i64>,
     pub(super) next_reset_at_utc: Option<String>,
+    pub(super) next_reset_scope: Option<&'static str>,
     pub(super) buckets: Vec<ServiceUsageBucket>,
 }
 
@@ -111,25 +113,10 @@ async fn refresh_service_usage(
         return unavailable_usage("invalidResponse");
     }
     let observed_at = Utc::now().timestamp();
-    let next_reset_at = snapshots
-        .iter()
-        .flat_map(|snapshot| {
-            snapshot
-                .primary
-                .iter()
-                .chain(snapshot.secondary.iter())
-                .filter_map(|window| window.resets_at)
-                .chain(
-                    snapshot
-                        .individual_limit
-                        .iter()
-                        .map(|limit| limit.resets_at),
-                )
-        })
-        .filter(|reset| {
-            *reset > observed_at && chrono::DateTime::from_timestamp(*reset, /*nsecs*/ 0).is_some()
-        })
-        .min();
+    let next_reset = next_codex_limit_reset(&snapshots, observed_at).filter(|reset| {
+        chrono::DateTime::from_timestamp(reset.resets_at, /*nsecs*/ 0).is_some()
+    });
+    let next_reset_at = next_reset.as_ref().map(|reset| reset.resets_at);
     if let Some(account_id) = account_id {
         let _ = router.record_rate_limits(account_id, observed_at, snapshots.clone());
     }
@@ -138,6 +125,7 @@ async fn refresh_service_usage(
         reason: None,
         observed_at: Some(observed_at),
         next_reset_at,
+        next_reset_scope: next_reset.map(|reset| reset.scope),
         next_reset_at_utc: next_reset_at
             .and_then(|reset| chrono::DateTime::from_timestamp(reset, /*nsecs*/ 0))
             .map(|reset| reset.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
@@ -212,6 +200,7 @@ fn unavailable_usage(reason: &'static str) -> ServiceUsageOutput {
         observed_at: None,
         next_reset_at: None,
         next_reset_at_utc: None,
+        next_reset_scope: None,
         buckets: Vec::new(),
     }
 }
@@ -236,6 +225,7 @@ pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
         observed_at: Some(i64::MAX),
         next_reset_at: Some(i64::MAX),
         next_reset_at_utc: Some("9999-12-31 23:59:59 UTC".into()),
+        next_reset_scope: Some("codex.individual"),
         buckets: (0..MAX_SERVICE_BUCKETS)
             .map(|index| {
                 ServiceUsageBucket(
