@@ -15,6 +15,26 @@ const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 15);
 const TIMEOUT_ERROR: &str =
     "Coordinator evidence verification is incomplete: the whole query timed out";
 
+#[derive(Debug, thiserror::Error)]
+enum EvidenceReadError {
+    #[error("Coordinator repository lookup failed (repository_not_found): the task directory is not registered")]
+    RepositoryNotFound,
+    #[error("{0}")]
+    Unavailable(&'static str),
+}
+
+impl From<&'static str> for EvidenceReadError {
+    fn from(message: &'static str) -> Self {
+        Self::Unavailable(message)
+    }
+}
+
+impl From<EvidenceReadError> for String {
+    fn from(error: EvidenceReadError) -> Self {
+        error.to_string()
+    }
+}
+
 pub async fn validate_project_evidence(
     command: &ProjectAutomationCommand,
     cwd: &Path,
@@ -84,7 +104,61 @@ async fn validate_with_reader(
             reader(),
             deadline,
         )
-        .await?;
+        .await;
+        let repository = match repository {
+            Ok(repository) => repository,
+            Err(EvidenceReadError::RepositoryNotFound) => {
+                let owner = expected
+                    .and_then(|project| {
+                        project.thread_outcomes.get(&project.owner_thread_id.to_string())
+                    })
+                    .ok_or("Coordinator cannot resolve the task directory: link the owner's outcome to its registered repository")?;
+                validate_reference(owner)?;
+                let outcome = coordinator_json(
+                    cwd,
+                    &["task", "history", owner, "--format", "json"],
+                    reader(),
+                    deadline,
+                )
+                .await?;
+                if outcome.pointer("/task/task_id").and_then(Value::as_str) != Some(owner) {
+                    return Err("Coordinator returned a different owner outcome".into());
+                }
+                let repository_id = outcome
+                    .pointer("/task/repository_id")
+                    .and_then(Value::as_str)
+                    .ok_or("Coordinator did not identify the linked outcome's repository")?;
+                validate_reference(repository_id)?;
+                let repository = coordinator_json(
+                    cwd,
+                    &["repository", "status", repository_id, "--format", "json"],
+                    reader(),
+                    deadline,
+                )
+                .await?;
+                let directory = std::fs::canonicalize(cwd)
+                    .map_err(|_| "cannot resolve the task directory for repository verification")?;
+                let within_directory = repository
+                    .get("worktrees")
+                    .and_then(Value::as_array)
+                    .is_some_and(|worktrees| {
+                        worktrees.iter().any(|worktree| {
+                            worktree
+                                .get("worktree_path")
+                                .and_then(Value::as_str)
+                                .and_then(|path| std::fs::canonicalize(path).ok())
+                                .is_some_and(|path| path.starts_with(&directory))
+                        })
+                    });
+                if repository.get("repository_id").and_then(Value::as_str) != Some(repository_id)
+                    || !within_directory
+                {
+                    return Err("the linked outcome must identify a registered repository within the task directory".into());
+                }
+                repository
+            }
+            Err(error) => return Err(error.into()),
+        };
         let repository_id = repository
             .get("repository_id")
             .or_else(|| repository.pointer("/repository/repository_id"))
@@ -223,7 +297,7 @@ async fn coordinator_json(
     args: &[&str],
     mut reader: Command,
     deadline: tokio::time::Instant,
-) -> Result<Value, String> {
+) -> Result<Value, EvidenceReadError> {
     if tokio::time::Instant::now() >= deadline {
         return Err(TIMEOUT_ERROR.into());
     }
@@ -236,7 +310,7 @@ async fn coordinator_json(
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| "Coordinator evidence reader is unavailable".to_owned())?;
+        .map_err(|_| "Coordinator evidence reader is unavailable")?;
     let mut output = Vec::new();
     process
         .stdout
@@ -253,6 +327,12 @@ async fn coordinator_json(
     let value: Value =
         serde_json::from_slice(&output).map_err(|_| "invalid Coordinator evidence response")?;
     if !status.success() || value.get("ok").and_then(Value::as_bool) != Some(true) {
+        if args.starts_with(&["repository", "status"])
+            && value.get("ok").and_then(Value::as_bool) == Some(false)
+            && value.pointer("/error/code").and_then(Value::as_str) == Some("repository_not_found")
+        {
+            return Err(EvidenceReadError::RepositoryNotFound);
+        }
         return Err("qualified Coordinator evidence is unavailable; preserve the existing deadline and retry after evidence is recorded".into());
     }
     if tokio::time::Instant::now() >= deadline {
