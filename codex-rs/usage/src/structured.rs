@@ -65,6 +65,17 @@ impl StructuredUsageSummary {
                 end_ms: range.end_ms(),
             }),
             coverage: StructuredCoverage {
+                dimensions: StructuredCoverageDimensions {
+                    recorded_tokens: if summary.tokens.is_empty() { "unobserved" }
+                        else if summary.tokens.iter().any(|token| token.exact_tokens.is_none()) { "partial" }
+                        else { "complete" },
+                    unfinished_operations: summary.coverage.unfinished_operations,
+                    timing_unknown_intervals: summary.timing.execution_wall_union.unknown_intervals,
+                    activity_unattributed_operations: summary.classifications.iter()
+                        .filter(|classification| classification.provenance == "unknown")
+                        .map(|classification| classification.count).sum(),
+                    context: "use task_tree_summary for measured and unknown context requests",
+                },
                 state: summary.coverage.overall_state.clone(),
                 has_gaps: summary.coverage.has_gaps,
                 events: summary
@@ -171,7 +182,7 @@ impl StructuredUsageSummary {
             },
             formulas: StructuredUsageFormulas {
                 wall_time: "request_to_delivery_wall is an enclosing span; execution, phase, state, agent, and tool durations are reported separately and must not be summed",
-                tokens: "provider-native categories are independent observations; provider_tokens_by_activity allocates provider-reported total_tokens only",
+                tokens: "total_tokens includes input and output; cached input and reasoning output are subsets, not extra tokens; activity totals allocate total_tokens only",
                 concurrency: "interval unions deduplicate overlap; summed_per_agent_active intentionally includes concurrent agent time",
                 repository: summary.aggregation,
             },
@@ -209,6 +220,17 @@ pub struct StructuredCoverage {
     pub has_gaps: bool,
     pub events: Vec<StructuredCoverageCount>,
     pub token_observations: Vec<StructuredCoverageCount>,
+    pub dimensions: StructuredCoverageDimensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredCoverageDimensions {
+    pub recorded_tokens: &'static str,
+    pub unfinished_operations: u64,
+    pub timing_unknown_intervals: u64,
+    pub activity_unattributed_operations: u64,
+    pub context: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

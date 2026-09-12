@@ -25,8 +25,8 @@ mod lineage;
 mod types;
 pub use types::*;
 
-const MAX_TASK_TREE_THREADS: usize = 64;
-const MAX_TASK_TREE_AGENTS: usize = 48;
+// Computation bounds are separate from the agent tool's paginated output bound.
+const MAX_TASK_TREE_NODES: usize = 10_000;
 const MAX_TASK_TREE_OPERATIONS: usize = 100_000;
 const MAX_TASK_TREE_FACT_ROWS: usize = 200_000;
 const MAX_OPERATION_LINK_VISITS: usize = 4_096;
@@ -191,25 +191,22 @@ impl UsageStore {
     ) -> Result<Vec<String>, UsageStoreError> {
         let rows = sqlx::query(
             r#"
-            WITH RECURSIVE tree(id, depth, path) AS (
-                SELECT id, 0, ',' || id || ',' FROM threads WHERE id = ?
-                UNION ALL
-                SELECT child.id, tree.depth + 1, tree.path || child.id || ','
-                FROM threads AS child JOIN tree ON child.parent_thread_id = tree.id
-                WHERE ? AND tree.depth < ?
-                  AND instr(tree.path, ',' || child.id || ',') = 0
+            WITH RECURSIVE tree(id) AS (
+                SELECT id FROM threads WHERE id = ?
+                UNION
+                SELECT child.id FROM threads AS child JOIN tree ON child.parent_thread_id = tree.id
+                WHERE ?
             )
-            SELECT id FROM tree ORDER BY depth, id LIMIT ?
+            SELECT id FROM tree ORDER BY id LIMIT ?
             "#,
         )
         .bind(query.root_thread_id.as_str())
         .bind(query.include_descendants)
-        .bind(i64::try_from(MAX_TASK_TREE_THREADS).unwrap_or(i64::MAX))
-        .bind(i64::try_from(MAX_TASK_TREE_THREADS + 1).unwrap_or(i64::MAX))
+        .bind(i64::try_from(MAX_TASK_TREE_NODES + 1).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
         .map_err(UsageStoreError::Database)?;
-        if rows.len() > MAX_TASK_TREE_THREADS {
+        if rows.len() > MAX_TASK_TREE_NODES {
             return Err(UsageStoreError::TaskTreeTooLarge);
         }
         Ok(rows.into_iter().map(|row| row.get("id")).collect())
@@ -219,7 +216,7 @@ impl UsageStore {
         &self,
         agent_ids: &HashSet<String>,
     ) -> Result<BTreeMap<String, AgentMetadata>, UsageStoreError> {
-        if agent_ids.len() > MAX_TASK_TREE_AGENTS {
+        if agent_ids.len() > MAX_TASK_TREE_NODES {
             return Err(UsageStoreError::TaskTreeTooLarge);
         }
         if agent_ids.is_empty() {
@@ -230,13 +227,13 @@ impl UsageStore {
             QueryBuilder::<Sqlite>::new("SELECT id, role_kind FROM agents WHERE id IN (");
         push_string_binds(&mut query, &agent_ids);
         query.push(" ) ORDER BY created_at_ms, id LIMIT ");
-        query.push_bind(i64::try_from(MAX_TASK_TREE_AGENTS + 1).unwrap_or(i64::MAX));
+        query.push_bind(i64::try_from(MAX_TASK_TREE_NODES + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
             .fetch_all(&self.pool)
             .await
             .map_err(UsageStoreError::Database)?;
-        if rows.len() > MAX_TASK_TREE_AGENTS {
+        if rows.len() > MAX_TASK_TREE_NODES {
             return Err(UsageStoreError::TaskTreeTooLarge);
         }
         Ok(rows

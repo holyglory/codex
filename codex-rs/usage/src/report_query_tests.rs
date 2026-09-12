@@ -37,3 +37,38 @@ async fn scoped_reports_preserve_results_when_unrelated_history_grows() {
     }
     assert_eq!(actual, expected);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn completed_capture_keeps_history_without_reporting_the_start_as_a_gap() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let process = ProcessId::new();
+    store.register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 900).await.expect("process");
+    insert_thread(&store, "complete").await;
+    let op = operation(process, "complete", OperationKind::ModelRequest);
+    let request = record_request(&store, &op).await;
+    store.record_token_observation(&token(request, RepositoryBucket::Unknown, Some(25), CoverageState::Complete)).await.expect("tokens");
+    for (state, time) in [(CoverageState::CaptureStarted, 1_000), (CoverageState::Partial, 1_100)] {
+        store.record_coverage(&NewCoverageEvent {event_id:FactEventId::new(),operation_id:Some(op.id),
+            scope_kind:CoverageScopeKind::new("model_attempt").expect("scope"),state,reason_code:None,
+            occurred_at_ms:time}).await.expect("capture");
+    }
+    let pending = store.usage_summary(UsageSummaryScope::All).await.expect("pending summary");
+    assert!(pending.coverage.has_gaps);
+    store.finish_operation(&TerminalOperation {operation_id:op.id,status:TerminalStatus::Completed,
+        occurred_at_ms:1_100,duration_ns:100_000_000,error_category:None}).await.expect("terminal");
+    let complete = store.usage_summary(UsageSummaryScope::All).await.expect("complete summary");
+    assert_eq!(complete.coverage, CoverageSummary {overall_state:"complete".into(),
+        event_counts:vec![CoverageCount {state:"capture_started".into(),count:1},CoverageCount {state:"partial".into(),count:1}],
+        token_observation_counts:vec![CoverageCount {state:"complete".into(),count:1}],has_gaps:false,unfinished_operations:0});
+    let structured = StructuredUsageSummary::new(&complete, None);
+    assert_eq!(structured.coverage.dimensions.recorded_tokens, "complete");
+    assert_eq!(structured.coverage.dimensions.timing_unknown_intervals, 0);
+    store.record_coverage(&NewCoverageEvent {event_id:FactEventId::new(),operation_id:Some(op.id),
+        scope_kind:CoverageScopeKind::new("model_attempt").expect("scope"),state:CoverageState::Unknown,
+        reason_code:None,occurred_at_ms:1_200}).await.expect("missing evidence");
+    let missing = store.usage_summary(UsageSummaryScope::All).await.expect("missing summary");
+    assert!(missing.coverage.has_gaps);
+    assert_eq!(missing.tokens, complete.tokens);
+}

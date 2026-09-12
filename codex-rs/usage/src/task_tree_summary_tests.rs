@@ -42,6 +42,9 @@ use crate::ToolName;
 use crate::TransportKind;
 use pretty_assertions::assert_eq;
 
+#[path = "task_tree_scale_tests.rs"]
+mod scale_tests;
+
 fn operation(
     process_id: ProcessId,
     thread_id: &ThreadId,

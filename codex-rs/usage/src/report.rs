@@ -39,6 +39,7 @@ pub struct CoverageSummary {
     pub event_counts: Vec<CoverageCount>,
     pub token_observation_counts: Vec<CoverageCount>,
     pub has_gaps: bool,
+    pub unfinished_operations: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -378,9 +379,13 @@ impl UsageStore {
             }
         }
         let has_evidence = !tokens.is_empty() || !coverage_events.is_empty();
+        let unfinished_operations = u64::try_from(selection.operations.iter()
+            .filter(|operation| operation.terminal_status.is_none()).count())
+            .map_err(|_| UsageStoreError::AggregateOverflow)?;
         let has_gaps = !has_evidence
             || tokens.iter().any(|token| token.exact_tokens.is_none())
-            || coverage_events.keys().any(|state| state != "complete")
+            || unfinished_operations > 0
+            || self.unresolved_report_coverage(&selection, include_global_coverage).await?
             || has_token_coverage_gap;
         let overall_state = if !has_evidence {
             "unobserved"
@@ -441,6 +446,7 @@ impl UsageStore {
             scope,
             time_range: query.time_range,
             coverage: CoverageSummary {
+                unfinished_operations,
                 overall_state: overall_state.to_string(),
                 event_counts: coverage_counts(coverage_events),
                 token_observation_counts: coverage_counts(token_coverage),
