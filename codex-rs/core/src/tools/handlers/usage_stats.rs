@@ -13,6 +13,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_usage::ThreadId;
 use codex_usage::UsageDetailKind;
+use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
@@ -102,6 +103,12 @@ impl ToolOutput for UsageStatsOutput {
 
     fn success_for_logging(&self) -> bool {
         true
+    }
+
+    fn fallback_token_limit_override(&self) -> Option<usize> {
+        // The handler already bounds complete JSON; generic middle truncation would
+        // corrupt both the report and its pagination cursor.
+        Some(TruncationPolicy::Bytes(MAX_OUTPUT_BYTES).token_budget())
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
