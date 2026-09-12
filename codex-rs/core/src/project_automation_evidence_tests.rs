@@ -81,7 +81,11 @@ exit /b 9
     }
 
     fn reply(&self, file: &str, data: Value) {
-        let data = if file == "repositories.json" { json!({"repositories":[data]}) } else { data };
+        let data = if file == "repositories.json" {
+            json!({"repositories":[data]})
+        } else {
+            data
+        };
         self.raw(file, &json!({"ok":true,"data":data}).to_string());
     }
 
@@ -288,10 +292,16 @@ async fn getter_catalogue_handles_other_repositories_and_preserves_its_bound() {
     fixture.reply("delivery.json", delivery());
     let project = project();
     let command = ProjectAutomationCommand::RecordDelivery {
-        target: "linux".into(), delivered_at_ms: 100, evidence_ref: "delivery-test".into(),
+        target: "linux".into(),
+        delivered_at_ms: 100,
+        evidence_ref: "delivery-test".into(),
     };
-    let mut repositories = (0..200).map(|i| json!({"repository_id":format!("other-{i}"),
-        "root_path":"/another/repository", "display_name":"unrelated repository", "worktrees":[]})).collect::<Vec<_>>();
+    let mut repositories = (0..200)
+        .map(|i| {
+            json!({"repository_id":format!("other-{i}"),
+        "root_path":"/another/repository", "display_name":"unrelated repository", "worktrees":[]})
+        })
+        .collect::<Vec<_>>();
     repositories.push(json!({"repository_id":"repo","worktrees":[{"worktree_path":root}]}));
     let response = json!({"ok":true,"data":{"repositories":repositories}}).to_string();
     assert!(response.len() > MAX_RESPONSE_BYTES);
@@ -299,7 +309,10 @@ async fn getter_catalogue_handles_other_repositories_and_preserves_its_bound() {
     assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
     fixture.raw("repositories.json", &"x".repeat(256 * 1_024 + 1));
     assert!(fixture.validate(&command, Some(&project)).await.is_err());
-    fixture.raw("repositories.json", r#"{"ok":true,"data":{"repositories":[]}}"#);
+    fixture.raw(
+        "repositories.json",
+        r#"{"ok":true,"data":{"repositories":[]}}"#,
+    );
     assert!(fixture.validate(&command, Some(&project)).await.is_err());
 }
 
