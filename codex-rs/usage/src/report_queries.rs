@@ -47,7 +47,9 @@ impl UsageStore {
         }
         query.push(" WHERE 1 = 1");
         if let UsageSummaryScope::Thread(thread) = &scope {
-            query.push(" AND operation.thread_id = ").push_bind(thread.as_str());
+            query
+                .push(" AND operation.thread_id = ")
+                .push_bind(thread.as_str());
         }
         if let Some(family) = repository_family {
             query
@@ -61,26 +63,37 @@ impl UsageStore {
                 .push_bind(account.as_str());
         }
         if let Some(range) = time_range {
-            query.push(" AND operation.started_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND operation.started_at_ms < ")
+                .push_bind(range.end_ms());
             query
                 .push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
                 .push_bind(range.start_ms())
                 .push(")");
         }
-        let rows = query.build().fetch_all(&self.pool).await.map_err(UsageStoreError::Database)?;
-        let operations = rows.into_iter().map(|row| OperationLifecycle {
-            id: row.get("id"),
-            kind: row.get("operation_kind"),
-            started_at_ms: row.get("started_at_ms"),
-            ended_at_ms: row.get("occurred_at_ms"),
-            terminal_status: row.get("event_kind"),
-            agent_id: row.get("agent_id"),
-            phase: row.get("phase"),
-            activity: row.get("activity"),
-            activity_state: row.get("activity_state"),
-            attribution_provenance: row.get("provenance"),
-        }).collect();
-        Ok(ReportSelection::new(scope, time_range, operations, /*uses_report_cache*/ false))
+        let rows = query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?;
+        let operations = rows
+            .into_iter()
+            .map(|row| OperationLifecycle {
+                id: row.get("id"),
+                kind: row.get("operation_kind"),
+                started_at_ms: row.get("started_at_ms"),
+                ended_at_ms: row.get("occurred_at_ms"),
+                terminal_status: row.get("event_kind"),
+                agent_id: row.get("agent_id"),
+                phase: row.get("phase"),
+                activity: row.get("activity"),
+                activity_state: row.get("activity_state"),
+                attribution_provenance: row.get("provenance"),
+            })
+            .collect();
+        Ok(ReportSelection::new(
+            scope, time_range, operations, /*uses_report_cache*/ false,
+        ))
     }
 
     pub(crate) async fn selected_token_rows(
@@ -90,8 +103,11 @@ impl UsageStore {
     ) -> Result<Vec<SqliteRow>, UsageStoreError> {
         // Start with selected owners so repository queries use the owner indexes instead
         // of scanning every token ever recorded. Each token has exactly one owner kind.
-        let mut query = QueryBuilder::<Sqlite>::new("WITH selected AS (SELECT value AS id FROM json_each(");
-        query.push_bind(selection.operation_ids()).push(")), tokens AS (");
+        let mut query =
+            QueryBuilder::<Sqlite>::new("WITH selected AS (SELECT value AS id FROM json_each(");
+        query
+            .push_bind(selection.operation_ids())
+            .push(")), tokens AS (");
         query.push(
             r#"
             SELECT token.*, request.operation_id
@@ -105,14 +121,24 @@ impl UsageStore {
             "#,
         );
         if let Some(range) = selection.time_range {
-            query.push(" AND token.observed_at_ms >= ").push_bind(range.start_ms());
-            query.push(" AND token.observed_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND token.observed_at_ms >= ")
+                .push_bind(range.start_ms());
+            query
+                .push(" AND token.observed_at_ms < ")
+                .push_bind(range.end_ms());
         }
         if let Some(family) = repository_family {
-            query.push(" AND token.repository_bucket IN (SELECT value FROM json_each(")
-                .push_bind(Json(family.iter().collect::<Vec<_>>())).push("))");
+            query
+                .push(" AND token.repository_bucket IN (SELECT value FROM json_each(")
+                .push_bind(Json(family.iter().collect::<Vec<_>>()))
+                .push("))");
         }
-        query.build().fetch_all(&self.pool).await.map_err(UsageStoreError::Database)
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)
     }
 
     pub(crate) async fn selected_coverage_rows(
@@ -129,11 +155,19 @@ impl UsageStore {
         }
         query.push(")");
         if let Some(range) = selection.time_range {
-            query.push(" AND occurred_at_ms >= ").push_bind(range.start_ms());
-            query.push(" AND occurred_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND occurred_at_ms >= ")
+                .push_bind(range.start_ms());
+            query
+                .push(" AND occurred_at_ms < ")
+                .push_bind(range.end_ms());
         }
         query.push(" GROUP BY coverage_state");
-        query.build().fetch_all(&self.pool).await.map_err(UsageStoreError::Database)
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)
     }
 
     pub(crate) async fn unresolved_report_coverage(
@@ -150,8 +184,12 @@ impl UsageStore {
         }
         query.push(") AND coverage_state <> 'complete'");
         if let Some(range) = selection.time_range {
-            query.push(" AND occurred_at_ms >= ").push_bind(range.start_ms());
-            query.push(" AND occurred_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND occurred_at_ms >= ")
+                .push_bind(range.start_ms());
+            query
+                .push(" AND occurred_at_ms < ")
+                .push_bind(range.end_ms());
         }
         // Lifecycle start events and the legacy conservative partial marker do not
         // erase a terminal receipt with captured usage. Explicit unknown/error coverage
@@ -170,8 +208,12 @@ impl UsageStore {
                   AND token.category_path NOT GLOB 'attribution.items.*'
         "#);
         if let Some(range) = selection.time_range {
-            query.push(" AND token.observed_at_ms >= ").push_bind(range.start_ms());
-            query.push(" AND token.observed_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND token.observed_at_ms >= ")
+                .push_bind(range.start_ms());
+            query
+                .push(" AND token.observed_at_ms < ")
+                .push_bind(range.end_ms());
         }
         query.push(r#" )) ) AND NOT EXISTS (
             SELECT 1 FROM coverage_events AS later
@@ -180,9 +222,15 @@ impl UsageStore {
                    OR (later.occurred_at_ms = coverage.occurred_at_ms AND later.event_id > coverage.event_id))
         "#);
         if let Some(range) = selection.time_range {
-            query.push(" AND later.occurred_at_ms < ").push_bind(range.end_ms());
+            query
+                .push(" AND later.occurred_at_ms < ")
+                .push_bind(range.end_ms());
         }
         query.push("))");
-        query.build_query_scalar().fetch_one(&self.pool).await.map_err(UsageStoreError::Database)
+        query
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)
     }
 }

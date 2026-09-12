@@ -64,7 +64,10 @@ pub(super) async fn execute(
         UsageStatsAction::Events => query_lists::events(store, context, &args, time_range).await,
         UsageStatsAction::Details => details(store, context, &args, time_range).await,
     }?;
-    if matches!(args.action, UsageStatsAction::Summary | UsageStatsAction::TaskTreeSummary) {
+    if matches!(
+        args.action,
+        UsageStatsAction::Summary | UsageStatsAction::TaskTreeSummary
+    ) {
         super::pagination::paginate(&mut value, &args)?;
     }
     if let Some(object) = value.as_object_mut() {
