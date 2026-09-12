@@ -318,7 +318,7 @@ fn next_probe_target(
     state: &ProbeSelectionState,
     attempted: &HashSet<AccountId>,
 ) -> Option<AccountId> {
-    let mut current_eligible_priority = None;
+    let mut highest_eligible_priority = None;
     if let Some(current_id) = state.current_account_id.as_ref()
         && let Some(current) = state
             .registry
@@ -335,7 +335,7 @@ fn next_probe_target(
             state.now,
             MAX_LIMIT_AGE_SECONDS,
         ) {
-            Eligibility::Eligible => current_eligible_priority = Some(current.priority),
+            Eligibility::Eligible => highest_eligible_priority = Some(current.priority),
             Eligibility::Unknown(_) if !attempted.contains(current_id) => {
                 return Some(current_id.clone());
             }
@@ -350,9 +350,9 @@ fn next_probe_target(
         {
             continue;
         }
-        // Equal and lower tiers cannot displace an eligible current account, so probing them
-        // would add credential traffic without changing this turn's selection.
-        if current_eligible_priority.is_some_and(|priority| account.priority <= priority) {
+        // Compare every peer in the highest eligible tier: a later reset can displace
+        // the current account. Lower tiers cannot win and need no additional probes.
+        if highest_eligible_priority.is_some_and(|priority| account.priority < priority) {
             return None;
         }
         match state.cache.eligibility(
@@ -361,7 +361,7 @@ fn next_probe_target(
             state.now,
             MAX_LIMIT_AGE_SECONDS,
         ) {
-            Eligibility::Eligible => return None,
+            Eligibility::Eligible => highest_eligible_priority = Some(account.priority),
             Eligibility::Unknown(_) if !attempted.contains(&account.id) => {
                 return Some(account.id.clone());
             }
