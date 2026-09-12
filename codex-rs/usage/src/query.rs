@@ -63,22 +63,16 @@ impl UsageStore {
                 JOIN repositories AS repository ON repository.id = family.member_id
                 GROUP BY family.canonical_id
             ), updates(id, occurred_at_ms) AS (
-                SELECT family.canonical_id, repository.created_at_ms
+                SELECT family.canonical_id,
+                       MAX(repository.created_at_ms,
+                           COALESCE((SELECT MAX(occurred_at_ms) FROM repository_seen_events
+                                     WHERE repository_id = family.member_id), repository.created_at_ms),
+                           COALESCE((SELECT MAX(occurred_at_ms) FROM repository_alias_events
+                                     WHERE repository_id = family.member_id), repository.created_at_ms),
+                           COALESCE((SELECT MAX(occurred_at_ms) FROM repository_merge_events
+                                     WHERE source_repository_id = family.member_id), repository.created_at_ms))
                 FROM family
                 JOIN repositories AS repository ON repository.id = family.member_id
-                UNION ALL
-                SELECT family.canonical_id, seen.occurred_at_ms
-                FROM family
-                JOIN repository_seen_events AS seen ON seen.repository_id = family.member_id
-                UNION ALL
-                SELECT family.canonical_id, alias.occurred_at_ms
-                FROM family
-                JOIN repository_alias_events AS alias ON alias.repository_id = family.member_id
-                UNION ALL
-                SELECT family.canonical_id, merge.occurred_at_ms
-                FROM family
-                JOIN repository_merge_events AS merge
-                  ON merge.source_repository_id = family.member_id
             ), repository_rows(id, created_at_ms, updated_at_ms) AS (
                 SELECT canonical_rows.id, canonical_rows.created_at_ms,
                        MAX(updates.occurred_at_ms)
