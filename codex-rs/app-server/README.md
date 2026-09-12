@@ -2771,6 +2771,13 @@ include a current safe `repositoryLabel`; their stable `repositoryBucket` remain
 HMAC key and never contains a path or remote. Account filters return a current local alias or a
 redacted removed-account fingerprint, never email or service/workspace identity.
 
+`coverage.dimensions` distinguishes complete recorded token observations from unfinished
+operations, unknown timing intervals, and unattributed activity. Older servers may omit these
+details; clients must treat their absence as unknown. Completed lifecycle-start
+markers remain in event counts but do not by themselves make current coverage incomplete.
+Explicit missing or uncertain facts remain visible. Cached input and reasoning output are
+subsets of provider totals; concurrent agent time and elapsed wall time must not be added.
+
 List methods use opaque keyset
 cursors, accept limits from 1 through 100, and tool/activity/event lists accept an inclusive
 `fromAt` and exclusive `toAt` in Unix seconds. Repository aliases, repository merges, and
