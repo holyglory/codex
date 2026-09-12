@@ -17,7 +17,9 @@ const TIMEOUT_ERROR: &str =
 
 #[derive(Debug, thiserror::Error)]
 enum EvidenceReadError {
-    #[error("Coordinator repository lookup failed (repository_not_found): the task directory is not registered")]
+    #[error(
+        "Coordinator repository lookup failed (repository_not_found): the task directory is not registered"
+    )]
     RepositoryNotFound,
     #[error("{0}")]
     Unavailable(&'static str),

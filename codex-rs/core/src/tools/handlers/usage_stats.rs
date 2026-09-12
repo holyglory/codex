@@ -20,10 +20,10 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod pagination;
 mod query;
 mod query_lists;
 mod repository;
-mod pagination;
 
 const TOOL_NAME: &str = "usage_stats";
 const DEFAULT_PAGE_LIMIT: u32 = 10;
@@ -141,7 +141,11 @@ impl ToolExecutor<ToolInvocation> for UsageStatsHandler {
             let args: UsageStatsArgs = serde_json::from_str(arguments)
                 .map_err(|_| tool_error("usage_stats arguments are invalid"))?;
             let context = UsageStatsContext::from_invocation(&invocation)?;
-            let store = invocation.session.services.usage_runtime.store()
+            let store = invocation
+                .session
+                .services
+                .usage_runtime
+                .store()
                 .await
                 .map_err(|_| storage_error())?;
             let value = query::execute(&store, &context, args).await?;
@@ -256,7 +260,9 @@ fn usage_stats_spec() -> ToolSpec {
         ),
         (
             "limit".to_string(),
-            JsonSchema::number(Some("Detail/summary page size, 1–50. Summary totals repeat across pages.".to_string())),
+            JsonSchema::number(Some(
+                "Detail/summary page size, 1–50. Summary totals repeat across pages.".to_string(),
+            )),
         ),
         (
             "cursor_sort_value".to_string(),
