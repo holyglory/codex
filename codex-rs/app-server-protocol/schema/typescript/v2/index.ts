@@ -268,6 +268,7 @@ export type { LocalUsageReportClassificationCount } from "./LocalUsageReportClas
 export type { LocalUsageReportCounts } from "./LocalUsageReportCounts";
 export type { LocalUsageReportCoverage } from "./LocalUsageReportCoverage";
 export type { LocalUsageReportCoverageCount } from "./LocalUsageReportCoverageCount";
+export type { LocalUsageReportCoverageDimensions } from "./LocalUsageReportCoverageDimensions";
 export type { LocalUsageReportDuration } from "./LocalUsageReportDuration";
 export type { LocalUsageReportFormulas } from "./LocalUsageReportFormulas";
 export type { LocalUsageReportNamedDuration } from "./LocalUsageReportNamedDuration";
