@@ -62,7 +62,7 @@ async fn completed_capture_keeps_history_without_reporting_the_start_as_a_gap() 
     assert_eq!(complete.coverage, CoverageSummary {overall_state:"complete".into(),
         event_counts:vec![CoverageCount {state:"capture_started".into(),count:1},CoverageCount {state:"partial".into(),count:1}],
         token_observation_counts:vec![CoverageCount {state:"complete".into(),count:1}],has_gaps:false,unfinished_operations:0});
-    let structured = StructuredUsageSummary::new(&complete, None);
+    let structured = StructuredUsageSummary::new(&complete, /*account*/ None);
     assert_eq!(structured.coverage.dimensions.recorded_tokens, "complete");
     assert_eq!(structured.coverage.dimensions.timing_unknown_intervals, 0);
     store.record_coverage(&NewCoverageEvent {event_id:FactEventId::new(),operation_id:Some(op.id),
