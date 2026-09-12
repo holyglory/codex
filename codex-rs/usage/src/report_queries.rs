@@ -154,13 +154,26 @@ impl UsageStore {
             query.push(" AND occurred_at_ms < ").push_bind(range.end_ms());
         }
         // Lifecycle start events and the legacy conservative partial marker do not
-        // erase a terminal receipt. Explicit unknown/error coverage remains visible.
+        // erase a terminal receipt with captured usage. Explicit unknown/error coverage
+        // and completed model attempts without usage facts remain visible.
         query.push(r#" AND NOT (
             scope_kind IN ('model_attempt', 'tool_attempt')
             AND coverage_state IN ('capture_started', 'partial') AND reason_code IS NULL
             AND EXISTS (SELECT 1 FROM operation_events AS terminal
                         WHERE terminal.operation_id = coverage.operation_id AND terminal.terminal = 1)
-        ) AND NOT EXISTS (
+            AND (scope_kind = 'tool_attempt' OR EXISTS (
+                SELECT 1 FROM model_requests AS request
+                JOIN token_observations AS token ON token.model_request_id = request.id
+                WHERE request.operation_id = coverage.operation_id
+                  AND token.measurement_provenance = 'provider_reported'
+                  AND token.token_count IS NOT NULL AND token.coverage_state = 'complete'
+                  AND token.category_path NOT GLOB 'attribution.items.*'
+        "#);
+        if let Some(range) = selection.time_range {
+            query.push(" AND token.observed_at_ms >= ").push_bind(range.start_ms());
+            query.push(" AND token.observed_at_ms < ").push_bind(range.end_ms());
+        }
+        query.push(r#" )) ) AND NOT EXISTS (
             SELECT 1 FROM coverage_events AS later
             WHERE later.operation_id = coverage.operation_id AND later.scope_kind = coverage.scope_kind
               AND (later.occurred_at_ms > coverage.occurred_at_ms
