@@ -259,7 +259,9 @@ impl UsageStore {
                 aggregate.has_gap |= row.get::<i64, _>("has_gap") != 0;
             }
         } else {
-            let token_rows = self.selected_token_rows(&selection, repository_family.as_ref()).await?;
+            let token_rows = self
+                .selected_token_rows(&selection, repository_family.as_ref())
+                .await?;
             for row in token_rows {
                 let operation_id: String = row.get("operation_id");
                 let repository_bucket: String = row.get("repository_bucket");
@@ -372,20 +374,30 @@ impl UsageStore {
                     .ok_or(UsageStoreError::AggregateOverflow)?;
             }
         } else {
-            for row in self.selected_coverage_rows(&selection, include_global_coverage).await? {
+            for row in self
+                .selected_coverage_rows(&selection, include_global_coverage)
+                .await?
+            {
                 let count = u64::try_from(row.get::<i64, _>("observation_count"))
                     .map_err(|_| UsageStoreError::AggregateOverflow)?;
                 coverage_events.insert(row.get("coverage_state"), count);
             }
         }
         let has_evidence = !tokens.is_empty() || !coverage_events.is_empty();
-        let unfinished_operations = u64::try_from(selection.operations.iter()
-            .filter(|operation| operation.terminal_status.is_none()).count())
-            .map_err(|_| UsageStoreError::AggregateOverflow)?;
+        let unfinished_operations = u64::try_from(
+            selection
+                .operations
+                .iter()
+                .filter(|operation| operation.terminal_status.is_none())
+                .count(),
+        )
+        .map_err(|_| UsageStoreError::AggregateOverflow)?;
         let has_gaps = !has_evidence
             || tokens.iter().any(|token| token.exact_tokens.is_none())
             || unfinished_operations > 0
-            || self.unresolved_report_coverage(&selection, include_global_coverage).await?
+            || self
+                .unresolved_report_coverage(&selection, include_global_coverage)
+                .await?
             || has_token_coverage_gap;
         let overall_state = if !has_evidence {
             "unobserved"

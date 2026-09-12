@@ -305,11 +305,9 @@ esac
     ] {
         std::fs::write(workspace.path().join(file), response.to_string())?;
     }
-    let path = std::env::join_paths(
-        std::iter::once(workspace.path().to_path_buf()).chain(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        )),
-    )?;
+    let path = std::env::join_paths(std::iter::once(workspace.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))?;
     let path = path.to_string_lossy();
     MockResponsesConfig::new(&server.uri()).write(home.path())?;
     let mut app = TestAppServer::builder()
@@ -328,7 +326,9 @@ esac
     let response = app
         .read_stream_until_response_message(api::RequestId::Integer(request_id))
         .await?;
-    let thread = serde_json::from_value::<api::ThreadStartResponse>(response.result)?.thread.id;
+    let thread = serde_json::from_value::<api::ThreadStartResponse>(response.result)?
+        .thread
+        .id;
     let completed = app
         .start_turn_and_wait_for_completion(api::TurnStartParams {
             thread_id: thread.clone(),
@@ -340,11 +340,21 @@ esac
         })
         .await?;
     assert_eq!(completed.turn.status, api::TurnStatus::Completed);
-    let bound = command(&mut app, json!({"threadId":thread,"command":{"action":"bind","purpose":"implementation"}}))
-        .await?.project.context("bound project")?;
-    let linked = command(&mut app, json!({"threadId":thread,"expectedRevision":bound.revision,
-        "command":{"action":"linkWork","outcomeId":"owner"}}))
-        .await?.project.context("linked outcome")?;
+    let bound = command(
+        &mut app,
+        json!({"threadId":thread,"command":{"action":"bind","purpose":"implementation"}}),
+    )
+    .await?
+    .project
+    .context("bound project")?;
+    let linked = command(
+        &mut app,
+        json!({"threadId":thread,"expectedRevision":bound.revision,
+        "command":{"action":"linkWork","outcomeId":"owner"}}),
+    )
+    .await?
+    .project
+    .context("linked outcome")?;
     let activated = command(&mut app, json!({"threadId":thread,"expectedRevision":linked.revision,
         "command":{"action":"activateDelivery","target":"preview","surface":"local preview","acceptance":"real receipt"}}))
         .await?.project.context("activated target")?;
@@ -364,11 +374,17 @@ esac
     );
     receipt["data"]["repository_id"] = json!("repo");
     std::fs::write(workspace.path().join("delivery.json"), receipt.to_string())?;
-    let delivered = command(&mut app, request).await?.project.context("recorded delivery")?;
+    let delivered = command(&mut app, request)
+        .await?
+        .project
+        .context("recorded delivery")?;
     assert_eq!(delivered.project_id, activated.project_id);
     assert_eq!(delivered.started_at_ms, activated.started_at_ms);
     assert_eq!(delivered.thread_outcomes, activated.thread_outcomes);
-    assert_eq!(delivered.delivery["preview"].delivered_at_ms, Some(observed));
+    assert_eq!(
+        delivered.delivery["preview"].delivered_at_ms,
+        Some(observed)
+    );
     assert_eq!(
         command(&mut app, json!({"threadId":thread})).await?.project,
         Some(delivered)
