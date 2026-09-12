@@ -588,7 +588,7 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         .split('\t')
         .next_back()
         .unwrap();
-    assert_reset_countdown(countdown, /*reset*/ 1893456000, before);
+    assert_reset_countdown(countdown, /*reset*/ 1893456000, before)?;
     insta::assert_snapshot!(
         "account_list_limits",
         human.replace(countdown, "[Codex reset countdown]")
@@ -642,25 +642,24 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     Ok(())
 }
 
-fn assert_reset_countdown(countdown: &str, reset: i64, before: i64) {
-    let seconds: i64 = countdown
-        .split_whitespace()
-        .map(|part| {
-            let (number, unit) = part.split_at(part.len() - 1);
-            let scale = match unit {
-                "d" => 86400,
-                "h" => 3600,
-                "m" => 60,
-                _ => panic!("invalid countdown: {countdown}"),
-            };
-            number.parse::<i64>().expect("numeric countdown component") * scale
-        })
-        .sum();
+fn assert_reset_countdown(countdown: &str, reset: i64, before: i64) -> Result<()> {
+    let mut seconds = 0;
+    for part in countdown.split_whitespace() {
+        let (number, unit) = part.split_at(part.len() - 1);
+        let scale = match unit {
+            "d" => 86400,
+            "h" => 3600,
+            "m" => 60,
+            _ => panic!("invalid countdown: {countdown}"),
+        };
+        seconds += number.parse::<i64>()? * scale;
+    }
     let after = chrono::Utc::now().timestamp();
     assert!(
         ((reset - after) / 60 * 60..=(reset - before) / 60 * 60).contains(&seconds),
         "{countdown} does not match main Codex reset {reset}"
     );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -741,7 +740,7 @@ async fn account_list_keeps_each_accounts_weekly_reset_with_identical_unused_spa
             .find(|line| line.split('\t').nth(1) == Some(account.alias.as_str()))
             .unwrap();
         let countdown = line.split('\t').next_back().unwrap();
-        assert_reset_countdown(countdown, reset, before);
+        assert_reset_countdown(countdown, reset, before)?;
         normalized = normalized.replace(countdown, "[Codex reset countdown]");
     }
     insta::assert_snapshot!("account_list_weekly_resets", normalized);
