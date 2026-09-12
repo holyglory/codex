@@ -1,7 +1,6 @@
 use crate::report::UsageSummaryScope;
 use crate::store::UsageStore;
 use crate::store::UsageStoreError;
-use crate::types::AccountProfileRef;
 use sqlx::Row;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -9,6 +8,9 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 const NS_PER_MS: u64 = 1_000_000;
+
+#[path = "report_queries.rs"]
+mod queries;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UtcTimeRange {
@@ -123,6 +125,10 @@ pub(crate) struct ReportSelection {
 }
 
 impl ReportSelection {
+    pub(crate) fn operation_ids(&self) -> sqlx::types::Json<Vec<&str>> {
+        sqlx::types::Json(self.operations.iter().map(|operation| operation.id.as_str()).collect())
+    }
+
     fn new(
         scope: UsageSummaryScope,
         time_range: Option<UtcTimeRange>,
@@ -171,94 +177,6 @@ impl ReportSelection {
 }
 
 impl UsageStore {
-    pub(crate) async fn build_report_selection(
-        &self,
-        scope: UsageSummaryScope,
-        time_range: Option<UtcTimeRange>,
-        repository_family: Option<&HashSet<String>>,
-        account_profile_ref: Option<&AccountProfileRef>,
-    ) -> Result<ReportSelection, UsageStoreError> {
-        let attributed_operations = self
-            .attributed_operation_ids_for_math(repository_family)
-            .await?;
-        let effective = self.effective_classifications().await?;
-        let rows = sqlx::query(
-            r#"
-            SELECT operation.id, operation.operation_kind, operation.thread_id,
-                   operation.agent_id, operation.started_at_ms, operation.phase,
-                   operation.activity, operation.activity_state,
-                   operation.attribution_provenance,
-                   terminal.occurred_at_ms, terminal.event_kind,
-                   COALESCE(request.account_profile_ref,
-                            parent_request.account_profile_ref,
-                            turn.account_profile_ref)
-                       AS account_profile_ref
-            FROM operations AS operation
-            LEFT JOIN operation_events AS terminal
-              ON terminal.operation_id = operation.id AND terminal.terminal = 1
-            LEFT JOIN model_requests AS request ON request.operation_id = operation.id
-            LEFT JOIN model_requests AS parent_request
-              ON parent_request.operation_id = operation.parent_operation_id
-            LEFT JOIN turns AS turn ON turn.id = operation.turn_id
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(UsageStoreError::Database)?;
-        let mut operations = Vec::new();
-        for row in rows {
-            let id: String = row.get("id");
-            let thread_id: Option<String> = row.get("thread_id");
-            let started_at_ms: i64 = row.get("started_at_ms");
-            let ended_at_ms: Option<i64> = row.get("occurred_at_ms");
-            let scope_matches = match &scope {
-                UsageSummaryScope::All => true,
-                UsageSummaryScope::Thread(expected) => {
-                    thread_id.as_deref() == Some(expected.as_str())
-                }
-                UsageSummaryScope::Repository(_) => attributed_operations.contains(&id),
-            };
-            let repository_matches =
-                repository_family.is_none() || attributed_operations.contains(&id);
-            let account_matches = account_profile_ref.is_none_or(|expected| {
-                row.get::<Option<String>, _>("account_profile_ref")
-                    .as_deref()
-                    == Some(expected.as_str())
-            });
-            if !scope_matches
-                || !repository_matches
-                || !account_matches
-                || !interval_may_overlap(started_at_ms, ended_at_ms, time_range)
-            {
-                continue;
-            }
-            let (phase, activity, state, provenance) =
-                effective.get(&id).cloned().unwrap_or_else(|| {
-                    (
-                        row.get("phase"),
-                        row.get("activity"),
-                        row.get("activity_state"),
-                        row.get("attribution_provenance"),
-                    )
-                });
-            operations.push(OperationLifecycle {
-                id,
-                kind: row.get("operation_kind"),
-                started_at_ms,
-                ended_at_ms,
-                terminal_status: row.get("event_kind"),
-                agent_id: row.get("agent_id"),
-                phase,
-                activity,
-                activity_state: state,
-                attribution_provenance: provenance,
-            });
-        }
-        Ok(ReportSelection::new(
-            scope, time_range, operations, /*uses_report_cache*/ false,
-        ))
-    }
-
     pub(crate) async fn build_cached_all_report_selection(
         &self,
     ) -> Result<ReportSelection, UsageStoreError> {
@@ -314,6 +232,7 @@ impl UsageStore {
             r#"
             SELECT operation_id, activity_state, started_at_ms, ended_at_ms
             FROM _usage_report_spans
+            WHERE operation_id IN (SELECT value FROM json_each(?))
             "#
         } else {
             r#"
@@ -322,9 +241,11 @@ impl UsageStore {
             FROM activity_spans AS span
             LEFT JOIN activity_span_events AS ended
               ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
+            WHERE span.operation_id IN (SELECT value FROM json_each(?))
             "#
         };
         for row in sqlx::query(span_query)
+            .bind(selection.operation_ids())
             .fetch_all(&self.pool)
             .await
             .map_err(UsageStoreError::Database)?
@@ -456,48 +377,7 @@ impl UsageStore {
         Ok((metrics, tools))
     }
 
-    async fn effective_classifications(
-        &self,
-    ) -> Result<HashMap<String, (String, String, String, String)>, UsageStoreError> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-            r#"
-            SELECT operation_id, phase, activity, activity_state, provenance
-            FROM effective_classification_events
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(UsageStoreError::Database)?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, phase, activity, state, provenance)| {
-                (id, (phase, activity, state, provenance))
-            })
-            .collect())
-    }
 
-    async fn attributed_operation_ids_for_math(
-        &self,
-        repository_family: Option<&HashSet<String>>,
-    ) -> Result<HashSet<String>, UsageStoreError> {
-        let Some(repository_family) = repository_family else {
-            return Ok(HashSet::new());
-        };
-        let rows = sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT operation_id, repository_id FROM repository_attributions",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(UsageStoreError::Database)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(operation, repository)| {
-                repository
-                    .is_some_and(|repository| repository_family.contains(&repository))
-                    .then_some(operation)
-            })
-            .collect())
-    }
 }
 
 fn tool_metrics(selection: &ReportSelection) -> Result<ToolMetrics, UsageStoreError> {

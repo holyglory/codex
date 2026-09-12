@@ -403,7 +403,7 @@ impl UsageRuntime {
         })
     }
 
-    async fn store(&self) -> Result<Arc<UsageStore>, CodexErr> {
+    pub(crate) async fn store(&self) -> Result<Arc<UsageStore>, CodexErr> {
         self.store
             .get_or_try_init(|| async {
                 let store =
