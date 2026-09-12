@@ -24,6 +24,9 @@ use crate::auth::AuthKeyringBackendKind;
 use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_jwt_claims;
 
+#[path = "router_reset_tests.rs"]
+mod reset;
+
 fn auth(marker: &str) -> AuthDotJson {
     AuthDotJson {
         auth_mode: Some(AuthMode::ApiKey),
@@ -484,7 +487,7 @@ async fn selection_probe_preview_preserves_the_first_real_turn_switch() {
 #[cfg(unix)]
 #[tokio::test]
 #[serial(codex_auth_env)]
-async fn selection_probe_retains_fresh_current_with_an_equal_priority_peer() {
+async fn selection_probe_retains_fresh_current_when_equal_priority_peer_probe_fails() {
     let home = tempdir().expect("home");
     let account_a = seed_chatgpt_account(home.path(), "a");
     let account_b = seed_chatgpt_account(home.path(), "b");
@@ -528,7 +531,7 @@ async fn selection_probe_retains_fresh_current_with_an_equal_priority_peer() {
 
     assert_eq!(lease.account_id(), &account_a.id);
     assert!(!lease.automatic_switched());
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[cfg(unix)]

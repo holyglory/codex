@@ -72,7 +72,9 @@ implements it.
 - Unknown or stale capacity is refreshed through bounded read-only probes
   before selection. Unknown capacity does not silently become eligible.
 - Higher numeric priority drains before lower priority; the current profile is
-  retained only within its eligible priority tier.
+  retained within its eligible priority tier unless another account has a main
+  Codex reset at least ten minutes later. Compare every eligible peer and prefer
+  the furthest reset; unrelated quota buckets do not affect the ranking.
 - Mid-turn failover is allowed only before any response event. Tools and
   partial output are never replayed under another profile.
 - Usage accounting stores content-free facts in the private `CODEX_HOME`

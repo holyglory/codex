@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use thiserror::Error;
 
+mod priority;
+
 const DEFAULT_LIMIT_ID: &str = "codex";
 const MAX_LIMIT_SNAPSHOTS: usize = 64;
 const MAX_LIMIT_ID_BYTES: usize = 64;
@@ -389,37 +391,12 @@ pub fn select_account(
     let current_reason = current_reason(current, cache, &request);
     match registry.auto_selection.policy {
         SelectionPolicy::Priority => {
-            for account in registry.enabled_by_priority() {
-                if !request.authenticated_accounts.contains(&account.id)
-                    || !supports_automatic_selection(account.auth_mode)
-                {
-                    continue;
-                }
-                if cache.eligibility(
-                    &account.id,
-                    request.relevant_limit_id,
-                    request.now,
-                    request.max_limit_age_seconds,
-                ) == Eligibility::Eligible
-                {
-                    // Keep a live account within the winning tier so equal priorities do not
-                    // cause an account switch on every turn.
-                    if current_reason == SelectionReason::CurrentEligible
-                        && let Some(current) = current
-                        && current.priority == account.priority
-                    {
-                        return Ok(SelectionDecision {
-                            account_id: current.id.clone(),
-                            switched: false,
-                            reason: current_reason,
-                        });
-                    }
-                    return Ok(SelectionDecision {
-                        account_id: account.id.clone(),
-                        switched: request.current_account_id != Some(&account.id),
-                        reason: current_reason,
-                    });
-                }
+            if let Some(account) = priority::select_by_priority(registry, cache, &request) {
+                return Ok(SelectionDecision {
+                    account_id: account.id.clone(),
+                    switched: request.current_account_id != Some(&account.id),
+                    reason: current_reason,
+                });
             }
         }
     }
