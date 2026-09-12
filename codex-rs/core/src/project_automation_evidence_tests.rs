@@ -28,9 +28,8 @@ if [ "${DEVCOORDINATOR_WORK_CONTEXT+x}" ]; then exit 31; fi
 printf '%s %s %s\n' "$1" "$2" "${3-}" >> calls.log
 if [ -f fail ]; then /bin/cat failure.json; exit 9; fi
 case "$1:$2" in
-  repository:status)
-    if [ "$3" = "--format" ]; then /bin/cat repository.json
-    else /bin/cat "repository-$3.json"; fi ;;
+  repository:status) /bin/cat repository.json ;;
+  repository:list) /bin/cat repositories.json ;;
   release:evidence) /bin/cat delivery.json ;;
   review:show) /bin/cat review.json ;;
   task:history) /bin/cat "task-$3.json" ;;
@@ -51,11 +50,11 @@ if "%~1"=="review" goto review
 if "%~1"=="task" goto task
 exit /b 32
 :repository
-if not "%~3"=="--format" goto selected_repository
+if "%~2"=="list" goto repository_list
 type repository.json
 exit /b
-:selected_repository
-type repository-%~3.json
+:repository_list
+type repositories.json
 exit /b
 :delivery
 type delivery.json
@@ -82,6 +81,7 @@ exit /b 9
     }
 
     fn reply(&self, file: &str, data: Value) {
+        let data = if file == "repositories.json" { json!({"repositories":[data]}) } else { data };
         self.raw(file, &json!({"ok":true,"data":data}).to_string());
     }
 
@@ -105,7 +105,7 @@ exit /b 9
         );
         self.task("owner", "in_progress", "repo");
         self.reply(
-            "repository-repo.json",
+            "repositories.json",
             json!({"repository_id":"repo","root_path":root,"worktrees":[{"worktree_path":root}]}),
         );
         root
@@ -271,13 +271,35 @@ async fn getter_parent_directory_uses_linked_outcome_not_submitted_receipt() {
         vec![
             "repository status --format",
             "task history owner",
-            "repository status repo",
+            "repository list --format",
             "release evidence delivery-test",
         ]
     );
     let mut foreign = delivery();
     foreign["repository_id"] = json!("other");
     fixture.reply("delivery.json", foreign);
+    assert!(fixture.validate(&command, Some(&project)).await.is_err());
+}
+
+#[tokio::test]
+async fn getter_catalogue_handles_other_repositories_and_preserves_its_bound() {
+    let fixture = Getter::new();
+    let root = fixture.parent_repository();
+    fixture.reply("delivery.json", delivery());
+    let project = project();
+    let command = ProjectAutomationCommand::RecordDelivery {
+        target: "linux".into(), delivered_at_ms: 100, evidence_ref: "delivery-test".into(),
+    };
+    let mut repositories = (0..200).map(|i| json!({"repository_id":format!("other-{i}"),
+        "root_path":"/another/repository", "display_name":"unrelated repository", "worktrees":[]})).collect::<Vec<_>>();
+    repositories.push(json!({"repository_id":"repo","worktrees":[{"worktree_path":root}]}));
+    let response = json!({"ok":true,"data":{"repositories":repositories}}).to_string();
+    assert!(response.len() > MAX_RESPONSE_BYTES);
+    fixture.raw("repositories.json", &response);
+    assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
+    fixture.raw("repositories.json", &"x".repeat(256 * 1_024 + 1));
+    assert!(fixture.validate(&command, Some(&project)).await.is_err());
+    fixture.raw("repositories.json", r#"{"ok":true,"data":{"repositories":[]}}"#);
     assert!(fixture.validate(&command, Some(&project)).await.is_err());
 }
 
@@ -308,7 +330,7 @@ async fn getter_parent_directory_requires_bound_owner_and_matching_repository() 
     }
     fixture.task("owner", "in_progress", "repo");
     fixture.reply(
-        "repository-repo.json",
+        "repositories.json",
         json!({"repository_id":"different","worktrees":[{"worktree_path":fixture.directory.path()}]}),
     );
     assert!(fixture.validate(&command, Some(&project)).await.is_err());
@@ -335,13 +357,13 @@ async fn getter_parent_directory_rejects_outside_and_missing_worktrees() {
         fixture.directory.path().join("missing"),
     ] {
         fixture.reply(
-            "repository-repo.json",
+            "repositories.json",
             json!({"repository_id":"repo","root_path":fixture.directory.path(),"worktrees":[{"worktree_path":root}]}),
         );
         assert!(fixture.validate(&command, Some(&project)).await.is_err());
     }
     fixture.reply(
-        "repository-repo.json",
+        "repositories.json",
         json!({"repository_id":"repo","worktrees":[{"worktree_path":fixture.directory.path().join("application")}]}),
     );
     assert_eq!(fixture.validate(&command, Some(&project)).await, Ok(()));
@@ -356,7 +378,7 @@ async fn getter_parent_directory_rejects_symlink_escape() {
     let link = fixture.directory.path().join("escaped-worktree");
     std::os::unix::fs::symlink(outside.path(), &link).expect("worktree link");
     fixture.reply(
-        "repository-repo.json",
+        "repositories.json",
         json!({"repository_id":"repo","worktrees":[{"worktree_path":link}]}),
     );
     let command = ProjectAutomationCommand::Complete {
