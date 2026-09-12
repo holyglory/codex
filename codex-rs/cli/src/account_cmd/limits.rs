@@ -4,6 +4,7 @@ use chrono::Utc;
 use codex_account_registry::AccountMetadata;
 use codex_account_registry::RegistryStore;
 use codex_backend_client::Client as BackendClient;
+use codex_backend_client::next_codex_limit_reset;
 use codex_core::config::Config;
 use codex_login::ProfileAuthRouter;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -39,6 +40,7 @@ pub(super) struct AccountLimitsJson {
     pub(super) reason: Option<&'static str>,
     pub(super) buckets: Vec<RateLimitSnapshot>,
     pub(super) next_reset_at: Option<i64>,
+    next_reset_scope: Option<&'static str>,
 }
 
 pub(super) async fn run(
@@ -160,27 +162,17 @@ async fn fetch_account_limits(
             .then_with(|| left.limit_name.cmp(&right.limit_name))
     });
     let now = Utc::now().timestamp();
-    let next_reset_at = buckets
-        .iter()
-        .flat_map(|bucket| {
-            bucket
-                .primary
-                .iter()
-                .chain(bucket.secondary.iter())
-                .filter_map(|window| window.resets_at)
-                .chain(bucket.individual_limit.iter().map(|limit| limit.resets_at))
-        })
-        .filter(|reset| {
-            *reset > now && chrono::DateTime::from_timestamp(*reset, /*nsecs*/ 0).is_some()
-        })
-        .min();
+    let next_reset = next_codex_limit_reset(&buckets, now).filter(|reset| {
+        chrono::DateTime::from_timestamp(reset.resets_at, /*nsecs*/ 0).is_some()
+    });
     AccountLimitsJson {
         id: account.id.to_string(),
         alias: account.alias.to_string(),
         state: "observed",
         reason: None,
         buckets,
-        next_reset_at,
+        next_reset_at: next_reset.as_ref().map(|reset| reset.resets_at),
+        next_reset_scope: next_reset.map(|reset| reset.scope),
     }
 }
 
@@ -192,6 +184,7 @@ pub(super) fn unknown(account: &AccountMetadata, reason: &'static str) -> Accoun
         reason: Some(reason),
         buckets: Vec::new(),
         next_reset_at: None,
+        next_reset_scope: None,
     }
 }
 
@@ -237,6 +230,30 @@ pub(super) fn reset_label(reset: Option<i64>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+pub(super) fn reset_countdown(reset: Option<i64>, now: i64) -> String {
+    let Some(reset) = reset else {
+        return "unknown".into();
+    };
+    let seconds = reset.saturating_sub(now);
+    if seconds <= 0 {
+        return "now".into();
+    }
+    if seconds < 60 {
+        return "<1m".into();
+    }
+    let minutes = seconds / 60;
+    let days = minutes / (24 * 60);
+    let hours = minutes / 60 % 24;
+    let minutes = minutes % 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 pub(super) fn window_label(window: Option<&RateLimitWindow>) -> String {
     match window {
         Some(window) => format!(
@@ -257,14 +274,13 @@ pub(super) fn window_usage_label(window: Option<&RateLimitWindow>) -> String {
                 Some(minutes) => format!("{minutes}m"),
                 None => "window".to_string(),
             };
-            format!("{duration} {:.1}% used", window.used_percent)
+            format!("{duration} {:.0}% used", window.used_percent)
         }
         None => "unknown".to_string(),
     }
 }
 
 pub(super) fn bucket_summary(bucket: &RateLimitSnapshot) -> String {
-    use codex_protocol::protocol::RateLimitReachedType;
     let mut parts = bucket
         .primary
         .iter()
@@ -273,48 +289,28 @@ pub(super) fn bucket_summary(bucket: &RateLimitSnapshot) -> String {
         .collect::<Vec<_>>();
     if let Some(limit) = &bucket.individual_limit {
         parts.push(format!(
-            "individual {} / {} used ({}% left)",
-            super::view::safe_human_text(&limit.used),
-            super::view::safe_human_text(&limit.limit),
-            limit.remaining_percent
+            "individual {}% used",
+            100 - limit.remaining_percent
         ));
     }
-    if let Some(credits) = &bucket.credits {
-        parts.push(if credits.unlimited {
-            "unlimited credits".into()
-        } else if !credits.has_credits {
-            "credits depleted".into()
-        } else if let Some(balance) = &credits.balance {
-            format!("{} credits", super::view::safe_human_text(balance))
-        } else {
-            "credits available".into()
-        });
-    }
-    if bucket.spend_control_reached == Some(true) {
-        parts.push("spend limit reached".into());
-    }
-    if let Some(reason) = bucket.rate_limit_reached_type {
-        parts.push(
-            match reason {
-                RateLimitReachedType::RateLimitReached => "rate limit reached",
-                RateLimitReachedType::WorkspaceOwnerCreditsDepleted => {
-                    "workspace owner credits depleted"
-                }
-                RateLimitReachedType::WorkspaceMemberCreditsDepleted => {
-                    "workspace member credits depleted"
-                }
-                RateLimitReachedType::WorkspaceOwnerUsageLimitReached => {
-                    "workspace owner usage limit reached"
-                }
-                RateLimitReachedType::WorkspaceMemberUsageLimitReached => {
-                    "workspace member usage limit reached"
-                }
-            }
-            .into(),
-        );
-    }
     if parts.is_empty() {
-        parts.push("unknown".into());
+        parts.push(
+            if bucket.spend_control_reached == Some(true)
+                || bucket.rate_limit_reached_type.is_some()
+                || bucket
+                    .credits
+                    .as_ref()
+                    .is_some_and(|credits| !credits.has_credits && !credits.unlimited)
+            {
+                "limit reached".into()
+            } else {
+                "unknown".into()
+            },
+        );
     }
     parts.join(" / ")
 }
+
+#[cfg(test)]
+#[path = "limits_tests.rs"]
+mod tests;

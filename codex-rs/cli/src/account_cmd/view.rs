@@ -181,7 +181,7 @@ fn render_list(
         let limits_header = if limits.is_empty() {
             ""
         } else {
-            "\tLIMITS\tNEXT RESET"
+            "\tLIMITS\tRESET IN"
         };
         println!(
             "CURRENT\tALIAS\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE{limits_header}"
@@ -200,6 +200,12 @@ fn render_list(
                         limits
                             .buckets
                             .iter()
+                            .filter(|bucket| {
+                                bucket.limit_id.as_deref() != Some("codex_bengalfox")
+                                    && !bucket.limit_name.as_deref().is_some_and(|name| {
+                                        name.to_ascii_lowercase().contains("spark")
+                                    })
+                            })
                             .map(|bucket| {
                                 let name = bucket
                                     .limit_name
@@ -217,7 +223,13 @@ fn render_list(
                     } else {
                         format!("unknown ({})", limits.reason.unwrap_or("unavailable"))
                     };
-                    format!("\t{summary}\t{}", limits::reset_label(limits.next_reset_at))
+                    format!(
+                        "\t{summary}\t{}",
+                        limits::reset_countdown(
+                            limits.next_reset_at,
+                            chrono::Utc::now().timestamp()
+                        )
+                    )
                 }
                 None => String::new(),
             };
