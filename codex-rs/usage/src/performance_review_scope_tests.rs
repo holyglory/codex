@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn scoped_review_keeps_covered_facts_and_excludes_other_token_owners() {
