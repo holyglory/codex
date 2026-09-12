@@ -23,6 +23,7 @@ use std::path::PathBuf;
 mod query;
 mod query_lists;
 mod repository;
+mod pagination;
 
 const TOOL_NAME: &str = "usage_stats";
 const DEFAULT_PAGE_LIMIT: u32 = 10;
@@ -190,7 +191,7 @@ fn usage_stats_spec() -> ToolSpec {
                     json!("current_repository"),
                     json!("repository"),
                 ],
-                Some("Summary scope; defaults to current_chat.".to_string()),
+                Some("For summary only; defaults to current_chat.".to_string()),
             ),
         ),
         (
@@ -249,7 +250,7 @@ fn usage_stats_spec() -> ToolSpec {
         ),
         (
             "limit".to_string(),
-            JsonSchema::number(Some("Detail page size from 1 through 50.".to_string())),
+            JsonSchema::number(Some("Detail/summary page size, 1–50. Summary totals repeat across pages.".to_string())),
         ),
         (
             "cursor_sort_value".to_string(),
@@ -262,7 +263,7 @@ fn usage_stats_spec() -> ToolSpec {
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: TOOL_NAME.to_string(),
-        description: "Read the private, content-free local usage collector. Summary preserves every aggregate dimension; task_tree_summary gives one bounded root/descendant management view. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
+        description: "Read the private, content-free local usage collector. Summaries retain totals and paginate detail when needed; task_tree_summary includes recorded descendants. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
             .to_string(),
         strict: false,
         defer_loading: None,
