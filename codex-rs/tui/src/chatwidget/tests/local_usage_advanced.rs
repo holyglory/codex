@@ -75,6 +75,7 @@ pub(super) fn local_report(coverage: protocol::LocalUsageCoverage) -> protocol::
             end_ms: 20,
         }),
         coverage: protocol::LocalUsageReportCoverage {
+            dimensions: None,
             state: coverage_state.to_string(),
             has_gaps: coverage != protocol::LocalUsageCoverage::Complete,
             events: vec![protocol::LocalUsageReportCoverageCount {

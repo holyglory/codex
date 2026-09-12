@@ -15024,6 +15024,16 @@
       },
       "LocalUsageReportCoverage": {
         "properties": {
+          "dimensions": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageReportCoverageDimensions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "events": {
             "items": {
               "$ref": "#/definitions/v2/LocalUsageReportCoverageCount"
@@ -15065,6 +15075,39 @@
         "required": [
           "count",
           "state"
+        ],
+        "type": "object"
+      },
+      "LocalUsageReportCoverageDimensions": {
+        "properties": {
+          "activityUnattributedOperations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "context": {
+            "type": "string"
+          },
+          "recordedTokens": {
+            "type": "string"
+          },
+          "timingUnknownIntervals": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "unfinishedOperations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activityUnattributedOperations",
+          "context",
+          "recordedTokens",
+          "timingUnknownIntervals",
+          "unfinishedOperations"
         ],
         "type": "object"
       },

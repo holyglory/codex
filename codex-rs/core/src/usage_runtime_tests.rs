@@ -147,7 +147,7 @@ async fn provider_usage_is_deduplicated_and_reported_content_free() {
             .sum::<u64>(),
         2
     );
-    assert_eq!(summary.coverage.overall_state, "unknown");
+    assert_eq!(summary.coverage.overall_state, "complete");
 }
 
 #[cfg(unix)]
@@ -795,7 +795,7 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             .iter()
             .any(|tokens| tokens.activity == "unknown" && tokens.measured_tokens == 17)
     );
-    assert!(summary.coverage.has_gaps);
+    assert!(!summary.coverage.has_gaps);
     let heartbeats = runtime
         .store
         .get()
