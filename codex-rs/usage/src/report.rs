@@ -258,21 +258,7 @@ impl UsageStore {
                 aggregate.has_gap |= row.get::<i64, _>("has_gap") != 0;
             }
         } else {
-            let token_rows = sqlx::query(
-                r#"
-                SELECT token.category_path, token.repository_bucket,
-                       token.measurement_provenance, token.token_count,
-                       token.coverage_state, token.observed_at_ms,
-                       COALESCE(request.operation_id, tool.operation_id) AS operation_id
-                FROM token_observations AS token
-                LEFT JOIN model_requests AS request ON request.id = token.model_request_id
-                LEFT JOIN tool_invocations AS tool ON tool.id = token.tool_invocation_id
-                WHERE token.category_path NOT GLOB 'attribution.items.*'
-                "#,
-            )
-            .fetch_all(&self.pool)
-            .await
-            .map_err(UsageStoreError::Database)?;
+            let token_rows = self.selected_token_rows(&selection, repository_family.as_ref()).await?;
             for row in token_rows {
                 let operation_id: String = row.get("operation_id");
                 let repository_bucket: String = row.get("repository_bucket");
@@ -385,25 +371,10 @@ impl UsageStore {
                     .ok_or(UsageStoreError::AggregateOverflow)?;
             }
         } else {
-            for row in sqlx::query(
-                "SELECT operation_id, coverage_state, occurred_at_ms FROM coverage_events",
-            )
-            .fetch_all(&self.pool)
-            .await
-            .map_err(UsageStoreError::Database)?
-            {
-                let operation_id = row.get::<Option<String>, _>("operation_id");
-                let selected = match operation_id.as_deref() {
-                    Some(operation_id) => operation_selected(operation_id),
-                    None => include_global_coverage,
-                } && selection.contains_timestamp(row.get("occurred_at_ms"));
-                if selected {
-                    increment_count(
-                        coverage_events
-                            .entry(row.get("coverage_state"))
-                            .or_default(),
-                    )?;
-                }
+            for row in self.selected_coverage_rows(&selection, include_global_coverage).await? {
+                let count = u64::try_from(row.get::<i64, _>("observation_count"))
+                    .map_err(|_| UsageStoreError::AggregateOverflow)?;
+                coverage_events.insert(row.get("coverage_state"), count);
             }
         }
         let has_evidence = !tokens.is_empty() || !coverage_events.is_empty();
