@@ -22,7 +22,6 @@ use std::io::Read;
 use std::net::IpAddr;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -136,10 +135,6 @@ const COLOR_ENV_VARS: &[&str] = &[
 const TERMINAL_DIMENSION_ENV_VARS: &[&str] = &["COLUMNS", "LINES"];
 const TERMINFO_ENV_VARS: &[&str] = &["TERMINFO", "TERMINFO_DIRS"];
 const LOCALE_ENV_VARS: &[&str] = &["LC_ALL", "LC_CTYPE", "LANG"];
-#[cfg(windows)]
-const NPM_COMMAND: &str = "npm.cmd";
-#[cfg(not(windows))]
-const NPM_COMMAND: &str = "npm";
 const REMOTE_TERMINAL_ENV_VARS: &[&str] = &[
     "SSH_TTY",
     "SSH_CONNECTION",
@@ -1128,15 +1123,21 @@ fn npm_global_root_check() -> NpmRootCheck {
         return NpmRootCheck::MissingPackageRoot;
     };
 
-    let output = match run_command(NPM_COMMAND, ["root", "-g"]) {
-        Ok(output) => output,
-        Err(err) => return NpmRootCheck::NpmUnavailable(err),
+    let Some(npm_prefix) = env::var_os("npm_config_prefix")
+        .or_else(|| env::var_os("NPM_CONFIG_PREFIX"))
+        .map(PathBuf::from)
+    else {
+        return NpmRootCheck::NpmUnavailable(
+            "npm global root not inspected (npm_config_prefix is not set; PATH helpers are not executed)"
+                .to_string(),
+        );
     };
-    let Some(npm_root) = output.lines().map(str::trim).find(|line| !line.is_empty()) else {
-        return NpmRootCheck::NpmUnavailable("empty output from npm root -g".to_string());
+    let npm_root = if cfg!(windows) {
+        npm_prefix.join("node_modules")
+    } else {
+        npm_prefix.join("lib/node_modules")
     };
-
-    compare_npm_package_roots(&running_package_root, &PathBuf::from(npm_root))
+    compare_npm_package_roots(&running_package_root, &npm_root)
 }
 
 fn compare_npm_package_roots(running_package_root: &Path, npm_root: &Path) -> NpmRootCheck {

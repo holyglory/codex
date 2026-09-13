@@ -583,6 +583,7 @@ impl UsageAttempt {
             | ResponseItem::Compaction { .. }
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::Other => {}
         }
     }

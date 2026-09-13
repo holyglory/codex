@@ -429,81 +429,88 @@ pub(crate) async fn run_turn(
             }
         };
         let sampling_request_result: CodexResult<_> = async {
-        super::time_reminder::maybe_record_current_time_reminder(
-            sess.as_ref(),
-            turn_context.as_ref(),
-            &window_id,
-        )
-        .await?;
-
-        world_state = sess
-            .record_step_world_state_if_changed(&world_state, step_context.as_ref())
+            super::time_reminder::maybe_record_current_time_reminder(
+                sess.as_ref(),
+                turn_context.as_ref(),
+                &window_id,
+            )
             .await?;
 
-        // Keep the override after accepted input so ordinary turn rollback removes it too.
-        sess.record_reasoning_effort_override(step_context.as_ref()).await;
+            world_state = sess
+                .record_step_world_state_if_changed(&world_state, step_context.as_ref())
+                .await?;
 
-        // Construct the input once. A clean account failover retries this exact pending sampling
-        // step without rebuilding history or replaying any completed tool.
-        let sampling_request_input: Vec<ResponseItem> = async {
-            sess.clone_history()
-                .await
-                .for_prompt(&step_context.settings.model_info.input_modalities)
-        }
-        .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-        .await;
-        let usage_chain = UsageRequestChain::new();
-        loop {
-            let responses_metadata = sess
-                .responses_metadata(turn_context.as_ref(), CodexResponsesRequestKind::Turn)
+            // Keep the override after accepted input so ordinary turn rollback removes it too.
+            sess.record_reasoning_effort_override(step_context.as_ref())
                 .await;
-            let result = run_sampling_request(
-                Arc::clone(&sess),
-                Arc::clone(&step_context),
-                Arc::clone(&turn_context.extension_data),
-                Arc::clone(&turn_diff_tracker),
-                &mut client_session,
-                &responses_metadata,
-                sampling_request_input.clone(),
-                cancellation_token.child_token(),
-                &usage_chain,
-            )
+
+            // Construct the input once. A clean account failover retries this exact pending sampling
+            // step without rebuilding history or replaying any completed tool.
+            let sampling_request_input: Vec<ResponseItem> = async {
+                sess.clone_history()
+                    .await
+                    .for_prompt(&step_context.settings.model_info.input_modalities)
+            }
+            .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
-            let failure = match result {
-                Ok(output) => break Ok(output),
-                Err(failure) if failure.can_failover_accounts() => failure,
-                Err(failure) => break Err(failure.error),
-            };
-            let Some(account_id) = turn_context
-                .account_lease
-                .as_ref()
-                .map(|lease| lease.account_id().clone())
-            else {
-                break Err(failure.error);
-            };
-            usage_limited_account_ids.insert(account_id);
-            let Some(next_turn_context) = sess
-                .failover_turn_context_after_usage_limit(&turn_context, &usage_limited_account_ids)
-                .await
-            else {
-                break Err(failure.error);
-            };
-            client_session = model_client_session_for_turn(&sess, &next_turn_context);
-            step_context = Arc::new(StepContext {
-                turn: Arc::clone(&next_turn_context),
-                settings: Arc::clone(&step_context.settings),
-                token_budget: step_context.token_budget.clone(),
-                session_telemetry: step_context.session_telemetry.clone(),
-                environments: step_context.environments.clone(),
-                selected_capability_roots: step_context.selected_capability_roots.clone(),
-                executor_capability_discovery: step_context.executor_capability_discovery.clone(),
-                mcp: Arc::clone(&step_context.mcp),
-                tool_router: Arc::clone(&step_context.tool_router),
-                loaded_agents_md: step_context.loaded_agents_md.clone(),
-            });
-            turn_context = next_turn_context;
+            let usage_chain = UsageRequestChain::new();
+            loop {
+                let responses_metadata = sess
+                    .responses_metadata(turn_context.as_ref(), CodexResponsesRequestKind::Turn)
+                    .await;
+                let result = run_sampling_request(
+                    Arc::clone(&sess),
+                    Arc::clone(&step_context),
+                    Arc::clone(&turn_context.extension_data),
+                    Arc::clone(&turn_diff_tracker),
+                    &mut client_session,
+                    &responses_metadata,
+                    sampling_request_input.clone(),
+                    cancellation_token.child_token(),
+                    &usage_chain,
+                )
+                .await;
+                let failure = match result {
+                    Ok(output) => break Ok(output),
+                    Err(failure) if failure.can_failover_accounts() => failure,
+                    Err(failure) => break Err(failure.error),
+                };
+                let Some(account_id) = turn_context
+                    .account_lease
+                    .as_ref()
+                    .map(|lease| lease.account_id().clone())
+                else {
+                    break Err(failure.error);
+                };
+                usage_limited_account_ids.insert(account_id);
+                let Some(next_turn_context) = sess
+                    .failover_turn_context_after_usage_limit(
+                        &turn_context,
+                        &usage_limited_account_ids,
+                    )
+                    .await
+                else {
+                    break Err(failure.error);
+                };
+                client_session = model_client_session_for_turn(&sess, &next_turn_context);
+                step_context = Arc::new(StepContext {
+                    turn: Arc::clone(&next_turn_context),
+                    settings: Arc::clone(&step_context.settings),
+                    token_budget: step_context.token_budget.clone(),
+                    session_telemetry: step_context.session_telemetry.clone(),
+                    environments: step_context.environments.clone(),
+                    selected_capability_roots: step_context.selected_capability_roots.clone(),
+                    executor_capability_discovery: step_context
+                        .executor_capability_discovery
+                        .clone(),
+                    mcp: Arc::clone(&step_context.mcp),
+                    tool_router: Arc::clone(&step_context.tool_router),
+                    loaded_agents_md: step_context.loaded_agents_md.clone(),
+                });
+                turn_context = next_turn_context;
+            }
         }
-        }.await;
+        .await;
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
                 let SamplingRequestResult {

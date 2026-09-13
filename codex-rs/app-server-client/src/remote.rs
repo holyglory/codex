@@ -254,8 +254,7 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
-        let (pending_events, metadata, server_capabilities) =
-            initialize_remote_connection(
+        let (pending_events, metadata, server_capabilities) = initialize_remote_connection(
             &mut stream,
             &endpoint,
             initialize_params,
@@ -1024,11 +1023,7 @@ where
     )
     .await?;
 
-    Ok((
-        pending_events,
-        metadata,
-        server_capabilities,
-    ))
+    Ok((pending_events, metadata, server_capabilities))
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
