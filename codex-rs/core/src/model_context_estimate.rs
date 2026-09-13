@@ -90,6 +90,7 @@ fn request_context_source(item: &ResponseItem) -> RequestContextSource {
         | ResponseItem::Compaction { .. }
         | ResponseItem::CompactionTrigger { .. }
         | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::ConfigurationUpdate { .. }
         | ResponseItem::Other => RequestContextSource::Conversation,
     }
 }
