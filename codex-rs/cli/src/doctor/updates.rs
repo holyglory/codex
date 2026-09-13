@@ -23,14 +23,14 @@ use super::CheckStatus;
 use super::DoctorCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::DoctorIssue;
+use super::NpmRootCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::desktop::platform::InstalledApp;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
-use super::npm_global_root_check;
-use super::NpmRootCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::network;
+use super::npm_global_root_check;
 
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
@@ -451,9 +451,7 @@ async fn fetch_latest_version(
     }
 }
 
-async fn fetch_latest_npm_release_version(
-    client: &RouteAwareClientPool,
-) -> Result<String, String> {
+async fn fetch_latest_npm_release_version(client: &RouteAwareClientPool) -> Result<String, String> {
     #[derive(Deserialize)]
     struct ReleaseInfo {
         version: String,
