@@ -722,7 +722,7 @@ impl AccountRequestProcessor {
         {
             opts.issuer = issuer;
         }
-        let opts = match self.active_profile_storage()? {
+        let mut opts = match self.active_profile_storage()? {
             Some(profile) => opts.with_profile_auth_storage(profile),
             None => opts,
         };
