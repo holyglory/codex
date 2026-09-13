@@ -20,7 +20,6 @@ struct GuardianSamplerTemplate {
     originator: Option<String>,
     luna_compaction_hash: Option<String>,
     metrics: Option<Arc<dyn ExtensionMetrics>>,
-    computer_use_only: bool,
     prewarm_allowed: bool,
 }
 
@@ -77,8 +76,6 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .get_or_init(NodeReplReviewEvidence::default)
                     .enable_image_capture();
             }
-            let computer_use_only =
-                guardian_config.review_scope == GuardianV2ReviewScope::ComputerUseOnly;
             let prewarm_allowed = input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
                 && !has_full_access(
                     input.config.permissions.approval_policy.value(),
@@ -99,7 +96,6 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .map(|originator| originator.0.clone()),
                 luna_compaction_hash,
                 metrics: input.extension_metrics.clone(),
-                computer_use_only,
                 prewarm_allowed,
             };
             input.thread_store.insert(template.clone());
@@ -122,9 +118,7 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                         template.luna_compaction_hash.clone(),
                     )
                 });
-                input.thread_store.insert(GuardianV2Enabled {
-                    computer_use_only: template.computer_use_only,
-                });
+                input.thread_store.insert(GuardianV2Enabled);
                 if template.prewarm_allowed {
                     tokio::spawn(async move {
                         sampler.prewarm().await;
@@ -174,9 +168,7 @@ impl TurnLifecycleContributor for GuardianV2Extension {
                     luna_compaction_hash,
                 )
             });
-            input.thread_store.insert(GuardianV2Enabled {
-                computer_use_only: template.computer_use_only,
-            });
+            input.thread_store.insert(GuardianV2Enabled);
             if template.prewarm_allowed {
                 tokio::spawn(async move {
                     sampler.prewarm().await;

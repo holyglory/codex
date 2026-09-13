@@ -104,6 +104,7 @@ fn limits(used_percent: f64) -> codex_protocol::protocol::RateLimitSnapshot {
         spend_control_reached: None,
         plan_type: None,
         rate_limit_reached_type: None,
+        normal_model_slug: None,
     }
 }
 

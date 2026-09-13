@@ -55,6 +55,7 @@ fn snapshot(limit_id: &str, used_percent: f64) -> RateLimitSnapshot {
         spend_control_reached: Some(false),
         plan_type: None,
         rate_limit_reached_type: None,
+        normal_model_slug: None,
     }
 }
 

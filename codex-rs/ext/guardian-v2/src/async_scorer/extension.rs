@@ -36,9 +36,6 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::ReviewDecision;
-use codex_protocol::protocol::TruncationPolicy;
-use codex_protocol::protocol::has_full_access;
 
 use codex_protocol::security_risk::SecurityRiskScore;
 
@@ -88,7 +85,6 @@ struct GuardianV2Extension {
     event_sink: Arc<dyn ExtensionEventSink>,
     thread_manager: Weak<ThreadManager>,
 }
-
 
 impl SkillInvocationContributor for GuardianV2Extension {
     fn requires_host_skill_discovery(&self) -> bool {
@@ -370,7 +366,6 @@ impl GuardianV2Extension {
                 )))
             });
         let uses_turn_auth = self.auth_resolver.is_some();
-
 
         let score_authorization = ScoreAuthorization::current(&thread).await;
         tokio::spawn(async move {
@@ -707,8 +702,6 @@ fn install_inner(
     if uses_turn_auth {
         registry.turn_lifecycle_contributor(extension.clone());
     }
-    registry.approval_review_contributor(extension.clone());
-
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);
 }
