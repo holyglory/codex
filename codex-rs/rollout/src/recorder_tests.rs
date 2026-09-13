@@ -1112,7 +1112,7 @@ async fn resumed_paginated_rollout_consumes_floating_point_record_ordinal() -> s
         }
     });
     assert!(
-        serde_json::from_value::<RolloutLine>(floating_point_token_count.clone()).is_err(),
+        crate::decode_rollout_line(floating_point_token_count.clone()).is_err(),
         "fixture must exercise a payload the complete rollout model rejects"
     );
     append_raw_rollout_line(&rollout_path, &floating_point_token_count)?;
@@ -1145,7 +1145,7 @@ async fn resumed_paginated_rollout_consumes_unknown_record_ordinal() -> std::io:
         "payload": { "type": "future_payload", "ratio": 0.5 }
     });
     assert!(
-        serde_json::from_value::<RolloutLine>(future_record.clone()).is_err(),
+        crate::decode_rollout_line(future_record.clone()).is_err(),
         "fixture must exercise an unknown future record"
     );
     append_raw_rollout_line(&rollout_path, &future_record)?;
