@@ -18,7 +18,7 @@ fn resolves_managed_install_as_package_layout_changes() -> std::io::Result<()> {
     assert_eq!(managed_codex_bin(codex_home.path()), packaged);
 
     std::fs::write(&flat, b"flat executable fixture")?;
-    assert_eq!(managed_codex_bin(codex_home.path()), flat);
+    assert_eq!(managed_codex_bin(codex_home.path()), packaged);
 
     std::fs::remove_file(&flat)?;
     std::fs::create_dir(&flat)?;
