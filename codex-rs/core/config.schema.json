@@ -732,6 +732,9 @@
             "enable_request_compression": {
               "type": "boolean"
             },
+            "event_subscriptions": {
+              "type": "boolean"
+            },
             "exec_permission_approvals": {
               "type": "boolean"
             },
@@ -1915,6 +1918,16 @@
     },
     "LegacyAppPathString": {
       "type": "string"
+    },
+    "LocalControlsToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     },
     "MarketplaceConfig": {
       "additionalProperties": false,
@@ -3811,6 +3824,9 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "local_controls": {
+          "$ref": "#/definitions/LocalControlsToolConfig"
         },
         "update_plan": {
           "$ref": "#/definitions/UpdatePlanToolConfig"
@@ -6125,6 +6141,9 @@
           "type": "boolean"
         },
         "enable_request_compression": {
+          "type": "boolean"
+        },
+        "event_subscriptions": {
           "type": "boolean"
         },
         "exec_permission_approvals": {

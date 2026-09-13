@@ -343,6 +343,23 @@ impl TurnMetadataState {
         self.root_turn_id.get().cloned()
     }
 
+    pub(crate) fn can_start_root_turn(&self, session_source: &SessionSource) -> bool {
+        if session_source.is_non_root_agent() {
+            return false;
+        }
+        match &self.thread_source {
+            Some(
+                ThreadSource::Subagent
+                | ThreadSource::GuardianReview
+                | ThreadSource::MemoryConsolidation,
+            ) => false,
+            Some(ThreadSource::Feature(feature)) => {
+                !matches!(feature.as_str(), "system" | "title") && !feature.starts_with("ambient")
+            }
+            Some(ThreadSource::User) | None => true,
+        }
+    }
+
     pub(crate) fn set_responsesapi_client_metadata(
         &self,
         responsesapi_client_metadata: HashMap<String, String>,

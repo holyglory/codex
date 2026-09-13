@@ -554,7 +554,11 @@ impl PluginRequestProcessor {
 
     async fn on_effective_plugins_changed(&self, auth_lease: &AuthManagerLease) {
         self.clear_plugin_related_caches();
-        reload_plugin_runtime_configs_without_mcp_prewarm(&self.thread_manager, &self.config_manager).await;
+        reload_plugin_runtime_configs_without_mcp_prewarm(
+            &self.thread_manager,
+            &self.config_manager,
+        )
+        .await;
         self.thread_manager
             .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
             .await;
