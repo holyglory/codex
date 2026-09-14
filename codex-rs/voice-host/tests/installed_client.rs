@@ -266,6 +266,20 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
             let gathered = Arc::new(Notify::new());
             let mut settings = SettingEngine::default();
             settings.set_lite(/*lite*/ true);
+            let host = VoiceHost::connect(&package, &commit).await?;
+            let (host, offer) = host.start_transport().await?;
+            let offer = RTCSessionDescription::offer(offer.into_sdp())?;
+            // Use one interface from the helper's offer so virtual NICs cannot
+            // inflate the test answer beyond the production candidate limit.
+            let address = offer
+                .sdp
+                .lines()
+                .filter(|line| line.starts_with("a=candidate:"))
+                .filter_map(|line| line.split_whitespace().nth(/*n*/ 4))
+                .filter_map(|address| address.parse::<std::net::IpAddr>().ok())
+                .find(std::net::IpAddr::is_ipv4)
+                .context("local IPv4 candidate")?;
+            let bind_address = std::net::SocketAddr::new(address, /*port*/ 0);
             let mut media = MediaEngine::default();
             media.register_default_codecs()?;
             let builder = PeerConnectionBuilder::new()
@@ -278,18 +292,14 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
                     started,
                 }));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec![bind_address])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec![bind_address])
             }
             .build()
             .await?;
             let result: Result<()> = async {
-                let host = VoiceHost::connect(&package, &commit).await?;
-                let (host, offer) = host.start_transport().await?;
-                remote
-                    .set_remote_description(RTCSessionDescription::offer(offer.into_sdp())?)
-                    .await?;
+                remote.set_remote_description(offer).await?;
                 let answer = remote.create_answer(/*options*/ None).await?;
                 remote.set_local_description(answer).await?;
                 gathered.notified().await;
