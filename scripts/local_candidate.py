@@ -138,6 +138,7 @@ def commands(root, state, directory):
                 "cargo",
                 "clippy",
                 "--locked",
+                "--keep-going",
                 "--workspace",
                 "--all-targets",
                 "--",

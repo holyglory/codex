@@ -147,7 +147,7 @@ jobs:
         run: cargo fmt -- --config imports_granularity=Item --check
       - uses: ./.github/actions/downstream-compiler-cache
       - name: Run complete Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --keep-going --workspace --all-targets -- -D warnings
       - name: Reclaim Clippy build output
         run: cargo clean
       - name: Run complete Rust suite
