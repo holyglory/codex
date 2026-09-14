@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-03
+Last reviewed: 2026-09-14
 
 ## Confirmed project context
 
@@ -102,6 +102,11 @@ Last reviewed: 2026-09-03
 
 ## Current trust boundaries and controls
 
+- An approved shell command must retain explicit denied-read restrictions.
+  When its child command attempts such a read, report the denial without
+  requesting approval again. Shell approval cannot authorize that read
+  (user confirmation on 2026-09-14;
+  `approved-shell-denied-read-no-reprompt-v1`).
 - Source collaboration and per-user runtime data are different boundaries.
   Repository owner and shared-group permissions are equal, directories retain
   the shared group and inherit group `rwx`, and named per-user ACL entries are
