@@ -5,6 +5,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
+use codex_login::migrate_legacy_auth_if_needed;
 use codex_login::save_auth;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::models::PermissionProfile;
@@ -51,6 +52,11 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
     save_auth(
         home.path(),
         &legacy_auth(credential),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?;
+    migrate_legacy_auth_if_needed(
+        home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
@@ -203,6 +209,11 @@ async fn agent_lists_and_mutates_priorities_without_credential_exposure() -> Res
     save_auth(
         home.path(),
         &legacy_auth(credential),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?;
+    migrate_legacy_auth_if_needed(
+        home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;

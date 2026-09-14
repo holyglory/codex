@@ -1103,6 +1103,12 @@ async fn list_apps_force_refetch_preserves_previous_cache_on_failure() -> Result
         AuthCredentialsStoreMode::File,
     )?;
 
+    codex_login::migrate_legacy_auth_if_needed(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()

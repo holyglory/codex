@@ -424,7 +424,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
             }
         })))
         // Startup refreshes through the cloud-config and runtime managers race
-        // with the lazily migrated profile manager used by this request.
+        // with the auth status request.
         .expect(2..=3)
         .mount(&server)
         .await;
@@ -480,6 +480,12 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
         AuthCredentialsStoreMode::File,
     )?;
 
+    codex_login::migrate_legacy_auth_if_needed(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?;
+
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
@@ -489,7 +495,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             }
         })))
         // Startup refreshes through the cloud-config and runtime managers race
-        // with the lazily migrated profile manager used by this request.
+        // with the auth status request.
         .expect(2..=3)
         .mount(&server)
         .await;
