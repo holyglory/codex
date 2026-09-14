@@ -63,6 +63,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             message,
             misalignment,
         }),
+        ApiError::Transport(ref transport) if is_server_overloaded_transport_error(transport) => {
+            CodexErr::ServerOverloaded
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -71,19 +74,6 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 body,
             } => {
                 let body_text = body.unwrap_or_default();
-
-                if status == http::StatusCode::SERVICE_UNAVAILABLE
-                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
-                    && matches!(
-                        value
-                            .get("error")
-                            .and_then(|error| error.get("code"))
-                            .and_then(serde_json::Value::as_str),
-                        Some("server_is_overloaded" | "slow_down")
-                    )
-                {
-                    return CodexErr::ServerOverloaded;
-                }
 
                 if (status == http::StatusCode::BAD_REQUEST
                     || status == http::StatusCode::FORBIDDEN)
@@ -194,6 +184,28 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg),
     }
+}
+
+pub(crate) fn is_server_overloaded_transport_error(err: &TransportError) -> bool {
+    let TransportError::Http {
+        status,
+        body: Some(body),
+        ..
+    } = err
+    else {
+        return false;
+    };
+    *status == http::StatusCode::SERVICE_UNAVAILABLE
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value
+                        .pointer("/error/code")
+                        .and_then(serde_json::Value::as_str),
+                    Some("server_is_overloaded" | "slow_down")
+                )
+            })
 }
 
 const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
