@@ -2,13 +2,13 @@
 
 - Repository: `https://github.com/openai/codex.git`
 - Remote name: `upstream`
-- Release tag: `rust-v0.153.4`
-- Annotated tag object: `042fb41b7c813ac7999105e886b2b7aa715b5081`
-- Peeled commit: `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`
-- Selected: 2026-09-07
+- Release tag: `rust-v0.154.0`
+- Annotated tag object: `36eab01061df3cde5f95ec20a526777b430091ba`
+- Peeled commit: `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`
+- Selected: 2026-09-09
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.153.4+multi.1`
-- Downstream npm version: `0.153.4-multi.1`
+- Downstream Rust version: `0.154.0+multi.1`
+- Downstream npm version: `0.154.0-multi.1`
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic
