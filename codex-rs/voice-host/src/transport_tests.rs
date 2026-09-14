@@ -63,7 +63,7 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 .sdp
                 .lines()
                 .filter(|line| line.starts_with("a=candidate:"))
-                .filter_map(|line| line.split_whitespace().nth(4))
+                .filter_map(|line| line.split_whitespace().nth(/*n*/ 4))
                 .filter_map(|address| address.parse::<std::net::IpAddr>().ok())
                 .find(std::net::IpAddr::is_ipv4)
                 .expect("local IPv4 candidate");
