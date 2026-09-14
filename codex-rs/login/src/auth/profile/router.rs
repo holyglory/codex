@@ -313,6 +313,13 @@ impl SharedProfileAuthRouter {
                 )
             }
             None => {
+                // Opening management routing may migrate legacy credentials. Passive
+                // discovery must preserve singular auth until routing is configured.
+                match RegistryStore::new(&self.inner.auth_config.codex_home).read() {
+                    Ok(_) => {}
+                    Err(RegistryStoreError::NotFound) => return Ok(None),
+                    Err(error) => return Err(ProfileAuthRouterError::Registry(error)),
+                }
                 match ProfileAuthRouter::open_for_management(self.inner.auth_config.clone()).await {
                     Ok(router) => Some(router),
                     Err(ProfileAuthRouterError::Registry(RegistryStoreError::NotFound)) => None,

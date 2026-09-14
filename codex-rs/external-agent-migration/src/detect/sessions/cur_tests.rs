@@ -170,7 +170,7 @@ fn rejects_ambiguous_encoded_project_cwd() {
     fs::create_dir_all(&hyphenated_project).expect("hyphenated project");
 
     assert_eq!(
-        decode_cur_project_path(&encode_project_path(&nested_project)),
+        decode_cur_project_path_from_root("workspace-nested", root.path()),
         None
     );
 }
@@ -300,7 +300,11 @@ fn rejects_ambiguous_cur_project_with_multiple_punctuated_ancestors() {
         let encoded = encode_project_path(&first);
 
         assert_eq!(encoded, encode_project_path(&second));
-        assert_eq!(decode_cur_project_path(&encoded), None);
+        let relative = first.strip_prefix(root.path()).expect("fixture project");
+        assert_eq!(
+            decode_cur_project_path_from_root(&encode_project_path(relative), root.path()),
+            None
+        );
     }
 }
 

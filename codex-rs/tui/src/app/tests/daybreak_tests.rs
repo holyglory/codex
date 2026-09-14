@@ -26,6 +26,17 @@ async fn cyber_refusal_reads_eligibility_without_changing_the_model() -> Result<
     )
     .expect("write synthetic auth");
     let server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let auth_status: codex_app_server_protocol::GetAuthStatusResponse = server
+        .request_handle()
+        .request_typed(codex_app_server_protocol::ClientRequest::GetAuthStatus {
+            request_id: codex_app_server_protocol::RequestId::String("fixture-auth".to_string()),
+            params: codex_app_server_protocol::GetAuthStatusParams {
+                include_token: Some(false),
+                refresh_token: Some(false),
+            },
+        })
+        .await?;
+    assert_eq!(auth_status.auth_method, Some(AuthMode::Chatgpt));
     let thread_id = ThreadId::new();
     let mut session = test_thread_session(thread_id, app.config.cwd.to_path_buf());
     session.model_provider_id = "openai".to_string();

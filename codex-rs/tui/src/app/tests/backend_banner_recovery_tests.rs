@@ -65,6 +65,7 @@ async fn luna_reserve_periodic_refresh_adapts_without_an_experiment_banner() -> 
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     app.config.codex_home = home.path().to_path_buf().abs();
     app.config.chatgpt_base_url = backend.uri();
+    app.config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
     app.config.sqlite = codex_state::SqliteConfig::new_for_testing(home.path().abs());
     set_chatgpt_auth(&mut app.chat_widget);
     let mut session = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;

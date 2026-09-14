@@ -65,6 +65,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py'
 
   preflight:
     name: Critical producer and consumer regressions
@@ -126,7 +127,10 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap cmake
+      - name: Prepare pinned native voice dependencies for Cargo tests
+        working-directory: ${{ github.workspace }}
+        run: python3 .github/scripts/prepare_cargo_voice_tests.py --output "$RUNNER_TEMP/cargo-voice" --environment-file "$GITHUB_ENV"
       - name: Verify the Linux sandbox prerequisite
         run: bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0

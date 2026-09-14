@@ -29,9 +29,7 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
         input: ThreadStartInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            if !input.config.features.enabled(Feature::GuardianV2)
-                || !input.config.features.enabled(Feature::GuardianApproval)
-            {
+            if !input.config.features.enabled(Feature::GuardianApproval) {
                 return;
             }
 
@@ -47,6 +45,8 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     return;
                 }
             };
+            let scoring_enabled =
+                Self::scoring_enabled(input.config, &guardian_config, input.thread_store);
             // Keep the upstream background prewarm when this process still uses the singular
             // authentication path. A configured profile registry must defer construction until
             // the owning turn supplies its exact account lease; router errors fail closed here.
@@ -70,7 +70,7 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             } else {
                 None
             };
-            if guardian_config.transcript.include_images {
+            if scoring_enabled && guardian_config.transcript.include_images {
                 input
                     .thread_store
                     .get_or_init(NodeReplReviewEvidence::default)
@@ -104,7 +104,9 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 metrics: input.extension_metrics.clone(),
                 ..Default::default()
             });
-            input.thread_store.insert(GuardianReviewEvidence::default());
+            input
+                .thread_store
+                .get_or_init(GuardianReviewEvidence::default);
             input
                 .thread_store
                 .insert(TrustedSkillRoots::from_config(input.config));
@@ -118,8 +120,10 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                         template.luna_compaction_hash.clone(),
                     )
                 });
-                input.thread_store.insert(GuardianV2Enabled);
-                if template.prewarm_allowed {
+                if scoring_enabled {
+                    input.thread_store.insert(GuardianV2Enabled);
+                }
+                if scoring_enabled && template.prewarm_allowed {
                     tokio::spawn(async move {
                         sampler.prewarm().await;
                     });
@@ -168,8 +172,17 @@ impl TurnLifecycleContributor for GuardianV2Extension {
                     luna_compaction_hash,
                 )
             });
-            input.thread_store.insert(GuardianV2Enabled);
-            if template.prewarm_allowed {
+            let scoring_enabled =
+                input
+                    .thread_store
+                    .get::<GuardianV2Config>()
+                    .is_some_and(|config| {
+                        Self::scoring_enabled(&turn_config, &config, input.thread_store)
+                    });
+            if scoring_enabled {
+                input.thread_store.insert(GuardianV2Enabled);
+            }
+            if scoring_enabled && template.prewarm_allowed {
                 tokio::spawn(async move {
                     sampler.prewarm().await;
                 });
@@ -179,6 +192,24 @@ impl TurnLifecycleContributor for GuardianV2Extension {
 }
 
 impl GuardianV2Extension {
+    fn scoring_enabled(
+        config: &Config,
+        guardian_config: &GuardianV2Config,
+        thread_store: &codex_extension_api::ExtensionData,
+    ) -> bool {
+        let model = thread_store.get::<ModelInfo>();
+        let mut policy = guardian_config.policy_for_model(model.as_deref());
+        if model.as_ref().is_some_and(|model| {
+            config
+                .config_layer_stack
+                .requirements()
+                .auto_review_required_for_model(&model.slug)
+        }) {
+            policy.enforce_required_model();
+        }
+        policy.scoring_enabled()
+    }
+
     pub(super) fn config_for_auth_lease(
         config: &Config,
         auth_lease: &codex_login::AuthManagerLease,

@@ -1116,6 +1116,37 @@ async fn shared_process_pin_rejects_safe_external_category_before_lease() {
 #[cfg(unix)]
 #[tokio::test]
 #[serial(codex_auth_env)]
+async fn passive_operation_preserves_legacy_auth_without_creating_profiles() {
+    let home = tempdir().expect("temporary home");
+    crate::auth::save_auth(
+        home.path(),
+        &chatgpt_auth("legacy"),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )
+    .expect("save legacy auth");
+    let auth_path = home.path().join("auth.json");
+    let original = std::fs::read(&auth_path).expect("legacy auth bytes");
+    let upstream = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("upstream"));
+    let shared = SharedProfileAuthRouter::new_with_external_auth(
+        config(home.path()),
+        RouterExternalAuthState::default(),
+        Arc::clone(&upstream),
+    );
+
+    let lease = shared.lease_for_operation().await.expect("legacy lease");
+
+    assert!(Arc::ptr_eq(lease.auth_manager(), &upstream));
+    assert_eq!(std::fs::read(auth_path).expect("preserved auth"), original);
+    assert!(matches!(
+        RegistryStore::new(home.path()).read(),
+        Err(RegistryStoreError::NotFound)
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial(codex_auth_env)]
 async fn operation_lease_uses_upstream_auth_for_an_empty_registry() {
     let home = tempdir().expect("temporary home");
     RegistryStore::new(home.path())

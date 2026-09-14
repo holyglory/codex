@@ -55,22 +55,33 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             let gathered = Arc::new(Notify::new());
             let mut settings = webrtc::peer_connection::SettingEngine::default();
             settings.set_lite(/*lite*/ true);
+            let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
+            let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
+            // Bind the test peer to one real interface advertised by the local peer.
+            // Wildcards can exceed the candidate limit on hosts with many virtual NICs.
+            let address = offer
+                .sdp
+                .lines()
+                .filter(|line| line.starts_with("a=candidate:"))
+                .filter_map(|line| line.split_whitespace().nth(4))
+                .filter_map(|address| address.parse::<std::net::IpAddr>().ok())
+                .find(std::net::IpAddr::is_ipv4)
+                .expect("local IPv4 candidate");
+            let bind_address = std::net::SocketAddr::new(address, /*port*/ 0);
             let (media, mut remote_audio) = crate::audio_track::AudioTrack::new().unwrap();
             let builder = PeerConnectionBuilder::new()
                 .with_media_engine(media)
                 .with_setting_engine(settings)
                 .with_handler(Arc::new(RemoteEvents(sender, gathered.clone())));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec![bind_address])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec![bind_address])
             }
             .build()
             .await
             .unwrap();
             remote.add_track(remote_audio.track.clone()).await.unwrap();
-            let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
-            let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
             remote.set_remote_description(offer).await.unwrap();
             let answer = remote.create_answer(/*options*/ None).await.unwrap();
             remote.set_local_description(answer).await.unwrap();

@@ -722,19 +722,23 @@ impl AccountRequestProcessor {
         {
             opts.issuer = issuer;
         }
-        let mut opts = match self.active_profile_storage()? {
+        let opts = match self.active_profile_storage()? {
             Some(profile) => opts.with_profile_auth_storage(profile),
             None => opts,
         };
         #[cfg(debug_assertions)]
-        if let LoginSuccessPage::Hosted { url, .. } = &mut opts.login_success_page
-            && let Ok(open_app_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
-            && !open_app_url.trim().is_empty()
-        {
-            *url = open_app_url
-                .parse()
-                .map_err(|err| internal_error(format!("invalid Codex open app URL: {err}")))?;
-        }
+        let opts = {
+            let mut opts = opts;
+            if let LoginSuccessPage::Hosted { url, .. } = &mut opts.login_success_page
+                && let Ok(open_app_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
+                && !open_app_url.trim().is_empty()
+            {
+                *url = open_app_url
+                    .parse()
+                    .map_err(|err| internal_error(format!("invalid Codex open app URL: {err}")))?;
+            }
+            opts
+        };
 
         Ok(opts)
     }
