@@ -1,0 +1,31 @@
+name: downstream-artifact-retry-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/compiler-cache-write-load]
+    paths: [.github/workflows/downstream-artifact-retry-probe.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  artifact-retry:
+    if: github.repository == 'holyglory/codex'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Write isolated retry fixture
+        run: printf 'artifact retry fixture\n' > retry-fixture.txt
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: artifact-retry-fixture
+          path: retry-fixture.txt
+      - name: Fail only the first controlled attempt after upload
+        shell: bash
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" == "1" ]]; then
+            echo 'Expected first-attempt failure after artifact upload.'
+            exit 1
+          fi
+          echo 'Same-name artifact upload on a fresh run attempt passed.'
