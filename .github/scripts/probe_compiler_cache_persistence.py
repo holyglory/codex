@@ -8,6 +8,8 @@ import re
 import subprocess
 import time
 
+from compiler_cache_write_diagnostics import cache_write_diagnostics
+
 
 def cache_summary(document: dict) -> dict:
     stats = document["stats"]
@@ -79,41 +81,55 @@ def main() -> int:
         '[profile.release]\nlto = "thin"\ndebug = "line-tables-only"\n'
         'split-debuginfo = "packed"\nstrip = false\ncodegen-units = 4\n'
     )
-    subprocess.run(["sccache", "--zero-stats"], check=True)
-    result = subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--offline",
-            "--release",
-            "--workspace",
-            "--manifest-path",
-            str(args.workdir / "Cargo.toml"),
-            "--target",
-            args.target,
-        ],
-        check=False,
-    )
-    deadline = time.monotonic() + 60
-    delay = 0.5
-    while True:
-        document = json.loads(
-            subprocess.check_output(["sccache", "--show-stats", "--stats-format=json"])
+    with cache_write_diagnostics(args.workdir, dict(os.environ)) as (
+        environment,
+        write_diagnostics,
+    ):
+        subprocess.run(["sccache", "--zero-stats"], env=environment, check=True)
+        result = subprocess.run(
+            [
+                "cargo",
+                "build",
+                "--offline",
+                "--release",
+                "--workspace",
+                "--manifest-path",
+                str(args.workdir / "Cargo.toml"),
+                "--target",
+                args.target,
+            ],
+            env=environment,
+            check=False,
         )
-        stats = document["stats"]
-        # The compiler response can precede its asynchronous cache write.
-        if (
-            stats["cache_writes"] + stats["cache_write_errors"] >= stats["compilations"]
-            or time.monotonic() >= deadline
-        ):
-            break
-        time.sleep(min(delay, max(0, deadline - time.monotonic())))
-        delay = min(delay * 2, 5)
+        deadline = time.monotonic() + 60
+        delay = 0.5
+        while True:
+            document = json.loads(
+                subprocess.check_output(
+                    ["sccache", "--show-stats", "--stats-format=json"], env=environment
+                )
+            )
+            stats = document["stats"]
+            # The compiler response can precede its asynchronous cache write.
+            if (
+                stats["cache_writes"] + stats["cache_write_errors"]
+                >= stats["compilations"]
+                or time.monotonic() >= deadline
+            ):
+                break
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+            delay = min(delay * 2, 5)
     summary = cache_summary(document)
     failures = verify_summary(summary, args.mode, args.count)
     if result.returncode:
         failures.append(f"Compilation exited with status {result.returncode}")
-    evidence = {"mode": args.mode, "count": args.count, **summary, "failures": failures}
+    evidence = {
+        "mode": args.mode,
+        "count": args.count,
+        **summary,
+        "write_diagnostics": dict(write_diagnostics),
+        "failures": failures,
+    }
     args.evidence.mkdir(parents=True, exist_ok=True)
     (args.evidence / "cache-proof.json").write_text(
         json.dumps(evidence, indent=2) + "\n"

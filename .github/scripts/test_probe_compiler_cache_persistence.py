@@ -1,9 +1,52 @@
+import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
+from compiler_cache_write_diagnostics import cache_write_diagnostics
+from compiler_cache_write_diagnostics import classify_write_error
 from probe_compiler_cache_persistence import cache_summary, verify_summary
 
 
 class CompilerCacheProofTests(unittest.TestCase):
+    def test_error_classification_omits_service_urls_and_credentials(self):
+        self.assertEqual(
+            classify_write_error(
+                "Unexpected at write: status_code: 429, rate limit exceeded; "
+                "url=https://cache.example/object?sig=private-fixture; "
+                "Authorization: Bearer private-fixture"
+            ),
+            {"http_429", "rate_limited"},
+        )
+        self.assertEqual(
+            classify_write_error("Unknown private-fixture"), {"unclassified"}
+        )
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX cache diagnostic stream")
+    def test_diagnostics_keep_only_allowlisted_metadata_across_writer_connections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with cache_write_diagnostics(root, {}) as (environment, counters):
+                for message in (
+                    b"status_code: 429; rate limit; sig=private-fixture\n",
+                    b"status: 403; permission denied; token=private-fixture\n",
+                ):
+                    with open(environment["SCCACHE_ERROR_LOG"], "wb") as stream:
+                        stream.write(message)
+            self.assertEqual(
+                dict(counters),
+                {
+                    "messages": 2,
+                    "http_429": 1,
+                    "rate_limited": 1,
+                    "http_403": 1,
+                    "permission_denied": 1,
+                },
+            )
+            self.assertNotIn("private-fixture", json.dumps(counters))
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_write_failures_are_detected_when_the_generic_error_counter_is_zero(self):
         summary = cache_summary(
             {
