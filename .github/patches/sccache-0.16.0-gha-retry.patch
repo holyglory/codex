@@ -1,0 +1,119 @@
+diff --git a/src/cache/gha.rs b/src/cache/gha.rs
+--- a/src/cache/gha.rs
++++ b/src/cache/gha.rs
+@@ -12,8 +12,10 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++use std::time::Duration;
++
+ use opendal::Operator;
+-use opendal::layers::{HttpClientLayer, LoggingLayer};
++use opendal::layers::{HttpClientLayer, LoggingLayer, RetryLayer};
+ use opendal::services::Ghac;
+ 
+ use crate::VERSION;
+@@ -44,8 +46,20 @@ impl GHACache {
+             builder.version(&format!("sccache-v{VERSION}-{version}"))
+         };
+ 
++        let retry = RetryLayer::new()
++            .with_min_delay(Duration::from_secs(/*secs*/ 2))
++            .with_max_delay(Duration::from_secs(/*secs*/ 60))
++            .with_max_times(/*max_times*/ 8)
++            .with_jitter()
++            .with_notify(|error: &opendal::Error, delay: Duration| {
++                let kind = error.kind();
++                let seconds = delay.as_secs_f64();
++                log::warn!("GitHub compiler cache {kind:?}; will retry after {seconds:.1}s");
++            });
++
+         let op = Operator::new(builder)?
+             .layer(HttpClientLayer::new(set_user_agent()))
++            .layer(retry)
+             .layer(LoggingLayer::default())
+             .finish();
+         Ok(op)
+diff --git a/src/server.rs b/src/server.rs
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -1408,6 +1408,7 @@
+                                     }
+                                     MissType::CacheReadError => {
+                                         stats.cache_errors.increment(&kind, &lang);
++                                        stats.cache_read_errors += 1;
+                                     }
+                                 }
+                                 stats.compilations += 1;
+diff --git a/src/cache/cache.rs b/src/cache/cache.rs
+--- a/src/cache/cache.rs
++++ b/src/cache/cache.rs
+@@ -216,8 +216,9 @@
+             }
+             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
+             Err(e) => {
+-                warn!("Got unexpected error: {:?}", e);
+-                Ok(Cache::Miss)
++                let kind = e.kind();
++                warn!("Compiler cache read failed: {kind:?}");
++                Err(e.into())
+             }
+         }
+     }
+diff --git a/src/cache/mod.rs b/src/cache/mod.rs
+--- a/src/cache/mod.rs
++++ b/src/cache/mod.rs
+@@ -17,6 +17,8 @@
+ #[allow(clippy::module_inception)]
+ pub mod cache;
+ pub mod cache_io;
++#[cfg(feature = "gha")]
++pub mod bazel_http;
+ #[cfg(feature = "cos")]
+ pub mod cos;
+ pub mod disk;
+diff --git a/src/cache/cache.rs b/src/cache/cache.rs
+--- a/src/cache/cache.rs
++++ b/src/cache/cache.rs
+@@ -576,6 +576,10 @@
+     config: &Config,
+     pool: &tokio::runtime::Handle,
+ ) -> Result<Arc<dyn Storage>> {
++    #[cfg(feature = "gha")]
++    if let Ok(endpoint) = std::env::var("SCCACHE_BAZEL_REMOTE_CACHE_URL") {
++        return Ok(Arc::new(super::bazel_http::BazelHttpCache::new(&endpoint, config.basedirs.clone())?));
++    }
+     // Check for multi-level cache configuration
+     if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
+         return Ok(Arc::new(multilevel));
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -82,6 +82,7 @@
+ object = "0.37"
+ opendal = { version = "0.55.0", optional = true, default-features = false }
+ openssl = { version = "0.10.75", optional = true }
++prost = { version = "=0.13.5", optional = true }
+ rand = "0.8.4"
+ regex = "1.10.3"
+ reqsign = { version = "0.18.0", optional = true }
+@@ -183,7 +184,7 @@
+ cos = ["opendal/services-cos", "reqsign", "reqwest"]
+ default = ["all"]
+ gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest"]
+-gha = ["opendal/services-ghac", "reqwest"]
++gha = ["opendal/services-ghac", "reqwest", "prost", "sha2"]
+ memcached = ["opendal/services-memcached"]
+ native-zlib = []
+ oss = ["opendal/services-oss", "reqsign", "reqwest"]
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2930,6 +2930,7 @@
+  "opendal",
+  "openssl",
+  "predicates",
++ "prost",
+  "rand 0.8.5",
+  "regex",
+  "reqsign 0.18.0",

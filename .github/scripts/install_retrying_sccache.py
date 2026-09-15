@@ -88,6 +88,7 @@ def main() -> None:
     patch = (
         Path(__file__).resolve().parents[1] / "patches/sccache-0.16.0-gha-retry.patch"
     )
+    backend = patch.with_name("sccache-bazel-http.rs")
     rustc = subprocess.check_output(["rustc", "-vV"], text=True)
     host = next(
         line.removeprefix("host: ")
@@ -98,6 +99,7 @@ def main() -> None:
         "source_commit": SOURCE_COMMIT,
         "version": VERSION,
         "patch_sha256": digest(patch),
+        "backend_sha256": digest(backend),
         "host": host,
     }
     binary = cached_binary(args.install_dir, identity)
@@ -123,6 +125,7 @@ def main() -> None:
             check=True,
         )
         subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
+        shutil.copyfile(backend, source / "src/cache/bazel_http.rs")
         environment = host_build_environment(
             dict(os.environ), args.build_root / "target"
         )
