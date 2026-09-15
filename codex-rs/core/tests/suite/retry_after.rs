@@ -1281,9 +1281,14 @@ async fn sse_overload_retries_with_dedicated_budget() -> Result<()> {
     Reconnecting... 4/5
     Reconnecting... 5/5
     ");
-    assert_eq!(tool_executions, 1);
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 7);
+    assert_eq!(
+        tool_executions,
+        1,
+        "completed tool output: {}",
+        requests[1].function_call_output("capacity-tool"),
+    );
     for request in &requests[1..] {
         assert_eq!(request.input(), requests[1].input());
         assert_eq!(

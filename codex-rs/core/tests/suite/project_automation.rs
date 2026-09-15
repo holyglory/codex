@@ -47,7 +47,7 @@ async fn request_review(test: &TestCodex) -> Result<ProjectAutomation> {
     let state = test.codex.state_db().context("persistent state enabled")?;
     let store = state.event_subscriptions();
     let project_id =
-        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
+        project_automation_id(&test.executor_environment().selection().cwd.to_path_buf());
     let project = store
         .project_command(
             &project_id,
@@ -96,7 +96,8 @@ async fn allow_background_review(test: &TestCodex, project: &ProjectAutomation) 
 async fn stopping_owner_interrupts_review_and_suspends_its_permission() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    // Review workers run in the owner's local project, including in remote-exec suites.
+    let test = test_codex().build(&server).await?;
     let project = request_review(&test).await?;
     allow_background_review(&test, &project).await?;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
