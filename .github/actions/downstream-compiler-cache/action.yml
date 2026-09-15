@@ -13,6 +13,28 @@ runs:
         SCCACHE_IDLE_TIMEOUT: "0"
       with:
         version: v0.16.0
+    - name: Restore verified retrying compiler-cache tool
+      if: steps.cache.outcome == 'success'
+      id: retrying-tool
+      continue-on-error: true
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ${{ env.CI_BUILD_ROOT }}/retrying-sccache
+        key: retrying-sccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/scripts/install_retrying_sccache.py', '.github/patches/sccache-0.16.0-gha-retry.patch') }}
+    - name: Install the pinned cache with bounded storage retries
+      if: steps.cache.outcome == 'success'
+      shell: bash
+      run: |
+        python3 "${GITHUB_WORKSPACE}/.github/scripts/install_retrying_sccache.py" \
+          --install-dir "$CI_BUILD_ROOT/retrying-sccache" \
+          --build-root "$RUNNER_TEMP/retrying-sccache-build"
+    - name: Save the verified compiler-cache tool
+      if: steps.cache.outcome == 'success' && steps.retrying-tool.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ${{ env.CI_BUILD_ROOT }}/retrying-sccache
+        key: ${{ steps.retrying-tool.outputs.cache-primary-key }}
     - name: Enable compiler cache
       if: steps.cache.outcome == 'success'
       shell: bash

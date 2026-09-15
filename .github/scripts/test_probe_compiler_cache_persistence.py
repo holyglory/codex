@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import unittest
 
 from compiler_cache_write_diagnostics import cache_write_diagnostics
 from compiler_cache_write_diagnostics import classify_write_error
+from install_retrying_sccache import cached_binary
 from probe_compiler_cache_persistence import cache_summary, verify_summary
 
 
@@ -22,6 +24,35 @@ class CompilerCacheProofTests(unittest.TestCase):
         self.assertEqual(
             classify_write_error("Unknown private-fixture"), {"unclassified"}
         )
+        self.assertEqual(
+            classify_write_error(
+                "GitHub compiler cache RateLimited; will retry after 2.3s"
+            ),
+            {"rate_limited", "retry_scheduled"},
+        )
+
+    def test_cached_tool_rejects_changed_binary_or_source_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / ("sccache.exe" if os.name == "nt" else "sccache")
+            binary.write_bytes(b"compiled tool fixture")
+            identity = {"source_commit": "source", "patch_sha256": "patch"}
+            (root / "receipt.json").write_text(
+                json.dumps(
+                    {
+                        **identity,
+                        "binary_sha256": hashlib.sha256(
+                            binary.read_bytes()
+                        ).hexdigest(),
+                    }
+                )
+            )
+            self.assertEqual(cached_binary(root, identity), binary)
+            self.assertIsNone(
+                cached_binary(root, {**identity, "patch_sha256": "changed"})
+            )
+            binary.write_bytes(b"changed tool fixture")
+            self.assertIsNone(cached_binary(root, identity))
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX cache diagnostic stream")
     def test_diagnostics_keep_only_allowlisted_metadata_across_writer_connections(self):

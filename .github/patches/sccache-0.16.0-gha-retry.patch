@@ -1,0 +1,36 @@
+diff --git a/src/cache/gha.rs b/src/cache/gha.rs
+--- a/src/cache/gha.rs
++++ b/src/cache/gha.rs
+@@ -12,8 +12,10 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++use std::time::Duration;
++
+ use opendal::Operator;
+-use opendal::layers::{HttpClientLayer, LoggingLayer};
++use opendal::layers::{HttpClientLayer, LoggingLayer, RetryLayer};
+ use opendal::services::Ghac;
+ 
+ use crate::VERSION;
+@@ -44,8 +46,20 @@ impl GHACache {
+             builder.version(&format!("sccache-v{VERSION}-{version}"))
+         };
+ 
++        let retry = RetryLayer::new()
++            .with_min_delay(Duration::from_secs(/*secs*/ 2))
++            .with_max_delay(Duration::from_secs(/*secs*/ 60))
++            .with_max_times(/*max_times*/ 8)
++            .with_jitter()
++            .with_notify(|error: &opendal::Error, delay: Duration| {
++                let kind = error.kind();
++                let seconds = delay.as_secs_f64();
++                log::warn!("GitHub compiler cache {kind:?}; will retry after {seconds:.1}s");
++            });
++
+         let op = Operator::new(builder)?
+             .layer(HttpClientLayer::new(set_user_agent()))
++            .layer(retry)
+             .layer(LoggingLayer::default())
+             .finish();
+         Ok(op)

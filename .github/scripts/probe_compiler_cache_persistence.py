@@ -101,7 +101,7 @@ def main() -> int:
             env=environment,
             check=False,
         )
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 360
         delay = 0.5
         while True:
             document = json.loads(

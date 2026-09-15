@@ -7,6 +7,8 @@ on:
     paths:
       - .github/scripts/probe_compiler_cache_persistence.py
       - .github/scripts/compiler_cache_write_diagnostics.py
+      - .github/scripts/install_retrying_sccache.py
+      - .github/patches/sccache-0.16.0-gha-retry.patch
       - .github/scripts/test_probe_compiler_cache_persistence.py
       - .github/actions/probe-compiler-cache/action.yml
       - .github/actions/downstream-compiler-cache/action.yml
