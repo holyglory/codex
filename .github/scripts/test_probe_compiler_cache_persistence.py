@@ -35,7 +35,9 @@ class CompilerCacheProofTests(unittest.TestCase):
         }
         original = dict(environment)
         self.assertEqual(
-            host_build_environment(environment, Path("host-target")),
+            host_build_environment(
+                environment, Path("host-target"), "aarch64-unknown-linux-gnu"
+            ),
             {
                 "PATH": "native-tools",
                 "CARGO_HOME": "cargo-cache",
@@ -48,6 +50,19 @@ class CompilerCacheProofTests(unittest.TestCase):
             },
         )
         self.assertEqual(environment, original)
+
+    def test_native_windows_linker_survives_cross_compiler_isolation(self):
+        environment = {
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "native-rust-lld.exe",
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER": "target-linker.exe",
+        }
+        actual = host_build_environment(
+            environment, Path("host-target"), "x86_64-pc-windows-msvc"
+        )
+        self.assertEqual(
+            actual["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"], "native-rust-lld.exe"
+        )
+        self.assertNotIn("CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER", actual)
 
     @unittest.skipUnless(
         os.name == "posix" and os.environ.get("SCCACHE_TEST_BINARY"),
@@ -99,7 +114,9 @@ class CompilerCacheProofTests(unittest.TestCase):
                         self.fail("The isolated cache write did not finish")
                     time.sleep(0.5)
                 entries = [
-                    path for path in (root / "cache").rglob("*") if path.is_file()
+                    path
+                    for path in (root / "cache").rglob("*")
+                    if path.is_file() and path.read_bytes().startswith(b"PK\x03\x04")
                 ]
                 self.assertTrue(entries)
                 for path in entries:
