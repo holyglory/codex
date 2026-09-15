@@ -1,0 +1,41 @@
+name: downstream-compiler-cache-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/npm-compiler-cache-probe]
+    paths:
+      - .github/scripts/probe_compiler_cache_persistence.py
+      - .github/scripts/test_probe_compiler_cache_persistence.py
+      - .github/actions/probe-compiler-cache/action.yml
+      - .github/actions/downstream-compiler-cache/action.yml
+      - .github/workflows/downstream-compiler-cache-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  populate:
+    if: github.repository == 'holyglory/codex'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/probe-compiler-cache
+        with:
+          mode: populate
+
+  consume:
+    if: always() && github.repository == 'holyglory/codex'
+    needs: populate
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/probe-compiler-cache
+        with:
+          mode: consume

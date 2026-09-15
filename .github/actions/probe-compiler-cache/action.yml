@@ -1,0 +1,34 @@
+name: Probe hosted compiler cache
+description: Verify compilation persistence without using local build outputs.
+inputs:
+  mode:
+    required: true
+    description: Populate or consume the compiler cache proof.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-ci
+    - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      with:
+        targets: aarch64-apple-darwin
+    - uses: ./.github/actions/downstream-compiler-cache
+    - name: Verify cache-health failure detection
+      shell: bash
+      run: python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
+    - name: Prove compiler cache writes and fresh-runner reuse
+      shell: bash
+      env:
+        PROBE_MODE: ${{ inputs.mode }}
+        CARGO_PROFILE_RELEASE_DEBUG: "1"
+      run: |
+        python3 .github/scripts/probe_compiler_cache_persistence.py \
+          --mode "$PROBE_MODE" --namespace "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+          --workdir "$RUNNER_TEMP/compiler-cache-proof" \
+          --target aarch64-apple-darwin \
+          --evidence "$RUNNER_TEMP/compiler-cache-evidence"
+    - name: Preserve compiler cache proof
+      if: always()
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: compiler-cache-proof-${{ inputs.mode }}
+        path: ${{ runner.temp }}/compiler-cache-evidence
