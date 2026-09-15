@@ -28,6 +28,7 @@ def classify_write_error(message: str) -> set[str]:
             "not authorized",
         ),
         "timed_out": ("timed out", "timeout"),
+        "retry_scheduled": ("will retry",),
     }.items():
         if any(phrase in lowered for phrase in phrases):
             result.add(category)
@@ -68,7 +69,7 @@ def cache_write_diagnostics(root: Path, inherited: dict[str, str]):
     worker.start()
     environment = dict(
         inherited,
-        SCCACHE_LOG="sccache::server=debug/Error executing cache write",
+        SCCACHE_LOG="sccache::server=debug,sccache::cache::gha=warn/(Error executing cache write|will retry)",
         SCCACHE_ERROR_LOG=str(pipe),
     )
     try:
