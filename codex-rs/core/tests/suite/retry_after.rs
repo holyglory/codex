@@ -12,6 +12,7 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -1208,6 +1209,10 @@ async fn sse_rate_limit_message_with_retry_after_uses_server_advised_retry_delay
 #[tokio::test(flavor = "current_thread")]
 async fn sse_overload_retries_with_dedicated_budget() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Wine's Windows sandbox cannot resolve codex_home to execute the proof command"
+    );
 
     let mut telemetry = RetryTelemetryCapture::install();
 

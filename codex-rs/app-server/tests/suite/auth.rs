@@ -494,9 +494,8 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
                 "code": "refresh_token_reused"
             }
         })))
-        // Startup refreshes through the cloud-config and runtime managers race
-        // with the auth status request.
-        .expect(2..=3)
+        // The configured profile shares one cached refresh failure across callers.
+        .expect(1)
         .mount(&server)
         .await;
 
