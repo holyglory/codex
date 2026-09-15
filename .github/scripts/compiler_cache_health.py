@@ -2,6 +2,8 @@
 
 import json
 import os
+import argparse
+from pathlib import Path
 import subprocess
 import time
 
@@ -27,10 +29,10 @@ def cache_summary(document: dict) -> dict:
     }
 
 
-def health_failures(summary: dict) -> list[str]:
+def health_failures(summary: dict, expected_backend: str = "ghac") -> list[str]:
     failures = []
-    if summary["backend"] != "ghac":
-        failures.append("The GitHub Actions cache backend was not used")
+    if summary["backend"] != expected_backend:
+        failures.append(f"The expected {expected_backend} cache backend was not used")
     if summary["rust_hits"] + summary["rust_misses"] == 0:
         failures.append("No Rust compiler-cache activity was observed")
     for counter in (
@@ -44,8 +46,10 @@ def health_failures(summary: dict) -> list[str]:
     return failures
 
 
-def wait_for_cache_writes(environment: dict[str, str]) -> dict:
-    deadline = time.monotonic() + 360
+def wait_for_cache_writes(
+    environment: dict[str, str], timeout_seconds: int = 360
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
     delay = 0.5
     while True:
         document = json.loads(
@@ -69,7 +73,15 @@ def wait_for_cache_writes(environment: dict[str, str]) -> dict:
 
 
 if __name__ == "__main__":
-    summary = cache_summary(wait_for_cache_writes(dict(os.environ)))
-    failures = health_failures(summary)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--file", type=Path)
+    parser.add_argument("--backend", choices=("ghac", "bazel-http"), default="ghac")
+    args = parser.parse_args()
+    summary = (
+        json.loads(args.file.read_text())["summary"]
+        if args.file
+        else cache_summary(wait_for_cache_writes(dict(os.environ)))
+    )
+    failures = health_failures(summary, args.backend)
     print(json.dumps({**summary, "failures": failures}), flush=True)
     raise SystemExit(int(bool(failures)))
