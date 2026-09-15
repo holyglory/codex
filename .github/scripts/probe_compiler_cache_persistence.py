@@ -35,8 +35,8 @@ def main() -> int:
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9]+-[0-9]+", args.namespace):
         parser.error("Namespace must identify the workflow run and attempt")
-    if not 1 <= args.count <= 512:
-        parser.error("Count must be between 1 and 512")
+    if not 1 <= args.count <= 4096:
+        parser.error("Count must be between 1 and 4096")
     if os.environ.get("CARGO_INCREMENTAL") != "0":
         parser.error("Incremental compilation must be disabled")
     if Path(os.environ.get("RUSTC_WRAPPER", "")).name != "sccache":
