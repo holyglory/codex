@@ -66,6 +66,7 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
 
   preflight:
     name: Critical producer and consumer regressions
@@ -284,7 +285,7 @@ jobs:
     # Publication still requires every validation and packaging job to succeed.
     needs: [identity, preflight]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
     permissions:
       contents: read
       id-token: write
@@ -301,6 +302,7 @@ jobs:
             target: x86_64-apple-darwin
           - runner: macos-15
             target: aarch64-apple-darwin
+            timeout_minutes: 360
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
           - runner: windows-11-arm
@@ -465,6 +467,10 @@ jobs:
           path: codex-rs/native-dist/${{ matrix.target }}/*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Verify compiler-cache writes completed successfully
+        shell: bash
+        run: python3 "${GITHUB_WORKSPACE}/.github/scripts/compiler_cache_health.py"
 
   npm:
     name: Build and verify seven npm tarballs

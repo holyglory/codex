@@ -8,7 +8,9 @@ import unittest
 from compiler_cache_write_diagnostics import cache_write_diagnostics
 from compiler_cache_write_diagnostics import classify_write_error
 from install_retrying_sccache import cached_binary
-from probe_compiler_cache_persistence import cache_summary, verify_summary
+from compiler_cache_health import cache_summary
+from compiler_cache_health import health_failures
+from probe_compiler_cache_persistence import verify_summary
 
 
 class CompilerCacheProofTests(unittest.TestCase):
@@ -91,6 +93,7 @@ class CompilerCacheProofTests(unittest.TestCase):
                     "cache_write_errors": 275,
                     "cache_read_errors": 0,
                     "cache_timeouts": 0,
+                    "compilations": 774,
                 },
             }
         )
@@ -114,6 +117,7 @@ class CompilerCacheProofTests(unittest.TestCase):
             "read_errors": 0,
             "timeouts": 0,
             "errors": 0,
+            "pending_writes": 0,
         }
         self.assertEqual(
             verify_summary(summary, "consume", 512),
@@ -134,12 +138,33 @@ class CompilerCacheProofTests(unittest.TestCase):
             "read_errors": 0,
             "timeouts": 0,
             "errors": 0,
+            "pending_writes": 0,
         }
         self.assertEqual(
             verify_summary(summary, "consume", 512),
             [
                 "The GitHub Actions cache backend was not used",
             ],
+        )
+
+    def test_unfinished_cache_writes_cannot_be_reported_as_healthy(self):
+        summary = {
+            "backend": "ghac",
+            "rust_hits": 1,
+            "rust_misses": 1,
+            "writes": 0,
+            "write_errors": 0,
+            "read_errors": 0,
+            "timeouts": 0,
+            "errors": 0,
+            "pending_writes": 1,
+        }
+        self.assertEqual(health_failures(summary), ["pending_writes=1"])
+        summary.update(writes=1, pending_writes=0)
+        self.assertEqual(health_failures(summary), [])
+        summary.update(rust_hits=0, rust_misses=0)
+        self.assertEqual(
+            health_failures(summary), ["No Rust compiler-cache activity was observed"]
         )
 
 

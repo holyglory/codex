@@ -6,33 +6,15 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import time
 
+from compiler_cache_health import cache_summary
+from compiler_cache_health import health_failures
+from compiler_cache_health import wait_for_cache_writes
 from compiler_cache_write_diagnostics import cache_write_diagnostics
 
 
-def cache_summary(document: dict) -> dict:
-    stats = document["stats"]
-    return {
-        "backend": document["cache_location"].split(",", 1)[0],
-        "version": document["version"],
-        "rust_hits": stats["cache_hits"]["counts"].get("Rust", 0),
-        "rust_misses": stats["cache_misses"]["counts"].get("Rust", 0),
-        "writes": stats["cache_writes"],
-        "write_errors": stats["cache_write_errors"],
-        "read_errors": stats["cache_read_errors"],
-        "timeouts": stats["cache_timeouts"],
-        "errors": sum(stats["cache_errors"]["counts"].values()),
-    }
-
-
 def verify_summary(summary: dict, mode: str, count: int) -> list[str]:
-    failures = []
-    if summary["backend"] != "ghac":
-        failures.append("The GitHub Actions cache backend was not used")
-    for counter in ("write_errors", "read_errors", "timeouts", "errors"):
-        if summary[counter]:
-            failures.append(f"{counter}={summary[counter]}")
+    failures = health_failures(summary)
     if mode == "populate" and summary["writes"] < count:
         failures.append(f"Expected {count} successful cache writes")
     if mode == "consume" and (
@@ -101,24 +83,7 @@ def main() -> int:
             env=environment,
             check=False,
         )
-        deadline = time.monotonic() + 360
-        delay = 0.5
-        while True:
-            document = json.loads(
-                subprocess.check_output(
-                    ["sccache", "--show-stats", "--stats-format=json"], env=environment
-                )
-            )
-            stats = document["stats"]
-            # The compiler response can precede its asynchronous cache write.
-            if (
-                stats["cache_writes"] + stats["cache_write_errors"]
-                >= stats["compilations"]
-                or time.monotonic() >= deadline
-            ):
-                break
-            time.sleep(min(delay, max(0, deadline - time.monotonic())))
-            delay = min(delay * 2, 5)
+        document = wait_for_cache_writes(environment)
     summary = cache_summary(document)
     failures = verify_summary(summary, args.mode, args.count)
     if result.returncode:

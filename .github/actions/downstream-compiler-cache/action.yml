@@ -39,7 +39,7 @@ runs:
       if: steps.cache.outcome == 'success'
       shell: bash
       run: |
-        echo 'RUSTC_WRAPPER=sccache' >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
         echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
         echo 'SCCACHE_GHA_ENABLED=true' >> "$GITHUB_ENV"
         echo 'SCCACHE_GHA_VERSION=codex-downstream-v1' >> "$GITHUB_ENV"
