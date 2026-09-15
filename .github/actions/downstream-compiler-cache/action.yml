@@ -17,12 +17,25 @@ runs:
       if: steps.cache.outcome == 'success'
       shell: bash
       run: |
-        echo 'RUSTC_WRAPPER=sccache' >> "$GITHUB_ENV"
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        config = Path(os.environ["RUNNER_TEMP"]) / "codex-compiler-cache-config.toml"
+        config.write_text("server_startup_timeout_ms = 360000\n")
+        with open(os.environ["GITHUB_ENV"], "a") as output:
+            output.write(f"SCCACHE_CONF={config}\n")
+        PY
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
         echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
         echo 'SCCACHE_GHA_ENABLED=true' >> "$GITHUB_ENV"
         echo 'SCCACHE_GHA_VERSION=codex-downstream-v1' >> "$GITHUB_ENV"
         echo 'SCCACHE_IGNORE_SERVER_IO_ERROR=1' >> "$GITHUB_ENV"
         echo 'SCCACHE_IDLE_TIMEOUT=0' >> "$GITHUB_ENV"
+    - name: Wait for the compiler cache to be ready
+      if: steps.cache.outcome == 'success'
+      shell: bash
+      run: '"$SCCACHE_PATH" --start-server'
     - name: Explain cold-build fallback
       if: steps.cache.outcome != 'success'
       shell: bash
