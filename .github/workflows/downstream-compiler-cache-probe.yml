@@ -19,6 +19,67 @@ permissions:
   contents: read
 
 jobs:
+  windows-host-build:
+    if: github.repository == 'holyglory/codex'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Verify the installed native tool and setup helpers
+        shell: bash
+        run: |
+          "$SCCACHE_PATH" --version
+          python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
+
+  linux-host-build:
+    if: github.repository == 'holyglory/codex'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Configure the real product cross-compiler environment
+        shell: bash
+        env:
+          TARGET: aarch64-unknown-linux-musl
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - name: Build the native cache tool from a cold directory
+        shell: bash
+        run: |
+          python3 .github/scripts/install_retrying_sccache.py \
+            --install-dir "$RUNNER_TEMP/native-sccache-proof" \
+            --build-root "$RUNNER_TEMP/native-sccache-build"
+      - name: Verify host isolation and actual cache-read recovery
+        shell: bash
+        env:
+          SCCACHE_TEST_BINARY: ${{ env.SCCACHE_PATH }}
+        run: python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
+
   populate:
     if: github.repository == 'holyglory/codex'
     runs-on: macos-15

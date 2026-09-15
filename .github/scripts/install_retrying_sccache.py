@@ -32,6 +32,54 @@ def cached_binary(root: Path, identity: dict) -> Path | None:
     return None
 
 
+def host_build_environment(
+    inherited: dict[str, str], target_dir: Path
+) -> dict[str, str]:
+    compiler_variables = (
+        "CC",
+        "CXX",
+        "AR",
+        "RANLIB",
+        "CFLAGS",
+        "CXXFLAGS",
+        "CPPFLAGS",
+        "LDFLAGS",
+        "PKG_CONFIG",
+        "CMAKE",
+        "BORING_BSSL_SYSROOT",
+        "OPENSSL",
+    )
+    environment = {
+        key: value
+        for key, value in inherited.items()
+        if key
+        not in (
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_BUILD_TARGET",
+            "TARGET",
+            "HOST",
+        )
+        and not key.startswith("CARGO_TARGET_")
+        and not any(
+            key == prefix or key.startswith(prefix + "_")
+            for base in compiler_variables
+            for prefix in (base, "TARGET_" + base, "HOST_" + base)
+        )
+    }
+    environment.update(
+        CARGO_TARGET_DIR=str(target_dir),
+        CARGO_INCREMENTAL="0",
+        CARGO_PROFILE_RELEASE_DEBUG="0",
+        CARGO_PROFILE_RELEASE_LTO="false",
+        CARGO_PROFILE_RELEASE_STRIP="symbols",
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16",
+    )
+    return environment
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-dir", type=Path, required=True)
@@ -75,22 +123,8 @@ def main() -> None:
             check=True,
         )
         subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
-        environment = dict(os.environ)
-        for key in (
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-            "RUSTFLAGS",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "CARGO_BUILD_TARGET",
-        ):
-            environment.pop(key, None)
-        environment.update(
-            CARGO_TARGET_DIR=str(args.build_root / "target"),
-            CARGO_INCREMENTAL="0",
-            CARGO_PROFILE_RELEASE_DEBUG="0",
-            CARGO_PROFILE_RELEASE_LTO="false",
-            CARGO_PROFILE_RELEASE_STRIP="symbols",
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16",
+        environment = host_build_environment(
+            dict(os.environ), args.build_root / "target"
         )
         subprocess.run(
             [
@@ -130,8 +164,9 @@ def main() -> None:
         (args.install_dir / "receipt.json").write_text(
             json.dumps({**identity, "binary_sha256": digest(binary)}) + "\n"
         )
-        # Only this invocation's completed source/build scratch is retired.
-        shutil.rmtree(args.build_root)
+        # Retire the large generated output. Keep the small pinned source for
+        # runner diagnostics; Git pack files can be read-only on Windows.
+        shutil.rmtree(args.build_root / "target")
     print(f"Using retrying sccache {VERSION} from source {SOURCE_COMMIT}")
     for variable, value in (
         ("GITHUB_PATH", str(args.install_dir.resolve())),

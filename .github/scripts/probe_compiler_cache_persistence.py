@@ -63,6 +63,9 @@ def main() -> int:
         '[profile.release]\nlto = "thin"\ndebug = "line-tables-only"\n'
         'split-debuginfo = "packed"\nstrip = false\ncodegen-units = 4\n'
     )
+    # The action proves startup before compilation. Restart only this job's
+    # cache daemon to enable the credential-safe diagnostic stream below.
+    subprocess.run([os.environ["SCCACHE_PATH"], "--stop-server"], check=True)
     with cache_write_diagnostics(args.workdir, dict(os.environ)) as (
         environment,
         write_diagnostics,

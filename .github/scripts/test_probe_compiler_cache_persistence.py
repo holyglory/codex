@@ -11,12 +11,44 @@ import unittest
 from compiler_cache_write_diagnostics import cache_write_diagnostics
 from compiler_cache_write_diagnostics import classify_write_error
 from install_retrying_sccache import cached_binary
+from install_retrying_sccache import host_build_environment
 from compiler_cache_health import cache_summary
 from compiler_cache_health import health_failures
 from probe_compiler_cache_persistence import verify_summary
 
 
 class CompilerCacheProofTests(unittest.TestCase):
+    def test_host_tool_build_does_not_inherit_product_cross_compilers(self):
+        environment = {
+            "PATH": "native-tools",
+            "CARGO_HOME": "cargo-cache",
+            "CC": "zigcc",
+            "TARGET_CC": "zigcc",
+            "CC_aarch64_unknown_linux_musl": "zigcc",
+            "CXX": "zigcxx",
+            "CFLAGS": "--sysroot=musl",
+            "PKG_CONFIG_PATH": "musl-libraries",
+            "PKG_CONFIG_LIBDIR_aarch64_unknown_linux_musl": "musl-libraries",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER": "musl-gcc",
+            "CMAKE_C_COMPILER": "zigcc",
+            "RUSTC_WRAPPER": "sccache",
+        }
+        original = dict(environment)
+        self.assertEqual(
+            host_build_environment(environment, Path("host-target")),
+            {
+                "PATH": "native-tools",
+                "CARGO_HOME": "cargo-cache",
+                "CARGO_TARGET_DIR": "host-target",
+                "CARGO_INCREMENTAL": "0",
+                "CARGO_PROFILE_RELEASE_DEBUG": "0",
+                "CARGO_PROFILE_RELEASE_LTO": "false",
+                "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+            },
+        )
+        self.assertEqual(environment, original)
+
     @unittest.skipUnless(
         os.name == "posix" and os.environ.get("SCCACHE_TEST_BINARY"),
         "Requires the installed cache tool on a POSIX runner",
