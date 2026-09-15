@@ -167,6 +167,42 @@ class CompilerCacheProofTests(unittest.TestCase):
             health_failures(summary), ["No Rust compiler-cache activity was observed"]
         )
 
+    def test_only_successful_cache_misses_require_persistent_writes(self):
+        summary = cache_summary(
+            {
+                "cache_location": "ghac, name: fixture, prefix: /sccache/",
+                "version": "0.16.0",
+                "stats": {
+                    "cache_hits": {"counts": {"Rust": 2}},
+                    "cache_misses": {"counts": {"Rust": 4, "C/C++": 1}},
+                    "cache_errors": {"counts": {}},
+                    "compilations": 10,
+                    "non_cacheable_compilations": 2,
+                    "compile_fails": 3,
+                    "cache_writes": 5,
+                    "cache_write_errors": 0,
+                    "cache_read_errors": 0,
+                    "cache_timeouts": 0,
+                },
+            }
+        )
+        self.assertEqual(
+            summary,
+            {
+                "backend": "ghac",
+                "version": "0.16.0",
+                "rust_hits": 2,
+                "rust_misses": 4,
+                "writes": 5,
+                "write_errors": 0,
+                "read_errors": 0,
+                "timeouts": 0,
+                "errors": 0,
+                "pending_writes": 0,
+            },
+        )
+        self.assertEqual(health_failures(summary), [])
+
 
 if __name__ == "__main__":
     unittest.main()

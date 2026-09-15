@@ -20,7 +20,9 @@ def cache_summary(document: dict) -> dict:
         "errors": sum(stats["cache_errors"]["counts"].values()),
         "pending_writes": max(
             0,
-            stats["compilations"] - stats["cache_writes"] - stats["cache_write_errors"],
+            sum(stats["cache_misses"]["counts"].values())
+            - stats["cache_writes"]
+            - stats["cache_write_errors"],
         ),
     }
 
@@ -55,6 +57,7 @@ def wait_for_cache_writes(environment: dict[str, str]) -> dict:
                     "--stats-format=json",
                 ],
                 env=environment,
+                timeout=30,
             )
         )
         if (
