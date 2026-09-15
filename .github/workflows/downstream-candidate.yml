@@ -66,6 +66,9 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'
 
   preflight:
     name: Critical producer and consumer regressions
@@ -317,8 +320,10 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            timeout_minutes: 360
           - runner: macos-15
             target: aarch64-apple-darwin
+            timeout_minutes: 360
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
           - runner: windows-11-arm
@@ -364,6 +369,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: cargo check --locked --tests -p codex-private-storage --target "$TARGET"
       - uses: ./.github/actions/downstream-compiler-cache
+        with:
+          backend: persistent
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
@@ -372,9 +379,14 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
         run: |
           set -euo pipefail
-          cargo build --locked --target "$TARGET" --release --bin bwrap
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-bwrap.json" --defer-health -- \
+            cargo build --locked --target "$TARGET" --release --bin bwrap
           bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
           strip --strip-debug --strip-unneeded "$bwrap_path"
           digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
@@ -383,6 +395,9 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
         run: |
           set -euo pipefail
           args=(
@@ -395,7 +410,8 @@ jobs:
             export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
             args+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
           fi
-          "${args[@]}"
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-product.json" --defer-health -- "${args[@]}"
       - name: Verify the native fork updater without changing any installation
         shell: bash
         env:
@@ -483,6 +499,16 @@ jobs:
           path: codex-rs/native-dist/${{ matrix.target }}/*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Verify compiler-cache writes completed successfully
+        shell: bash
+        run: |
+          cache_check_status=0
+          for receipt in "$RUNNER_TEMP"/compiler-cache-*.json; do
+            python3 "${GITHUB_WORKSPACE}/.github/scripts/compiler_cache_health.py" \
+              --file "$receipt" --backend bazel-http || cache_check_status=1
+          done
+          exit "$cache_check_status"
 
   npm:
     name: Build and verify seven npm tarballs
