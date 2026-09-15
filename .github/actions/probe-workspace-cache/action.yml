@@ -1,0 +1,38 @@
+name: Probe repository compiler cache
+description: Build a real workspace crate with the native-release environment.
+inputs:
+  mode:
+    required: true
+    description: Populate or consume the repository compiler cache.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-ci
+    - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      with:
+        targets: x86_64-unknown-linux-musl
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: 0.14.0
+        use-cache: false
+    - name: Prepare real musl release tools
+      shell: bash
+      env:
+        TARGET: x86_64-unknown-linux-musl
+      run: bash .github/scripts/install-musl-build-tools.sh
+    - uses: ./.github/actions/downstream-compiler-cache
+    - name: Compare repository compiler-cache reuse
+      shell: bash
+      env:
+        PROBE_MODE: ${{ inputs.mode }}
+        CARGO_PROFILE_RELEASE_DEBUG: "1"
+        CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: "off"
+      run: |
+        python3 .github/scripts/probe_workspace_compiler_cache.py \
+          --mode "$PROBE_MODE" --evidence "$RUNNER_TEMP/workspace-cache-proof"
+    - name: Preserve cache results and hashed build inputs
+      if: always()
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: workspace-cache-${{ inputs.mode }}
+        path: ${{ runner.temp }}/workspace-cache-proof

@@ -1,0 +1,39 @@
+name: downstream-workspace-cache-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/compiler-cache-write-load]
+    paths:
+      - .github/scripts/trace_compiler_cache_inputs.py
+      - .github/scripts/probe_workspace_compiler_cache.py
+      - .github/actions/probe-workspace-cache/action.yml
+      - .github/workflows/downstream-workspace-cache-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  populate:
+    if: github.repository == 'holyglory/codex'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/probe-workspace-cache
+        with:
+          mode: populate
+  consume:
+    if: always() && github.repository == 'holyglory/codex'
+    needs: populate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/probe-workspace-cache
+        with:
+          mode: consume

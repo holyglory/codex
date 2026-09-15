@@ -2,11 +2,6 @@ name: downstream-compiler-cache-load
 
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/compiler-cache-write-load]
-    paths:
-      - .github/scripts/*compiler_cache*.py
-      - .github/workflows/downstream-compiler-cache-load.yml
 
 permissions:
   contents: read
