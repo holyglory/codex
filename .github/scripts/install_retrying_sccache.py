@@ -33,7 +33,7 @@ def cached_binary(root: Path, identity: dict) -> Path | None:
 
 
 def host_build_environment(
-    inherited: dict[str, str], target_dir: Path
+    inherited: dict[str, str], target_dir: Path, host: str
 ) -> dict[str, str]:
     compiler_variables = (
         "CC",
@@ -77,6 +77,9 @@ def host_build_environment(
         CARGO_PROFILE_RELEASE_STRIP="symbols",
         CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16",
     )
+    host_linker = "CARGO_TARGET_" + host.upper().replace("-", "_") + "_LINKER"
+    if host_linker in inherited:
+        environment[host_linker] = inherited[host_linker]
     return environment
 
 
@@ -127,7 +130,7 @@ def main() -> None:
         subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
         shutil.copyfile(backend, source / "src/cache/bazel_http.rs")
         environment = host_build_environment(
-            dict(os.environ), args.build_root / "target"
+            dict(os.environ), args.build_root / "target", host
         )
         subprocess.run(
             [
