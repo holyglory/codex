@@ -2,7 +2,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
+import time
 import unittest
 
 from compiler_cache_write_diagnostics import cache_write_diagnostics
@@ -14,6 +17,87 @@ from probe_compiler_cache_persistence import verify_summary
 
 
 class CompilerCacheProofTests(unittest.TestCase):
+    @unittest.skipUnless(
+        os.name == "posix" and os.environ.get("SCCACHE_TEST_BINARY"),
+        "Requires the installed cache tool on a POSIX runner",
+    )
+    def test_corrupt_cache_read_is_counted_and_recompiled_without_corrupting_output(
+        self,
+    ):
+        with tempfile.TemporaryDirectory(
+            prefix="cr-", dir=os.environ.get("RUNNER_TEMP")
+        ) as temporary:
+            root = Path(temporary)
+            source = root / "probe.c"
+            source.write_text("int answer(void) { return 42; }\n")
+            output = root / "probe.o"
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("SCCACHE_")
+            }
+            environment.update(
+                SCCACHE_DIR=str(root / "cache"),
+                SCCACHE_SERVER_UDS=str(root / "s.sock"),
+                SCCACHE_IDLE_TIMEOUT="0",
+            )
+            binary = os.environ["SCCACHE_TEST_BINARY"]
+            command = [binary, shutil.which("cc"), "-c", str(source), "-o", str(output)]
+            try:
+                subprocess.run(
+                    command,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                expected = output.read_bytes()
+                deadline = time.monotonic() + 20
+                while True:
+                    stats = json.loads(
+                        subprocess.check_output(
+                            [binary, "--show-stats", "--stats-format=json"],
+                            env=environment,
+                            timeout=10,
+                        )
+                    )["stats"]
+                    if stats["cache_writes"] >= 1:
+                        break
+                    if time.monotonic() >= deadline:
+                        self.fail("The isolated cache write did not finish")
+                    time.sleep(0.5)
+                entries = [
+                    path for path in (root / "cache").rglob("*") if path.is_file()
+                ]
+                self.assertTrue(entries)
+                for path in entries:
+                    path.write_bytes(b"invalid cache entry")
+                output.unlink()
+                subprocess.run(
+                    command,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                stats = json.loads(
+                    subprocess.check_output(
+                        [binary, "--show-stats", "--stats-format=json"],
+                        env=environment,
+                        timeout=10,
+                    )
+                )["stats"]
+                self.assertGreaterEqual(stats["cache_read_errors"], 1)
+                self.assertEqual(output.read_bytes(), expected)
+            finally:
+                subprocess.run(
+                    [binary, "--stop-server"],
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    timeout=20,
+                )
+
     def test_error_classification_omits_service_urls_and_credentials(self):
         self.assertEqual(
             classify_write_error(
@@ -116,7 +200,7 @@ class CompilerCacheProofTests(unittest.TestCase):
             "write_errors": 0,
             "read_errors": 0,
             "timeouts": 0,
-            "errors": 0,
+            "compiler_errors": 0,
             "pending_writes": 0,
         }
         self.assertEqual(
@@ -137,7 +221,7 @@ class CompilerCacheProofTests(unittest.TestCase):
             "write_errors": 0,
             "read_errors": 0,
             "timeouts": 0,
-            "errors": 0,
+            "compiler_errors": 0,
             "pending_writes": 0,
         }
         self.assertEqual(
@@ -156,7 +240,7 @@ class CompilerCacheProofTests(unittest.TestCase):
             "write_errors": 0,
             "read_errors": 0,
             "timeouts": 0,
-            "errors": 0,
+            "compiler_errors": 0,
             "pending_writes": 1,
         }
         self.assertEqual(health_failures(summary), ["pending_writes=1"])
@@ -197,11 +281,15 @@ class CompilerCacheProofTests(unittest.TestCase):
                 "write_errors": 0,
                 "read_errors": 0,
                 "timeouts": 0,
-                "errors": 0,
+                "compiler_errors": 0,
                 "pending_writes": 0,
             },
         )
         self.assertEqual(health_failures(summary), [])
+        summary.update(compiler_errors=8)
+        self.assertEqual(health_failures(summary), [])
+        summary.update(read_errors=1)
+        self.assertEqual(health_failures(summary), ["read_errors=1"])
 
 
 if __name__ == "__main__":

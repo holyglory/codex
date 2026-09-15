@@ -14,6 +14,8 @@ runs:
     - uses: ./.github/actions/downstream-compiler-cache
     - name: Verify cache-health failure detection
       shell: bash
+      env:
+        SCCACHE_TEST_BINARY: ${{ env.SCCACHE_PATH }}
       run: python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
     - name: Prove compiler cache writes and fresh-runner reuse
       shell: bash

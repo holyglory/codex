@@ -17,7 +17,7 @@ def cache_summary(document: dict) -> dict:
         "write_errors": stats["cache_write_errors"],
         "read_errors": stats["cache_read_errors"],
         "timeouts": stats["cache_timeouts"],
-        "errors": sum(stats["cache_errors"]["counts"].values()),
+        "compiler_errors": sum(stats["cache_errors"]["counts"].values()),
         "pending_writes": max(
             0,
             sum(stats["cache_misses"]["counts"].values())
@@ -37,7 +37,6 @@ def health_failures(summary: dict) -> list[str]:
         "write_errors",
         "read_errors",
         "timeouts",
-        "errors",
         "pending_writes",
     ):
         if summary[counter]:
