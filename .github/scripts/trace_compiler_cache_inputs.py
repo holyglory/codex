@@ -77,6 +77,11 @@ if (
     (output / f"{crate}-{target}.json").write_text(
         json.dumps(snapshot, sort_keys=True) + "\n"
     )
+    if (
+        crate == "codex_utils_absolute_path"
+        and os.environ.get("CACHE_STOP_AFTER_SNAPSHOT") == "1"
+    ):
+        raise SystemExit(73)
 raise SystemExit(
     subprocess.run([os.environ["SCCACHE_PATH"], compiler, *arguments]).returncode
 )
