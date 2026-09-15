@@ -1,0 +1,82 @@
+name: downstream-persistent-compiler-probe
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      cache_host:
+        required: true
+        type: string
+      cache_host_key:
+        required: true
+        type: string
+    secrets:
+      cache_ssh_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'holyglory/codex'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ inputs.target }}
+      - if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Prepare native Linux release tools
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ inputs.target }}
+      - uses: ./.github/actions/downstream-compiler-cache
+        with:
+          backend: persistent
+      - name: Verify cache-helper regressions
+        shell: bash
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*persistent_compiler_wrapper.py'
+      - name: Verify real workspace cache persistence
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          PROBE_MODE: ${{ inputs.mode }}
+          CARGO_PROFILE_RELEASE_DEBUG: "1"
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ runner.os == 'macOS' && 'packed' || 'off' }}
+          CODEX_BAZEL_CACHE_HOST: ${{ inputs.cache_host }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ inputs.cache_host_key }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.cache_ssh_key }}
+        run: |
+          python3 .github/scripts/run_with_persistent_compiler_cache.py \
+            --stats-file "$RUNNER_TEMP/persistent-compiler-proof.json" -- \
+            python3 .github/scripts/probe_persistent_workspace.py \
+            --mode "$PROBE_MODE" --target "$TARGET"
+      - name: Retain the cache proof
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: persistent-compiler-${{ inputs.target }}-${{ inputs.mode }}
+          path: ${{ runner.temp }}/persistent-compiler-proof.json

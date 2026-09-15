@@ -259,7 +259,7 @@ class CompilerCacheProofTests(unittest.TestCase):
         self.assertEqual(
             verify_summary(summary, "consume", 512),
             [
-                "The GitHub Actions cache backend was not used",
+                "The expected ghac cache backend was not used",
             ],
         )
 
