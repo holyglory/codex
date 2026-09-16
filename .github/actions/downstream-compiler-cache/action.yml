@@ -59,13 +59,6 @@ runs:
         echo 'SCCACHE_GHA_VERSION=codex-downstream-v1' >> "$GITHUB_ENV"
         echo 'SCCACHE_IGNORE_SERVER_IO_ERROR=1' >> "$GITHUB_ENV"
         echo 'SCCACHE_IDLE_TIMEOUT=0' >> "$GITHUB_ENV"
-        if [[ "$RUNNER_OS" == "Windows" ]]; then
-          # Host proc-macro DLL timestamps otherwise change dependent cache keys.
-          # LLVM lld uses this fixed epoch for PE and debug-directory timestamps.
-          echo 'SOURCE_DATE_EPOCH=0' >> "$GITHUB_ENV"
-          # Real PDBs avoid unstable synthetic build IDs in host proc-macro DLLs.
-          echo 'CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG=1' >> "$GITHUB_ENV"
-        fi
     - name: Wait for the compiler cache to be ready
       if: steps.cache.outcome == 'success' && inputs.backend != 'persistent'
       shell: bash
