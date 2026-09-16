@@ -83,7 +83,7 @@ def commands(root, state, directory):
             [
                 "bash",
                 "-euc",
-                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py' && {python} -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py' && {python} -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'",
+                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py' && {python} -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py' && {python} -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py' && {python} -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'",
             ],
             root,
         ),

@@ -68,6 +68,7 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py'
           python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
           python3 -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
 
   preflight:
     name: Critical producer and consumer regressions

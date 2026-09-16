@@ -58,7 +58,9 @@ jobs:
           backend: persistent
       - name: Verify cache-helper regressions
         shell: bash
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*persistent_compiler_wrapper.py'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_*persistent_compiler_wrapper.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
       - name: Verify real workspace cache persistence
         shell: bash
         env:
