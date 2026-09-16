@@ -83,7 +83,7 @@ def commands(root, state, directory):
             [
                 "bash",
                 "-euc",
-                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py' && {python} -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py' && {python} -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py' && {python} -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'",
+                f"{python} .github/scripts/test_archive_release_symbols.py && {python} -m unittest discover -s codex-cli/scripts -p 'test_*.py' && {python} -m unittest discover -s scripts -p 'test_*candidate*.py' && {python} -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py' && {python} -m unittest discover -s scripts -p 'test_stage_npm_packages.py' && {python} -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py' && {python} -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py' && {python} -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py' && {python} -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py' && {python} -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'",
             ],
             root,
         ),
@@ -352,7 +352,7 @@ def check(root, state, cargo_target, release_target):
     return 0 if receipt["status"] == "success" else 1
 
 
-def dispatch(root, receipt_path, branch):
+def dispatch(root, receipt_path, branch, native_source_run=None):
     commit = frozen_commit(root)
     receipt = json.loads(receipt_path.read_text())
     validate(receipt, commit)
@@ -395,6 +395,11 @@ def dispatch(root, receipt_path, branch):
         raise ValueError(
             "A candidate is still active on this branch; preserve its evidence"
         )
+    inputs = {"local_acceptance": json.dumps(receipt)}
+    if native_source_run is not None:
+        if native_source_run <= 0:
+            raise ValueError("Native producer run ID must be positive")
+        inputs["native_source_run"] = str(native_source_run)
     subprocess.run(
         [
             "gh",
@@ -407,7 +412,7 @@ def dispatch(root, receipt_path, branch):
             branch,
             "--json",
         ],
-        input=json.dumps({"local_acceptance": json.dumps(receipt)}),
+        input=json.dumps(inputs),
         text=True,
         check=True,
     )
@@ -424,6 +429,7 @@ def main():
     item = sub.add_parser("dispatch")
     item.add_argument("--receipt", type=Path, required=True)
     item.add_argument("--branch", required=True)
+    item.add_argument("--native-source-run", type=int)
     item = sub.add_parser("verify")
     item.add_argument("--commit", required=True)
     item = sub.add_parser("verify-package")
@@ -436,7 +442,7 @@ def main():
         elif args.action == "verify-package":
             verify_package(args.directory, frozen_commit(root))
         elif args.action == "dispatch":
-            dispatch(root, args.receipt, args.branch)
+            dispatch(root, args.receipt, args.branch, args.native_source_run)
         elif args.action == "plan":
             print(
                 json.dumps(

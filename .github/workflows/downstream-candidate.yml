@@ -7,6 +7,10 @@ on:
         description: Exact-commit successful Linux receipt from scripts/local_candidate.py
         type: string
         required: true
+      native_source_run:
+        description: Reuse a verified native candidate for packaging-only changes
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -61,6 +65,8 @@ jobs:
           python3 .github/scripts/test_archive_release_symbols.py -v
           python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
           python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
+          python3 -m unittest discover -s scripts -p 'test_stage_npm_packages.py'
+          python3 -m unittest discover -s scripts -p 'test_reuse_native_candidate.py'
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
@@ -71,6 +77,7 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
 
   preflight:
+    if: inputs.native_source_run == ''
     name: Critical producer and consumer regressions
     needs: identity
     runs-on: ubuntu-24.04
@@ -109,6 +116,7 @@ jobs:
         run: python3 scripts/run_candidate_preflight.py
 
   rust-validation:
+    if: inputs.native_source_run == ''
     name: Complete Rust validation
     needs: [identity, preflight]
     runs-on: ubuntu-24.04
@@ -166,6 +174,7 @@ jobs:
           cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
           git diff --exit-code
   bazel-validation:
+    if: inputs.native_source_run == ''
     name: Complete Bazel validation
     needs: [identity, preflight]
     runs-on: ubuntu-24.04
@@ -282,6 +291,7 @@ jobs:
           retention-days: 14
 
   native:
+    if: inputs.native_source_run == ''
     name: Build ${{ matrix.target }}
     # After focused regressions pass, compile alongside complete validation.
     # Publication still requires every validation and packaging job to succeed.
@@ -492,18 +502,46 @@ jobs:
           done
           exit "$cache_check_status"
 
+  reuse-native:
+    name: Verify unchanged native sources and producer validation
+    if: inputs.native_source_run != ''
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the complete producer and unchanged build inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.native_source_run }}
+        run: python3 scripts/reuse_native_candidate.py --source-run "$SOURCE_RUN" --receipt native-source.json
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-source-proof
+          path: native-source.json
+          if-no-files-found: error
+
   npm:
     name: Build and verify seven npm tarballs
-    needs: [identity, native]
+    needs: [identity, native, reuse-native]
+    if: always() && needs.identity.result == 'success' && (needs.native.result == 'success' || needs.reuse-native.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
@@ -515,6 +553,19 @@ jobs:
         with:
           path: native-artifacts
           pattern: "*-*-*"
+          run-id: ${{ inputs.native_source_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Download native producer identity
+        if: inputs.native_source_run != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-source-proof
+      - name: Verify native checksums and original source attestations
+        if: inputs.native_source_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.native_source_run }}
+        run: python3 scripts/reuse_native_candidate.py --source-run "$SOURCE_RUN" --receipt native-source.json --artifacts-dir native-artifacts
       - name: Build npm tarballs
         shell: bash
         env:
@@ -526,6 +577,9 @@ jobs:
             --artifacts-dir native-artifacts \
             --output-dir dist/npm \
             --package codex
+          if [[ -f native-source.json ]]; then
+            cp native-source.json dist/npm/native-source.json
+          fi
       - name: Verify exact npm package set
         shell: bash
         env:
@@ -554,13 +608,23 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: always()
-    needs: [identity, preflight, rust-validation, bazel-validation, native, npm]
+    needs:
+      [
+        identity,
+        preflight,
+        rust-validation,
+        bazel-validation,
+        native,
+        reuse-native,
+        npm,
+      ]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate job
         shell: bash
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          NATIVE_SOURCE_RUN: ${{ inputs.native_source_run }}
         run: |
           python3 - <<'PY'
           import json
@@ -569,7 +633,12 @@ jobs:
           results = {
               name: job["result"] for name, job in json.loads(os.environ["NEEDS_JSON"]).items()
           }
-          failures = {name: result for name, result in results.items() if result != "success"}
+          reused = bool(os.environ["NATIVE_SOURCE_RUN"])
+          skipped = {"preflight", "rust-validation", "bazel-validation", "native"} if reused else {"reuse-native"}
+          failures = {
+              name: result for name, result in results.items()
+              if result != ("skipped" if name in skipped else "success")
+          }
           if failures:
               raise SystemExit(f"Candidate jobs did not all pass: {failures}")
           print("Every candidate validation and packaging job passed.")
