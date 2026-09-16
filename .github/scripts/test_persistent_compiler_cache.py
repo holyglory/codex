@@ -82,6 +82,12 @@ def compiler_trial(endpoint):
             )
 
 
+@unittest.skipUnless(
+    os.name == "posix"
+    and os.environ.get("SCCACHE_TEST_BINARY")
+    and os.environ.get("CODEX_TEST_PERSISTENT_CACHE"),
+    "Requires the approved local cache service and compiled test client",
+)
 class PersistentCompilerCacheTests(unittest.TestCase):
     def test_real_service_reuses_after_daemon_restart_and_invalidates_changed_source(
         self,
