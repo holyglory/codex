@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 
@@ -34,6 +35,8 @@ if os.name == "nt":
     # PE timestamps across runners before attributing dependent misses to storage.
     linked_inputs = {}
     directory = Path(os.environ["CARGO_TARGET_DIR"]) / "release" / "deps"
+    retained = Path(os.environ["RUNNER_TEMP"]) / "persistent-compiler-linked"
+    retained.mkdir()
     for path in sorted(directory.glob("*.dll")):
         with path.open("rb") as source:
             digest = hashlib.file_digest(source, "sha256").hexdigest()
@@ -42,6 +45,7 @@ if os.name == "nt":
             source.seek(pe_offset + 8)
             timestamp = struct.unpack("<I", source.read(4))[0]
         linked_inputs[path.name] = {"sha256": digest, "pe_timestamp": timestamp}
+        shutil.copyfile(path, retained / path.name)
     (
         Path(os.environ["RUNNER_TEMP"]) / "persistent-compiler-link-inputs.json"
     ).write_text(json.dumps(linked_inputs, sort_keys=True) + "\n")
