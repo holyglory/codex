@@ -42,9 +42,9 @@ if os.name == "nt":
             source.seek(pe_offset + 8)
             timestamp = struct.unpack("<I", source.read(4))[0]
         linked_inputs[path.name] = {"sha256": digest, "pe_timestamp": timestamp}
-    (Path(os.environ["RUNNER_TEMP"]) / "persistent-compiler-link-inputs.json").write_text(
-        json.dumps(linked_inputs, sort_keys=True) + "\n"
-    )
+    (
+        Path(os.environ["RUNNER_TEMP"]) / "persistent-compiler-link-inputs.json"
+    ).write_text(json.dumps(linked_inputs, sort_keys=True) + "\n")
 summary = cache_summary(wait_for_cache_writes(dict(os.environ), timeout_seconds=900))
 failures = health_failures(summary, "bazel-http")
 if args.mode == "consume" and (
