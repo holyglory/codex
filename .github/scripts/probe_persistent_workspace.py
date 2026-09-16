@@ -1,9 +1,11 @@
 """Prove a real workspace crate is restored from the persistent compiler cache."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 
 from compiler_cache_health import cache_summary, health_failures, wait_for_cache_writes
@@ -27,6 +29,22 @@ subprocess.run(
     cwd=root / "codex-rs",
     check=True,
 )
+if os.name == "nt":
+    # Proc-macro DLLs are linked locally. Compare their public-file digests and
+    # PE timestamps across runners before attributing dependent misses to storage.
+    linked_inputs = {}
+    directory = Path(os.environ["CARGO_TARGET_DIR"]) / "release" / "deps"
+    for path in sorted(directory.glob("*.dll")):
+        with path.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+            source.seek(0x3C)
+            pe_offset = struct.unpack("<I", source.read(4))[0]
+            source.seek(pe_offset + 8)
+            timestamp = struct.unpack("<I", source.read(4))[0]
+        linked_inputs[path.name] = {"sha256": digest, "pe_timestamp": timestamp}
+    (Path(os.environ["RUNNER_TEMP"]) / "persistent-compiler-link-inputs.json").write_text(
+        json.dumps(linked_inputs, sort_keys=True) + "\n"
+    )
 summary = cache_summary(wait_for_cache_writes(dict(os.environ), timeout_seconds=900))
 failures = health_failures(summary, "bazel-http")
 if args.mode == "consume" and (
