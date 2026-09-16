@@ -20,9 +20,33 @@ URL_ENV = "CODEX_BAZEL_REMOTE_CACHE_URL"
 
 def private_file(path: Path, contents: str) -> None:
     with open(
-        path, "x", opener=lambda name, flags: os.open(name, flags, 0o600)
+        path,
+        "x",
+        encoding="utf-8",
+        newline="\n",
+        opener=lambda name, flags: os.open(name, flags, 0o600),
     ) as file:
         file.write(contents.rstrip() + "\n")
+
+
+def ssh_failure_category(message: str) -> str:
+    lowered = message.lower()
+    for category, patterns in (
+        ("key_format", ("invalid format", "error in libcrypto")),
+        ("key_permissions", ("unprotected private key", "bad permissions")),
+        ("config_path", ("can't open user config file", "bad configuration option")),
+        (
+            "host_key",
+            ("host key verification failed", "remote host identification has changed"),
+        ),
+        ("authentication", ("permission denied",)),
+        ("name_resolution", ("could not resolve hostname",)),
+        ("connection_refused", ("connection refused",)),
+        ("connection_timeout", ("connection timed out",)),
+    ):
+        if any(pattern in lowered for pattern in patterns):
+            return category
+    return "connection_not_ready"
 
 
 def ssh_command(root: Path, host: str, port: int) -> list[str]:
@@ -117,8 +141,13 @@ def remote_cache(environment: dict[str, str]):
                             flush=True,
                         )
                     else:
+                        log.flush()
+                        with (root / "ssh.log").open("rb") as diagnostic:
+                            category = ssh_failure_category(
+                                diagnostic.read(8192).decode(errors="replace")
+                            )
                         print(
-                            "::warning::Persistent Bazel cache unavailable; compiling locally.",
+                            f"::warning::Persistent Bazel cache unavailable ({category}); compiling locally.",
                             flush=True,
                         )
                 except (OSError, ValueError):
