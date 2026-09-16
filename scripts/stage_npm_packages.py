@@ -224,6 +224,16 @@ def install_from_workflow_artifacts(
     else:
         artifacts = select_target_artifacts(workflow_id, components)
         download_artifacts(workflow_id, artifacts_dir, artifacts)
+    install_from_downloaded_artifacts(artifacts_dir, components, vendor_dir)
+
+
+def install_from_downloaded_artifacts(
+    artifacts_dir: Path,
+    components: Sequence[str],
+    vendor_dir: Path,
+) -> None:
+    if not local_artifacts_cover_components(artifacts_dir, components):
+        raise FileNotFoundError("The downloaded native artifact set is incomplete")
     if CODEX_PACKAGE_COMPONENT in components:
         install_codex_package_archives(artifacts_dir, vendor_dir, BINARY_TARGETS)
     install_binary_components(
