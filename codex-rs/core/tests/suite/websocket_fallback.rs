@@ -83,6 +83,56 @@ async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_fallback_switches_to_http_on_server_error_connect() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config({
+        let base_url = format!("{}/v1", server.uri());
+        move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.wire_api = WireApi::Responses;
+            config.model_provider.supports_websockets = true;
+            config.model_provider.stream_max_retries = Some(2);
+            config.model_provider.request_max_retries = Some(0);
+        }
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("hello").await?;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let websocket_attempts = requests
+        .iter()
+        .filter(|req| req.method == Method::GET && req.url.path().ends_with("/responses"))
+        .count();
+    let http_attempts = requests
+        .iter()
+        .filter(|req| req.method == Method::POST && req.url.path().ends_with("/responses"))
+        .count();
+
+    // A transient websocket gateway failure should use the working HTTP stream immediately,
+    // including when the websocket prewarm runs before the first turn.
+    assert_eq!(websocket_attempts, 1);
+    assert_eq!(http_attempts, 1);
+    assert_eq!(response_mock.requests().len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
