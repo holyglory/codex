@@ -231,3 +231,13 @@ stack; `upstream/main` and prerelease tags are compatibility canaries only
   branch or deployed alpha directly would make each build harder to audit and
   reproduce.
 - [Details](DecisionDetails/DEC-CODEX-017.md)
+
+### DEC-CODEX-018
+
+- **Decision:** Restore upstream Responses retry ownership, classification, and
+  backoff while preserving the independent WebSocket fallback, account routing,
+  and usage behavior.
+- **Why:** The fork-specific retry policy added unnecessary waiting and did not
+  explain the reported failures. The narrow upstream alignment keeps the
+  maintained checkout easier to update and verify.
+- [Details](DecisionDetails/DEC-CODEX-018.md)
