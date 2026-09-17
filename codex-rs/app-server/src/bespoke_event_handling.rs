@@ -1054,6 +1054,11 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::StreamError(ev) => {
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
             // but we notify the client.
+            thread_state
+                .lock()
+                .await
+                .turn_summary
+                .record_stream_error_details(ev.additional_details.as_deref());
             let turn_error = TurnError {
                 misalignment: None,
                 message: ev.message,
@@ -1505,11 +1510,28 @@ async fn handle_turn_complete(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
+    let mut turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
 
-    let (status, error, last_agent_message) = match turn_summary.last_error {
-        Some(error) => (TurnStatus::Failed, Some(error), None),
-        None => (TurnStatus::Completed, None, turn_summary.last_agent_message),
+    let (status, error, last_agent_message) = match turn_summary.last_error.take() {
+        Some(mut error) => {
+            if error.additional_details.is_none() {
+                error.additional_details = turn_summary.take_stream_error_details();
+            }
+            (TurnStatus::Failed, Some(error), None)
+        }
+        None => match turn_complete_event.error {
+            Some(error) => (
+                TurnStatus::Failed,
+                Some(TurnError {
+                    message: error.message,
+                    codex_error_info: error.codex_error_info.map(Into::into),
+                    additional_details: turn_summary.take_stream_error_details(),
+                    misalignment: error.misalignment.map(Into::into),
+                }),
+                None,
+            ),
+            None => (TurnStatus::Completed, None, turn_summary.last_agent_message),
+        },
     };
 
     emit_turn_completed_with_status(
@@ -1599,10 +1621,13 @@ async fn handle_token_count_event(
 
 async fn handle_error(
     _conversation_id: ThreadId,
-    error: TurnError,
+    mut error: TurnError,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
     let mut state = thread_state.lock().await;
+    if error.additional_details.is_none() {
+        error.additional_details = state.turn_summary.take_stream_error_details();
+    }
     state.turn_summary.last_error = Some(error);
 }
 
@@ -3578,6 +3603,65 @@ mod tests {
             other => bail!("unexpected message: {other:?}"),
         }
         assert!(rx.try_recv().is_err(), "no extra messages expected");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_terminal_error_includes_stream_diagnostics() -> Result<()> {
+        let conversation_id = ThreadId::new();
+        let event_turn_id = "complete_diag1".to_string();
+        let thread_state = new_thread_state();
+        thread_state
+            .lock()
+            .await
+            .turn_summary
+            .record_stream_error_details(Some("HTTP 503 request id req-123"));
+        handle_error(
+            conversation_id,
+            TurnError {
+                misalignment: None,
+                message: "terminal failure".to_string(),
+                codex_error_info: Some(V2CodexErrorInfo::InternalServerError),
+                additional_details: None,
+            },
+            &thread_state,
+        )
+        .await;
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            ThreadId::new(),
+        );
+
+        handle_turn_complete(
+            conversation_id,
+            event_turn_id.clone(),
+            turn_complete_event(&event_turn_id),
+            &outgoing,
+            &thread_state,
+        )
+        .await;
+
+        match recv_broadcast_notification(&mut rx).await? {
+            ServerNotification::TurnCompleted(notification) => {
+                assert_eq!(
+                    notification
+                        .turn
+                        .error
+                        .and_then(|error| error.additional_details),
+                    Some(
+                        "stream error diagnostics:\nAttempt 1: HTTP 503 request id req-123"
+                            .to_string()
+                    )
+                );
+            }
+            other => bail!("unexpected message: {other:?}"),
+        }
         Ok(())
     }
 
