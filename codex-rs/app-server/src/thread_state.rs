@@ -19,6 +19,7 @@ use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::RolloutItem;
 use codex_rollout::state_db::StateDbHandle;
+use codex_secrets::redact_secrets;
 use codex_utils_path_uri::LegacyAppPathString;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,6 +33,10 @@ use tokio::sync::watch;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
+
+const MAX_STREAM_ERROR_DETAILS: usize = 8;
+const MAX_STREAM_ERROR_DETAIL_CHARS: usize = 4_096;
+const MAX_STREAM_ERROR_TOTAL_CHARS: usize = 16_384;
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
@@ -89,7 +94,41 @@ pub(crate) struct TurnSummary {
     pub(crate) started_at: Option<i64>,
     pub(crate) command_execution_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
+    stream_error_details: Vec<String>,
     pub(crate) last_agent_message: Option<ThreadItem>,
+}
+
+impl TurnSummary {
+    pub(crate) fn record_stream_error_details(&mut self, details: Option<&str>) {
+        let Some(details) = details.map(str::trim).filter(|details| !details.is_empty()) else {
+            return;
+        };
+
+        let bounded = redact_secrets(details.to_string())
+            .chars()
+            .take(MAX_STREAM_ERROR_DETAIL_CHARS)
+            .collect();
+        if self.stream_error_details.len() == MAX_STREAM_ERROR_DETAILS {
+            self.stream_error_details.remove(0);
+        }
+        self.stream_error_details.push(bounded);
+    }
+
+    pub(crate) fn take_stream_error_details(&mut self) -> Option<String> {
+        if self.stream_error_details.is_empty() {
+            return None;
+        }
+
+        let mut output = String::from("stream error diagnostics:");
+        for (index, details) in self.stream_error_details.drain(..).enumerate() {
+            let entry = format!("\nAttempt {}: {details}", index + 1);
+            if output.chars().count() + entry.chars().count() > MAX_STREAM_ERROR_TOTAL_CHARS {
+                break;
+            }
+            output.push_str(&entry);
+        }
+        Some(output)
+    }
 }
 
 #[derive(Default)]
@@ -261,6 +300,19 @@ mod tests {
         ];
 
         assert_eq!(results, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn stream_error_details_are_bounded_and_consumed() {
+        let mut summary = TurnSummary::default();
+        summary.record_stream_error_details(Some(" first detail api_key=super-secret-value "));
+        summary.record_stream_error_details(Some(&"x".repeat(8_000)));
+        let details = summary.take_stream_error_details().expect("details");
+
+        assert!(details.starts_with("stream error diagnostics:\nAttempt 1: first detail"));
+        assert!(!details.contains("super-secret-value"));
+        assert!(details.chars().count() <= MAX_STREAM_ERROR_TOTAL_CHARS);
+        assert_eq!(summary.take_stream_error_details(), None);
     }
 
     fn thread_settings(model: &str) -> ThreadSettings {

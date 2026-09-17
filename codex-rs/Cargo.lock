@@ -2248,6 +2248,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-rollout",
  "codex-sandboxing",
+ "codex-secrets",
  "codex-shell-command",
  "codex-skills",
  "codex-skills-extension",
