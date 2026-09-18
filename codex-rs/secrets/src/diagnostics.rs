@@ -7,7 +7,7 @@ static URL: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r#"(?i)\b(?:https?|wss?)://[^\s\"'<>]+"#));
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(
-        r#"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+"#,
+        r#"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\b[\"']?\s*[:=]\s*[^\r\n]+"#,
     )
 });
 static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
