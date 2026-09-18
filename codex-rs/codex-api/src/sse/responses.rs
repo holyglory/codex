@@ -63,6 +63,12 @@ pub fn spawn_response_stream(
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    tracing::info!(target: "codex.network_diagnostics",
+        event = "http_response_headers", transport = "http",
+        request_id = upstream_request_id.as_deref(),
+        http_status = stream_response.status.as_u16(),
+        model = server_model.as_deref(),
+    );
     let safety_buffering_treatment =
         treatment_from_headers(&stream_response.headers).unwrap_or_default();
     if let Some(turn_state) = turn_state.as_ref()
@@ -74,6 +80,8 @@ pub fn spawn_response_stream(
         let _ = turn_state.set(header_value.to_string());
     }
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
+    let parent_span = tracing::Span::current();
+    let diagnostic_request_id = upstream_request_id.clone();
     tokio::spawn(async move {
         if let Some(model) = server_model {
             let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
@@ -95,6 +103,8 @@ pub fn spawn_response_stream(
             idle_timeout,
             telemetry,
             safety_buffering_treatment,
+            parent_span,
+            diagnostic_request_id,
         )
         .await;
     });
@@ -438,8 +448,69 @@ pub fn process_responses_event(
             }
         }
         "response.failed" => {
-            return Err(ResponsesEventError::Api(parse_failed_response(
-                event.response,
+            if let Some(resp_val) = event.response {
+                let mut response_error = ApiError::Stream("response.failed event received".into());
+                if let Some(error) = resp_val.get("error")
+                    && let Ok(error) = serde_json::from_value::<Error>(error.clone())
+                {
+                    tracing::warn!(target: "codex.network_diagnostics", event = "provider_stream_error",
+                        error_code = error.code.as_deref().and_then(crate::diagnostics::error_code),
+                        response_id = resp_val.get("id").and_then(Value::as_str),
+                    );
+                    if is_context_window_error(&error) {
+                        response_error = ApiError::ContextWindowExceeded;
+                    } else if is_quota_exceeded_error(&error) {
+                        response_error = ApiError::QuotaExceeded;
+                    } else if is_usage_not_included(&error) {
+                        response_error = ApiError::UsageNotIncluded;
+                    } else if is_cyber_policy_error(&error) {
+                        let message = cyber_policy_message(error.message);
+                        response_error = ApiError::CyberPolicy { message };
+                    } else if error.code.as_deref() == Some("bio_policy") {
+                        let message = error
+                            .message
+                            .filter(|message| !message.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                "This content was flagged for possible biological risk.".to_string()
+                            });
+                        response_error = ApiError::BioPolicy { message };
+                    } else if error.code.as_deref() == Some("misalignment_policy_violation") {
+                        let message = error
+                            .message
+                            .filter(|message| !message.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                "This request was blocked due to a misalignment policy violation."
+                                    .to_string()
+                            });
+                        response_error = ApiError::MisalignmentPolicyViolation {
+                            message,
+                            misalignment: error.misalignment.and_then(|details| {
+                                serde_json::from_value::<MisalignmentErrorDetails>(details).ok()
+                            }),
+                        };
+                    } else if error.code.as_deref() == Some("invalid_prompt") {
+                        let message = error
+                            .message
+                            .unwrap_or_else(|| "Invalid request.".to_string());
+                        response_error = ApiError::InvalidPrompt { message };
+                    } else if is_server_overloaded_error(&error) {
+                        response_error = ApiError::ServerOverloaded;
+                    } else {
+                        let delay = try_parse_retry_after(&error);
+                        let message = error.message.unwrap_or_default();
+                        response_error = match error.code.as_deref() {
+                            Some("rate_limit_exceeded" | "slow_down") => {
+                                ApiError::RateLimitExceeded { message, delay }
+                            }
+                            _ => ApiError::Retryable { message, delay },
+                        };
+                    }
+                }
+                return Err(ResponsesEventError::Api(response_error));
+            }
+
+            return Err(ResponsesEventError::Api(ApiError::Stream(
+                "response.failed event received".into(),
             )));
         }
         "response.completed" | "response.incomplete" => {
@@ -541,16 +612,22 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
+        tracing::Span::current(),
+        /*request_id*/ None,
     )
     .await;
 }
 
+#[tracing::instrument(name = "responses_sse.stream", skip_all, parent = &parent_span,
+    fields(transport = "http", request_id = request_id.as_deref()))]
 async fn process_sse_with_treatment(
     stream: ByteStream,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
+    parent_span: tracing::Span,
+    request_id: Option<String>,
 ) {
     let mut stream = stream.eventsource();
     let mut last_server_model: Option<String> = None;
@@ -568,6 +645,12 @@ async fn process_sse_with_treatment(
         let sse = match response {
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
+                let kind = match &e {
+                    eventsource_stream::EventStreamError::Utf8(_) => "invalid_utf8",
+                    eventsource_stream::EventStreamError::Parser(_) => "invalid_event_stream",
+                    eventsource_stream::EventStreamError::Transport(_) => "transport_read_error",
+                };
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind);
                 debug!("SSE Error: {e:#}");
                 let error = match e {
                     eventsource_stream::EventStreamError::Transport(
@@ -579,6 +662,7 @@ async fn process_sse_with_treatment(
                 return;
             }
             Ok(None) => {
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "closed_before_completion");
                 let _ = tx_event
                     .send(Err(ApiError::Stream(
                         "stream closed before response.completed".into(),
@@ -587,6 +671,7 @@ async fn process_sse_with_treatment(
                 return;
             }
             Err(_) => {
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "idle_timeout");
                 let _ = tx_event
                     .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
                     .await;
