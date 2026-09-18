@@ -2,15 +2,13 @@ use super::*;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 #[tokio::test]
-async fn close_diagnostics_preserve_code_and_redact_reason() {
+async fn close_diagnostics_preserve_code_and_redact_reason() -> anyhow::Result<()> {
     let (tx_command, mut commands) = mpsc::channel(/*buffer*/ 4);
     let (messages, rx_message) = mpsc::unbounded_channel();
-    messages
-        .send(Ok(Message::Close(Some(CloseFrame {
-            code: CloseCode::Policy,
-            reason: "policy violation token=synthetic-secret".into(),
-        }))))
-        .unwrap();
+    messages.send(Ok(Message::Close(Some(CloseFrame {
+        code: CloseCode::Policy,
+        reason: "policy violation token=synthetic-secret".into(),
+    }))))?;
     drop(messages);
     let pump_task = tokio::spawn(async move {
         while let Some(WsCommand::Send { tx_result, .. }) = commands.recv().await {
@@ -34,7 +32,7 @@ async fn close_diagnostics_preserve_code_and_redact_reason() {
         warmup: false,
         connection_reused: false,
     };
-    let error = run_websocket_response_stream(
+    let Err(error) = run_websocket_response_stream(
         &mut stream,
         events,
         "{}".to_string(),
@@ -44,6 +42,9 @@ async fn close_diagnostics_preserve_code_and_redact_reason() {
         &context,
     )
     .await
-    .unwrap_err();
+    else {
+        anyhow::bail!("the premature close unexpectedly completed successfully");
+    };
     insta::assert_snapshot!(error.to_string(), @r#"stream error: websocket closed by server before response.completed (code: 1008, reason: "policy violation token=[REDACTED_SECRET]")"#);
+    Ok(())
 }
