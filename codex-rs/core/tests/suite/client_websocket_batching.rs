@@ -44,7 +44,7 @@ async fn staging_preserves_context_window_errors() {
         .await;
     assert!(matches!(
         result,
-        Err(codex_core::error::CodexErr::ContextWindowExceeded)
+        Err(codex_protocol::error::CodexErr::ContextWindowExceeded)
     ));
     assert_eq!(server.single_connection().len(), 1);
     server.shutdown().await;
