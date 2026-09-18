@@ -621,7 +621,7 @@ fn map_wrapped_websocket_error_event(
         tracing::warn!(target: "codex.network_diagnostics", event = "websocket_provider_error",
             transport = "websocket", http_status = status,
             error_code = error.as_ref().and_then(|error| error.code.as_deref()).and_then(crate::diagnostics::error_code),
-            request_id = headers.as_ref().and_then(|headers| headers.get("x-request-id").or_else(|| headers.get("x-oai-request-id"))).and_then(Value::as_str),
+            request_id = headers.as_ref().and_then(|headers| headers.get("x-request-id").or_else(|| headers.get("x-oai-request-id"))).and_then(serde_json::Value::as_str),
         )
     };
 
