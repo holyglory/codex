@@ -1,16 +1,19 @@
 use crate::redact_secrets;
+use crate::sanitizer::compile_regex;
 use regex::Regex;
 use std::sync::LazyLock;
 
-static URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?:https?|wss?)://[^\s\"'<>]+"#).expect("diagnostic URL pattern")
-});
+static URL: LazyLock<Regex> =
+    LazyLock::new(|| compile_regex(r#"(?i)\b(?:https?|wss?)://[^\s\"'<>]+"#));
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+"#)
-        .expect("diagnostic header pattern")
+    compile_regex(
+        r#"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+"#,
+    )
 });
 static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|device[_-]?code|password|secret|token|state)\b[\"']?\s*[:=]\s*[\"']?[^\s\"',;&]+"#).expect("diagnostic credential pattern")
+    compile_regex(
+        r#"(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|device[_-]?code|password|secret|token|state)\b[\"']?\s*[:=]\s*[\"']?[^\s\"',;&]+"#,
+    )
 });
 
 /// Sanitize free-text network diagnostics. Never use this to retain payloads or

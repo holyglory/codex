@@ -21,7 +21,7 @@ pub fn redact_secrets(input: String) -> String {
     redacted.to_string()
 }
 
-fn compile_regex(pattern: &str) -> Regex {
+pub(super) fn compile_regex(pattern: &str) -> Regex {
     match Regex::new(pattern) {
         Ok(regex) => regex,
         Err(err) => panic!("invalid regex pattern `{pattern}`: {err}"),
