@@ -10,6 +10,7 @@ chrono = { workspace = true }
 codex-history = { workspace = true }
 codex-event-subscriptions = { workspace = true }
 codex-protocol = { workspace = true }
+codex-secrets = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 libsqlite3-sys = { workspace = true }
 log = { workspace = true }
