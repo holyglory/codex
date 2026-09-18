@@ -209,6 +209,34 @@ Enter these in the interactive Codex prompt, not your shell:
 
 You can also ask the agent to list local account aliases, identify which profile handled the current turn, show available limits, or change priorities. The built-in `account_management` tool supports these bounded operations; it does not sign in, activate, rename, or remove profiles and does not reveal credentials, email, or service/workspace identifiers. Use the explicit account commands for those management actions.
 
+## Diagnose network failures
+
+Codex Multi keeps model HTTP and WebSocket diagnostics in a separate private
+`network_diagnostics_1.sqlite` database beside its other SQLite state files
+(normally in `~/.codex`). Records have no automatic expiry or per-task row cap;
+ordinary debug-log pruning and runtime restarts do not remove them.
+
+```sh
+codex debug network-errors --thread-id TASK_ID --limit 20
+codex debug network-errors --thread-id TASK_ID --before-id NEXT_BEFORE_ID
+codex debug network-errors --thread-id TASK_ID --include-context
+```
+
+The JSON report includes UTC Unix timestamps in milliseconds, task and turn IDs,
+available request/response IDs, HTTP statuses, provider error codes, WebSocket
+close codes and redacted reasons, retry schedules, fallback, and completion
+markers. `--since-ms` limits the time range; `nextBeforeId` continues an older page.
+The default view shows incidents; `--include-context` adds successful request and
+completion records around them. Incident queries use dedicated indexes, so a long
+successful run does not bury earlier failures or require scanning all its activity.
+
+Request/response bodies, prompts, tool output, credentials, and arbitrary headers
+are excluded. Individual error/reason fields retain up to 8,192 characters, with
+an explicit truncation marker; metadata fields retain up to 512. Disk write
+failures are reported and retried without stopping model work. Queue overflow is
+reported immediately and counted in the next retained record. The ledger grows
+with network activity and is not uploaded automatically.
+
 ## Inspect local usage
 
 Local accounting answers **what this fork observed on this machine**, not how much quota remains on OpenAI's service. Use `codex account limits` for service limits. The local collector does not reconstruct a complete usage history from before it was installed.
