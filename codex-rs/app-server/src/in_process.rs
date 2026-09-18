@@ -432,6 +432,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
+    let shutdown_logs = args.log_db.clone();
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let analytics_events_client =
@@ -785,6 +786,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         }
 
         analytics_events_flush_client.flush().await;
+        if let Some(log_db) = shutdown_logs {
+            log_db.flush().await;
+        }
 
         if let Some(done_tx) = shutdown_ack {
             let _ = done_tx.send(());

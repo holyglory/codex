@@ -2,6 +2,7 @@
 # Build and smoke-test local artifacts only; never install or publish them.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export CODEX_REPO_ROOT="$root"
 target=x86_64-unknown-linux-musl
 : "${LOCAL_MUSL_V8_ARCHIVE:?Provide the verified musl V8 archive}"
 : "${LOCAL_MUSL_V8_BINDING:?Provide the matching musl V8 bindings}"
