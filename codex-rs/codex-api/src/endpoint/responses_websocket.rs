@@ -505,14 +505,22 @@ async fn connect_websocket(
 
     let (stream, response) = match response {
         Ok((stream, response)) => {
-            info!(
-                "successfully connected to websocket: {url}, headers: {:?}",
-                response.headers()
+            info!(target: "codex.network_diagnostics",
+                event = "websocket_connected", transport = "websocket",
+                origin = url.origin().ascii_serialization(),
+                http_status = response.status().as_u16(),
+                request_id = response.headers().get("x-request-id")
+                    .or_else(|| response.headers().get("x-oai-request-id"))
+                    .and_then(|value| value.to_str().ok()),
+                cf_ray = response.headers().get("cf-ray").and_then(|value| value.to_str().ok()),
             );
             (stream, response)
         }
         Err(err) => {
-            error!("failed to connect to websocket: {err}, url: {url}");
+            error!(target: "codex.network_diagnostics", event = "websocket_connect_failed",
+                transport = "websocket", origin = url.origin().ascii_serialization(),
+                error.message = codex_secrets::redact_network_diagnostic(&err.to_string()),
+            );
             return Err(map_ws_error(err, &url));
         }
     };
@@ -609,6 +617,14 @@ fn map_wrapped_websocket_error_event(
         ..
     } = event;
 
+    let record_failure = || {
+        tracing::warn!(target: "codex.network_diagnostics", event = "websocket_provider_error",
+            transport = "websocket", http_status = status,
+            error_code = error.as_ref().and_then(|error| error.code.as_deref()).and_then(crate::diagnostics::error_code),
+            request_id = headers.as_ref().and_then(|headers| headers.get("x-request-id").or_else(|| headers.get("x-oai-request-id"))).and_then(Value::as_str),
+        )
+    };
+
     if let Some(error) = error.as_ref()
         && let Some(code) = error.code.as_deref()
         && let Some(fallback_message) = match code {
@@ -619,6 +635,7 @@ fn map_wrapped_websocket_error_event(
             _ => None,
         }
     {
+        record_failure();
         return Some(ApiError::Retryable {
             message: error
                 .message
@@ -632,6 +649,8 @@ fn map_wrapped_websocket_error_event(
     if status.is_success() {
         return None;
     }
+
+    record_failure();
 
     Some(ApiError::Transport(TransportError::Http {
         status,
@@ -665,6 +684,10 @@ fn json_header_value(value: &Value) -> Option<HeaderValue> {
     HeaderValue::from_str(&value).ok()
 }
 
+#[tracing::instrument(name = "responses_websocket.response_stream", skip_all,
+    fields(thread_id = timing_log_context.thread_id.as_deref(),
+        turn_id = timing_log_context.turn_id.as_deref(),
+        model = timing_log_context.model.as_str(), warmup = timing_log_context.warmup))]
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
     tx_event: mpsc::Sender<std::result::Result<ResponseEvent, ApiError>>,
@@ -675,6 +698,9 @@ async fn run_websocket_response_stream(
     timing_log_context: &ResponsesWebsocketTimingLogContext,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
+    let request_started = Instant::now();
+    let mut last_event = "none".to_string();
+    let mut response_id = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
     send_websocket_request(
         ws_stream,
@@ -729,6 +755,7 @@ async fn run_websocket_response_stream(
                     text.as_str(),
                     timing_log_context,
                 );
+                last_event = event.kind().to_string();
                 if event.kind() == "codex.response.metadata"
                     && let Some(etag) =
                         event
@@ -810,6 +837,9 @@ async fn run_websocket_response_stream(
                 }
                 match process_responses_event(event) {
                     Ok(Some(event)) => {
+                        if let ResponseEvent::Created { response_id: id } = &event {
+                            response_id.clone_from(id);
+                        }
                         let is_completed = matches!(event, ResponseEvent::Completed { .. });
                         let _ = tx_event.send(Ok(event)).await;
                         if is_completed {
@@ -825,10 +855,31 @@ async fn run_websocket_response_stream(
             Message::Binary(_) => {
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
-            Message::Close(_) => {
-                return Err(ApiError::Stream(
-                    "websocket closed by server before response.completed".into(),
-                ));
+            Message::Close(frame) => {
+                let code = frame.as_ref().map(|frame| u16::from(frame.code));
+                let reason = frame
+                    .as_ref()
+                    .map(|frame| codex_secrets::redact_network_diagnostic(&frame.reason));
+                tracing::warn!(target: "codex.network_diagnostics",
+                    event = "websocket_close", transport = "websocket",
+                    thread_id = timing_log_context.thread_id.as_deref(),
+                    turn_id = timing_log_context.turn_id.as_deref(),
+                    model = timing_log_context.model, close_code = code,
+                    close_reason = reason.as_deref(), last_event,
+                    response_id = response_id.as_deref(),
+                    elapsed_ms = request_started.elapsed().as_millis() as u64,
+                    connection_reused = timing_log_context.connection_reused,
+                    warmup = timing_log_context.warmup,
+                );
+                let base = "websocket closed by server before response.completed";
+                let message = match code {
+                    Some(code) => format!(
+                        "{base} (code: {code}, reason: {:?})",
+                        reason.as_deref().unwrap_or("")
+                    ),
+                    None => base.to_string(),
+                };
+                return Err(ApiError::Stream(message));
             }
             Message::Frame(_) => {}
             Message::Ping(_) | Message::Pong(_) => {}
@@ -915,6 +966,10 @@ fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<Strin
     serde_json::to_string(request)
         .map_err(|err| ApiError::Stream(format!("failed to encode websocket request: {err}")))
 }
+
+#[cfg(test)]
+#[path = "responses_websocket_diagnostics_tests.rs"]
+mod network_diagnostics_tests;
 
 #[cfg(test)]
 mod tests {

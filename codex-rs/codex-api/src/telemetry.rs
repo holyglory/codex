@@ -83,7 +83,33 @@ where
         let send = send.clone();
         async move {
             let start = Instant::now();
+            let origin = url::Url::parse(&req.url).ok().map(|url| url.origin().ascii_serialization());
             let result = send(req).await;
+            if let Err(TransportError::Http { status, headers, body, .. }) = &result {
+                let parsed = body.as_ref().filter(|body| body.len() <= 1024 * 1024)
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+                let code = parsed.as_ref().and_then(|body| body.pointer("/error/code")).and_then(serde_json::Value::as_str)
+                    .and_then(crate::diagnostics::error_code);
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_failure",
+                    transport = "http", attempt, http_status = status.as_u16(), error_code = code,
+                    origin = origin.as_deref(),
+                    request_id = headers.as_ref().and_then(|headers| headers.get("x-request-id").or_else(|| headers.get("x-oai-request-id"))).and_then(|value| value.to_str().ok()),
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                );
+            } else if let Err(error) = &result {
+                let kind = match error {
+                    TransportError::Connection(_) => "connection",
+                    TransportError::Network(_) => "network",
+                    TransportError::Timeout => "timeout",
+                    TransportError::Build(_) => "request_build",
+                    TransportError::RetryLimit => "retry_exhausted",
+                    TransportError::Http { .. } => "http_status",
+                };
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_transport_failure",
+                    transport = "http", attempt, kind, origin = origin.as_deref(),
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                );
+            }
             if let Some(t) = telemetry.as_ref() {
                 let (status, err) = match &result {
                     Ok(resp) => (Some(resp.status()), None),
