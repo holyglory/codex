@@ -46,6 +46,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
+mod network_diagnostics;
+
 #[cfg(all(
     target_os = "linux",
     target_env = "musl",
@@ -274,6 +276,8 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    /// Read the persistent local network incident ledger as JSON.
+    NetworkErrors(network_diagnostics::NetworkDiagnosticsArgs),
     /// Render the raw model catalog as JSON.
     Models(DebugModelsCommand),
 
@@ -1827,6 +1831,14 @@ async fn cli_main(
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
+            DebugSubcommand::NetworkErrors(args) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug network-errors",
+                )?;
+                network_diagnostics::run(args, root_config_overrides).await?;
+            }
             DebugSubcommand::Models(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),
