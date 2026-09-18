@@ -460,7 +460,7 @@ pub fn process_responses_event(
                 {
                     tracing::warn!(target: "codex.network_diagnostics", event = "provider_stream_error",
                         error_code = error.code.as_deref().and_then(crate::diagnostics::error_code),
-                        response_id = resp_val.get("id").and_then(Value::as_str),
+                        response_id = resp_val.get("id").and_then(serde_json::Value::as_str),
                     );
                     if is_context_window_error(&error) {
                         response_error = ApiError::ContextWindowExceeded;

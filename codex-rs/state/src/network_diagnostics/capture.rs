@@ -65,6 +65,22 @@ impl Visit for NetworkFields {
 }
 
 impl NetworkFields {
+    pub(crate) fn retain_context(&mut self) {
+        self.0.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "thread_id"
+                    | "turn_id"
+                    | "model"
+                    | "transport"
+                    | "endpoint"
+                    | "request_id"
+                    | "warmup"
+                    | "connection_reused"
+            )
+        });
+    }
+
     fn insert(&mut self, name: &str, value: Value) {
         if let Some(name) = field_name(name) {
             self.0.insert(name.to_string(), value);
