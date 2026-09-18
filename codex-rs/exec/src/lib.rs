@@ -1314,9 +1314,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         warn!("in-process app-server shutdown failed: {err}");
     }
     event_processor.print_final_output();
-    if let Some(log_db) = &log_db {
-        log_db.flush().await;
-    }
     if error_seen {
         std::process::exit(1);
     }
