@@ -239,6 +239,7 @@ where
 
         let mut network_fields = crate::network_diagnostics::NetworkFields::default();
         attrs.record(&mut network_fields);
+        network_fields.retain_context();
 
         if let Some(span) = ctx.span(id) {
             span.extensions_mut().insert(network_fields);
@@ -261,6 +262,7 @@ where
 
         let mut network_fields = crate::network_diagnostics::NetworkFields::default();
         values.record(&mut network_fields);
+        network_fields.retain_context();
 
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
