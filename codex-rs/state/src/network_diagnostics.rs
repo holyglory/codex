@@ -21,7 +21,7 @@ pub(crate) use capture::NetworkFields;
 pub(crate) use writer::NetworkSink;
 
 pub const DATABASE_FILENAME: &str = "network_diagnostics_1.sqlite";
-const INCIDENT_PREDICATE: &str = "json_extract(details, '$.level') IN ('WARN', 'ERROR') OR json_extract(details, '$.failed') = 1 OR json_extract(details, '$.error') IS NOT NULL OR json_extract(details, '$.http_status') >= 400";
+const INCIDENT_PREDICATE: &str = "json_extract(details, '$.level') IN ('WARN', 'ERROR') OR json_extract(details, '$.failed') = 1 OR json_extract(details, '$.error') IS NOT NULL OR json_extract(details, '$.http_status') >= 400 OR json_extract(details, '$.dropped_records_before_this_event') > 0";
 
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -121,8 +121,14 @@ async fn open(home: &Path) -> anyhow::Result<SqlitePool> {
     let pool = open_sqlite_pool(&path, SqlitePoolProfile::DurableEvents).await?;
     sqlx::raw_sql("CREATE TABLE IF NOT EXISTS network_events (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp_ms INTEGER NOT NULL, thread_id TEXT, turn_id TEXT, event TEXT NOT NULL, details TEXT NOT NULL); CREATE INDEX IF NOT EXISTS network_events_thread ON network_events(thread_id, id DESC); CREATE INDEX IF NOT EXISTS network_events_time ON network_events(timestamp_ms);")
         .execute(&pool).await?;
-    sqlx::raw_sql(&format!("CREATE INDEX IF NOT EXISTS network_incidents_thread ON network_events(thread_id, id DESC) WHERE {INCIDENT_PREDICATE}; CREATE INDEX IF NOT EXISTS network_incidents_recent ON network_events(id DESC) WHERE {INCIDENT_PREDICATE};"))
-        .execute(&pool).await?;
+    for definition in [
+        "CREATE INDEX IF NOT EXISTS network_incidents_thread ON network_events(thread_id, id DESC)",
+        "CREATE INDEX IF NOT EXISTS network_incidents_recent ON network_events(id DESC)",
+    ] {
+        let mut statement = sqlx::QueryBuilder::<sqlx::Sqlite>::new(definition);
+        statement.push(" WHERE ").push(INCIDENT_PREDICATE);
+        statement.build().execute(&pool).await?;
+    }
     Ok(pool)
 }
 

@@ -28,6 +28,7 @@ async fn network_queue_overflow_is_reported_in_retained_evidence() -> anyhow::Re
     let first = query(
         &sqlite,
         NetworkQuery {
+            incidents_only: true,
             before_id: Some(2),
             limit: 1,
             ..Default::default()
@@ -229,9 +230,12 @@ async fn unknown_events_and_upstream_error_bodies_are_not_retained() -> anyhow::
     let guard = tracing_subscriber::registry()
         .with(layer.clone().with_filter(log_db::default_filter()))
         .set_default();
-    tracing::event!(target: "codex_otel.trace_safe", tracing::Level::INFO, event.name = "codex.sse_event", event.kind = "response.failed", error.message = "{private response body}");
-    tracing::event!(target: "codex_otel.trace_safe", tracing::Level::INFO, event.name = "codex.tool_result", message = "private tool output");
-    tracing::event!(target: "unrelated", tracing::Level::INFO, event.name = "codex.api_request", message = "not a network event");
+    tracing::info_span!("outer", error.message = "private parent error", message = "private parent message").in_scope(|| {
+        tracing::event!(target: "codex_otel.trace_safe", tracing::Level::INFO, event.name = "codex.sse_event", event.kind = "response.failed", error.message = "{private response body}");
+        tracing::event!(target: "codex_otel.trace_safe", tracing::Level::INFO, event.name = "codex.tool_result", message = "private tool output");
+        tracing::event!(target: "unrelated", tracing::Level::INFO, event.name = "codex.api_request", message = "not a network event");
+        tracing::info!(target: "codex.network_diagnostics", event = "http_response_headers", http_status = 200u64);
+    });
     layer.flush().await;
     drop(guard);
     let page = query(
@@ -242,9 +246,19 @@ async fn unknown_events_and_upstream_error_bodies_are_not_retained() -> anyhow::
         },
     )
     .await?;
-    assert_eq!(page.data.len(), 1);
-    assert_eq!(page.data[0].details.get("failed"), Some(&json!(true)));
+    assert_eq!(page.data.len(), 2);
+    assert_eq!(page.data[1].details.get("failed"), Some(&json!(true)));
     assert!(!serde_json::to_string(&page)?.contains("private"));
+    let incidents = query(
+        &sqlite,
+        NetworkQuery {
+            incidents_only: true,
+            limit: 20,
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(incidents.data.len(), 1);
     drop(layer);
     runtime.close().await;
     Ok(())
