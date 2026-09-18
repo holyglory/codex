@@ -63,7 +63,18 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
         TransportError::RetryLimit => "retry limit reached".to_string(),
         TransportError::ResponseTooLarge { .. } => "response body too large".to_string(),
         TransportError::Timeout => "timeout".to_string(),
-        TransportError::Connection(err) => err.to_string(),
+        TransportError::Connection(err) => {
+            let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(err);
+            let mut chain = Vec::new();
+            for _ in 0..8 {
+                let Some(error) = cause else {
+                    break;
+                };
+                chain.push(error.to_string());
+                cause = error.source();
+            }
+            chain.join(": ")
+        }
         TransportError::Network(err) => err.to_string(),
         TransportError::Build(err) => err.to_string(),
     }

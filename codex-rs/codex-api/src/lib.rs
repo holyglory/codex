@@ -1,6 +1,7 @@
 pub(crate) mod api_bridge;
 pub(crate) mod auth;
 pub(crate) mod common;
+mod diagnostics;
 pub(crate) mod endpoint;
 pub(crate) mod error;
 pub(crate) mod files;
