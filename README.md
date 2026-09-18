@@ -230,6 +230,13 @@ The default view shows incidents; `--include-context` adds successful request an
 completion records around them. Incident queries use dedicated indexes, so a long
 successful run does not bury earlier failures or require scanning all its activity.
 
+Large WebSocket requests upload complete context items in ordered batches before
+generating one response. The client targets 4 MiB per request; this is a batching
+choice, not the server's documented limit. If an item cannot fit intact or the
+server rejects preparation, Codex uses HTTP with the complete request. No images
+or conversation items are discarded. The ledger records request byte counts and
+batch preparation alongside recovery events.
+
 Request/response bodies, prompts, tool output, credentials, and arbitrary headers
 are excluded. Individual error/reason fields retain up to 8,192 characters, with
 an explicit truncation marker; metadata fields retain up to 512. Disk write
