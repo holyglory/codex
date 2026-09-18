@@ -2186,14 +2186,6 @@ impl ModelClientSession {
 
             let (incremental_request, mut previous_response_id_from_untraced_warmup) =
                 self.prepare_websocket_request(&request);
-            let inference_trace_attempt = if warmup {
-                InferenceTraceAttempt::disabled()
-            } else {
-                inference_trace.start_attempt()
-            };
-            if previous_response_id_from_untraced_warmup {
-                inference_trace_attempt.record_started(&request);
-            }
 
             let (previous_response_id, mut incremental_items) = match incremental_request {
                 Some((response_id, items)) => (Some(response_id), Some(items)),
@@ -2235,16 +2227,22 @@ impl ModelClientSession {
             match self.stage_large_websocket_request(ws_payload).await {
                 Ok(websocket_batching::StagingOutcome::Unchanged) => {}
                 Ok(websocket_batching::StagingOutcome::Staged) => {
-                    if !previous_response_id_from_untraced_warmup {
-                        // Preparation is untraced; replay still needs all input.
-                        inference_trace_attempt.record_started(&request);
-                    }
                     previous_response_id_from_untraced_warmup = true;
                 }
                 Ok(websocket_batching::StagingOutcome::FallbackToHttp) => {
                     return Ok(WebsocketStreamOutcome::FallbackToHttp);
                 }
                 Err(err) => return Err(provider.map_api_error(err)),
+            }
+            // Preparation may fall back or be cancelled without ever requesting
+            // inference. Start the trace only once the generated request is ready.
+            let inference_trace_attempt = if warmup {
+                InferenceTraceAttempt::disabled()
+            } else {
+                inference_trace.start_attempt()
+            };
+            if previous_response_id_from_untraced_warmup {
+                inference_trace_attempt.record_started(&request);
             }
             if !previous_response_id_from_untraced_warmup {
                 inference_trace_attempt.record_started(&ws_request);
