@@ -323,6 +323,39 @@ def verify(binary):
                 assert failed.status.value == "failed"
                 refused_thread = thread.id
             refused_rows = read_ledger(binary, config, refused_thread)
+            cli = subprocess.run(
+                [
+                    str(binary),
+                    "exec",
+                    "--skip-git-repo-check",
+                    "connection refused CLI fixture",
+                ],
+                env=os.environ | config.env,
+                cwd=config.cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert cli.returncode != 0
+            cli_rows = read_ledger(binary, config, refused_thread)
+            assert cli_rows == refused_rows, (
+                "CLI execution changed an unrelated task's records"
+            )
+            cli_result = subprocess.run(
+                [str(binary), "debug", "network-errors", "--limit", "100"],
+                env=os.environ | config.env,
+                cwd=config.cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            cli_incidents = json.loads(cli_result.stdout)["data"]
+            assert any(
+                row["threadId"] != refused_thread
+                and row["event"] == "http_transport_failure"
+                for row in cli_incidents
+            ), "CLI network failure was not retained"
             assert any(
                 row["event"] == "http_transport_failure"
                 and row["details"].get("origin") == harness.responses.url
@@ -349,6 +382,7 @@ def verify(binary):
                 "normal_close_not_flagged": True,
                 "retained_after_process_restart": True,
                 "connection_failure_cause_retained": True,
+                "cli_failure_retained": True,
                 "credentials_and_payloads_excluded": True,
             }
 

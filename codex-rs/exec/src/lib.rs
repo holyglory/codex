@@ -658,8 +658,15 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
 
+    let state_db = codex_core::init_state_db(&config).await;
+    let log_db = state_db.clone().map(codex_state::log_db::start);
+    let log_db_layer = log_db
+        .clone()
+        .map(|layer| layer.with_filter(codex_state::log_db::default_filter()));
+
     let _ = tracing_subscriber::registry()
         .with(fmt_layer)
+        .with(log_db_layer)
         .with(otel_tracing_layer)
         .with(otel_logger_layer)
         .try_init();
@@ -686,7 +693,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
     );
-    let state_db = codex_core::init_state_db(&config).await;
     let environment_manager = if run_loader_overrides.ignore_user_config {
         EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory())
             .await?
@@ -706,7 +712,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         strict_config,
         cloud_config_bundle: run_cloud_config_bundle,
         feedback: CodexFeedback::new(),
-        log_db: None,
+        log_db: log_db.clone(),
         state_db: state_db.clone(),
         environment_manager: std::sync::Arc::new(environment_manager),
         config_warnings,
@@ -1308,6 +1314,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         warn!("in-process app-server shutdown failed: {err}");
     }
     event_processor.print_final_output();
+    if let Some(log_db) = &log_db {
+        log_db.flush().await;
+    }
     if error_seen {
         std::process::exit(1);
     }
