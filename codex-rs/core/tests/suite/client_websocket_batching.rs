@@ -42,10 +42,13 @@ async fn staging_preserves_context_window_errors() {
             &InferenceTraceContext::disabled(),
         )
         .await;
-    assert!(matches!(
-        result,
-        Err(codex_protocol::error::CodexErr::ContextWindowExceeded)
-    ));
+    let Err(error) = result else {
+        panic!("staging swallowed a context-window error");
+    };
+    assert_eq!(
+        error.to_string(),
+        codex_protocol::error::CodexErr::ContextWindowExceeded.to_string()
+    );
     assert_eq!(server.single_connection().len(), 1);
     server.shutdown().await;
 }
