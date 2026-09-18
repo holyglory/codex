@@ -13,9 +13,11 @@ use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
 
+mod diagnostics;
 mod local;
 mod sanitizer;
 
+pub use diagnostics::redact_network_diagnostic;
 pub use local::LocalSecretsBackend;
 pub use local::LocalSecretsNamespace;
 pub use sanitizer::redact_secrets;
