@@ -25,19 +25,27 @@ async fn staging_preserves_context_window_errors() {
         "response": {"id": "failed-stage", "error": {
             "code": "context_length_exceeded", "message": "context exceeded"
         }}
-    })]]]).await;
+    })]]])
+    .await;
     let harness = websocket_harness(&server).await;
-    let result = harness.client.new_session().stream(
-        &prompt_with_input(large_input()),
-        &harness.model_info,
-        &harness.session_telemetry,
-        harness.effort.clone(),
-        harness.summary,
-        /*service_tier*/ None,
-        &turn_metadata(&harness, /*turn_id*/ None),
-        &InferenceTraceContext::disabled(),
-    ).await;
-    assert!(matches!(result, Err(codex_core::error::CodexErr::ContextWindowExceeded)));
+    let result = harness
+        .client
+        .new_session()
+        .stream(
+            &prompt_with_input(large_input()),
+            &harness.model_info,
+            &harness.session_telemetry,
+            harness.effort.clone(),
+            harness.summary,
+            /*service_tier*/ None,
+            &turn_metadata(&harness, /*turn_id*/ None),
+            &InferenceTraceContext::disabled(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(codex_core::error::CodexErr::ContextWindowExceeded)
+    ));
     assert_eq!(server.single_connection().len(), 1);
     server.shutdown().await;
 }
