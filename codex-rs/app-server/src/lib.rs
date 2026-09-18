@@ -953,7 +953,7 @@ pub async fn run_main_with_transport_options(
             config_manager,
             environment_manager,
             feedback: feedback.clone(),
-            log_db,
+            log_db: log_db.clone(),
             state_db: state_db.clone(),
             config_warnings,
             session_source,
@@ -1253,6 +1253,10 @@ pub async fn run_main_with_transport_options(
     let _ = otel_reloader_handle.await;
     for handle in transport_accept_handles {
         let _ = handle.await;
+    }
+
+    if let Some(log_db) = &log_db {
+        log_db.flush().await;
     }
 
     Ok(())

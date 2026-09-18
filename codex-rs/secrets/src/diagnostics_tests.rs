@@ -18,6 +18,10 @@ fn network_errors_preserve_reason_but_remove_credentials_and_urls() {
         ),
         ("cookie: session=private", "cookie: [REDACTED_SECRET]"),
         (
+            r#"{"authorization":"Basic c2VjcmV0"}"#,
+            r#"{"authorization: [REDACTED_SECRET]"#,
+        ),
+        (
             "connection refused https://user:pass@host/path?state=private",
             "connection refused [REDACTED_URL]",
         ),
