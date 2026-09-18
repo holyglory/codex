@@ -64,7 +64,7 @@ impl NetworkSink {
                     }
                     let result = sqlx::query("INSERT INTO network_events (timestamp_ms, thread_id, turn_id, event, details) VALUES (?, ?, ?, ?, ?)")
                         .bind(event.timestamp_ms).bind(&event.thread_id).bind(&event.turn_id)
-                        .bind(&event.event).bind(serde_json::to_string(&details).expect("diagnostic JSON values"))
+                        .bind(&event.event).bind(serde_json::Value::Object(details.into_iter().collect()).to_string())
                         .execute(db).await;
                     if result.is_ok() {
                         gaps.fetch_sub(missing, Ordering::Relaxed);
