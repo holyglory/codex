@@ -147,10 +147,12 @@ async fn cancelled_upload_does_not_generate_or_reuse_partial_context() {
     skip_if_no_network!();
     let server = start_websocket_server_with_headers(vec![
         WebSocketConnectionConfig {
-            requests: vec![vec![]],
+            // Keep reading until cancellation disconnects the client, then
+            // allow the fixture to accept the recovery connection.
+            requests: vec![vec![], vec![]],
             response_headers: vec![],
             accept_delay: None,
-            close_after_requests: false,
+            close_after_requests: true,
         },
         WebSocketConnectionConfig {
             requests: replies(/*count*/ 3),
