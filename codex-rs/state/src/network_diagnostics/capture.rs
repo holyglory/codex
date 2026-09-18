@@ -191,7 +191,9 @@ fn field_name(name: &str) -> Option<&str> {
         | "error_code" | "duration_ms" | "attempt" | "success" | "retries" | "max_retries"
         | "retry_delay" | "close_code" | "close_reason" | "request_id" | "cf_ray" | "kind"
         | "transport" | "elapsed_ms" | "last_event" | "response_id" | "connection_reused"
-        | "warmup" => Some(name),
+        | "warmup" | "request_bytes" | "batch_limit_bytes" | "batch_index" | "input_items" => {
+            Some(name)
+        }
         _ => None,
     }
 }
