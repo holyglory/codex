@@ -43,7 +43,12 @@ fn encoded_size(value: &impl Serialize) -> Result<usize, ApiError> {
 }
 
 impl ModelClientSession {
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(
+        transport = "websocket",
+        thread_id = %self.client.state.thread_id,
+        turn_id = request.client_metadata.as_ref().and_then(|metadata| metadata.get("turn_id")).map(String::as_str),
+        model = request.model,
+    ))]
     pub(super) async fn stage_large_websocket_request(
         &mut self,
         request: &mut ResponseCreateWsRequest<'_>,
@@ -112,7 +117,10 @@ impl ModelClientSession {
                 .await
             {
                 Ok(stream) => stream,
-                Err(_) => return Ok(StagingOutcome::FallbackToHttp),
+                Err(ApiError::Stream(_) | ApiError::InvalidRequest { .. }) => {
+                    return Ok(StagingOutcome::FallbackToHttp);
+                }
+                Err(err) => return Err(err),
             };
             let response_id = loop {
                 match stream.next().await {
@@ -143,16 +151,19 @@ impl ModelClientSession {
                         | ResponseEvent::ReasoningContentDelta { .. }
                         | ResponseEvent::ReasoningSummaryPartAdded { .. },
                     ))
-                    | Some(Err(_))
+                    | Some(Err(ApiError::Stream(_) | ApiError::InvalidRequest { .. }))
                     | None => {
                         tracing::warn!(target: "codex.network_diagnostics",
                             event = "websocket_batching_fallback", kind = "staging_failed",
                             batch_index, request_bytes = batch_bytes);
                         return Ok(StagingOutcome::FallbackToHttp);
                     }
+                    Some(Err(err)) => return Err(err),
                 }
             };
             request.previous_response_id = Some(response_id);
+            self.websocket_session
+                .set_connection_reused(/*connection_reused*/ true);
             start = end;
         }
     }
