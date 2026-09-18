@@ -14,6 +14,7 @@ mod extract;
 pub mod log_db;
 mod migrations;
 mod model;
+pub mod network_diagnostics;
 mod paths;
 mod runtime;
 mod sqlite;
