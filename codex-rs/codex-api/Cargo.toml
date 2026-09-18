@@ -12,6 +12,7 @@ chrono = { workspace = true }
 codex-client = { workspace = true }
 codex-http-client = { workspace = true }
 codex-protocol = { workspace = true }
+codex-secrets = { workspace = true }
 codex-utils-rustls-provider = { workspace = true }
 codex-websocket-client = { workspace = true }
 futures = { workspace = true }
@@ -32,6 +33,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+insta = { workspace = true }
 assert_matches = { workspace = true }
 pretty_assertions = { workspace = true }
 rcgen = { workspace = true }

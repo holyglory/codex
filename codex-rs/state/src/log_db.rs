@@ -72,7 +72,7 @@ pub fn default_filter() -> Targets {
         .with_target("tonic::transport", LevelFilter::WARN)
         .with_target("tower::buffer", LevelFilter::WARN)
         .with_target("codex_otel.log_only", LevelFilter::OFF)
-        .with_target("codex_otel.trace_safe", LevelFilter::OFF)
+        .with_target("codex_otel.trace_safe", LevelFilter::INFO)
         .with_target("rmcp", LevelFilter::INFO)
         .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
         .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF)
@@ -139,6 +139,7 @@ pub struct LogDbLayer {
     has_write_failure: Arc<AtomicBool>,
     failure_reporter: Arc<RwLock<Arc<dyn LogWriteFailureReporter>>>,
     process_uuid: String,
+    network: Option<crate::network_diagnostics::NetworkSink>,
 }
 
 /// Starts the SQLite log writer with a shared, independent failure reporter.
@@ -156,6 +157,7 @@ impl Clone for LogDbLayer {
             has_write_failure: self.has_write_failure.clone(),
             failure_reporter: self.failure_reporter.clone(),
             process_uuid: self.process_uuid.clone(),
+            network: self.network.clone(),
         }
     }
 }
@@ -175,20 +177,16 @@ impl LogDbLayer {
     ) -> Self {
         let config = config.normalized();
         let (sender, receiver) = mpsc::channel(config.queue_capacity);
-        let has_write_failure = Arc::new(AtomicBool::new(false));
-        let failure_reporter = Arc::new(RwLock::new(failure_reporter));
-        tokio::spawn(run_inserter(
-            state_db,
-            receiver,
-            config,
-            failure_reporter.clone(),
-            has_write_failure.clone(),
+        let network = Some(crate::network_diagnostics::NetworkSink::start(
+            state_db.sqlite().clone(),
         ));
+        tokio::spawn(run_inserter(state_db, receiver, config));
         Self {
             sender,
             has_write_failure,
             failure_reporter,
             process_uuid: current_process_log_uuid().to_string(),
+            network,
         }
     }
 
@@ -209,6 +207,9 @@ impl LogDbLayer {
         let (tx, rx) = oneshot::channel();
         if self.sender.send(LogDbCommand::Flush(tx)).await.is_ok() {
             let _ = rx.await;
+        }
+        if let Some(network) = &self.network {
+            network.flush().await;
         }
     }
 
@@ -236,7 +237,11 @@ where
         let mut visitor = SpanFieldVisitor::default();
         attrs.record(&mut visitor);
 
+        let mut network_fields = crate::network_diagnostics::NetworkFields::default();
+        attrs.record(&mut network_fields);
+
         if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(network_fields);
             span.extensions_mut().insert(SpanLogContext {
                 name: span.metadata().name().to_string(),
                 formatted_fields: format_fields(attrs),
@@ -254,8 +259,17 @@ where
         let mut visitor = SpanFieldVisitor::default();
         values.record(&mut visitor);
 
+        let mut network_fields = crate::network_diagnostics::NetworkFields::default();
+        values.record(&mut network_fields);
+
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
+            if let Some(fields) = extensions.get_mut::<crate::network_diagnostics::NetworkFields>()
+            {
+                fields.0.extend(network_fields.0);
+            } else {
+                extensions.insert(network_fields);
+            }
             if let Some(log_context) = extensions.get_mut::<SpanLogContext>() {
                 if let Some(thread_id) = visitor.thread_id {
                     log_context.thread_id = Some(thread_id);
@@ -274,6 +288,22 @@ where
     fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let metadata = event.metadata();
         let target = metadata.target();
+        if let Some(network) = &self.network
+            && let Some(mut record) = crate::network_diagnostics::NetworkFields::event(event, &ctx)
+        {
+            record
+                .details
+                .insert("process_uuid".to_string(), self.process_uuid.clone().into());
+            network.record(record);
+        }
+        // These events are inspected only by the allowlisted network collector.
+        // Other telemetry, including prompt/tool events, stays out of local logs.
+        if matches!(
+            target,
+            "codex_otel.trace_safe" | "codex.network_diagnostics"
+        ) {
+            return;
+        }
         // SQLx can emit from both the inserter task and its separate worker threads.
         // This guard must remain local to the sink and independent of optional filters.
         if target
@@ -911,6 +941,7 @@ mod tests {
             has_write_failure: Arc::new(AtomicBool::new(false)),
             failure_reporter: Arc::new(RwLock::new(Arc::new(SharedWriter::default()))),
             process_uuid: "process-1".to_string(),
+            network: None,
         };
 
         layer.try_send(test_entry("first-queued-log"));
@@ -933,6 +964,7 @@ mod tests {
             has_write_failure: Arc::new(AtomicBool::new(false)),
             failure_reporter: Arc::new(RwLock::new(Arc::new(SharedWriter::default()))),
             process_uuid: "process-1".to_string(),
+            network: None,
         };
 
         layer.try_send(test_entry("queued-before-flush"));
