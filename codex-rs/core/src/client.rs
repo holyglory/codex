@@ -23,6 +23,8 @@
 //! WebSocket prewarm is treated as the first websocket connection attempt for a turn. If it
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
+mod websocket_batching;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -2182,19 +2184,14 @@ impl ModelClientSession {
                 Err(err) => return Err(provider.map_api_error(err)),
             }
 
-            let (incremental_request, previous_response_id_from_untraced_warmup) =
+            let (incremental_request, mut previous_response_id_from_untraced_warmup) =
                 self.prepare_websocket_request(&request);
             let inference_trace_attempt = if warmup {
-                // Prewarm sends `generate=false`; it is connection setup, not a
-                // model inference attempt that should appear in rollout traces.
                 InferenceTraceAttempt::disabled()
             } else {
                 inference_trace.start_attempt()
             };
             if previous_response_id_from_untraced_warmup {
-                // The transport can reuse an untraced warmup response id and omit the
-                // already-sent input, but rollout replay needs the logical model-visible
-                // request rather than the compressed websocket delta.
                 inference_trace_attempt.record_started(&request);
             }
 
@@ -2234,6 +2231,21 @@ impl ModelClientSession {
             );
             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
             stamp_ws_stream_request_start_ms(&mut ws_request);
+            let ResponsesWsRequest::ResponseCreate(ws_payload) = &mut ws_request;
+            match self.stage_large_websocket_request(ws_payload).await {
+                Ok(websocket_batching::StagingOutcome::Unchanged) => {}
+                Ok(websocket_batching::StagingOutcome::Staged) => {
+                    if !previous_response_id_from_untraced_warmup {
+                        // Preparation is untraced; replay still needs all input.
+                        inference_trace_attempt.record_started(&request);
+                    }
+                    previous_response_id_from_untraced_warmup = true;
+                }
+                Ok(websocket_batching::StagingOutcome::FallbackToHttp) => {
+                    return Ok(WebsocketStreamOutcome::FallbackToHttp);
+                }
+                Err(err) => return Err(provider.map_api_error(err)),
+            }
             if !previous_response_id_from_untraced_warmup {
                 inference_trace_attempt.record_started(&ws_request);
             }

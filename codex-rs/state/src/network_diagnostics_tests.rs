@@ -9,6 +9,41 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::test]
+async fn batching_retains_sizes_without_request_content() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(dir.path())?);
+    let runtime = StateRuntime::init(sqlite.clone(), "test".to_string()).await?;
+    let layer = log_db::start(runtime);
+    let guard = tracing_subscriber::registry()
+        .with(layer.clone())
+        .set_default();
+    let request = json!({"input": ["private content with 🦀 and \"quotes\""]});
+    let request_bytes = serde_json::to_vec(&request)?.len();
+    tracing::info!(target: "codex.network_diagnostics", event = "websocket_context_batch",
+        thread_id = "batch-fixture", batch_index = 2u64, request_bytes,
+        batch_limit_bytes = 4096u64, input_items = 1u64, payload = %request);
+    layer.flush().await;
+    drop(guard);
+    let page = query(&sqlite, NetworkQuery::default()).await?;
+    let mut details = page.data[0].details.clone();
+    details.remove("process_uuid");
+    assert_eq!(
+        details,
+        BTreeMap::from([
+            ("event".into(), json!("websocket_context_batch")),
+            ("thread_id".into(), json!("batch-fixture")),
+            ("batch_index".into(), json!(2)),
+            ("request_bytes".into(), json!(request_bytes)),
+            ("batch_limit_bytes".into(), json!(4096)),
+            ("input_items".into(), json!(1)),
+            ("level".into(), json!("INFO")),
+            ("source".into(), json!("codex.network_diagnostics")),
+        ])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn network_queue_overflow_is_reported_in_retained_evidence() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(dir.path())?);

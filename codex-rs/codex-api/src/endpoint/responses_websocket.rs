@@ -956,6 +956,9 @@ async fn send_websocket_request(
     connection_reused: bool,
 ) -> Result<(), ApiError> {
     let request_start = Instant::now();
+    tracing::info!(target: "codex.network_diagnostics",
+        event = "websocket_request_size", transport = "websocket",
+        request_bytes = request_text.len());
     let result = tokio::time::timeout(
         idle_timeout,
         ws_stream.send(Message::Text(request_text.into())),

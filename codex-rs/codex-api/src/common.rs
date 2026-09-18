@@ -340,7 +340,7 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponseCreateWsRequest<'a> {
     pub model: &'a str,
     #[serde(skip_serializing_if = "str::is_empty")]

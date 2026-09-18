@@ -66,6 +66,9 @@ use tempfile::TempDir;
 use tracing::Instrument;
 use tracing_test::traced_test;
 
+#[path = "client_websocket_batching.rs"]
+mod batching;
+
 const MODEL: &str = "gpt-5.4";
 const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 const USER_AGENT_HEADER: &str = "user-agent";
