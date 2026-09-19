@@ -23,6 +23,7 @@ from openai_codex import (
     ImageInput,
     Sandbox,
     TextInput,
+    Thread,
 )
 
 LIMIT = 4 * 1024 * 1024
@@ -391,14 +392,20 @@ def verify_rollout(binary, source):
             )
             mock.enqueue_assistant_message("BATCH_OK")
             with Codex(config=config) as client:
-                thread = client.thread_resume(
+                # Resume metadata is sufficient here; hydrating every historical
+                # UI item also asks the SDK to decode obsolete item variants.
+                resumed = client._client.thread_resume(
                     thread_id,
-                    model="mock-model",
-                    model_provider="mock_provider",
-                    cwd=str(harness.workspace),
-                    approval_mode=ApprovalMode.deny_all,
-                    sandbox=Sandbox.read_only,
+                    {
+                        "excludeTurns": True,
+                        "model": "mock-model",
+                        "modelProvider": "mock_provider",
+                        "cwd": str(harness.workspace),
+                        "approvalPolicy": "never",
+                        "sandbox": "read-only",
+                    },
                 )
+                thread = Thread(client._client, resumed.thread.id)
                 assert (
                     thread.run("Verify saved history restoration.").final_response
                     == "BATCH_OK"
