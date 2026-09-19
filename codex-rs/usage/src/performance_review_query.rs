@@ -23,23 +23,24 @@ pub(crate) async fn window_operation_ids(
     if query.time_range.is_none() {
         return Ok(None);
     }
+    // Put bounds first so SQLite can seek time indexes before reading collector rows.
     let mut builder = selection(query, source);
-    builder.push(", candidates(id) AS (SELECT id FROM operations CROSS JOIN bounds WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT operation_id FROM operation_events CROSS JOIN bounds WHERE terminal = 1 AND occurred_at_ms > lower_ms
+    builder.push(", candidates(id) AS (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
+        UNION SELECT operation_id FROM bounds CROSS JOIN operation_events WHERE terminal = 1 AND occurred_at_ms > lower_ms
         UNION ");
     builder.push(match source.classification {
-        ClassificationSource::Cache => "SELECT operation_id FROM _usage_report_operations CROSS JOIN bounds WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
-        ClassificationSource::Canonical => "SELECT operation.id FROM operations operation CROSS JOIN bounds WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
+        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
+        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
     });
     builder.push(
         " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
-        FROM token_observations token CROSS JOIN bounds
+        FROM bounds CROSS JOIN token_observations token
         LEFT JOIN model_requests request ON request.id = token.model_request_id
         LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
         LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
         WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
           AND token.category_path NOT GLOB 'attribution.items.*'
-        UNION SELECT operation_id FROM coverage_events CROSS JOIN bounds
+        UNION SELECT operation_id FROM bounds CROSS JOIN coverage_events
           WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
         SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001",
     );
