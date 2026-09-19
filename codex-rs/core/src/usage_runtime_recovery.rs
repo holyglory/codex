@@ -2,30 +2,67 @@ use super::tool::UsageToolAttempt;
 use super::*;
 
 impl UsageRuntime {
+    pub(crate) async fn restore_work_context(
+        &self,
+        project: Option<&codex_event_subscriptions::ProjectAutomation>,
+        thread_id: codex_protocol::ThreadId,
+    ) {
+        let thread = thread_id.to_string();
+        let context = if let Some(project) =
+            project.filter(|project| project.threads.contains_key(&thread))
+        {
+            codex_usage::OperationWorkContext {
+                native_project_id: Some(project.project_id.clone()),
+                workstream_id: project.thread_workstreams.get(&thread).cloned(),
+                outcome_id: project.thread_outcomes.get(&thread).cloned(),
+                experiment_ref: project.thread_experiments.get(&thread).cloned(),
+            }
+        } else {
+            codex_usage::OperationWorkContext::default()
+        };
+        self.work_contexts.lock().await.insert(thread, context);
+    }
+
     pub(crate) async fn begin_model_attempt(
         self: &Arc<Self>,
         context: ModelAttemptContext<'_>,
     ) -> UsageAttempt {
+        let work_context = self
+            .work_contexts
+            .lock()
+            .await
+            .get(context.thread_id)
+            .cloned()
+            .unwrap_or_default();
         self.flush_pending_usage().await;
         if !self.faulted.load(Ordering::Acquire)
-            && let Ok(model_attempt) = self.begin_model_attempt_once(&context).await
+            && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
         {
             return model_attempt;
         }
-        self.begin_buffered_model_attempt(&context).await
+        self.begin_buffered_model_attempt(&context, &work_context)
+            .await
     }
 
     pub(crate) async fn begin_tool_attempt(
         self: &Arc<Self>,
         context: ToolAttemptContext<'_>,
     ) -> UsageToolAttempt {
+        let work_context = self
+            .work_contexts
+            .lock()
+            .await
+            .get(context.thread_id)
+            .cloned()
+            .unwrap_or_default();
         self.flush_pending_usage().await;
         if !self.faulted.load(Ordering::Acquire)
-            && let Ok(tool_attempt) = self.begin_tool_attempt_once(&context).await
+            && let Ok(tool_attempt) = self.begin_tool_attempt_once(&context, &work_context).await
         {
             return tool_attempt;
         }
-        self.begin_buffered_tool_attempt(&context).await
+        self.begin_buffered_tool_attempt(&context, &work_context)
+            .await
     }
 
     pub(super) async fn recover_after_write_failure(&self) -> Result<(), CodexErr> {

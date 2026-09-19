@@ -83,6 +83,7 @@ async fn repository_lookup_index_preserves_history_across_reopen() {
 #[cfg(unix)]
 fn operation(process_id: &ProcessId) -> NewOperation {
     NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id: *process_id,
         thread_id: None,
@@ -197,7 +198,7 @@ async fn operation_lifecycle_is_idempotent_and_doctor_reports_completion() {
     assert_eq!(
         DoctorReport {
             integrity: "ok".to_string(),
-            migration_count: 6,
+            migration_count: 7,
             incomplete_operations: 0,
         },
         store.doctor().await.expect("doctor")
@@ -617,7 +618,7 @@ async fn populated_v3_database_migrates_without_losing_account_attribution() {
     let store = UsageStore::open(temp.path())
         .await
         .expect("migrate v3 store");
-    assert_eq!(store.doctor().await.expect("doctor").migration_count, 6);
+    assert_eq!(store.doctor().await.expect("doctor").migration_count, 7);
     assert_eq!(
         (
             sqlx::query_as::<_, (String, String, Option<String>)>(
@@ -730,4 +731,134 @@ async fn usage_directory_and_database_are_private() {
             & 0o777
     );
     store.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn operation_work_context_is_immutable_and_never_backfilled() {
+    let home = tempfile::tempdir().expect("home");
+    let store = UsageStore::open(home.path()).await.expect("store");
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 1, /*started_at_ms*/ 1)
+        .await
+        .expect("process");
+    let mut legacy = operation(&process);
+    store
+        .begin_operation(&legacy)
+        .await
+        .expect("legacy operation");
+    let context = crate::OperationWorkContext {
+        native_project_id: Some("project-fixture".into()),
+        workstream_id: Some("accounting".into()),
+        outcome_id: Some("outcome-a".into()),
+        experiment_ref: Some("review-fixture@1".into()),
+    };
+    legacy.work_context = Some(context.clone());
+    assert!(matches!(
+        store.begin_operation(&legacy).await,
+        Err(UsageStoreError::OperationConflict)
+    ));
+    let mut current = operation(&process);
+    current.work_context = Some(context.clone());
+    store
+        .begin_operation(&current)
+        .await
+        .expect("prospective operation");
+    store
+        .begin_operation(&current)
+        .await
+        .expect("idempotent replay");
+    current.work_context.as_mut().expect("context").outcome_id = Some("outcome-b".into());
+    assert!(matches!(
+        store.begin_operation(&current).await,
+        Err(UsageStoreError::OperationConflict)
+    ));
+    let mut cleared = operation(&process);
+    cleared.work_context = Some(crate::OperationWorkContext {
+        outcome_id: None,
+        ..context
+    });
+    store
+        .begin_operation(&cleared)
+        .await
+        .expect("explicit clear");
+    let mut unknown = operation(&process);
+    unknown.work_context = Some(crate::OperationWorkContext::default());
+    store
+        .begin_operation(&unknown)
+        .await
+        .expect("unknown prospective context");
+    let rows: Vec<(Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT native_project_id, outcome_id, provenance FROM operation_work_contexts ORDER BY rowid")
+        .fetch_all(&store.pool).await.expect("snapshots");
+    assert_eq!(
+        rows,
+        vec![
+            (
+                Some("project-fixture".into()),
+                Some("outcome-a".into()),
+                "runtime_observed".into()
+            ),
+            (
+                Some("project-fixture".into()),
+                None,
+                "runtime_observed".into()
+            ),
+            (None, None, "unknown".into()),
+        ]
+    );
+    assert!(
+        sqlx::query("UPDATE operation_work_contexts SET outcome_id = 'changed'")
+            .execute(&store.pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM operation_work_contexts")
+            .execute(&store.pool)
+            .await
+            .is_err()
+    );
+    store.close().await;
+    let reopened = UsageStore::open(home.path()).await.expect("reopen");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operation_work_contexts")
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("count");
+    assert_eq!(count, 3);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn operation_and_work_context_commit_atomically() {
+    let home = tempfile::tempdir().expect("home");
+    let store = UsageStore::open(home.path()).await.expect("store");
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 1, /*started_at_ms*/ 1)
+        .await
+        .expect("process");
+    sqlx::query("CREATE TRIGGER reject_context BEFORE INSERT ON operation_work_contexts BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+        .execute(&store.pool).await.expect("failure injection");
+    let mut next = operation(&process);
+    next.work_context = Some(crate::OperationWorkContext::default());
+    assert!(store.begin_operation(&next).await.is_err());
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations")
+        .fetch_one(&store.pool)
+        .await
+        .expect("count");
+    assert_eq!(count, 0);
+    sqlx::query("DROP TRIGGER reject_context")
+        .execute(&store.pool)
+        .await
+        .expect("restore writes");
+    store.begin_operation(&next).await.expect("replay");
+    let counts: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM operations), (SELECT COUNT(*) FROM operation_work_contexts)",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("counts");
+    assert_eq!(counts, (1, 1));
 }
