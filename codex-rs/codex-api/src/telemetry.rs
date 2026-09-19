@@ -5,7 +5,7 @@ use codex_client::Response;
 use codex_client::RetryPolicy;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
-use codex_client::run_with_retry;
+use codex_client::run_with_retry_if;
 use http::StatusCode;
 use std::future::Future;
 use std::sync::Arc;
@@ -70,15 +70,16 @@ pub(crate) async fn run_with_request_telemetry<T, F, Fut>(
     telemetry: Option<Arc<dyn RequestTelemetry>>,
     make_request: impl FnMut() -> Request,
     send: F,
+    retry_if: impl Fn(&TransportError) -> bool,
 ) -> Result<T, TransportError>
 where
     T: WithStatus,
     F: Clone + Fn(Request) -> Fut,
     Fut: Future<Output = Result<T, TransportError>>,
 {
-    // Wraps `run_with_retry` to attach per-attempt request telemetry for both
+    // Wraps `run_with_retry_if` to attach per-attempt request telemetry for both
     // unary and streaming HTTP calls.
-    run_with_retry(policy, make_request, move |req, attempt| {
+    run_with_retry_if(policy, make_request, move |req, attempt| {
         let telemetry = telemetry.clone();
         let send = send.clone();
         async move {
@@ -119,6 +120,6 @@ where
             }
             result
         }
-    })
+    }, retry_if)
     .await
 }
