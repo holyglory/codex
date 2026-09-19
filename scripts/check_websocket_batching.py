@@ -2,10 +2,12 @@
 
 import argparse
 import base64
+from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
 import random
+import shutil
 import socket
 import struct
 import tempfile
@@ -102,9 +104,47 @@ class BatchHandler(_ResponsesHandler):
                 context = cache.get(previous, []) + request["input"]
                 warmup = request.get("generate") is False
                 images = list(image_inputs(context))
+                pending = set()
+                for item in context:
+                    kind = item.get("type", "")
+                    call_id = item.get("call_id")
+                    if call_id and kind in ("custom_tool_call", "function_call"):
+                        pending.add((kind, call_id))
+                    elif call_id and kind in (
+                        "custom_tool_call_output",
+                        "function_call_output",
+                    ):
+                        pending.discard((kind.removesuffix("_output"), call_id))
+                if pending:
+                    mock.batch_incomplete += 1
+                    self.event(
+                        {
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "No tool output found for custom tool call.",
+                                "param": "input",
+                            },
+                        }
+                    )
+                    return
                 if warmup and images and mock.batch_reject_staging:
                     mock.batch_rejections += 1
-                    self.frame(8, struct.pack("!H", 1009))
+                    if mock.batch_reject_staging == "wrapped400":
+                        self.event(
+                            {
+                                "type": "error",
+                                "status": 400,
+                                "error": {
+                                    "type": "invalid_request_error",
+                                    "message": "Staging is not supported.",
+                                    "param": "input",
+                                },
+                            }
+                        )
+                    else:
+                        self.frame(8, struct.pack("!H", 1009))
                     return
                 index = len(mock.batch_requests)
                 response_id = f"batch-response-{index}"
@@ -157,6 +197,7 @@ def verify(binary):
         mock.batch_rejections = 0
         mock.batch_oversized = 0
         mock.batch_http = 0
+        mock.batch_incomplete = 0
         with harness:
             path = harness.codex_home / "config.toml"
             path.write_text(path.read_text() + "supports_websockets = true\n")
@@ -183,6 +224,40 @@ def verify(binary):
                         == "BATCH_OK"
                     )
                 thread_id = thread.id
+            # This is isolated saved-history fixture data, never a live task edit.
+            rollout = next(
+                harness.codex_home.glob(f"sessions/**/rollout-*{thread_id}.jsonl")
+            )
+            records = [json.loads(line) for line in rollout.read_text().splitlines()]
+            ordinal = max(record.get("ordinal", 0) for record in records) + 1
+            saved_exchange = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call-saved-image",
+                    "name": "exec",
+                    "status": "completed",
+                    "input": "saved fixture",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call-saved-image",
+                    "output": [{"type": "input_image", "image_url": url}],
+                },
+            ]
+            with rollout.open("a") as stream:
+                for index, item in enumerate(saved_exchange):
+                    stream.write(
+                        json.dumps(
+                            {
+                                "timestamp": datetime.now(UTC).isoformat(),
+                                "ordinal": ordinal + index,
+                                "type": "response_item",
+                                "payload": item,
+                            }
+                        )
+                        + "\n"
+                    )
+            expected_images.append(hashlib.sha256(url.encode()).hexdigest())
             before = len(mock.batch_requests)
             with Codex(config=config) as client:
                 thread = client.thread_resume(thread_id)
@@ -195,6 +270,7 @@ def verify(binary):
             assert sum(x["warmup"] and bool(x["images"]) for x in restored) >= 2
             assert restored[-1]["images"] == expected_images
             assert mock.batch_http == 0 and mock.batch_oversized == 0
+            assert mock.batch_incomplete == 0
             rows = read_ledger(binary, config, thread_id)
             assert any(row["event"] == "websocket_context_batch" for row in rows)
             assert all(
@@ -210,6 +286,26 @@ def verify(binary):
                 flush=True,
             )
 
+            mock.batch_reject_staging = "wrapped400"
+            mock.enqueue_assistant_message("WRAPPED_400_RECOVERED")
+            with Codex(config=config) as client:
+                thread = client.thread_resume(thread_id)
+                assert (
+                    thread.run("recover provider staging rejection").final_response
+                    == "WRAPPED_400_RECOVERED"
+                )
+            assert mock.batch_http == 1 and mock.batch_rejections == 1
+            assert (
+                list(image_inputs(mock.requests()[-1].body_json())) == expected_images
+            )
+            assert mock.batch_incomplete == 0
+            print(
+                json.dumps(
+                    {"case": "wrapped_400_staging_recovers_over_http", "passed": True}
+                ),
+                flush=True,
+            )
+
             mock.batch_reject_staging = True
             mock.enqueue_assistant_message("HTTP_RECOVERED")
             with Codex(config=config) as client:
@@ -218,7 +314,7 @@ def verify(binary):
                     thread.run("recover rejected upload").final_response
                     == "HTTP_RECOVERED"
                 )
-            assert mock.batch_http == 1 and mock.batch_rejections == 1
+            assert mock.batch_http == 2 and mock.batch_rejections == 2
             assert (
                 list(image_inputs(mock.requests()[-1].body_json())) == expected_images
             )
@@ -241,13 +337,16 @@ def verify(binary):
                     [TextInput("one indivisible item")] + [ImageInput(url)] * 3
                 )
                 assert result.final_response == "LARGE_ITEM_RECOVERED"
-            assert mock.batch_http == 2 and mock.batch_oversized == 0
+            assert mock.batch_http == 3 and mock.batch_oversized == 0
             assert (
-                list(image_inputs(mock.requests()[-1].body_json())) == expected_images
+                list(image_inputs(mock.requests()[-1].body_json()))
+                == expected_images[:3]
             )
             return {
                 "restart_context_preserved": True,
+                "saved_tool_exchange_preserved": True,
                 "single_generation": True,
+                "wrapped_400_http_recovery": True,
                 "rejected_staging_http_recovery": True,
                 "indivisible_item_http_recovery": True,
                 "max_websocket_request_bytes": max(
@@ -257,12 +356,78 @@ def verify(binary):
             }
 
 
+def verify_rollout(binary, source):
+    """Replay a private copy against the local fixture, leaving the original task untouched."""
+    with tempfile.TemporaryDirectory(prefix="codex-saved-proof-") as directory:
+        harness = AppServerHarness(Path(directory))
+        mock = harness.responses
+        mock._server.RequestHandlerClass = BatchHandler
+        mock.batch_requests = []
+        mock.batch_reject_staging = False
+        mock.batch_rejections = 0
+        mock.batch_oversized = 0
+        mock.batch_http = 0
+        mock.batch_incomplete = 0
+        with harness:
+            with source.open() as stream:
+                thread_id = json.loads(stream.readline())["payload"]["id"]
+            target = (
+                harness.codex_home / "sessions" / "2026" / "09" / "19" / source.name
+            )
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(source, target)
+            with target.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            path = harness.codex_home / "config.toml"
+            path.write_text(path.read_text() + "supports_websockets = true\n")
+            config = CodexConfig(
+                codex_bin=str(binary),
+                cwd=str(harness.workspace),
+                env={
+                    "CODEX_HOME": str(harness.codex_home),
+                    "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
+                    "RUST_LOG": "error",
+                },
+            )
+            mock.enqueue_assistant_message("BATCH_OK")
+            with Codex(config=config) as client:
+                thread = client.thread_resume(
+                    thread_id,
+                    model="mock-model",
+                    model_provider="mock_provider",
+                    cwd=str(harness.workspace),
+                    approval_mode=ApprovalMode.deny_all,
+                    sandbox=Sandbox.read_only,
+                )
+                assert (
+                    thread.run("Verify saved history restoration.").final_response
+                    == "BATCH_OK"
+                )
+            assert mock.batch_incomplete == 0 and mock.batch_oversized == 0
+            generated = sum(not request["warmup"] for request in mock.batch_requests)
+            assert generated + mock.batch_http == 1
+            return {
+                "thread_id": thread_id,
+                "source_sha256": digest,
+                "restored": True,
+                "incomplete_batches": mock.batch_incomplete,
+                "http_requests": mock.batch_http,
+                "websocket_requests": len(mock.batch_requests),
+            }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--rollout", type=Path, action="append", default=[])
     args = parser.parse_args()
     report = verify(args.binary.resolve(strict=True))
+    if args.rollout:
+        report["saved_tasks"] = [
+            verify_rollout(args.binary.resolve(strict=True), source)
+            for source in args.rollout
+        ]
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
