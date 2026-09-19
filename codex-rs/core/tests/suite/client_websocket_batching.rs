@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::models::FunctionCallOutputPayload;
 use core_test_support::responses::WebSocketRequest;
 use pretty_assertions::assert_eq;
 
@@ -102,6 +103,59 @@ async fn large_context_is_uploaded_once_before_generation_and_remains_incrementa
     let next_request = requests[4].body_json();
     assert_eq!(next_request["previous_response_id"], "resp-3");
     assert_eq!(next_request["input"], json!([next]));
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn staged_batches_never_split_custom_tool_call_output() {
+    skip_if_no_network!();
+    let server = start_websocket_server(vec![replies(/*count*/ 5)]).await;
+    let harness = websocket_harness(&server).await;
+    let call_id = "call-boundary";
+    let prompt = prompt_with_input(vec![
+        message_item(&"x".repeat(3 * 1024 * 1024)),
+        ResponseItem::CustomToolCall {
+            id: None,
+            status: Some("completed".into()),
+            call_id: call_id.into(),
+            name: "exec".into(),
+            namespace: None,
+            input: "{}".into(),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        message_item(&"y".repeat(1024 * 1024)),
+        ResponseItem::CustomToolCallOutput {
+            id: None,
+            call_id: call_id.into(),
+            name: Some("exec".into()),
+            output: FunctionCallOutputPayload::from_text("ok".into()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        message_item(&"z".repeat(3 * 1024 * 1024)),
+    ]);
+
+    let mut session = harness.client.new_session();
+    stream_until_complete(&mut session, &harness, &prompt).await;
+
+    let requests = server.single_connection();
+    let mut call_seen = false;
+    for request in requests {
+        let body = request.body_json();
+        let items = body["input"].as_array().expect("input array");
+        let output_in_batch = items
+            .iter()
+            .any(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == call_id);
+        for item in items {
+            if item["type"] == "custom_tool_call" && item["call_id"] == call_id {
+                call_seen = true;
+                assert!(
+                    output_in_batch,
+                    "staged call has no output in the same request"
+                );
+            }
+        }
+    }
+    assert!(call_seen, "test input was not staged");
     server.shutdown().await;
 }
 

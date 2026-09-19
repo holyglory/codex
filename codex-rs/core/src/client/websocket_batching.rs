@@ -6,8 +6,10 @@ use codex_api::ApiError;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesWsRequest;
+use codex_protocol::models::ResponseItem;
 use futures::StreamExt;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 
@@ -42,6 +44,82 @@ fn encoded_size(value: &impl Serialize) -> Result<usize, ApiError> {
     Ok(size.0)
 }
 
+/// Finds the largest request prefix that both fits the transport target and leaves
+/// no client-side tool call waiting for an output. The Responses API validates each
+/// staged prefix independently, so a boundary between a call and its output is not
+/// a valid context boundary even though both items are valid in the full history.
+fn safe_batch_end(
+    input: &[ResponseItem],
+    sizes: &[usize],
+    start: usize,
+    base_bytes: usize,
+) -> (usize, usize) {
+    let mut pending_calls = HashSet::new();
+    let mut end = start;
+    let mut batch_bytes = base_bytes;
+    let mut safe_end = start;
+    let mut safe_bytes = base_bytes;
+    while let Some(item_bytes) = sizes.get(end) {
+        let next_bytes = batch_bytes.saturating_add(*item_bytes + usize::from(end > start));
+        if next_bytes > BATCH_BYTES {
+            break;
+        }
+        update_pending_calls(&input[end], &mut pending_calls);
+        batch_bytes = next_bytes;
+        end += 1;
+        if pending_calls.is_empty() {
+            safe_end = end;
+            safe_bytes = batch_bytes;
+        }
+    }
+    (safe_end, safe_bytes)
+}
+
+fn update_pending_calls<'a>(item: &'a ResponseItem, pending_calls: &mut HashSet<&'a str>) {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. } => {
+            pending_calls.insert(call_id);
+        }
+        ResponseItem::LocalShellCall {
+            call_id: Some(call_id),
+            ..
+        }
+        | ResponseItem::ToolSearchCall {
+            call_id: Some(call_id),
+            ..
+        } => {
+            pending_calls.insert(call_id);
+        }
+        ResponseItem::FunctionCallOutput {
+            call_id: Some(call_id),
+            ..
+        }
+        | ResponseItem::CustomToolCallOutput { call_id, .. }
+        | ResponseItem::ToolSearchOutput {
+            call_id: Some(call_id),
+            ..
+        } => {
+            pending_calls.remove(call_id.as_str());
+        }
+        ResponseItem::LocalShellCall { call_id: None, .. }
+        | ResponseItem::ToolSearchCall { call_id: None, .. }
+        | ResponseItem::FunctionCallOutput { call_id: None, .. }
+        | ResponseItem::AdditionalTools { .. }
+        | ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::ToolSearchOutput { call_id: None, .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::ConfigurationUpdate { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => {}
+    }
+}
+
 impl ModelClientSession {
     #[tracing::instrument(skip_all, fields(
         transport = "websocket",
@@ -72,20 +150,16 @@ impl ModelClientSession {
         request.generate = Some(false);
         loop {
             request.input = &[];
-            let mut batch_bytes =
-                encoded_size(&ResponsesWsRequest::ResponseCreate(request.clone()))?;
-            let mut end = start;
-            while let Some(item_bytes) = sizes.get(end) {
-                let next_bytes = batch_bytes.saturating_add(*item_bytes + usize::from(end > start));
-                if next_bytes > BATCH_BYTES {
-                    break;
-                }
-                batch_bytes = next_bytes;
-                end += 1;
-            }
+            let base_bytes = encoded_size(&ResponsesWsRequest::ResponseCreate(request.clone()))?;
+            let (end, batch_bytes) = safe_batch_end(input, &sizes, start, base_bytes);
             if end == start {
+                let kind = sizes
+                    .get(start)
+                    .is_some_and(|item_bytes| base_bytes.saturating_add(*item_bytes) <= BATCH_BYTES)
+                    .then_some("unsafe_tool_call_boundary")
+                    .unwrap_or("indivisible_request");
                 tracing::warn!(target: "codex.network_diagnostics",
-                    event = "websocket_batching_fallback", kind = "indivisible_request",
+                    event = "websocket_batching_fallback", kind,
                     request_bytes, batch_limit_bytes = BATCH_BYTES);
                 return Ok(StagingOutcome::FallbackToHttp);
             }
@@ -168,3 +242,7 @@ impl ModelClientSession {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "websocket_batching_tests.rs"]
+mod tests;
