@@ -1,3 +1,4 @@
+use crate::api_bridge::is_server_overloaded_transport_error;
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
@@ -23,9 +24,34 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tracing::instrument;
 
+/// Responses-compatible inference routes supported by Codex backend.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResponsesEndpoint {
+    /// Regular user-owned model inference.
+    #[default]
+    Responses,
+    /// Full Guardian approval-review agent inference.
+    Guardian,
+    /// Lightweight asynchronous Guardian risk classification.
+    GuardianClassifier,
+}
+
+impl ResponsesEndpoint {
+    /// Returns the provider-relative path for this inference surface.
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::Responses => "/responses",
+            Self::Guardian => "/guardian",
+            Self::GuardianClassifier => "/guardian-classifier",
+        }
+    }
+}
+
 pub struct ResponsesClient<T: HttpTransport> {
     session: EndpointSession<T>,
     sse_telemetry: Option<Arc<dyn SseTelemetry>>,
+    endpoint: ResponsesEndpoint,
+    defer_server_overloaded_retries: bool,
 }
 
 #[derive(Default)]
@@ -43,7 +69,15 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: EndpointSession::new(transport, provider, auth),
             sse_telemetry: None,
+            endpoint: ResponsesEndpoint::Responses,
+            defer_server_overloaded_retries: false,
         }
+    }
+
+    /// Selects a Responses-compatible backend route for subsequent requests.
+    pub fn with_endpoint(mut self, endpoint: ResponsesEndpoint) -> Self {
+        self.endpoint = endpoint;
+        self
     }
 
     pub fn with_telemetry(
@@ -54,7 +88,15 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: self.session.with_request_telemetry(request),
             sse_telemetry: sse,
+            endpoint: self.endpoint,
+            defer_server_overloaded_retries: self.defer_server_overloaded_retries,
         }
+    }
+
+    /// Return capacity-coded 503s to the turn loop's slower retry policy.
+    pub fn defer_server_overload_retries(mut self) -> Self {
+        self.defer_server_overloaded_retries = true;
+        self
     }
 
     #[instrument(
@@ -64,7 +106,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "/responses"
+            api.path = self.endpoint.path()
         )
     )]
     pub async fn stream_request(
@@ -103,7 +145,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "/responses",
+            api.path = self.endpoint.path(),
             turn.has_state = turn_state.is_some()
         )
     )]
@@ -136,9 +178,13 @@ impl<T: HttpTransport> ResponsesClient<T> {
             .session
             .stream_encoded_json_with(
                 Method::POST,
-                "/responses",
+                self.endpoint.path(),
                 extra_headers,
                 Some(body),
+                |err| {
+                    !self.defer_server_overloaded_retries
+                        || !is_server_overloaded_transport_error(err)
+                },
                 |req| {
                     req.headers.insert(
                         http::header::ACCEPT,

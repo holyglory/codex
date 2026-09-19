@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::client::ModelClientSession;
+use crate::client::ServerOverloadRetry;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::InitialContextInjection;
@@ -1592,7 +1593,11 @@ async fn run_sampling_request(
 
         let original_input = original_input.get_or_insert(prompt.input);
 
-        if !err.is_retryable() {
+        let should_retry_server_overload = response_progress
+            != SamplingResponseProgress::OutputStarted
+            && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source);
+        if !err.is_retryable() && !should_retry_server_overload {
             return Err(SamplingRequestFailure::new(err, response_progress));
         }
 
@@ -1605,7 +1610,9 @@ async fn run_sampling_request(
             &turn_context,
             ResponsesStreamRequest::Sampling,
         )
+        .or_cancel(&cancellation_token)
         .await
+        .map_err(|_| SamplingRequestFailure::new(CodexErr::TurnAborted, response_progress))?
         .map_err(|error| SamplingRequestFailure::new(error, response_progress))?;
         turn_context.turn_timing_state.record_sampling_retry();
     }
@@ -1749,22 +1756,41 @@ struct SamplingRequestResult {
     last_agent_message: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 enum SamplingResponseProgress {
     #[default]
     NotStarted,
     Started,
+    OutputStarted,
 }
 
 impl SamplingResponseProgress {
-    fn note_started(&mut self) {
-        *self = Self::Started;
+    fn note_event(&mut self, event: &ResponseEvent) {
+        let progress = match event {
+            ResponseEvent::Created { .. }
+            | ResponseEvent::SafetyBuffering(_)
+            | ResponseEvent::ServerModel(_)
+            | ResponseEvent::ModelVerifications(_)
+            | ResponseEvent::TurnModerationMetadata(_)
+            | ResponseEvent::ServerReasoningIncluded(_)
+            | ResponseEvent::ProviderUsage(_)
+            | ResponseEvent::RateLimits(_)
+            | ResponseEvent::ModelsEtag(_) => Self::Started,
+            ResponseEvent::OutputItemDone(_)
+            | ResponseEvent::OutputItemAdded(_)
+            | ResponseEvent::Completed { .. }
+            | ResponseEvent::OutputTextDelta(_)
+            | ResponseEvent::ToolCallInputDelta { .. }
+            | ResponseEvent::ReasoningSummaryDelta { .. }
+            | ResponseEvent::ReasoningSummaryDone { .. }
+            | ResponseEvent::ReasoningContentDelta { .. }
+            | ResponseEvent::ReasoningSummaryPartAdded { .. } => Self::OutputStarted,
+        };
+        self.merge(progress);
     }
 
     fn merge(&mut self, other: Self) {
-        if other == Self::Started {
-            self.note_started();
-        }
+        *self = (*self).max(other);
     }
 }
 
@@ -2450,6 +2476,11 @@ async fn try_run_sampling_request(
             responses_metadata,
             &inference_trace,
             usage_chain,
+            if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+                ServerOverloadRetry::Transport
+            } else {
+                ServerOverloadRetry::Caller
+            },
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
@@ -2535,7 +2566,7 @@ async fn try_run_sampling_request(
 
         let event = match event {
             Some(Ok(event)) => {
-                response_progress.note_started();
+                response_progress.note_event(&event);
                 event
             }
             Some(Err(err)) => break Err(err),
