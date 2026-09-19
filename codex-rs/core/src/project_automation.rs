@@ -205,6 +205,8 @@ pub(crate) async fn observe_project_bottleneck(invocation: &ToolInvocation) {
                 time_range: Some(
                     codex_usage::UtcTimeRange::new(project.review_window_start_ms, now_ms).ok()?,
                 ),
+                include_descendants: true,
+                ..Default::default()
             })
             .await
             .ok()?;

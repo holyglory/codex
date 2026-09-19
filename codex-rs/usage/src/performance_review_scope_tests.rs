@@ -42,6 +42,7 @@ async fn scoped_review_keeps_covered_facts_and_excludes_other_token_owners() {
         time_range: Some(
             UtcTimeRange::new(/*start_ms*/ 1_000_000, /*end_ms*/ 1_001_000).expect("range"),
         ),
+        ..Default::default()
     };
     let expected = fixture
         .store

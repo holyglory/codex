@@ -40,7 +40,7 @@ const WORK_SELECTION: &str = ", work_selected AS (
 pub(super) async fn read(
     connection: &mut SqliteConnection,
     request: &PerformanceReviewQuery,
-    source: &query::ClassificationSource,
+    source: &query::Selection,
 ) -> Result<ReviewWorkBindings, UsageStoreError> {
     let mut builder = query::selection(request, source);
     let coverage = builder

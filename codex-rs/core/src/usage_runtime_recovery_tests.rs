@@ -356,3 +356,67 @@ async fn unavailable_accounting_never_blocks_tool_execution_and_replays_terminal
         1
     );
 }
+
+#[tokio::test]
+async fn buffered_operation_keeps_original_work_context_after_rebinding() {
+    let home = tempfile::tempdir().expect("home");
+    let runtime = UsageRuntime::new(home.path().to_path_buf());
+    runtime.store().await.expect("store");
+    let thread = "44444444-4444-7444-8444-444444444444";
+    let original = codex_usage::OperationWorkContext {
+        native_project_id: Some("project-fixture".into()),
+        outcome_id: Some("outcome-a".into()),
+        ..Default::default()
+    };
+    runtime
+        .work_contexts
+        .lock()
+        .await
+        .insert(thread.into(), original.clone());
+    runtime.faulted.store(true, Ordering::Release);
+    runtime
+        .fault_recovery_allowed
+        .store(false, Ordering::Release);
+    let buffered = runtime
+        .begin_model_attempt(context(thread, "buffered", "test-model"))
+        .await;
+    assert!(!buffered.durable);
+    runtime.work_contexts.lock().await.insert(
+        thread.into(),
+        codex_usage::OperationWorkContext {
+            outcome_id: Some("outcome-b".into()),
+            ..original
+        },
+    );
+    buffered
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    runtime.faulted.store(false, Ordering::Release);
+    runtime
+        .fault_recovery_allowed
+        .store(true, Ordering::Release);
+    let next = runtime
+        .begin_model_attempt(context(thread, "next", "test-model"))
+        .await;
+    next.finish(TerminalStatus::Completed, /*error*/ None).await;
+    let packet = runtime
+        .store()
+        .await
+        .expect("store")
+        .performance_review_packet(codex_usage::PerformanceReviewQuery {
+            thread_id: Some(codex_usage::ThreadId::new(thread).expect("thread")),
+            ..Default::default()
+        })
+        .await
+        .expect("replayed outcome report");
+    assert_eq!(
+        packet
+            .outcomes
+            .rows
+            .iter()
+            .map(|row| (row.outcome_id.as_str(), row.effort.operations))
+            .collect::<Vec<_>>(),
+        vec![("outcome-a", 1), ("outcome-b", 1)]
+    );
+    assert!(runtime.pending_usage.lock().await.is_empty());
+}

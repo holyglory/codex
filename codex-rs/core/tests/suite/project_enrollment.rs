@@ -21,6 +21,7 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::mount_sse_once;
@@ -39,6 +40,91 @@ use wiremock::MockServer;
 use wiremock::Request;
 
 const HOUR_MS: i64 = 3_600_000;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accounting_restores_persisted_links_and_honors_clear_and_override_without_binding_logs()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let owner = test.session_configured.thread_id;
+    let state = test.codex.state_db().context("persistent state")?;
+    let store = state.event_subscriptions();
+    let project_id =
+        project_automation_id(&executor_path_uri(test.config.cwd.as_path())?.to_path_buf());
+    store
+        .project_command(
+            &project_id,
+            owner,
+            /*expected_revision*/ None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: Some("accounting".into()),
+            },
+            project_automation_now_ms(),
+        )
+        .await?;
+    for (index, (outcome, tokens)) in [(Some("outcome-a"), 7), (None, 9), (Some("outcome-b"), 11)]
+        .into_iter()
+        .enumerate()
+    {
+        let current = store
+            .project_status(&project_id)
+            .await?
+            .context("project")?;
+        store
+            .project_command(
+                &project_id,
+                owner,
+                Some(current.revision),
+                ProjectAutomationCommand::LinkWork {
+                    outcome_id: outcome.map(str::to_string),
+                    experiment_ref: None,
+                    clear_outcome: outcome.is_none(),
+                    clear_experiment: false,
+                },
+                project_automation_now_ms(),
+            )
+            .await?;
+        let response_id = format!("accounting-{index}");
+        let response = mount_sse_once(
+            &server,
+            sse(vec![
+                ev_assistant_message(&format!("message-{index}"), "Recorded the current work."),
+                ev_completed_with_tokens(&response_id, tokens),
+            ]),
+        )
+        .await;
+        test.submit_turn("Continue the declared work without tools.")
+            .await?;
+        response.single_request();
+    }
+    let usage = codex_usage::UsageStore::open(&test.config.codex_home).await?;
+    let packet = usage
+        .performance_review_packet(codex_usage::PerformanceReviewQuery {
+            thread_id: Some(codex_usage::ThreadId::new(owner.to_string())?),
+            ..Default::default()
+        })
+        .await?;
+    assert!(packet.work_bindings.references.is_empty());
+    assert_eq!(
+        packet
+            .outcomes
+            .rows
+            .iter()
+            .map(|row| (
+                row.outcome_id.as_str(),
+                row.effort.provider_total_tokens.measured
+            ))
+            .collect::<Vec<_>>(),
+        vec![("outcome-a", 7), ("outcome-b", 11)]
+    );
+    assert_eq!(
+        packet.outcomes.unattributed.provider_total_tokens.measured,
+        9
+    );
+    Ok(())
+}
 
 fn request_body(request: &Request) -> Option<Value> {
     let compressed = request
@@ -469,7 +555,7 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
                 "child-first-message",
                 "Ready for the existing implementation.",
             ),
-            ev_completed("child-first-response"),
+            ev_completed_with_tokens("child-first-response", /*total_tokens*/ 17),
         ]),
     )
     .await;
@@ -541,6 +627,28 @@ async fn project_automation_real_child_inherits_parent_purpose_workstream_and_de
             linked.thread_outcomes.get(&owner.to_string()),
             linked.thread_experiments.get(&owner.to_string())
         )
+    );
+    // Real delegation must capture inherited outcome ownership before the child
+    // model request starts, including its provider usage.
+    let usage = codex_usage::UsageStore::open(&test.config.codex_home).await?;
+    let child_review = usage
+        .performance_review_packet(codex_usage::PerformanceReviewQuery {
+            thread_id: Some(codex_usage::ThreadId::new(child_id.to_string())?),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        child_review
+            .outcomes
+            .rows
+            .iter()
+            .map(|row| (
+                row.outcome_id.as_str(),
+                row.workstream_id.as_deref(),
+                row.effort.provider_total_tokens.measured,
+            ))
+            .collect::<Vec<_>>(),
+        vec![("p-enrollment-fixture", Some("api"), 17)]
     );
     let allowed = child_patch(&child, &server, "child-before-hard-stop").await?;
     assert!(
