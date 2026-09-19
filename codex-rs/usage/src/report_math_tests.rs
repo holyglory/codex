@@ -17,6 +17,7 @@ fn operation(
     kind: OperationKind,
 ) -> NewOperation {
     NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: Some(ThreadId::new("timing-thread").expect("thread")),
@@ -487,6 +488,7 @@ async fn wall_interval_conversion_reports_overflow() {
         .await
         .expect("process");
     let operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: None,
