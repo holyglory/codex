@@ -1789,21 +1789,20 @@ async fn websocket_rate_limit_without_retry_after_is_terminal() -> Result<()> {
 }
 
 /// Websocket overloads retry with the dedicated capacity budget and then recover.
-#[rstest::rstest]
-#[case::wrapped(json!({
+#[test_case::test_case(json!({
     "type": "error", "status": 503,
     "error": {"code": "server_is_overloaded", "message": "Temporarily at capacity.",
               "headers": {"Retry-After": "1"}}
-}))]
-#[case::streamed(json!({
+}); "wrapped")]
+#[test_case::test_case(json!({
     "type": "response.failed",
     "response": {"id": "pending", "error": {
         "code": "server_is_overloaded", "message": "Temporarily at capacity."
     }}
-}))]
+}); "streamed")]
 #[tokio::test(flavor = "current_thread")]
 async fn websocket_overload_retries_with_dedicated_budget(
-    #[case] overload_error: serde_json::Value,
+    overload_error: serde_json::Value,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
