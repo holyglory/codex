@@ -250,3 +250,58 @@ fn canonical_path(value: &str) -> Option<CanonicalRepositoryPath> {
         .unwrap_or_else(|| value.to_string());
     CanonicalRepositoryPath::new(canonical).ok()
 }
+
+pub(crate) async fn model_repository_candidates(
+    metadata: &crate::responses_metadata::CodexResponsesMetadata,
+) -> Vec<crate::usage_runtime::RepositoryCandidate> {
+    if metadata.workspaces.is_empty()
+        && let Some(cwd) = &metadata.local_usage_workspace
+    {
+        // Optional Git enrichment also scans the working tree and can finish after
+        // a fast model request. Resolve its known directory independently.
+        let workspace =
+            codex_git_utils::get_git_repo_root(cwd.as_path()).unwrap_or_else(|| cwd.to_path_buf());
+        let origin = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            codex_git_utils::get_git_remote_urls_assume_git_repo(&workspace),
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|remotes| {
+            remotes
+                .get("origin")
+                .or_else(|| remotes.values().next())
+                .cloned()
+        })
+        .map(String::from);
+        if let Some(workspace) = workspace.to_str() {
+            return vec![RepositoryCandidate::new(
+                workspace,
+                origin,
+                repository_safe_label(workspace),
+            )];
+        }
+    }
+    metadata
+        .workspaces
+        .iter()
+        .map(|(workspace, details)| {
+            let origin = details
+                .associated_remote_urls
+                .as_ref()
+                .and_then(|remotes| {
+                    remotes
+                        .get("origin")
+                        .or_else(|| remotes.values().next())
+                        .cloned()
+                })
+                .map(String::from);
+            crate::usage_runtime::RepositoryCandidate::new(
+                workspace.clone(),
+                origin,
+                crate::usage_runtime::repository_safe_label(workspace),
+            )
+        })
+        .collect()
+}

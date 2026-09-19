@@ -32,6 +32,63 @@ use tokio::time::Instant;
 
 const USAGE_STATS_INSTRUCTIONS_OPEN_TAG: &str = "<usage_stats_instructions>";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_model_request_keeps_repository_when_optional_git_metadata_is_absent() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let response = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("first-workspace-request"),
+            ev_assistant_message("workspace-message", "accounted"),
+            ev_completed_with_usage(
+                "first-workspace-request",
+                /*input_tokens*/ 4,
+                /*output_tokens*/ 3,
+            ),
+        ]),
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    // Repository hashing uses host paths. A directory without Git metadata
+    // deterministically exercises the same missing-enrichment path as a slow scan.
+    let test = test_codex()
+        .with_home(Arc::clone(&home))
+        .build(&server)
+        .await?;
+    test.submit_turn("measure this first request").await?;
+    let request = response.single_request();
+    let body = request.body_json();
+    let metadata: Value = serde_json::from_str(
+        body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .context("turn metadata")?,
+    )?;
+    assert!(metadata.get("workspaces").is_none());
+    assert!(metadata.get("local_usage_workspace").is_none());
+    let store = UsageStore::open(home.path()).await?;
+    let path = codex_usage::CanonicalRepositoryPath::new(
+        std::fs::canonicalize(&test.config.cwd)?
+            .to_str()
+            .context("UTF-8 fixture path")?,
+    )?;
+    let repository =
+        store.repository_id_for_identity(&codex_usage::RepositoryIdentityInput::new(path))?;
+    let summary = store
+        .usage_summary(UsageSummaryScope::Repository(repository))
+        .await?;
+    assert_eq!(summary.model_request_count, 1);
+    assert_eq!(
+        summary
+            .tokens
+            .iter()
+            .find(|token| token.category_path == "total_tokens")
+            .map(|token| token.measured_tokens),
+        Some(7)
+    );
+    Ok(())
+}
+
 fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
     let content = request
         .function_call_output_text(call_id)

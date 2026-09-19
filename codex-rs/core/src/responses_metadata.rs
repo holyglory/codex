@@ -248,6 +248,8 @@ pub struct CodexResponsesMetadata {
     pub(crate) auto_review_enabled: Option<bool>,
     pub(crate) node_repl_auto_review_required: Option<bool>,
     pub(crate) node_repl_disabled: Option<bool>,
+    /// Local accounting input only; deliberately absent from every wire projection.
+    pub(crate) local_usage_workspace: Option<codex_utils_absolute_path::AbsolutePathBuf>,
     pub(crate) workspaces: BTreeMap<String, TurnMetadataWorkspace>,
     pub(crate) tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     pub(crate) turn_started_at_unix_ms: Option<i64>,
@@ -291,6 +293,7 @@ impl CodexResponsesMetadata {
             auto_review_enabled: None,
             node_repl_auto_review_required: None,
             node_repl_disabled: None,
+            local_usage_workspace: None,
             workspaces: BTreeMap::new(),
             tool_namespaces_info: None,
             turn_started_at_unix_ms: None,

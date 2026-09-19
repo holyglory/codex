@@ -140,6 +140,7 @@ pub async fn detached_memory_responses_metadata(
         turn_trigger: Some("memory_consolidation".to_owned()),
         subagent_header: subagent_header_value(session_source),
         sandbox: sandbox.map(ToString::to_string),
+        local_usage_workspace: Some(cwd.clone()),
         workspaces: memory_workspaces(
             cwd,
             thread_manager.git_root_discovery().discover(cwd.clone()),
@@ -458,6 +459,7 @@ impl TurnMetadataState {
             auto_review_enabled: Some(self.auto_review_enabled),
             node_repl_auto_review_required: Some(self.node_repl_auto_review_required),
             node_repl_disabled: Some(self.node_repl_disabled),
+            local_usage_workspace: Some(self.cwd.clone()),
             workspaces: self.current_workspaces(),
             tool_namespaces_info: None,
             turn_started_at_unix_ms: self.current_turn_started_at_unix_ms(),
