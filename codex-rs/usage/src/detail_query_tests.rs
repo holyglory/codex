@@ -85,6 +85,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
         .expect("repository");
 
     let model_operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: Some(thread_id.clone()),
@@ -198,6 +199,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
     .await;
 
     let tool_operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         started_at_ms: 1_100,
         kind: OperationKind::LocalTool,
@@ -253,6 +255,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
     .await;
 
     let retry_operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         started_at_ms: 1_200,
         parent_operation_id: Some(model_operation.id),
@@ -300,6 +303,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
     .await;
 
     let rework_operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         started_at_ms: 1_300,
         parent_operation_id: Some(retry_operation.id),

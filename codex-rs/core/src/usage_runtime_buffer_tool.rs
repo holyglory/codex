@@ -209,6 +209,7 @@ impl UsageRuntime {
     pub(in super::super) async fn begin_buffered_tool_attempt(
         self: &Arc<Self>,
         context: &ToolAttemptContext<'_>,
+        work_context: &codex_usage::OperationWorkContext,
     ) -> UsageToolAttempt {
         let started_at_ms = now_ms();
         let thread_id = safe_thread_id(context.thread_id);
@@ -264,6 +265,7 @@ impl UsageRuntime {
                 created_at_ms: started_at_ms,
             },
             NewOperation {
+                work_context: Some(work_context.clone()),
                 id: operation_id,
                 process_id: self.process_id,
                 thread_id: Some(thread_id.clone()),

@@ -18,6 +18,7 @@ fn label(value: &str) -> SafeRepositoryLabel {
 
 fn operation(process_id: ProcessId, thread_id: &str, kind: OperationKind) -> NewOperation {
     NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: Some(ThreadId::new(thread_id).expect("thread id")),
@@ -433,7 +434,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
     );
     assert_eq!(all.operation_count, 4);
     assert_eq!(all.tool_count, 1);
-    assert_eq!(all.database_schema_version, 6);
+    assert_eq!(all.database_schema_version, 7);
     assert_eq!(all.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(repository_one_summary.tool_count, 1);
     assert_eq!(all.classifications.len(), 2);
@@ -444,7 +445,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
         .expect("effective correction");
     assert_eq!(correction.provenance, "user_corrected");
     let structured = StructuredUsageSummary::new(&all, Some("primary".to_string()));
-    assert_eq!(structured.database_schema_version, 6);
+    assert_eq!(structured.database_schema_version, 7);
     assert_eq!(structured.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(structured.account.as_deref(), Some("primary"));
     assert_eq!(structured.provider_tokens.len(), all.tokens.len());

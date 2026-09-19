@@ -6,6 +6,7 @@ use crate::types::ProcessId;
 
 fn operation(process_id: ProcessId, kind: OperationKind) -> crate::types::NewOperation {
     crate::types::NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: None,
