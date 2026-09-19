@@ -165,6 +165,7 @@ class BatchHandler(_ResponsesHandler):
             self.close_connection = True
 
     def do_POST(self):
+        self.server.mock.batch_http_paths.append(self.path)
         self.server.mock.batch_http += 1
         self.close_connection = True
         return super().do_POST()
@@ -198,6 +199,7 @@ def verify(binary):
         mock.batch_rejections = 0
         mock.batch_oversized = 0
         mock.batch_http = 0
+        mock.batch_http_paths = []
         mock.batch_incomplete = 0
         with harness:
             path = harness.codex_home / "config.toml"
@@ -357,7 +359,7 @@ def verify(binary):
             }
 
 
-def verify_rollout(binary, source):
+def verify_rollout(binary, source, *, websocket):
     """Replay a private copy against the local fixture, leaving the original task untouched."""
     with tempfile.TemporaryDirectory(prefix="codex-saved-proof-") as directory:
         harness = AppServerHarness(Path(directory))
@@ -368,6 +370,7 @@ def verify_rollout(binary, source):
         mock.batch_rejections = 0
         mock.batch_oversized = 0
         mock.batch_http = 0
+        mock.batch_http_paths = []
         mock.batch_incomplete = 0
         with harness:
             with source.open() as stream:
@@ -380,7 +383,9 @@ def verify_rollout(binary, source):
             with target.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             path = harness.codex_home / "config.toml"
-            path.write_text(path.read_text() + "supports_websockets = true\n")
+            path.write_text(
+                path.read_text() + f"supports_websockets = {str(websocket).lower()}\n"
+            )
             config = CodexConfig(
                 codex_bin=str(binary),
                 cwd=str(harness.workspace),
@@ -390,7 +395,10 @@ def verify_rollout(binary, source):
                     "RUST_LOG": "error",
                 },
             )
-            mock.enqueue_assistant_message("BATCH_OK")
+            for index in range(4):
+                mock.enqueue_assistant_message(
+                    "BATCH_OK", response_id=f"control-{index}"
+                )
             with Codex(config=config) as client:
                 # Resume metadata is sufficient here; hydrating every historical
                 # UI item also asks the SDK to decode obsolete item variants.
@@ -412,11 +420,15 @@ def verify_rollout(binary, source):
                 )
             assert mock.batch_incomplete == 0 and mock.batch_oversized == 0
             generated = sum(not request["warmup"] for request in mock.batch_requests)
-            assert generated + mock.batch_http == 1
+            inference_http = sum(
+                path.split("?", 1)[0].endswith("/responses")
+                for path in mock.batch_http_paths
+            )
             return {
                 "thread_id": thread_id,
                 "source_sha256": digest,
                 "restored": True,
+                "model_requests": generated + inference_http,
                 "incomplete_batches": mock.batch_incomplete,
                 "http_requests": mock.batch_http,
                 "websocket_requests": len(mock.batch_requests),
@@ -431,10 +443,28 @@ if __name__ == "__main__":
     args = parser.parse_args()
     report = verify(args.binary.resolve(strict=True))
     if args.rollout:
-        report["saved_tasks"] = [
-            verify_rollout(args.binary.resolve(strict=True), source)
-            for source in args.rollout
-        ]
+        report["saved_tasks"] = []
+        for source in args.rollout:
+            control = verify_rollout(
+                args.binary.resolve(strict=True), source, websocket=False
+            )
+            restored = verify_rollout(
+                args.binary.resolve(strict=True), source, websocket=True
+            )
+            assert restored["source_sha256"] == control["source_sha256"], (
+                "Source history changed between transport probes"
+            )
+            assert restored["model_requests"] == control["model_requests"], {
+                "websocket": restored,
+                "http": control,
+            }
+            assert control["model_requests"] > 0
+            restored["http_control_model_requests"] = control["model_requests"]
+            report["saved_tasks"].append(restored)
+            print(
+                json.dumps({"case": "saved_task_transport_parity", **restored}),
+                flush=True,
+            )
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
