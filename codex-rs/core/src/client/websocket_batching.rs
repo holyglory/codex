@@ -6,6 +6,7 @@ use codex_api::ApiError;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesWsRequest;
+use codex_api::TransportError;
 use codex_protocol::models::ResponseItem;
 use futures::StreamExt;
 use serde::Serialize;
@@ -64,7 +65,53 @@ fn safe_batch_end(
         if next_bytes > BATCH_BYTES {
             break;
         }
-        update_pending_calls(&input[end], &mut pending_calls);
+        let call = match &input[end] {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::LocalShellCall {
+                call_id: Some(call_id),
+                ..
+            } => Some(("function", call_id.as_str(), true)),
+            ResponseItem::CustomToolCall { call_id, .. } => {
+                Some(("custom", call_id.as_str(), true))
+            }
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            } => Some(("search", call_id.as_str(), true)),
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(call_id),
+                ..
+            } => Some(("function", call_id.as_str(), false)),
+            ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                Some(("custom", call_id.as_str(), false))
+            }
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                ..
+            } => Some(("search", call_id.as_str(), false)),
+            ResponseItem::LocalShellCall { call_id: None, .. }
+            | ResponseItem::ToolSearchCall { call_id: None, .. }
+            | ResponseItem::FunctionCallOutput { call_id: None, .. }
+            | ResponseItem::AdditionalTools { .. }
+            | ResponseItem::Message { .. }
+            | ResponseItem::AgentMessage { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::ToolSearchOutput { call_id: None, .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => None,
+        };
+        if let Some((kind, call_id, opens)) = call {
+            if opens {
+                pending_calls.insert((kind, call_id));
+            } else {
+                pending_calls.remove(&(kind, call_id));
+            }
+        }
         batch_bytes = next_bytes;
         end += 1;
         if pending_calls.is_empty() {
@@ -75,49 +122,10 @@ fn safe_batch_end(
     (safe_end, safe_bytes)
 }
 
-fn update_pending_calls<'a>(item: &'a ResponseItem, pending_calls: &mut HashSet<&'a str>) {
-    match item {
-        ResponseItem::FunctionCall { call_id, .. }
-        | ResponseItem::CustomToolCall { call_id, .. } => {
-            pending_calls.insert(call_id);
-        }
-        ResponseItem::LocalShellCall {
-            call_id: Some(call_id),
-            ..
-        }
-        | ResponseItem::ToolSearchCall {
-            call_id: Some(call_id),
-            ..
-        } => {
-            pending_calls.insert(call_id);
-        }
-        ResponseItem::FunctionCallOutput {
-            call_id: Some(call_id),
-            ..
-        }
-        | ResponseItem::CustomToolCallOutput { call_id, .. }
-        | ResponseItem::ToolSearchOutput {
-            call_id: Some(call_id),
-            ..
-        } => {
-            pending_calls.remove(call_id.as_str());
-        }
-        ResponseItem::LocalShellCall { call_id: None, .. }
-        | ResponseItem::ToolSearchCall { call_id: None, .. }
-        | ResponseItem::FunctionCallOutput { call_id: None, .. }
-        | ResponseItem::AdditionalTools { .. }
-        | ResponseItem::Message { .. }
-        | ResponseItem::AgentMessage { .. }
-        | ResponseItem::Reasoning { .. }
-        | ResponseItem::ToolSearchOutput { call_id: None, .. }
-        | ResponseItem::WebSearchCall { .. }
-        | ResponseItem::ImageGenerationCall { .. }
-        | ResponseItem::Compaction { .. }
-        | ResponseItem::ConfigurationUpdate { .. }
-        | ResponseItem::CompactionTrigger { .. }
-        | ResponseItem::ContextCompaction { .. }
-        | ResponseItem::Other => {}
-    }
+fn staging_can_fallback(error: &ApiError) -> bool {
+    matches!(error, ApiError::Stream(_) | ApiError::InvalidRequest { .. })
+        || matches!(error, ApiError::Transport(TransportError::Http { status, .. })
+            if matches!(status.as_u16(), 400 | 413))
 }
 
 impl ModelClientSession {
@@ -153,11 +161,14 @@ impl ModelClientSession {
             let base_bytes = encoded_size(&ResponsesWsRequest::ResponseCreate(request.clone()))?;
             let (end, batch_bytes) = safe_batch_end(input, &sizes, start, base_bytes);
             if end == start {
-                let kind = sizes
+                let kind = if sizes
                     .get(start)
                     .is_some_and(|item_bytes| base_bytes.saturating_add(*item_bytes) <= BATCH_BYTES)
-                    .then_some("unsafe_tool_call_boundary")
-                    .unwrap_or("indivisible_request");
+                {
+                    "unsafe_tool_call_boundary"
+                } else {
+                    "indivisible_request"
+                };
                 tracing::warn!(target: "codex.network_diagnostics",
                     event = "websocket_batching_fallback", kind,
                     request_bytes, batch_limit_bytes = BATCH_BYTES);
@@ -191,7 +202,7 @@ impl ModelClientSession {
                 .await
             {
                 Ok(stream) => stream,
-                Err(ApiError::Stream(_) | ApiError::InvalidRequest { .. }) => {
+                Err(err) if staging_can_fallback(&err) => {
                     return Ok(StagingOutcome::FallbackToHttp);
                 }
                 Err(err) => return Err(err),
@@ -225,10 +236,15 @@ impl ModelClientSession {
                         | ResponseEvent::ReasoningContentDelta { .. }
                         | ResponseEvent::ReasoningSummaryPartAdded { .. },
                     ))
-                    | Some(Err(ApiError::Stream(_) | ApiError::InvalidRequest { .. }))
                     | None => {
                         tracing::warn!(target: "codex.network_diagnostics",
                             event = "websocket_batching_fallback", kind = "staging_failed",
+                            batch_index, request_bytes = batch_bytes);
+                        return Ok(StagingOutcome::FallbackToHttp);
+                    }
+                    Some(Err(err)) if staging_can_fallback(&err) => {
+                        tracing::warn!(target: "codex.network_diagnostics",
+                            event = "websocket_batching_fallback", kind = "staging_rejected",
                             batch_index, request_bytes = batch_bytes);
                         return Ok(StagingOutcome::FallbackToHttp);
                     }
