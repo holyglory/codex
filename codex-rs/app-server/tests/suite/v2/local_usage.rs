@@ -749,6 +749,7 @@ fn operation(
     started_at_ms: i64,
 ) -> NewOperation {
     NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: Some(thread_id.clone()),

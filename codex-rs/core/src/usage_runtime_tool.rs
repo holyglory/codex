@@ -115,6 +115,7 @@ impl UsageRuntime {
     pub(super) async fn begin_tool_attempt_once(
         self: &Arc<Self>,
         context: &ToolAttemptContext<'_>,
+        work_context: &codex_usage::OperationWorkContext,
     ) -> Result<UsageToolAttempt, CodexErr> {
         if context.call_id.len() > 512 {
             return Err(unavailable());
@@ -238,6 +239,7 @@ impl UsageRuntime {
             OperationKind::LocalTool
         };
         let operation = NewOperation {
+            work_context: Some(work_context.clone()),
             id: operation_id,
             process_id: self.process_id,
             thread_id: Some(thread_id.clone()),
@@ -990,6 +992,7 @@ impl UsageAttempt {
         let writes = async {
             store
                 .begin_operation(&NewOperation {
+                    work_context: Some(self.work_context.clone()),
                     id: operation_id,
                     process_id: self.runtime.process_id,
                     thread_id: Some(self.thread_id.clone()),

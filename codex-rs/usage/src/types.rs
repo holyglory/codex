@@ -363,6 +363,7 @@ impl Default for ProcessId {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewOperation {
+    pub work_context: Option<crate::OperationWorkContext>,
     pub id: OperationId,
     pub process_id: ProcessId,
     pub thread_id: Option<ThreadId>,

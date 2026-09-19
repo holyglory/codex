@@ -105,6 +105,12 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
                     .map_err(|failure| error(&failure.to_string()))?
             };
             if capture_binding {
+                invocation
+                    .session
+                    .services
+                    .usage_runtime
+                    .restore_work_context(Some(&project), invocation.session.thread_id())
+                    .await;
                 crate::project_work_context::capture_project_work_binding(
                     &invocation.turn.config.codex_home,
                     &project,
