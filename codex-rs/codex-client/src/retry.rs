@@ -81,8 +81,23 @@ macro_rules! record_retry {
 
 pub async fn run_with_retry<T, F, Fut>(
     policy: RetryPolicy,
+    make_req: impl FnMut() -> Request,
+    op: F,
+) -> Result<T, TransportError>
+where
+    F: Fn(Request, u64) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    run_with_retry_if(policy, make_req, op, |_| true).await
+}
+
+/// Applies the configured retry budget only when the caller also permits a retry.
+/// A caller that owns a different recovery policy can receive those errors immediately.
+pub async fn run_with_retry_if<T, F, Fut>(
+    policy: RetryPolicy,
     mut make_req: impl FnMut() -> Request,
     op: F,
+    retry_if: impl Fn(&TransportError) -> bool,
 ) -> Result<T, TransportError>
 where
     F: Fn(Request, u64) -> Fut,
@@ -93,9 +108,10 @@ where
         match op(req, attempt).await {
             Ok(resp) => return Ok(resp),
             Err(err)
-                if policy
-                    .retry_on
-                    .should_retry(&err, attempt, policy.max_attempts) =>
+                if retry_if(&err)
+                    && policy
+                        .retry_on
+                        .should_retry(&err, attempt, policy.max_attempts) =>
             {
                 let retry_attempt = attempt + 1;
                 // TODO(anp): Respect Retry-After from HTTP responses before retrying the request.
