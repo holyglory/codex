@@ -82,6 +82,7 @@ impl std::error::Error for UsageCommandError {}
 impl From<UsageStoreError> for UsageCommandError {
     fn from(error: UsageStoreError) -> Self {
         let kind = match error {
+            UsageStoreError::InvalidReviewCursor => UsageErrorKind::Input,
             UsageStoreError::OperationConflict
             | UsageStoreError::ProcessConflict
             | UsageStoreError::ProcessEventConflict

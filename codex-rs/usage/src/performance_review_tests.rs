@@ -6,6 +6,12 @@ use std::time::Instant;
 #[path = "performance_review_work_tests.rs"]
 mod work;
 
+#[path = "outcome_conformance_tests.rs"]
+mod outcome_conformance;
+#[path = "outcome_scale_tests.rs"]
+mod outcome_scale;
+#[path = "performance_review_outcome_tests.rs"]
+mod outcomes;
 #[path = "performance_review_scope_tests.rs"]
 mod scope;
 
@@ -483,6 +489,7 @@ async fn filters_clip_intervals_and_keep_observation_time_distinct_from_operatio
         time_range: Some(
             UtcTimeRange::new(/*start_ms*/ 1_000_010, /*end_ms*/ 1_000_021).expect("window"),
         ),
+        ..Default::default()
     };
     let packet = fixture
         .store

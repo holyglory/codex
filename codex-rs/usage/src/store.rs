@@ -65,6 +65,8 @@ pub enum UsageStoreError {
     AggregateOverflow,
     #[error("usage task tree exceeds the supported query bound")]
     TaskTreeTooLarge,
+    #[error("outcome cursor expired or does not match this report; start a new first page")]
+    InvalidReviewCursor,
 }
 
 impl UsageStoreError {
@@ -132,6 +134,23 @@ impl UsageStore {
             .await
             .map_err(UsageStoreError::Database)?;
         let _ = crate::report_cache::ensure(&pool).await;
+        // Derived lookup indexes do not change canonical facts or migration checksums.
+        // Keep the schema-compatible rollback able to read every collected record.
+        for index in [
+            "CREATE INDEX IF NOT EXISTS token_observations_observed_owner_idx ON token_observations(observed_at_ms, model_request_id, tool_invocation_id)",
+            "CREATE INDEX IF NOT EXISTS coverage_events_observed_owner_idx ON coverage_events(occurred_at_ms, operation_id)",
+            "CREATE INDEX IF NOT EXISTS operation_events_terminal_observed_idx ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1",
+            "CREATE INDEX IF NOT EXISTS operations_started_id_idx ON operations(started_at_ms, id)",
+        ] {
+            sqlx::query(index)
+                .execute(&pool)
+                .await
+                .map_err(UsageStoreError::Database)?;
+        }
+        if crate::report_cache::is_ready(&pool).await.unwrap_or(false) {
+            sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_open_operations_idx ON _usage_report_operations(started_at_ms, operation_id) WHERE ended_at_ms IS NULL")
+                .execute(&pool).await.map_err(UsageStoreError::Database)?;
+        }
         let repository_key = match load_or_create_repository_key(&usage_dir, &pool).await {
             Ok(repository_key) => repository_key,
             Err(error) => {
