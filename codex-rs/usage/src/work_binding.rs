@@ -55,7 +55,7 @@ impl UsageStore {
     }
 }
 
-fn valid_binding_identifier(value: &str) -> bool {
+pub(crate) fn valid_binding_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value

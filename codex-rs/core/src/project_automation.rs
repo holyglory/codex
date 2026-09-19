@@ -75,6 +75,12 @@ pub(crate) async fn ensure_project_enrollment(
         .map_err(|error| {
             FunctionCallError::RespondToModel(format!("Cannot enroll project work: {error}"))
         })?;
+    // Restore persisted declarations even if a previous runtime enrolled this task.
+    session
+        .services
+        .usage_runtime
+        .restore_work_context(Some(&project), thread_id)
+        .await;
     if !was_bound && project.threads.contains_key(&thread_id.to_string()) {
         crate::project_work_context::capture_project_work_binding(
             &step.turn.config.codex_home,
@@ -90,12 +96,11 @@ pub(crate) async fn ensure_project_enrollment(
 pub(crate) async fn enforce_project_admission(
     invocation: &ToolInvocation,
 ) -> Result<(), FunctionCallError> {
-    if !invocation.turn.config.local_control_tools_enabled
-        || invocation.tool_name.name == "project_automation"
-        || is_exec_tool_name(&invocation.tool_name)
-    {
+    if !invocation.turn.config.local_control_tools_enabled {
         return Ok(());
     }
+    let admission_exempt = invocation.tool_name.name == "project_automation"
+        || is_exec_tool_name(&invocation.tool_name);
     let Some(state) = invocation.session.state_db() else {
         return Ok(());
     };
@@ -105,9 +110,31 @@ pub(crate) async fn enforce_project_admission(
     let project_id = project_automation_id(&environment.cwd().to_path_buf());
     let store = state.event_subscriptions();
     let now_ms = project_automation_now_ms();
-    let project = store.project_status(&project_id).await.map_err(|error| {
-        FunctionCallError::RespondToModel(format!("Project deadline state is unavailable: {error}. Diagnose or restore the scheduling store before new implementation."))
-    })?;
+    let project = if admission_exempt {
+        // Control tools must remain usable during a state-store outage. Their
+        // optional accounting context becomes unknown instead of staying stale.
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            store.project_status(&project_id),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+    } else {
+        store.project_status(&project_id).await.map_err(|error| {
+            FunctionCallError::RespondToModel(format!("Project deadline state is unavailable: {error}. Diagnose or restore the scheduling store before new implementation."))
+        })?
+    };
+    invocation
+        .session
+        .services
+        .usage_runtime
+        .restore_work_context(project.as_ref(), invocation.session.thread_id())
+        .await;
+    if admission_exempt {
+        return Ok(());
+    }
     if let Some(project) = project {
         let purpose = project
             .threads

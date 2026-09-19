@@ -97,6 +97,7 @@ async fn recovery_interrupts_only_affected_operations_and_accepts_late_terminals
 
 fn operation(process_id: ProcessId, started_at_ms: i64) -> NewOperation {
     NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: None,

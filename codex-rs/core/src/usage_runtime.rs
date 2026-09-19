@@ -81,6 +81,7 @@ pub(crate) struct UsageRuntime {
     entity_times: Mutex<HashMap<String, i64>>,
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
+    work_contexts: Mutex<HashMap<String, codex_usage::OperationWorkContext>>,
 }
 
 impl fmt::Debug for UsageRuntime {
@@ -146,6 +147,7 @@ impl UsageRequestChain {
 }
 
 pub(crate) struct UsageAttempt {
+    work_context: codex_usage::OperationWorkContext,
     runtime: Arc<UsageRuntime>,
     operation_id: OperationId,
     model_request_id: ModelRequestId,
@@ -187,12 +189,14 @@ impl UsageRuntime {
             entity_times: Mutex::new(HashMap::new()),
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
+            work_contexts: Mutex::new(HashMap::new()),
         })
     }
 
     async fn begin_model_attempt_once(
         self: &Arc<Self>,
         context: &ModelAttemptContext<'_>,
+        work_context: &codex_usage::OperationWorkContext,
     ) -> Result<UsageAttempt, CodexErr> {
         let store = self.store().await?;
         let thread_id = ThreadId::new(context.thread_id).map_err(|_| unavailable())?;
@@ -302,6 +306,7 @@ impl UsageRuntime {
             )
             .await;
         let operation = NewOperation {
+            work_context: Some(work_context.clone()),
             id: operation_id,
             process_id: self.process_id,
             thread_id: Some(thread_id.clone()),
@@ -378,6 +383,7 @@ impl UsageRuntime {
             capture_started,
         );
         Ok(UsageAttempt {
+            work_context: work_context.clone(),
             runtime: Arc::clone(self),
             operation_id,
             model_request_id,

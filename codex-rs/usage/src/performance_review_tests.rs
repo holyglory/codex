@@ -58,6 +58,7 @@ impl Fixture {
 
     fn operation(&self, started_at_ms: i64) -> NewOperation {
         NewOperation {
+            work_context: None,
             id: OperationId::new(),
             process_id: self.process,
             thread_id: Some(ThreadId::new("spec").expect("thread")),

@@ -223,6 +223,10 @@ impl UsageStore {
     }
 
     pub async fn begin_operation(&self, operation: &NewOperation) -> Result<(), UsageStoreError> {
+        if let Some(context) = &operation.work_context {
+            context.validate()?;
+        }
+        let mut transaction = self.pool.begin().await.map_err(UsageStoreError::Database)?;
         let operation_id = operation.id.as_string();
         let result = sqlx::query(
             r#"
@@ -272,12 +276,49 @@ impl UsageStore {
         .bind(operation.activity.as_str())
         .bind(operation.activity_state.as_str())
         .bind(operation.attribution_provenance.as_str())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(UsageStoreError::Database)?;
-        if result.rows_affected() == 0 && !self.operation_matches(operation).await? {
+        if result.rows_affected() == 0
+            && !Self::operation_matches(&mut transaction, operation).await?
+        {
             return Err(UsageStoreError::OperationConflict);
         }
+        if let Some(context) = &operation.work_context {
+            if result.rows_affected() == 1 {
+                sqlx::query("INSERT INTO operation_work_contexts
+                    (operation_id, native_project_id, workstream_id, outcome_id, experiment_ref, provenance)
+                    VALUES (?, ?, ?, ?, ?, ?)")
+                    .bind(&operation_id)
+                    .bind(&context.native_project_id)
+                    .bind(&context.workstream_id)
+                    .bind(&context.outcome_id)
+                    .bind(&context.experiment_ref)
+                    .bind(if context.native_project_id.is_some() { "runtime_observed" } else { "unknown" })
+                    .execute(&mut *transaction).await.map_err(UsageStoreError::Database)?;
+            } else {
+                let matches: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM operation_work_contexts
+                    WHERE operation_id = ? AND native_project_id IS ? AND workstream_id IS ?
+                    AND outcome_id IS ? AND experiment_ref IS ?)",
+                )
+                .bind(&operation_id)
+                .bind(&context.native_project_id)
+                .bind(&context.workstream_id)
+                .bind(&context.outcome_id)
+                .bind(&context.experiment_ref)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(UsageStoreError::Database)?;
+                if !matches {
+                    return Err(UsageStoreError::OperationConflict);
+                }
+            }
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(UsageStoreError::Database)?;
         Ok(())
     }
 
@@ -357,7 +398,10 @@ impl UsageStore {
         self.pool.close().await;
     }
 
-    async fn operation_matches(&self, operation: &NewOperation) -> Result<bool, UsageStoreError> {
+    async fn operation_matches(
+        connection: &mut sqlx::SqliteConnection,
+        operation: &NewOperation,
+    ) -> Result<bool, UsageStoreError> {
         let row = sqlx::query(
             r#"
             SELECT process_id, thread_id, turn_id, agent_id, parent_operation_id,
@@ -368,7 +412,7 @@ impl UsageStore {
             "#,
         )
         .bind(operation.id.as_string())
-        .fetch_one(&self.pool)
+        .fetch_one(connection)
         .await
         .map_err(UsageStoreError::Database)?;
         let parent_operation_id = operation

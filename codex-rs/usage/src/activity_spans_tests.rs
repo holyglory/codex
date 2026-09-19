@@ -31,6 +31,7 @@ async fn activity_span_facts_are_append_only_and_exactly_replayable() {
     .await
     .expect("agent");
     let operation = NewOperation {
+        work_context: None,
         id: OperationId::new(),
         process_id,
         thread_id: Some(ThreadId::new("span-thread").expect("thread")),

@@ -68,6 +68,7 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     let operation_id = OperationId::new();
     store
         .begin_operation(&NewOperation {
+            work_context: None,
             id: operation_id,
             process_id,
             thread_id: Some(thread_id),
@@ -123,7 +124,7 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     )?;
     assert_eq!(identity["kind"], "usageRepositoryIdentity");
     assert_eq!(identity["scope"]["id"], repository.as_str());
-    assert_eq!(identity["databaseSchemaVersion"], 6);
+    assert_eq!(identity["databaseSchemaVersion"], 7);
     assert!(identity.get("tokens").is_none());
     assert_eq!(identity.as_object().unwrap().len(), 5);
     codex_command(home.path())?
