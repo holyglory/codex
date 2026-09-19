@@ -685,6 +685,7 @@ fn resource_not_found() -> JSONRPCErrorError {
 
 fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
     match error {
+        UsageStoreError::InvalidReviewCursor => invalid_params("invalid or expired usage cursor"),
         UsageStoreError::RepositoryMergeCycle => {
             invalid_params("repository merge would create a cycle")
         }

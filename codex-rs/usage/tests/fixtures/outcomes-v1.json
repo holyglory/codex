@@ -1,0 +1,720 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "name": "duplicate_owner_and_overlapping_outcomes",
+      "window": [
+        1000000,
+        1001000
+      ],
+      "operations": [
+        {
+          "id": "a",
+          "start": 1000000,
+          "duration": 100,
+          "outcome": "outcome-a",
+          "snapshot": true,
+          "tokens": 100
+        },
+        {
+          "id": "b",
+          "start": 1000050,
+          "duration": 100,
+          "outcome": "outcome-b",
+          "snapshot": true,
+          "tokens": 50
+        },
+        {
+          "id": "legacy",
+          "start": 1000100,
+          "duration": 100,
+          "outcome": null,
+          "snapshot": false,
+          "tokens": 7
+        },
+        {
+          "id": "clear",
+          "start": 1000150,
+          "duration": 100,
+          "outcome": null,
+          "snapshot": true,
+          "tokens": 3
+        }
+      ],
+      "covered": {
+        "owner": "a",
+        "start": 1000030,
+        "count": 100
+      },
+      "wait": {
+        "owner": "a",
+        "start": 1000020,
+        "end": 1000040
+      },
+      "expected": {
+        "coverage": "partial",
+        "totals": {
+          "operations": 5,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 160,
+            "exact": 160,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 230,
+            "exact": 230,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 250,
+            "exact": 250,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 20,
+            "exact": 20,
+            "unknown": 0
+          }
+        },
+        "attributed": {
+          "operations": 3,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 150,
+            "exact": 150,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 130,
+            "exact": 130,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 150,
+            "exact": 150,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 20,
+            "exact": 20,
+            "unknown": 0
+          }
+        },
+        "unattributed": {
+          "operations": 2,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 10,
+            "exact": 10,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 150,
+            "exact": 150,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 150,
+            "exact": 150,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributedReasons": {
+          "legacy_operation": 1,
+          "outcome_not_declared": 1
+        },
+        "rows": [
+          {
+            "outcomeId": "outcome-a",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 2,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "activeAgentMs": {
+                "measured": 80,
+                "exact": 80,
+                "unknown": 0
+              },
+              "elapsedExecutionMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "recordedWaitMs": {
+                "measured": 20,
+                "exact": 20,
+                "unknown": 0
+              }
+            }
+          },
+          {
+            "outcomeId": "outcome-b",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 1,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 50,
+                "exact": 50,
+                "unknown": 0
+              },
+              "activeAgentMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "elapsedExecutionMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "recordedWaitMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "late_observation_without_past_time",
+      "window": [
+        1000010,
+        1000021
+      ],
+      "operations": [
+        {
+          "id": "a",
+          "start": 1000000,
+          "duration": 5,
+          "outcome": "outcome-a",
+          "snapshot": true,
+          "tokens": 12
+        }
+      ],
+      "expected": {
+        "coverage": "complete",
+        "totals": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 12,
+            "exact": 12,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "attributed": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 12,
+            "exact": 12,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributed": {
+          "operations": 0,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributedReasons": {},
+        "rows": [
+          {
+            "outcomeId": "outcome-a",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 1,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 12,
+                "exact": 12,
+                "unknown": 0
+              },
+              "activeAgentMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              },
+              "elapsedExecutionMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              },
+              "recordedWaitMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "conflicting_duplicate_and_unfinished_wait",
+      "window": [
+        1000000,
+        1001000
+      ],
+      "operations": [
+        {
+          "id": "a",
+          "start": 1000000,
+          "duration": 100,
+          "outcome": "outcome-a",
+          "snapshot": true,
+          "tokens": 100
+        }
+      ],
+      "covered": {
+        "owner": "a",
+        "start": 1000030,
+        "count": 101
+      },
+      "wait": {
+        "owner": "a",
+        "start": 1000020,
+        "end": null
+      },
+      "expected": {
+        "coverage": "partial",
+        "totals": {
+          "operations": 2,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "elapsedExecutionMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          }
+        },
+        "attributed": {
+          "operations": 2,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "elapsedExecutionMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          }
+        },
+        "unattributed": {
+          "operations": 0,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributedReasons": {},
+        "rows": [
+          {
+            "outcomeId": "outcome-a",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 2,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 0,
+                "exact": null,
+                "unknown": 1
+              },
+              "activeAgentMs": {
+                "measured": 0,
+                "exact": null,
+                "unknown": 1
+              },
+              "elapsedExecutionMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "recordedWaitMs": {
+                "measured": 0,
+                "exact": null,
+                "unknown": 1
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "recovery_time_is_unknown",
+      "window": [
+        1000000,
+        1001000
+      ],
+      "operations": [
+        {
+          "id": "a",
+          "start": 1000000,
+          "duration": 100,
+          "outcome": "outcome-a",
+          "snapshot": true,
+          "tokens": 5,
+          "recovered": true,
+          "terminal": "interrupted"
+        }
+      ],
+      "expected": {
+        "coverage": "partial",
+        "totals": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 5,
+            "exact": 5,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "attributed": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 5,
+            "exact": 5,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": null,
+            "unknown": 1
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributed": {
+          "operations": 0,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributedReasons": {},
+        "rows": [
+          {
+            "outcomeId": "outcome-a",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 1,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 5,
+                "exact": 5,
+                "unknown": 0
+              },
+              "activeAgentMs": {
+                "measured": 0,
+                "exact": null,
+                "unknown": 1
+              },
+              "elapsedExecutionMs": {
+                "measured": 0,
+                "exact": null,
+                "unknown": 1
+              },
+              "recordedWaitMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ordinary_interruption_keeps_measured_time",
+      "window": [
+        1000000,
+        1001000
+      ],
+      "operations": [
+        {
+          "id": "a",
+          "start": 1000000,
+          "duration": 100,
+          "outcome": "outcome-a",
+          "snapshot": true,
+          "tokens": 5,
+          "recovered": false,
+          "terminal": "interrupted"
+        }
+      ],
+      "expected": {
+        "coverage": "complete",
+        "totals": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 5,
+            "exact": 5,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "attributed": {
+          "operations": 1,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 5,
+            "exact": 5,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 100,
+            "exact": 100,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributed": {
+          "operations": 0,
+          "retryOperations": 0,
+          "reworkOperations": 0,
+          "providerTotalTokens": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "activeAgentMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "elapsedExecutionMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          },
+          "recordedWaitMs": {
+            "measured": 0,
+            "exact": 0,
+            "unknown": 0
+          }
+        },
+        "unattributedReasons": {},
+        "rows": [
+          {
+            "outcomeId": "outcome-a",
+            "workstreamId": "accounting",
+            "effort": {
+              "operations": 1,
+              "retryOperations": 0,
+              "reworkOperations": 0,
+              "providerTotalTokens": {
+                "measured": 5,
+                "exact": 5,
+                "unknown": 0
+              },
+              "activeAgentMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "elapsedExecutionMs": {
+                "measured": 100,
+                "exact": 100,
+                "unknown": 0
+              },
+              "recordedWaitMs": {
+                "measured": 0,
+                "exact": 0,
+                "unknown": 0
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
