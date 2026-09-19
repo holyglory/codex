@@ -119,7 +119,6 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::Instant;
 use test_case::test_case;
 use tokio::sync::oneshot;
 use wiremock::Mock;
