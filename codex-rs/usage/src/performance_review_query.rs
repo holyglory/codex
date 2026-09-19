@@ -2,25 +2,84 @@ use super::PerformanceReviewQuery;
 use sqlx::QueryBuilder;
 use sqlx::Sqlite;
 
-pub(super) enum ClassificationSource {
+#[derive(Clone, Copy)]
+pub(crate) enum ClassificationSource {
     Cache,
     Canonical,
 }
 
-pub(super) fn selection(
+pub(crate) struct Selection {
+    pub classification: ClassificationSource,
+    pub operation_ids: Option<Vec<String>>,
+}
+
+// Freeze the relevant operation identities once per read transaction. This avoids
+// repeatedly joining years of history while preserving late token/coverage facts.
+pub(crate) async fn window_operation_ids(
+    connection: &mut sqlx::SqliteConnection,
     query: &PerformanceReviewQuery,
-    source: &ClassificationSource,
-) -> QueryBuilder<Sqlite> {
-    let mut builder =
-        QueryBuilder::new("WITH scoped AS (SELECT operation.* FROM operations operation WHERE 1=1");
-    if let Some(thread) = &query.thread_id {
-        builder
-            .push(" AND operation.thread_id = ")
-            .push_bind(thread.as_str());
+    source: &Selection,
+) -> Result<Option<Vec<String>>, crate::UsageStoreError> {
+    if query.time_range.is_none() {
+        return Ok(None);
     }
-    if let Some(repository) = &query.repository_id {
-        builder.push(" AND operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution WHERE attribution.repository_id = ")
-            .push_bind(repository.as_str()).push(")");
+    let mut builder = selection(query, source);
+    builder.push(", candidates(id) AS (SELECT id FROM operations CROSS JOIN bounds WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
+        UNION SELECT operation_id FROM operation_events CROSS JOIN bounds WHERE terminal = 1 AND occurred_at_ms > lower_ms
+        UNION ");
+    builder.push(match source.classification {
+        ClassificationSource::Cache => "SELECT operation_id FROM _usage_report_operations CROSS JOIN bounds WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
+        ClassificationSource::Canonical => "SELECT operation.id FROM operations operation CROSS JOIN bounds WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
+    });
+    builder.push(
+        " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
+        FROM token_observations token CROSS JOIN bounds
+        LEFT JOIN model_requests request ON request.id = token.model_request_id
+        LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
+        LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
+        WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
+          AND token.category_path NOT GLOB 'attribution.items.*'
+        UNION SELECT operation_id FROM coverage_events CROSS JOIN bounds
+          WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
+        SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001",
+    );
+    let ids = builder
+        .build_query_scalar::<String>()
+        .fetch_all(connection)
+        .await
+        .map_err(crate::UsageStoreError::Database)?;
+    if ids.len() > 200_000 {
+        return Err(crate::UsageStoreError::TaskTreeTooLarge);
+    }
+    Ok(Some(ids))
+}
+
+pub(crate) fn selection(
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+) -> QueryBuilder<Sqlite> {
+    let mut builder = QueryBuilder::new(
+        "WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ",
+    );
+    builder.push_bind(query.thread_id.as_ref().map(crate::ThreadId::as_str));
+    builder.push(" UNION SELECT child.id FROM threads child JOIN review_threads parent ON child.parent_thread_id = parent.id WHERE ")
+        .push_bind(query.include_descendants).push("), repository_family(id) AS (SELECT ")
+        .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
+        .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
+            JOIN repository_family family ON merge.target_repository_id = family.id),
+            scoped AS (SELECT operation.* FROM operations operation WHERE 1=1");
+    if let Some(ids) = &source.operation_ids {
+        builder
+            .push(" AND operation.id IN (SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(ids))
+            .push("))");
+    }
+    if query.thread_id.is_some() {
+        builder.push(" AND operation.thread_id IN (SELECT id FROM review_threads)");
+    }
+    if query.repository_id.is_some() {
+        builder.push(" AND operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution
+            WHERE attribution.repository_id IN (SELECT id FROM repository_family))");
     }
     builder.push("), bounds AS (SELECT ")
         .push_bind(query.time_range.map_or(i64::MIN, super::super::report_math::UtcTimeRange::start_ms))
@@ -30,7 +89,7 @@ pub(super) fn selection(
             COALESCE(effective.phase, operation.phase) effective_phase,
             COALESCE(effective.activity, operation.activity) effective_activity,
             COALESCE(effective.activity_state, operation.activity_state) effective_state,");
-    builder.push(match source {
+    builder.push(match source.classification {
         ClassificationSource::Cache => {
             "COALESCE(effective.attribution_provenance, operation.attribution_provenance)"
         }
@@ -39,12 +98,12 @@ pub(super) fn selection(
         }
     });
     builder.push(" effective_provenance, tool.execution_role, tool.execution_group_id,
-            CASE WHEN terminal.occurred_at_ms IS NOT NULL THEN
+            CASE WHEN terminal.occurred_at_ms IS NOT NULL AND terminal.duration_ns IS NOT NULL THEN
               MAX(0, MIN(terminal.occurred_at_ms, upper_ms) - MAX(operation.started_at_ms, lower_ms)) END interval_ms
             FROM scoped operation CROSS JOIN bounds
             LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1
             LEFT JOIN tool_invocations tool ON tool.operation_id = operation.id ");
-    builder.push(match source {
+    builder.push(match source.classification {
         ClassificationSource::Cache => "LEFT JOIN _usage_report_operations effective ON effective.operation_id = operation.id ",
         ClassificationSource::Canonical => "LEFT JOIN effective_classification_events effective ON effective.operation_id = operation.id ",
     });
@@ -60,7 +119,7 @@ pub(super) fn selection(
 
 // Resolve each token's effective owner from the scoped operations so the owner indexes
 // bound the read. Covered tool observations still deduplicate with their model request.
-pub(super) const TOKEN_FACTS: &str = ", owned_tokens AS (
+pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
     SELECT token.*, owner.id AS operation_id FROM scoped owner
     JOIN model_requests request ON request.operation_id = owner.id
     JOIN token_observations token ON token.model_request_id = request.id

@@ -51,9 +51,17 @@ pub(super) async fn execute(
                         .await?,
                     thread_id: optional_thread(context, args.thread_id.as_deref())?,
                     time_range,
+                    include_descendants: args.include_descendants.unwrap_or(false),
+                    outcome_cursor: args.outcome_cursor.clone(),
+                    outcome_limit: args.outcome_limit,
                 })
                 .await
-                .map_err(|_| storage_error())?;
+                .map_err(|error| match error {
+                    codex_usage::UsageStoreError::InvalidReviewCursor => {
+                        tool_error(&error.to_string())
+                    }
+                    _ => storage_error(),
+                })?;
             serde_json::to_value(packet).map_err(|_| storage_error())
         }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,
@@ -370,6 +378,19 @@ fn account_display(labels: &HashMap<String, String>, reference: &AccountProfileR
 }
 
 fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
+    if (args.outcome_cursor.is_some() || args.outcome_limit.is_some())
+        && !matches!(args.action, UsageStatsAction::PerformanceReview)
+        || args
+            .outcome_limit
+            .is_some_and(|limit| !(1..=50).contains(&limit))
+        || matches!(args.action, UsageStatsAction::PerformanceReview)
+            && args.include_descendants == Some(true)
+            && args.thread_id.is_none()
+    {
+        return Err(tool_error(
+            "Outcome pagination is available for performance_review (limit 1–50); descendant inclusion requires thread_id.",
+        ));
+    }
     let invalid = match args.action {
         UsageStatsAction::Summary => {
             args.thread_id.is_some()
@@ -392,7 +413,6 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
             args.scope.is_some()
                 || args.account.is_some()
                 || args.root_thread_id.is_some()
-                || args.include_descendants.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
                 || args.limit.is_some()

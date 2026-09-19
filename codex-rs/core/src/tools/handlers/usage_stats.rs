@@ -71,6 +71,8 @@ struct UsageStatsArgs {
     limit: Option<u32>,
     cursor_sort_value: Option<i64>,
     cursor_id: Option<String>,
+    outcome_cursor: Option<String>,
+    outcome_limit: Option<u32>,
 }
 
 struct UsageStatsContext {
@@ -232,9 +234,17 @@ fn usage_stats_spec() -> ToolSpec {
         (
             "include_descendants".to_string(),
             JsonSchema::boolean(Some(
-                "For task_tree_summary, include recorded descendants; defaults to true."
+                "Include recorded descendants: task_tree_summary defaults to true; thread-scoped performance_review defaults to false. Set true for daily task reviews that include delegated work."
                     .to_string(),
             )),
+        ),
+        (
+            "outcome_cursor".to_string(),
+            JsonSchema::string(Some("For performance_review, continue its fixed outcome snapshot; expired cursors require a new first page.".to_string())),
+        ),
+        (
+            "outcome_limit".to_string(),
+            JsonSchema::number(Some("For performance_review, outcome rows per page, 1–50 (default 8), subject to the response byte limit.".to_string())),
         ),
         (
             "agent_id".to_string(),

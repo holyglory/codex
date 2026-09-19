@@ -21,6 +21,8 @@ fn args() -> UsageStatsArgs {
         limit: None,
         cursor_sort_value: None,
         cursor_id: None,
+        outcome_cursor: None,
+        outcome_limit: None,
     }
 }
 
@@ -291,6 +293,7 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
     let operation_id = OperationId::new();
     store
         .begin_operation(&NewOperation {
+            work_context: None,
             id: operation_id,
             process_id,
             thread_id: Some(thread_id.clone()),
@@ -342,6 +345,8 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
             limit: None,
             cursor_sort_value: None,
             cursor_id: None,
+            outcome_cursor: None,
+            outcome_limit: None,
         },
     )
     .await
