@@ -416,6 +416,13 @@ impl WebsocketSession {
     }
 }
 
+/// Selects the layer that owns capacity retries for a Responses request.
+#[derive(Clone, Copy)]
+pub(crate) enum ServerOverloadRetry {
+    Transport,
+    Caller,
+}
+
 enum WebsocketStreamOutcome {
     Stream(ResponseStream),
     FallbackToHttp,
@@ -1875,6 +1882,7 @@ impl ModelClientSession {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        server_overload_retry: ServerOverloadRetry,
         inference_trace: &InferenceTraceContext,
         usage_chain: &UsageRequestChain,
     ) -> Result<ResponseStream> {
@@ -1960,6 +1968,10 @@ impl ModelClientSession {
             )
             .with_endpoint(endpoint)
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let client = match server_overload_retry {
+                ServerOverloadRetry::Transport => client,
+                ServerOverloadRetry::Caller => client.defer_server_overload_retries(),
+            };
             let usage_auth_mode = client_setup.auth.as_ref().map(CodexAuth::api_auth_mode);
             let usage_attempt = self
                 .begin_usage_attempt(
@@ -2412,6 +2424,7 @@ impl ModelClientSession {
             responses_metadata,
             inference_trace,
             &usage_chain,
+            ServerOverloadRetry::Transport,
         )
         .await
     }
@@ -2428,6 +2441,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
         usage_chain: &UsageRequestChain,
+        server_overload_retry: ServerOverloadRetry,
     ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
@@ -2465,6 +2479,7 @@ impl ModelClientSession {
                     summary,
                     service_tier,
                     responses_metadata,
+                    server_overload_retry,
                     inference_trace,
                     usage_chain,
                 )

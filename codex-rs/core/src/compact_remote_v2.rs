@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::Prompt;
 use crate::ResponseStream;
 use crate::client::ModelClientSession;
+use crate::client::ServerOverloadRetry;
 use crate::client_common::ResponseEvent;
 use crate::compact::CompactedHistoryMetadata;
 use crate::compact::CompactionAnalyticsAttempt;
@@ -419,6 +420,7 @@ async fn run_remote_compaction_request_v2(
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
                 usage_chain,
+                ServerOverloadRetry::Transport,
             )
             .await
         {
