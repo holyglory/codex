@@ -8,9 +8,12 @@ pub struct PerformanceReviewQuery {
     pub repository_id: Option<RepositoryId>,
     pub thread_id: Option<ThreadId>,
     pub time_range: Option<UtcTimeRange>,
+    pub include_descendants: bool,
+    pub outcome_cursor: Option<String>,
+    pub outcome_limit: Option<u32>,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PerformanceReviewPacket {
     pub schema_version: u32,
@@ -23,18 +26,19 @@ pub struct PerformanceReviewPacket {
     pub candidates: Vec<ReviewCandidate>,
     pub coverage: ReviewCoverage,
     pub work_bindings: ReviewWorkBindings,
+    pub outcomes: crate::OutcomeReport,
     pub evidence: ReviewEvidence,
     pub interpretation: &'static str,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewWindow {
     pub from_at_ms: Option<i64>,
     pub to_at_ms: Option<i64>,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewTokens {
     pub category: String,
@@ -45,7 +49,7 @@ pub struct ReviewTokens {
     pub unknown_observations: u64,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCategory {
     pub category: String,
@@ -54,7 +58,7 @@ pub struct ReviewCategory {
     pub unknown_intervals: u64,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewLinks {
     pub retry_operations: u64,
@@ -63,7 +67,7 @@ pub struct ReviewLinks {
     pub omitted_operations: u64,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewLink {
     pub operation_id: String,
@@ -72,7 +76,7 @@ pub struct ReviewLink {
     pub rework_of_operation_id: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCandidate {
     pub signal: &'static str,
@@ -82,7 +86,7 @@ pub struct ReviewCandidate {
     pub evidence: ReviewLink,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCoverage {
     pub raw_operations: u64,
@@ -106,14 +110,14 @@ pub struct ReviewCoverage {
     pub repeated_input_comparison: &'static str,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCoverageCount {
     pub state: String,
     pub count: u64,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ReviewEvidence {
     pub action: &'static str,
     pub details: [&'static str; 4],
@@ -124,7 +128,7 @@ pub struct ReviewEvidence {
     pub limit: u32,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewWorkBindings {
     pub references: Vec<ReviewWorkBindingReference>,
@@ -138,7 +142,7 @@ pub struct ReviewWorkBindings {
     pub basis: &'static str,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewWorkBindingReference {
     pub event_id: String,

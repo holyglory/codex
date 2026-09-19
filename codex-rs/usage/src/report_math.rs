@@ -466,7 +466,7 @@ fn enclosing_span_ns(intervals: &[(i64, i64)]) -> Result<u64, UsageStoreError> {
     interval_duration_ns((start, end))
 }
 
-fn interval_union_ns(intervals: &[(i64, i64)]) -> Result<u64, UsageStoreError> {
+pub(crate) fn interval_union_ns(intervals: &[(i64, i64)]) -> Result<u64, UsageStoreError> {
     let mut intervals = intervals.to_vec();
     intervals.sort_unstable();
     let mut total = 0_u64;
@@ -497,7 +497,7 @@ fn interval_duration_ns(interval: (i64, i64)) -> Result<u64, UsageStoreError> {
         .ok_or(UsageStoreError::AggregateOverflow)
 }
 
-fn subtract_intervals(
+pub(crate) fn subtract_intervals(
     base: (i64, i64),
     exclusions: &[(i64, i64)],
 ) -> Result<Vec<(i64, i64)>, UsageStoreError> {

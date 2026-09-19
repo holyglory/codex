@@ -11,8 +11,10 @@ use crate::detail_query_support::required_enum;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
+#[path = "performance_review_pages.rs"]
+mod pages;
 #[path = "performance_review_query.rs"]
-mod query;
+pub(crate) mod query;
 #[path = "performance_review_types.rs"]
 mod types;
 #[path = "performance_review_work.rs"]
@@ -22,9 +24,15 @@ pub use types::*;
 impl UsageStore {
     pub async fn performance_review_packet(
         &self,
-        query: PerformanceReviewQuery,
+        mut query: PerformanceReviewQuery,
     ) -> Result<PerformanceReviewPacket, UsageStoreError> {
-        let source = if crate::report_cache::is_ready(&self.pool)
+        if let Some(repository) = &query.repository_id {
+            query.repository_id = Some(self.canonical_repository_id(repository).await?);
+        }
+        if let Some(page) = pages::existing(self, &query)? {
+            return Ok(page);
+        }
+        let classification = if crate::report_cache::is_ready(&self.pool)
             .await
             .map_err(UsageStoreError::Database)?
         {
@@ -33,6 +41,12 @@ impl UsageStore {
             query::ClassificationSource::Canonical
         };
         let mut transaction = self.pool.begin().await.map_err(UsageStoreError::Database)?;
+        let mut source = query::Selection {
+            classification,
+            operation_ids: None,
+        };
+        source.operation_ids =
+            query::window_operation_ids(transaction.as_mut(), &query, &source).await?;
         let mut builder = query::selection(&query, &source);
         let coverage_row = builder
             .push(query::TOKEN_FACTS)
@@ -186,6 +200,7 @@ impl UsageStore {
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
         let work_bindings = work::read(transaction.as_mut(), &query, &source).await?;
+        let outcomes = crate::outcomes::read(transaction.as_mut(), &query, &source).await?;
         transaction
             .commit()
             .await
@@ -228,14 +243,17 @@ impl UsageStore {
             critical_path: "not_collected",
             repeated_input_comparison: "not_collected",
         };
-        Ok(PerformanceReviewPacket {
+        let packet = PerformanceReviewPacket {
             schema_version: 1,
             kind: "performanceReview",
             evidence: ReviewEvidence {
                 action: "details",
                 details: ["operations", "tokens", "coverage", "activity_spans"],
-                repository: query.repository_id.map(|id| id.as_str().to_string()),
-                thread_id: query.thread_id.map(|id| id.as_str().to_string()),
+                repository: query
+                    .repository_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string()),
+                thread_id: query.thread_id.as_ref().map(|id| id.as_str().to_string()),
                 from_at_ms: window.from_at_ms,
                 to_at_ms: window.to_at_ms,
                 limit: 25,
@@ -248,8 +266,10 @@ impl UsageStore {
             candidates,
             coverage,
             work_bindings,
+            outcomes,
             interpretation: "Candidates are signals, not diagnoses or measured waste. Critical path and avoidability are unknown. Manual waits and deliberate validation are not waste. Interval sums are effort, not elapsed wall time; waits overlap operation effort. Token categories and provenances overlap: never add total, input, cached, output, or reasoning categories together. Facts deduplicate by owner, source event, category and provenance; covered tools retain request ownership. Windows clip intervals and select facts by observation time. Evidence IDs reference operations; select one details family and follow its nextCursor. Omitted groups remain in paginated evidence. Collection gaps may be unobservable; zero recorded gaps does not prove complete capture.",
-        })
+        };
+        pages::remember(self, &query, packet)
     }
 }
 
