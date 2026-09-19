@@ -1465,7 +1465,10 @@ impl ModelClientSession {
                             .map(codex_usage::AccountProfileRef::as_str),
                         auth_mode,
                     ),
-                    repositories: usage_repository_candidates(responses_metadata),
+                    repositories: crate::usage_runtime::model_repository_candidates(
+                        responses_metadata,
+                    )
+                    .await,
                     attempt_number: usage_request.attempt_number,
                     retry_of_operation_id: usage_request.retry_of_operation_id,
                     retry_slot: usage_request.retry_slot,
@@ -1524,7 +1527,10 @@ impl ModelClient {
                             .map(codex_usage::AccountProfileRef::as_str),
                         auth_mode,
                     ),
-                    repositories: usage_repository_candidates(responses_metadata),
+                    repositories: crate::usage_runtime::model_repository_candidates(
+                        responses_metadata,
+                    )
+                    .await,
                     attempt_number: usage_request.attempt_number,
                     retry_of_operation_id: usage_request.retry_of_operation_id,
                     retry_slot: usage_request.retry_slot,
@@ -1568,32 +1574,6 @@ fn usage_codex_error_outcome(error: &CodexErr) -> (UsageTerminalStatus, UsageErr
     } else {
         (UsageTerminalStatus::Failed, UsageErrorCategory::Provider)
     }
-}
-
-fn usage_repository_candidates(
-    metadata: &CodexResponsesMetadata,
-) -> Vec<crate::usage_runtime::RepositoryCandidate> {
-    metadata
-        .workspaces
-        .iter()
-        .map(|(workspace, details)| {
-            let origin = details
-                .associated_remote_urls
-                .as_ref()
-                .and_then(|remotes| {
-                    remotes
-                        .get("origin")
-                        .or_else(|| remotes.values().next())
-                        .cloned()
-                })
-                .map(String::from);
-            crate::usage_runtime::RepositoryCandidate::new(
-                workspace.clone(),
-                origin,
-                crate::usage_runtime::repository_safe_label(workspace),
-            )
-        })
-        .collect()
 }
 
 impl Drop for ModelClientSession {
