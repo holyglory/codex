@@ -1807,6 +1807,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                     session_source: &SessionSource::Exec,
                     originator: &first_originator,
                     disabled_plugin_ids: &disabled_plugin_ids,
+                    auth: None,
                     environments: McpEnvironmentScope::Selected(
                         &first_session.services.turn_environments.selections(),
                     ),

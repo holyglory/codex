@@ -39,28 +39,21 @@ impl CodeModeSessionProvider for WaitTimerArmedProvider {
         self.inner.availability()
     }
 
-    fn create_session<'a>(
-        &'a self,
-        delegate: Arc<dyn CodeModeSessionDelegate>,
-    ) -> CodeModeSessionProviderFuture<'a> {
+    fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
         let timer_armed = Arc::clone(&self.timer_armed);
         Box::pin(async move {
-            let inner = self.inner.create_session(delegate).await?;
+            let inner = self.inner.create_session().await?;
             Ok(Arc::new(WaitTimerArmedSession { inner, timer_armed }) as Arc<dyn CodeModeSession>)
         })
     }
 
     fn create_session_with_limits<'a>(
         &'a self,
-        delegate: Arc<dyn CodeModeSessionDelegate>,
         limits: CodeModeSessionCellExecutionLimits,
     ) -> CodeModeSessionProviderFuture<'a> {
         let timer_armed = Arc::clone(&self.timer_armed);
         Box::pin(async move {
-            let inner = self
-                .inner
-                .create_session_with_limits(delegate, limits)
-                .await?;
+            let inner = self.inner.create_session_with_limits(limits).await?;
             Ok(Arc::new(WaitTimerArmedSession { inner, timer_armed }) as Arc<dyn CodeModeSession>)
         })
     }
@@ -75,8 +68,9 @@ impl CodeModeSession for WaitTimerArmedSession {
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
+        delegate: Arc<dyn CodeModeSessionDelegate>,
     ) -> CodeModeSessionResultFuture<'a, StartedCell> {
-        self.inner.execute(request)
+        self.inner.execute(request, delegate)
     }
 
     fn wait<'a>(&'a self, request: WaitRequest) -> CodeModeSessionResultFuture<'a, WaitOutcome> {

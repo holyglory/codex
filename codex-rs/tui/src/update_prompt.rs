@@ -348,7 +348,8 @@ mod tests {
     #[test]
     fn long_update_command_keeps_selected_skip_visible_in_a_short_viewport() {
         let mut screen = new_prompt();
-        screen.update_action = UpdateAction::StandaloneWindows;
+        screen.update_action =
+            UpdateAction::Daemon(crate::update_action::DaemonUpdateSource::ThisCli);
         screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let (width, height) = (28, 12);
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");
