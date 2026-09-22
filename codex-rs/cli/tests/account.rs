@@ -136,8 +136,8 @@ fn help_exposes_only_fully_implemented_account_surfaces() -> Result<()> {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout)?;
     for command in [
-        "list", "current", "show", "add", "limits", "rename", "edit", "priority", "use", "enable",
-        "disable", "remove", "auto", "doctor",
+        "list", "current", "show", "add", "limits", "reset", "rename", "edit", "priority", "use",
+        "enable", "disable", "remove", "auto", "doctor",
     ] {
         assert!(help.contains(command), "missing account command {command}");
     }
@@ -1108,3 +1108,6 @@ fn open_shared_lock(path: &Path) -> Result<File> {
     File::lock_shared(&file)?;
     Ok(file)
 }
+
+#[path = "account/reset_tests.rs"]
+mod reset_tests;
