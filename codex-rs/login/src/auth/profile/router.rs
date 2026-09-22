@@ -25,7 +25,6 @@ use codex_account_selection::UnknownReason;
 use codex_account_selection::select_account;
 use codex_config::types::AuthCredentialsStoreMode;
 use thiserror::Error;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::Semaphore;
 
@@ -183,7 +182,7 @@ struct RouterInner {
     process_pin: Option<AccountId>,
     active_leases: Mutex<HashMap<AccountId, usize>>,
     workspace_routing_owner: OnceLock<Weak<AuthManager>>,
-    manager_reload: AsyncMutex<()>,
+    manager_reload: Semaphore,
 }
 
 #[derive(Clone)]
@@ -778,7 +777,7 @@ impl ProfileAuthRouter {
                 process_pin: None,
                 active_leases: Mutex::new(HashMap::new()),
                 workspace_routing_owner: OnceLock::new(),
-                manager_reload: AsyncMutex::new(()),
+                manager_reload: Semaphore::new(/*permits*/ 1),
             }),
         })
     }
@@ -816,13 +815,18 @@ impl ProfileAuthRouter {
                 process_pin,
                 active_leases: Mutex::new(HashMap::new()),
                 workspace_routing_owner: OnceLock::new(),
-                manager_reload: AsyncMutex::new(()),
+                manager_reload: Semaphore::new(/*permits*/ 1),
             }),
         })
     }
 
     pub async fn reload_at_turn_boundary(&self) -> Result<u64, ProfileAuthRouterError> {
-        let _reload = self.inner.manager_reload.lock().await;
+        let _reload = self
+            .inner
+            .manager_reload
+            .acquire()
+            .await
+            .map_err(|_| router_state_error())?;
         for _ in 0..3 {
             let snapshot = self.inner.registry_store.read()?;
             let previous = self
@@ -898,7 +902,12 @@ impl ProfileAuthRouter {
         &self,
         account_id: &AccountId,
     ) -> Result<AccountLease, ProfileAuthRouterError> {
-        let _reload = self.inner.manager_reload.lock().await;
+        let _reload = self
+            .inner
+            .manager_reload
+            .acquire()
+            .await
+            .map_err(|_| router_state_error())?;
         for _ in 0..3 {
             let registry = self.inner.registry_store.read()?;
             let account = registry
