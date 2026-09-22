@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
 
@@ -180,6 +181,7 @@ struct RouterInner {
     managers: RwLock<HashMap<AccountId, Arc<AuthManager>>>,
     process_pin: Option<AccountId>,
     active_leases: Mutex<HashMap<AccountId, usize>>,
+    workspace_routing_owner: OnceLock<Weak<AuthManager>>,
 }
 
 #[derive(Clone)]
@@ -325,6 +327,12 @@ impl SharedProfileAuthRouter {
         };
         let mut router = self.inner.router.write().await;
         let router = router.get_or_insert(opened).clone();
+        if let Some(owner) = &self.inner.upstream_auth_manager {
+            router
+                .inner
+                .workspace_routing_owner
+                .get_or_init(|| Arc::downgrade(owner));
+        }
         Ok(Some(router))
     }
 
@@ -760,6 +768,7 @@ impl ProfileAuthRouter {
                 managers: RwLock::new(HashMap::new()),
                 process_pin: None,
                 active_leases: Mutex::new(HashMap::new()),
+                workspace_routing_owner: OnceLock::new(),
             }),
         })
     }
@@ -796,6 +805,7 @@ impl ProfileAuthRouter {
                 managers: RwLock::new(managers),
                 process_pin,
                 active_leases: Mutex::new(HashMap::new()),
+                workspace_routing_owner: OnceLock::new(),
             }),
         })
     }
@@ -1174,6 +1184,14 @@ impl ProfileAuthRouter {
         let manager = managers
             .get(account_id)
             .ok_or(ProfileAuthRouterError::UnknownAccount)?;
+        if let Some(owner) = self
+            .inner
+            .workspace_routing_owner
+            .get()
+            .and_then(Weak::upgrade)
+        {
+            manager.inherit_workspace_routing_resolver(&owner);
+        }
         let profile = ProfileAuthStorage::new(
             &self.inner.root_home,
             account_id.clone(),
