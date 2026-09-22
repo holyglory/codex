@@ -21,6 +21,7 @@ use predicates::str::contains;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use tempfile::TempDir;
+use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
@@ -182,6 +183,169 @@ fn list_current_and_show_json_are_versioned_and_redacted() -> Result<()> {
             .success(),
     )?;
     assert_eq!(shown["account"]["alias"], "beta");
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
+    let fixture = fixture(/*beta_authenticated*/ true)?;
+    let long_alias = "axel-marchenko-tt-eu-pp".parse::<AccountAlias>()?;
+    RegistryStore::new(fixture.home.path()).compare_and_swap(
+        /*expected_generation*/ 0,
+        |registry| {
+            registry.accounts[1].alias = long_alias.clone();
+        },
+    )?;
+
+    let output = codex_command(fixture.home.path())?
+        .args(["account", "list"])
+        .assert()
+        .success();
+    let human = String::from_utf8(output.get_output().stdout.clone())?;
+    let mut lines = human.lines();
+    lines.next().expect("account list header");
+    let first_account = lines.next().expect("first account");
+    let second_account = lines.next().expect("second account");
+    let first_columns = first_account.split('\t').collect::<Vec<_>>();
+    let second_columns = second_account.split('\t').collect::<Vec<_>>();
+    assert_eq!(first_columns[2], "ready");
+    assert_eq!(second_columns[2], "ready");
+    assert_eq!(first_columns[1].len(), second_columns[1].len());
+    insta::assert_snapshot!("account_list_long_alias", human);
+    assert!(!human.contains('\x1b'));
+    let program = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let ansi = regex_lite::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]")?;
+    for no_color in [false, true] {
+        let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
+        for key in [
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "NO_COLOR",
+            "CLICOLOR",
+            "CLICOLOR_FORCE",
+            "FORCE_COLOR",
+        ] {
+            env.remove(key);
+        }
+        env.insert(
+            "CODEX_HOME".to_string(),
+            fixture.home.path().to_string_lossy().into_owned(),
+        );
+        env.insert("TERM".to_string(), "xterm-256color".to_string());
+        if no_color {
+            env.insert("NO_COLOR".to_string(), "1".to_string());
+        }
+        let spawned = codex_utils_pty::spawn_pty_process(
+            program.to_str().unwrap(),
+            &["account".to_string(), "list".to_string()],
+            fixture.home.path(),
+            &env,
+            /*arg0*/ &None,
+            codex_utils_pty::TerminalSize {
+                rows: 24,
+                cols: 240,
+            },
+            &[],
+        )
+        .await?;
+        let session = spawned.session;
+        let mut stdout_rx = spawned.stdout_rx;
+        let (code, output) =
+            tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 30), async {
+                let mut output = Vec::new();
+                while let Some(bytes) = stdout_rx.recv().await {
+                    output.extend(bytes);
+                }
+                Ok::<_, anyhow::Error>((spawned.exit_rx.await?, String::from_utf8(output)?))
+            })
+            .await??;
+        drop(session);
+        assert_eq!(code, 0);
+        assert_eq!(output.contains('\x1b'), !no_color);
+        assert_eq!(ansi.replace_all(&output, "").replace('\r', ""), human);
+        if !no_color {
+            insta::assert_snapshot!(
+                "account_list_colors",
+                output.replace('\x1b', "ESC").replace('\r', "")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_reset_selects_soonest_credit_and_refreshes_account() -> Result<()> {
+    let server = MockServer::start().await;
+    let fixture = fixture(/*beta_authenticated*/ true)?;
+    std::fs::write(
+        fixture.home.path().join("config.toml"),
+        format!(
+            "cli_auth_credentials_store = \"file\"\nchatgpt_base_url = \"{}\"\n",
+            server.uri()
+        ),
+    )?;
+    ProfileAuthStorage::new(
+        fixture.home.path(),
+        fixture.alpha.id.clone(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?
+    .save(&chatgpt_auth("alpha")?)?;
+    RegistryStore::new(fixture.home.path())
+        .compare_and_swap(/*expected_generation*/ 0, |registry| {
+            registry.accounts[0].auth_mode = AuthMode::Chatgpt
+        })?;
+    let credits = serde_json::json!({
+        "available_count": 2,
+        "credits": [
+            {"id": "credit-later", "reset_type": "codex_rate_limits", "status": "available", "granted_at": "2026-01-01T00:00:00Z", "expires_at": "2030-01-01T00:00:00Z"},
+            {"id": "credit-soon", "reset_type": "codex_rate_limits", "status": "available", "granted_at": "2026-01-02T00:00:00Z", "expires_at": "2027-01-01T00:00:00Z"}
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(credits.clone()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": {"allowed": true, "limit_reached": false,
+                "primary_window": {"used_percent": 10, "limit_window_seconds": 300,
+                    "reset_after_seconds": 0, "reset_at": 1893456000}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": "reset", "windows_reset": 2
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = stdout_json(
+        codex_command(fixture.home.path())?
+            .args(["account", "reset", "alpha", "--json"])
+            .assert()
+            .success(),
+    )?;
+    assert_eq!(output["account"], "alpha");
+    assert_eq!(output["creditId"], "credit-soon");
+    assert_eq!(output["outcome"], "reset");
+    assert_eq!(output["windowsReset"], 2);
+    assert_eq!(output["refreshedBankedResets"]["availableCount"], 2);
+    assert!(
+        output["requestId"]
+            .as_str()
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+    );
+    server.verify().await;
     Ok(())
 }
 
@@ -484,6 +648,7 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         .and(header("chatgpt-account-id", "workspace-alpha"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "plan_type": "pro",
+            "rate_limit_reset_credits": {"available_count": 3},
             "credits": {"has_credits": true, "unlimited": false, "balance": "9.99"},
             "spend_control": {"reached": false, "individual_limit": {"limit":"25000", "used":"8000", "remaining":"17000", "used_percent":32, "remaining_percent":68, "reset_after_seconds":0, "reset_at":1893456000}},
             "rate_limit": {
@@ -503,6 +668,12 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
                 }
             },
             "additional_rate_limits": [{
+                "limit_name": "gpt-reserve",
+                "metered_feature": "gpt-reserve",
+                "rate_limit": {"allowed": true, "limit_reached": false,
+                    "primary_window": {"used_percent": 35, "limit_window_seconds": 604800,
+                        "reset_after_seconds": 0, "reset_at": 1893456000}}
+            }, {
                 "limit_name": "GPT-5.3-Codex-Spark",
                 "metered_feature": "codex_bengalfox",
                 "rate_limit": {
@@ -516,6 +687,29 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
                     }
                 }
             }]
+        })))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let credits = [
+        ("later", "available", Some("2030-02-01T00:00:00Z")),
+        ("redeemed", "redeemed", Some("2029-01-01T00:00:00Z")),
+        ("expired", "expired", Some("2025-01-01T00:00:00Z")),
+        ("soonest", "available", Some("2030-01-01T03:00:00+03:00")),
+        ("permanent", "available", None),
+    ]
+    .map(|(id, status, expires_at)| {
+        serde_json::json!({
+            "id": id, "status": status, "expires_at": expires_at,
+            "reset_type": "codex_rate_limits", "granted_at": "2026-09-01T00:00:00Z"
+        })
+    });
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .and(header("authorization", "Bearer access-alpha"))
+        .and(header("chatgpt-account-id", "workspace-alpha"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "available_count": 3, "credits": credits,
         })))
         .expect(3)
         .mount(&server)
@@ -556,7 +750,7 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     assert_eq!(report["accounts"][1]["state"], "observed");
     assert_eq!(
         report["accounts"][1]["buckets"].as_array().map(Vec::len),
-        Some(2)
+        Some(3)
     );
 
     let listed = stdout_json(
@@ -573,6 +767,12 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         listed["accounts"][1]["limits"]["nextResetScope"],
         "codex.primary"
     );
+    assert_eq!(
+        listed["accounts"][1]["limits"]["bankedResets"],
+        serde_json::json!({
+            "availableCount": 3, "soonestExpiresAt": 1893456000_i64, "expiryKnown": true,
+        })
+    );
     let before = chrono::Utc::now().timestamp();
     let human = codex_command(fixture.home.path())?
         .env("NO_PROXY", "127.0.0.1,localhost")
@@ -581,6 +781,9 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         .assert()
         .success();
     let human = String::from_utf8(human.get_output().stdout.clone())?;
+    assert!(!human.contains("gpt-reserve"));
+    assert!(!human.contains("Spark"));
+    assert!(human.contains("2030-01-01 00:00:00 UTC"));
     let countdown = human
         .lines()
         .last()
@@ -626,7 +829,7 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     server.verify().await;
     server.reset().await;
     Mock::given(method("GET")).and(path("/api/codex/usage"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"plan_type":"pro", "spend_control":{"reached":true}, "rate_limit_reached_type":{"type":"workspace_owner_credits_depleted"}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"plan_type":"pro", "rate_limit_reset_credits":{"available_count":0}, "spend_control":{"reached":true}, "rate_limit_reached_type":{"type":"workspace_owner_credits_depleted"}})))
         .expect(1).mount(&server).await;
     let restricted = codex_command(fixture.home.path())?
         .env("NO_PROXY", "127.0.0.1,localhost")
@@ -639,6 +842,93 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         String::from_utf8_lossy(&restricted.get_output().stdout)
     );
     server.verify().await;
+    for (details, expected) in [
+        (
+            None,
+            serde_json::json!({"availableCount": 2, "soonestExpiresAt": null, "expiryKnown": false}),
+        ),
+        (
+            Some(serde_json::json!({"available_count": 0, "credits": []})),
+            serde_json::json!({"availableCount": 0, "soonestExpiresAt": null, "expiryKnown": true}),
+        ),
+        (
+            Some(serde_json::json!({"available_count": 1, "credits": [{
+                "id": "permanent", "status": "available", "reset_type": "codex_rate_limits",
+                "granted_at": "2026-09-01T00:00:00Z", "expires_at": null
+            }]})),
+            serde_json::json!({"availableCount": 1, "soonestExpiresAt": null, "expiryKnown": true}),
+        ),
+        (
+            Some(serde_json::json!({"available_count": 1, "credits": [{
+                "id": "invalid", "status": "available", "reset_type": "codex_rate_limits",
+                "granted_at": "2026-09-01T00:00:00Z", "expires_at": "invalid-date"
+            }]})),
+            serde_json::json!({"availableCount": 1, "soonestExpiresAt": null, "expiryKnown": false}),
+        ),
+        (
+            Some(serde_json::json!({"available_count": 2, "credits": []})),
+            serde_json::json!({"availableCount": 2, "soonestExpiresAt": null, "expiryKnown": false}),
+        ),
+    ] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/api/codex/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plan_type": "pro", "rate_limit_reset_credits": {"available_count": 2},
+                "rate_limit": {"allowed": true, "limit_reached": false,
+                    "primary_window": {"used_percent": 42, "limit_window_seconds": 300,
+                        "reset_after_seconds": 0, "reset_at": 1893456000}}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let response = match details {
+            Some(details) => ResponseTemplate::new(200).set_body_json(details),
+            None => ResponseTemplate::new(500),
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/codex/rate-limit-reset-credits"))
+            .respond_with(response)
+            .expect(2)
+            .mount(&server)
+            .await;
+        let output = stdout_json(
+            codex_command(fixture.home.path())?
+                .args(["account", "list", "--json"])
+                .assert()
+                .success(),
+        )?;
+        assert_eq!(output["accounts"][1]["limits"]["state"], "observed");
+        assert_eq!(output["accounts"][1]["limits"]["bankedResets"], expected);
+        let expiry_label = if expected["availableCount"] == 0 {
+            "none"
+        } else if expected["expiryKnown"] == true {
+            "never"
+        } else {
+            "unknown"
+        };
+        let human = codex_command(fixture.home.path())?
+            .args(["account", "list"])
+            .assert()
+            .success();
+        let human = String::from_utf8(human.get_output().stdout.clone())?;
+        let columns = human
+            .lines()
+            .last()
+            .unwrap()
+            .split('\t')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (columns[6], columns[7]),
+            (
+                expected["availableCount"].to_string().as_str(),
+                expiry_label
+            )
+        );
+        assert!(human.contains("codex: 5m 42% used"));
+        server.verify().await;
+    }
     Ok(())
 }
 
@@ -737,7 +1027,7 @@ async fn account_list_keeps_each_accounts_weekly_reset_with_identical_unused_spa
         assert_eq!(data["limits"]["buckets"].as_array().unwrap().len(), 2);
         let line = human
             .lines()
-            .find(|line| line.split('\t').nth(1) == Some(account.alias.as_str()))
+            .find(|line| line.split('\t').nth(1).map(str::trim) == Some(account.alias.as_str()))
             .unwrap();
         let countdown = line.split('\t').next_back().unwrap();
         assert_reset_countdown(countdown, reset, before)?;
