@@ -20,7 +20,6 @@ struct GuardianSamplerTemplate {
     session_id: String,
     thread_id: String,
     originator: Option<String>,
-    luna_compaction_hash: Option<String>,
     metrics: Option<Arc<dyn ExtensionMetrics>>,
     prewarm_allowed: bool,
     scoring_enabled: bool,
@@ -83,9 +82,6 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .await,
                 )
             };
-            let luna_compaction_hash = standalone_sampler
-                .as_ref()
-                .and_then(|config| config.luna_compaction_hash.clone());
             if scoring_enabled && guardian_config.transcript.include_images {
                 input
                     .thread_store
@@ -111,7 +107,6 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .thread_store
                     .get::<ThreadOriginator>()
                     .map(|originator| originator.0.clone()),
-                luna_compaction_hash,
                 metrics: input.extension_metrics.clone(),
                 prewarm_allowed,
                 scoring_enabled,
