@@ -13,7 +13,7 @@ async fn desktop_turn_respects_the_ten_minute_reset_switch_threshold() -> Result
             ))
             .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
             .write(codex_home.path())?;
-        write_models_cache(codex_home.path())?;
+        write_models_cache(codex_home.path()).await?;
         let current =
             persist_managed_chatgpt_profile(codex_home.path(), "current", /*priority*/ 1_000)?;
         let mut peers = [

@@ -329,6 +329,7 @@ async fn malformed_system_defaults_do_not_block_existing_thread_turn() -> Result
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),

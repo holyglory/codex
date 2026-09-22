@@ -112,7 +112,7 @@ async fn remote_voice_uses_profile_auth(
         ))
         .enable_feature(Feature::RealtimeConversation)
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let alpha = persist_profile(codex_home.path(), "alpha", auth_kind)?;
     let beta = persist_profile(codex_home.path(), "beta", auth_kind)?;
     let mut registry = AccountRegistry {
