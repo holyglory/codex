@@ -137,6 +137,9 @@ impl UsageStore {
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [
+            "CREATE INDEX IF NOT EXISTS token_observations_repository_total_observed_idx ON token_observations(repository_bucket, observed_at_ms, token_count, coverage_state, model_request_id, tool_invocation_id) WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported'",
+            "CREATE INDEX IF NOT EXISTS model_requests_id_operation_idx ON model_requests(id, operation_id)",
+            "CREATE INDEX IF NOT EXISTS tool_invocations_id_operation_idx ON tool_invocations(id, operation_id)",
             "CREATE INDEX IF NOT EXISTS token_observations_observed_owner_idx ON token_observations(observed_at_ms, model_request_id, tool_invocation_id)",
             "CREATE INDEX IF NOT EXISTS coverage_events_observed_owner_idx ON coverage_events(occurred_at_ms, operation_id)",
             "CREATE INDEX IF NOT EXISTS operation_events_terminal_observed_idx ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1",
