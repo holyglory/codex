@@ -9,11 +9,13 @@ use codex_usage::AccountAttributionSnapshot;
 use codex_usage::AccountAuthMode;
 use codex_usage::AccountProfileRef;
 use codex_usage::Activity;
+use codex_usage::ActivityDeclarationRecord;
 use codex_usage::ActivityState;
 use codex_usage::AgentId;
 use codex_usage::AgentRoleKind;
 use codex_usage::AttributionProvenance;
 use codex_usage::ClientOrigin;
+use codex_usage::CoverageReasonCode;
 use codex_usage::CoverageScopeKind;
 use codex_usage::CoverageState;
 use codex_usage::ErrorCategory;
@@ -369,6 +371,24 @@ impl UsageRuntime {
             occurred_at_ms: started_at_ms,
         };
         self.write_required_for(operation_id, store.record_coverage(&capture_started).await)?;
+        if matches!(attribution_provenance, AttributionProvenance::Unknown) {
+            let missing_declaration = NewCoverageEvent {
+                event_id: FactEventId::new(),
+                operation_id: Some(operation_id),
+                scope_kind: CoverageScopeKind::new("activity_declaration")
+                    .map_err(|_| unavailable())?,
+                state: CoverageState::Unknown,
+                reason_code: Some(
+                    CoverageReasonCode::new("missing_activity_declaration")
+                        .map_err(|_| unavailable())?,
+                ),
+                occurred_at_ms: started_at_ms,
+            };
+            self.write_required_for(
+                operation_id,
+                store.record_coverage(&missing_declaration).await,
+            )?;
+        }
         self.note_latest_model_operation(context.thread_id, operation_id)
             .await;
         let mut buffered_thread = thread_fact;

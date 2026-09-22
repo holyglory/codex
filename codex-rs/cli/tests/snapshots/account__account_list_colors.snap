@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: "output.replace('\\x1b', \"ESC\").replace('\\r', \"\")"
+---
+ESC[36;1mCURRENT	ALIAS                  	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET INESC[0m
+	axel-marchenko-tt-eu-pp	ESC[32mreadyESC[0m	api-key	2		unknown      	unknown                	unknown (unsupportedAuthentication)	unknown
+ESC[32;1m*ESC[0m	ESC[32;1malpha                  ESC[0m	ESC[32mreadyESC[0m	api-key	1	primary	unknown      	unknown                	unknown (unsupportedAuthentication)	unknown

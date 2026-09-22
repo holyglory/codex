@@ -184,6 +184,14 @@ string_enum!(TerminalStatus {
     Interrupted => "interrupted",
 });
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityDeclarationRecord {
+    pub active: Option<(Phase, Activity, Option<OperationId>)>,
+    pub staged: Option<(Phase, Activity, Option<OperationId>)>,
+    pub parent_inheritance_blocked: bool,
+    pub updated_at_ms: i64,
+}
+
 string_enum!(ApprovalOutcome {
     NotRequired => "not_required",
     Approved => "approved",

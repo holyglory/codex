@@ -1,11 +1,19 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::Weak;
+use std::sync::atomic::Ordering;
 
 use codex_core::NotSubmittedReason;
 use codex_core::ThreadManager;
+use codex_event_subscriptions::CAPACITY_RETRY_EVENT_TYPE;
+use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
+use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionService;
 use codex_event_subscriptions::EventSubscriptionStore;
+use codex_event_subscriptions::HeartbeatSpec;
+use codex_event_subscriptions::NewSubscription;
 use codex_event_subscriptions::UserStartedSubscriptionWork;
 use codex_event_subscriptions::WakeBatch;
 use codex_event_subscriptions::WakeDisposition;
@@ -16,12 +24,35 @@ use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadReadyInput;
 use codex_extension_api::ThreadResumeInput;
+use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_protocol::ThreadId;
-use std::sync::atomic::Ordering;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
+use uuid::Uuid;
 
 use crate::request_processors::ThreadRequestProcessor;
+
+const CAPACITY_RETRY_MIN_DELAY_SECONDS: i64 = 30;
+const CAPACITY_RETRY_JITTER_SECONDS: i64 = 60;
+
+fn capacity_retry_delay_seconds() -> i64 {
+    CAPACITY_RETRY_MIN_DELAY_SECONDS
+        + i64::from(Uuid::now_v7().as_bytes()[15]) % CAPACITY_RETRY_JITTER_SECONDS
+}
+
+fn is_guardian_review_source(source: &SessionSource) -> bool {
+    matches!(
+        source,
+        SessionSource::Internal(InternalSessionSource::Guardian)
+    ) || matches!(
+        source,
+        SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "guardian"
+    )
+}
 
 #[derive(Clone)]
 pub(crate) struct AppServerSubscriptionWakeSink {
@@ -163,15 +194,43 @@ impl WakeSink for AppServerSubscriptionWakeSink {
         if run.stop_pending.load(Ordering::Acquire) {
             return Ok(WakeDisposition::DeferredUntilResume);
         }
-        let (eligible, mut discarded) = self
+        let (mut eligible, mut discarded) = self
             .select_wakes(&wake, thread.has_running_user_work().await)
             .await?;
+        let has_admitted_non_review_wake = eligible.iter().any(|item| {
+            !item.event.as_ref().is_some_and(|event| {
+                event.source == "codex.project" && event.event_type == "performance_review_due"
+            })
+        });
+        if has_admitted_non_review_wake {
+            let (follow_up_reviews, _) = self.select_wakes(&wake, /*running*/ true).await?;
+            for review in follow_up_reviews.into_iter().filter(|item| {
+                item.event.as_ref().is_some_and(|event| {
+                    event.source == "codex.project" && event.event_type == "performance_review_due"
+                })
+            }) {
+                if !eligible
+                    .iter()
+                    .any(|item| item.subscription_id == review.subscription_id)
+                {
+                    eligible.push(review);
+                }
+            }
+        }
         let mut delivered = Vec::new();
         let mut queued = false;
+        let mut retry_wakes = Vec::new();
         let mut normal = Vec::new();
         let mut reviews = Vec::new();
         for item in eligible {
-            if let Some(event) = &item.event
+            if self
+                .store
+                .is_capacity_retry_subscription(item.subscription_id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                retry_wakes.push(item);
+            } else if let Some(event) = &item.event
                 && event.source == "codex.project"
                 && event.event_type == "performance_review_due"
                 && let Some(project) = event.labels.get("project")
@@ -179,6 +238,48 @@ impl WakeSink for AppServerSubscriptionWakeSink {
                 reviews.push((project.clone(), item));
             } else {
                 normal.push(item);
+            }
+        }
+        let mut retry_deferred = false;
+        let mut retry_started = false;
+        let retry_wake_ids = retry_wakes
+            .iter()
+            .map(|item| item.subscription_id)
+            .collect::<Vec<_>>();
+        for item in retry_wakes {
+            if retry_started {
+                delivered.push(item);
+                continue;
+            }
+            match thread
+                .start_capacity_retry_if_idle()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                codex_core::StartIfIdleSubmission::Started { .. } => {
+                    for subscription_id in &retry_wake_ids {
+                        self.store
+                            .cancel(*subscription_id)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                    delivered.push(item);
+                    queued = true;
+                    retry_started = true;
+                }
+                codex_core::StartIfIdleSubmission::NotSubmitted {
+                    reason:
+                        NotSubmittedReason::NotIdle
+                        | NotSubmittedReason::PendingTriggerTurn
+                        | NotSubmittedReason::PlanMode,
+                } => {
+                    retry_deferred = true;
+                }
+                codex_core::StartIfIdleSubmission::NotSubmitted { reason } => {
+                    return Err(format!(
+                        "Core declined a permitted capacity retry: {reason:?}"
+                    ));
+                }
             }
         }
         // Keep every trusted project scope visible within the bounded model fragment.
@@ -224,11 +325,17 @@ impl WakeSink for AppServerSubscriptionWakeSink {
         drop(dispatch);
         // Review admission is checked again under the same owner's dispatch lock.
         for (project, item) in reviews {
-            match thread_manager
-                .run_project_review_worker(wake.thread_id, &project)
-                .await
-                .map_err(|error| error.to_string())?
-            {
+            let result = if has_admitted_non_review_wake {
+                thread_manager
+                    .run_project_review_worker_after_admitted_wake(wake.thread_id, &project)
+                    .await
+            } else {
+                thread_manager
+                    .run_project_review_worker(wake.thread_id, &project)
+                    .await
+            }
+            .map_err(|error| error.to_string())?;
+            match result {
                 WakeDisposition::Started => delivered.push(item),
                 WakeDisposition::Queued
                 | WakeDisposition::DeferredUntilIdle
@@ -243,6 +350,8 @@ impl WakeSink for AppServerSubscriptionWakeSink {
             }
         } else if queued {
             WakeDisposition::Queued
+        } else if retry_deferred {
+            WakeDisposition::DeferredUntilIdle
         } else {
             WakeDisposition::DeferredUntilResume
         })
@@ -330,6 +439,13 @@ impl TurnLifecycleContributor for EventSubscriptionLifecycle {
                 .get::<UserStartedSubscriptionWork>()
                 .is_some()
             {
+                if let Err(error) = self
+                    .store
+                    .cancel_capacity_retry_subscriptions(thread_id)
+                    .await
+                {
+                    tracing::warn!(%error, "capacity retry alarm cleanup failed at user turn start");
+                }
                 if let Err(error) = self.service.notify_user_started(thread_id).await {
                     tracing::warn!(%error, "user-start alarm dispatch failed");
                 }
@@ -338,4 +454,57 @@ impl TurnLifecycleContributor for EventSubscriptionLifecycle {
             }
         })
     }
+
+    fn on_turn_error<'a>(&'a self, input: TurnErrorInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if !matches!(input.error, CodexErrorInfo::ServerOverloaded)
+                || !input.retryable_before_response
+                || is_guardian_review_source(input.session_source)
+            {
+                return;
+            }
+            let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
+                return;
+            };
+            if let Err(error) = self
+                .store
+                .cancel_capacity_retry_subscriptions(thread_id)
+                .await
+            {
+                tracing::warn!(%error, "previous capacity retry alarm cleanup failed");
+            }
+            let now_ms = codex_core::project_automation_now_ms();
+            let delay_seconds = capacity_retry_delay_seconds();
+            let first_deadline_at_ms = now_ms.saturating_add(delay_seconds * 1_000);
+            let filter = EventFilter {
+                source: CAPACITY_RETRY_SOURCE.to_string(),
+                event_types: BTreeSet::from([CAPACITY_RETRY_EVENT_TYPE.to_string()]),
+                labels: BTreeMap::new(),
+            };
+            if let Err(error) = self
+                .service
+                .create(NewSubscription {
+                    thread_id,
+                    filter: Some(filter),
+                    source_cursor: None,
+                    heartbeat: Some(HeartbeatSpec {
+                        interval_ms: 365 * 86_400_000,
+                        first_deadline_at_ms: Some(first_deadline_at_ms),
+                    }),
+                })
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    %thread_id,
+                    delay_seconds,
+                    "failed to schedule capacity retry alarm"
+                );
+            }
+        })
+    }
 }
+
+#[cfg(test)]
+#[path = "event_subscriptions_tests.rs"]
+mod tests;

@@ -141,6 +141,7 @@ pub use types::AccountAttributionSnapshot;
 pub use types::AccountAuthMode;
 pub use types::AccountProfileRef;
 pub use types::Activity;
+pub use types::ActivityDeclarationRecord;
 pub use types::ActivitySpanId;
 pub use types::ActivityState;
 pub use types::AgentId;

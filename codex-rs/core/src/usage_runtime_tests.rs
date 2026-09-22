@@ -795,7 +795,7 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             .iter()
             .any(|tokens| tokens.activity == "unknown" && tokens.measured_tokens == 17)
     );
-    assert!(!summary.coverage.has_gaps);
+    assert!(summary.coverage.has_gaps);
     let heartbeats = runtime
         .store
         .get()
@@ -819,6 +819,61 @@ async fn staged_activity_crosses_turns_without_changing_or_inventing_token_total
             .filter(|event| event.provenance == UsageEventProvenance::AgentDeclared)
             .count(),
         2
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn activity_declaration_survives_usage_runtime_recreation() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let thread_id = "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb";
+    let first = UsageRuntime::new(home.path().to_path_buf());
+    first
+        .stage_activity(
+            thread_id,
+            Phase::Testing,
+            Activity::IntegrationTesting,
+            UsageActivityRelation::NewWork,
+        )
+        .await
+        .expect("stage activity");
+    let attempt = first
+        .begin_model_attempt(context(
+            thread_id,
+            /*parent_thread_id*/ None,
+            "activity-persisted-first",
+            Arc::new(StdMutex::new(None)),
+        ))
+        .await;
+    attempt
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    drop(first);
+
+    let resumed = UsageRuntime::new(home.path().to_path_buf());
+    let attempt = resumed
+        .begin_model_attempt(context(
+            thread_id,
+            /*parent_thread_id*/ None,
+            "activity-persisted-second",
+            Arc::new(StdMutex::new(None)),
+        ))
+        .await;
+    attempt
+        .finish(TerminalStatus::Completed, /*error*/ None)
+        .await;
+    let summary = resumed
+        .store
+        .get()
+        .expect("usage store")
+        .usage_summary(UsageSummaryScope::All)
+        .await
+        .expect("summary");
+    assert!(
+        summary
+            .classifications
+            .iter()
+            .any(|classification| classification.activity == "integration_testing")
     );
 }
 
