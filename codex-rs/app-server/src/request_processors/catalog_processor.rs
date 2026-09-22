@@ -1,3 +1,4 @@
+use crate::models::supported_models;
 use super::*;
 use crate::model_catalog::ModelCatalog;
 use codex_config::ConfigPathContext;
