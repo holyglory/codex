@@ -56,6 +56,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::CyberPolicy { message } => {
             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
         }
+        ApiError::BioPolicy { message } => CodexErr::new(CodexErrorDetails::BioPolicy { message }),
         ApiError::MisalignmentPolicyViolation {
             message,
             misalignment,
@@ -181,6 +182,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 CodexErr::ConnectionFailed(ConnectionFailedError { source })
             }
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
+            error @ TransportError::ResponseTooLarge { .. } => {
+                CodexErr::InvalidRequest(error.to_string())
+            }
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg),
     }

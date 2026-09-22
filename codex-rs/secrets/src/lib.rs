@@ -201,6 +201,7 @@ pub fn compute_keyring_account(codex_home: &Path, namespace: LocalSecretsNamespa
         LocalSecretsNamespace::GatewayOAuth => format!("{home_account}|gateway-oauth"),
         LocalSecretsNamespace::ManagedSecrets
         | LocalSecretsNamespace::CodexAuth
+        | LocalSecretsNamespace::CodexProfileAuthV1
         | LocalSecretsNamespace::McpOAuth => home_account,
     }
 }
