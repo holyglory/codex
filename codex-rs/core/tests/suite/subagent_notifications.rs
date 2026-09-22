@@ -73,7 +73,6 @@ use tracing_test::internal::MockWriter;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::matchers::method;
-use wiremock::matchers::path;
 use wiremock::matchers::path_regex;
 
 use super::direct_tool_metadata::tool_call_metadata;
