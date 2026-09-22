@@ -62,6 +62,29 @@ async fn repository_lookup_index_preserves_history_across_reopen() {
             .contains("USING COVERING INDEX repository_attributions_repository_operation_idx")),
         "{plan:?}"
     );
+    for (query, index) in [
+        (
+            "EXPLAIN QUERY PLAN SELECT token_count,coverage_state,observed_at_ms,model_request_id,tool_invocation_id FROM token_observations WHERE repository_bucket='fixture' AND category_path='total_tokens' AND measurement_provenance='provider_reported' AND observed_at_ms>=1 AND observed_at_ms<2",
+            "token_observations_repository_total_observed_idx",
+        ),
+        (
+            "EXPLAIN QUERY PLAN SELECT operation_id FROM model_requests INDEXED BY model_requests_id_operation_idx WHERE id='fixture'",
+            "model_requests_id_operation_idx",
+        ),
+        (
+            "EXPLAIN QUERY PLAN SELECT operation_id FROM tool_invocations INDEXED BY tool_invocations_id_operation_idx WHERE id='fixture'",
+            "tool_invocations_id_operation_idx",
+        ),
+    ] {
+        let plan: Vec<String> = sqlx::query(query)
+            .fetch_all(&store.pool)
+            .await
+            .expect("query plan")
+            .into_iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect();
+        assert!(plan.iter().any(|detail| detail.contains(index)), "{plan:?}");
+    }
     let process = ProcessId::new();
     store
         .register_process(&process, /*os_pid*/ 1, /*started_at_ms*/ 1)
