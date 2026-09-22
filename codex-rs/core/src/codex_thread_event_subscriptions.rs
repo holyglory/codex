@@ -127,6 +127,18 @@ impl CodexThread {
         }
         result
     }
+
+    /// Repeats a turn after a terminal model-capacity alarm without adding a
+    /// synthetic user message to the conversation.
+    pub async fn start_capacity_retry_if_idle(&self) -> CodexResult<StartIfIdleSubmission> {
+        self.start_turn_if_idle(TurnInputRequest::user_input(Vec::new()).on_start(
+            TurnStartOptions {
+                turn_trigger: Some("capacity_retry".to_string()),
+                ..Default::default()
+            },
+        ))
+        .await
+    }
 }
 
 impl crate::session::session::Session {

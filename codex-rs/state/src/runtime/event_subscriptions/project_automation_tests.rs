@@ -1,5 +1,8 @@
 use super::*;
 use codex_event_subscriptions::EventSubscriptionStore;
+use codex_event_subscriptions::ProjectIdentityCandidate;
+use codex_event_subscriptions::ProjectIdentityCandidates;
+use codex_event_subscriptions::ProjectIdentityKind;
 use codex_event_subscriptions::ProjectMode;
 use codex_event_subscriptions::WorkPurpose;
 use pretty_assertions::assert_eq;
@@ -30,10 +33,131 @@ async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0006_project_identity_aliases.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     (
         SqliteEventSubscriptionStore::new(std::sync::Arc::new(pool)),
         directory,
     )
+}
+
+#[tokio::test]
+async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subscription() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let provisional = store
+        .project_command(
+            "project-provisional",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: Some("review".into()),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store
+        .project_command(
+            "project-provisional",
+            owner,
+            Some(provisional.revision),
+            ProjectAutomationCommand::RequestReview {
+                evidence_ref: "usage-operation:provisional".into(),
+            },
+            101,
+        )
+        .await
+        .unwrap();
+    store.collect_due_heartbeats(500).await.unwrap();
+    let canonical = store
+        .project_command(
+            "project-git",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: Some("review".into()),
+            },
+            200,
+        )
+        .await
+        .unwrap();
+    store
+        .project_command(
+            "project-git",
+            owner,
+            Some(canonical.revision),
+            ProjectAutomationCommand::RequestReview {
+                evidence_ref: "usage-operation:canonical".into(),
+            },
+            201,
+        )
+        .await
+        .unwrap();
+    let resolved = store
+        .resolve_project_identity(
+            &ProjectIdentityCandidates {
+                canonical: ProjectIdentityCandidate {
+                    project_id: "project-git".into(),
+                    kind: ProjectIdentityKind::GitCommonDirectory,
+                },
+                aliases: vec![ProjectIdentityCandidate {
+                    project_id: "project-provisional".into(),
+                    kind: ProjectIdentityKind::WorkspacePath,
+                }],
+            },
+            300,
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolved, "project-git");
+    let merged = store.project_status("project-git").await.unwrap().unwrap();
+    assert_eq!(
+        merged.threads.get(&owner.to_string()),
+        Some(&WorkPurpose::Analysis)
+    );
+    assert_eq!(
+        store
+            .project_status("project-provisional")
+            .await
+            .unwrap()
+            .unwrap()
+            .project_id,
+        "project-git"
+    );
+    let project_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_automations")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(project_count, 1);
+    let subscription_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM event_subscriptions WHERE source = 'codex.project'",
+    )
+    .fetch_one(store.pool.as_ref())
+    .await
+    .unwrap();
+    assert_eq!(subscription_count, 1);
+    let alias_target: String = sqlx::query_scalar(
+        "SELECT canonical_project_id FROM project_identity_aliases WHERE alias_id = ?",
+    )
+    .bind("project-provisional")
+    .fetch_one(store.pool.as_ref())
+    .await
+    .unwrap();
+    assert_eq!(alias_target, "project-git");
+    assert!(merged.review.is_some());
+    let pending = store.pending_wake(owner).await.unwrap().unwrap();
+    assert_eq!(pending.wake.items.len(), 1);
+    assert_eq!(
+        pending.wake.items[0].event.as_ref().unwrap().event_type,
+        "performance_review_due"
+    );
 }
 
 #[tokio::test]

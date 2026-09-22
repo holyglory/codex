@@ -1,4 +1,4 @@
-use crate::project_automation::project_automation_id;
+use crate::project_automation::project_identity_candidates;
 use crate::unified_exec::UnifiedExecContext;
 use codex_event_subscriptions::ProjectAutomation;
 use codex_protocol::ThreadId;
@@ -38,7 +38,6 @@ pub(crate) async fn execution_context(
     context: &UnifiedExecContext,
     cwd: &PathUri,
 ) -> Option<String> {
-    let project_id = project_automation_id(&cwd.to_path_buf());
     let thread_id = context.session.thread_id().to_string();
     let operation_id = context
         .session
@@ -50,14 +49,22 @@ pub(crate) async fn execution_context(
             &context.call_id,
         )
         .await;
-    let project = match context.session.state_db() {
-        Some(state) => state
-            .event_subscriptions()
-            .project_status(&project_id)
-            .await
-            .ok()
-            .flatten(),
-        None => None,
+    let identities = project_identity_candidates(&cwd.to_path_buf());
+    let fallback_project_id = identities.canonical.project_id.clone();
+    let (project_id, project) = match context.session.state_db() {
+        Some(state) => {
+            let store = state.event_subscriptions();
+            let project_id = store
+                .resolve_project_identity(
+                    &identities,
+                    crate::project_automation::project_automation_now_ms(),
+                )
+                .await
+                .ok()?;
+            let project = store.project_status(&project_id).await.ok().flatten();
+            (project_id, project)
+        }
+        None => (fallback_project_id, None),
     };
     let value = json!({
         "version":1,"native_project_id":project_id,"thread_id":thread_id,

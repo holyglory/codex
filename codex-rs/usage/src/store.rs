@@ -1,9 +1,12 @@
 use crate::repository::RepositoryHmacKey;
 use crate::repository::load_or_create_repository_key;
+use crate::types::Activity;
+use crate::types::ActivityDeclarationRecord;
 use crate::types::DoctorReport;
 use crate::types::ErrorCategory;
 use crate::types::NewOperation;
 use crate::types::OperationId;
+use crate::types::Phase;
 use crate::types::ProcessId;
 use crate::types::TAXONOMY_VERSION;
 use crate::types::TerminalOperation;
@@ -87,6 +90,106 @@ pub struct UsageStore {
 }
 
 impl UsageStore {
+    pub async fn activity_declaration(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ActivityDeclarationRecord>, UsageStoreError> {
+        let row = sqlx::query(
+            "SELECT active_phase, active_activity, active_rework_of_operation_id,
+                    staged_phase, staged_activity, staged_rework_of_operation_id,
+                    parent_inheritance_blocked, updated_at_ms
+             FROM activity_declarations WHERE thread_id = ?",
+        )
+        .bind(thread_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)?;
+        let Some(row) = row else { return Ok(None) };
+        let parse_entry = |phase: Option<String>,
+                           activity: Option<String>,
+                           rework: Option<String>| {
+            let Some(phase) = phase else { return Ok(None) };
+            let phase = Phase::parse(&phase).ok_or(UsageStoreError::InvalidFact)?;
+            let activity = Activity::parse(&activity.ok_or(UsageStoreError::InvalidFact)?)
+                .ok_or(UsageStoreError::InvalidFact)?;
+            let rework = rework
+                .as_deref()
+                .map(|value| OperationId::from_string(value).ok_or(UsageStoreError::InvalidFact))
+                .transpose()?;
+            Ok(Some((phase, activity, rework)))
+        };
+        Ok(Some(ActivityDeclarationRecord {
+            active: parse_entry(
+                row.get("active_phase"),
+                row.get("active_activity"),
+                row.get("active_rework_of_operation_id"),
+            )?,
+            staged: parse_entry(
+                row.get("staged_phase"),
+                row.get("staged_activity"),
+                row.get("staged_rework_of_operation_id"),
+            )?,
+            parent_inheritance_blocked: row.get::<i64, _>("parent_inheritance_blocked") != 0,
+            updated_at_ms: row.get("updated_at_ms"),
+        }))
+    }
+
+    pub async fn save_activity_declaration(
+        &self,
+        thread_id: &str,
+        declaration: &ActivityDeclarationRecord,
+    ) -> Result<(), UsageStoreError> {
+        sqlx::query(
+            "INSERT INTO activity_declarations (
+                 thread_id, active_phase, active_activity, active_rework_of_operation_id,
+                 staged_phase, staged_activity, staged_rework_of_operation_id,
+                 parent_inheritance_blocked, updated_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(thread_id) DO UPDATE SET
+                 active_phase = excluded.active_phase,
+                 active_activity = excluded.active_activity,
+                 active_rework_of_operation_id = excluded.active_rework_of_operation_id,
+                 staged_phase = excluded.staged_phase,
+                 staged_activity = excluded.staged_activity,
+                 staged_rework_of_operation_id = excluded.staged_rework_of_operation_id,
+                 parent_inheritance_blocked = excluded.parent_inheritance_blocked,
+                 updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(thread_id)
+        .bind(declaration.active.map(|entry| entry.0.as_str()))
+        .bind(declaration.active.map(|entry| entry.1.as_str()))
+        .bind(
+            declaration
+                .active
+                .and_then(|entry| entry.2.map(OperationId::as_string)),
+        )
+        .bind(declaration.staged.map(|entry| entry.0.as_str()))
+        .bind(declaration.staged.map(|entry| entry.1.as_str()))
+        .bind(
+            declaration
+                .staged
+                .and_then(|entry| entry.2.map(OperationId::as_string)),
+        )
+        .bind(i64::from(declaration.parent_inheritance_blocked))
+        .bind(declaration.updated_at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)?;
+        Ok(())
+    }
+
+    pub async fn delete_activity_declaration(
+        &self,
+        thread_id: &str,
+    ) -> Result<(), UsageStoreError> {
+        sqlx::query("DELETE FROM activity_declarations WHERE thread_id = ?")
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?;
+        Ok(())
+    }
+
     pub async fn operation_links(
         &self,
         operation_id: OperationId,

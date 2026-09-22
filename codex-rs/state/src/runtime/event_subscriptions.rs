@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionStore;
 use codex_event_subscriptions::ListSubscriptionsQuery;
@@ -30,6 +31,7 @@ mod attention;
 mod await_work;
 mod owned_wait;
 mod project_automation;
+mod project_identity;
 mod project_review_workers;
 mod storage;
 mod wake_policy;
@@ -54,6 +56,50 @@ impl SqliteEventSubscriptionStore {
             source_changed: Arc::new(tokio::sync::Notify::new()),
             wait_requests: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// Returns durable capacity-retry alarms owned by one thread.
+    pub async fn capacity_retry_subscription_ids(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id FROM event_subscriptions
+             WHERE thread_id = ? AND source = ? ORDER BY id",
+        )
+        .bind(thread_id.to_string())
+        .bind(CAPACITY_RETRY_SOURCE)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(store_error)?;
+        rows.into_iter()
+            .map(|row| parse_uuid(row.try_get("id").map_err(store_error)?))
+            .collect()
+    }
+
+    /// Identifies a capacity-retry alarm without relying on caller-provided
+    /// event metadata.
+    pub async fn is_capacity_retry_subscription(&self, id: Uuid) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM event_subscriptions WHERE id = ? AND source = ?
+             )",
+        )
+        .bind(id.to_string())
+        .bind(CAPACITY_RETRY_SOURCE)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(store_error)
+    }
+
+    pub async fn cancel_capacity_retry_subscriptions(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), StoreError> {
+        for id in self.capacity_retry_subscription_ids(thread_id).await? {
+            self.cancel(id).await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn delete_thread(&self, thread_id: ThreadId) -> anyhow::Result<bool> {

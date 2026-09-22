@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use codex_account_registry::AccountAlias;
 use codex_account_registry::AccountId;
 use codex_account_registry::AccountMetadata;
@@ -7,6 +9,8 @@ use codex_core::config::Config;
 use codex_login::ProfileAuthStorage;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::auth::PlanType;
+use owo_colors::OwoColorize;
+use owo_colors::Style;
 use serde::Serialize;
 
 use super::AccountCommandError;
@@ -181,18 +185,49 @@ fn render_list(
         let limits_header = if limits.is_empty() {
             ""
         } else {
-            "\tLIMITS\tRESET IN"
+            "\tBANKED RESETS\tSOONEST EXPIRY (UTC)\tLIMITS\tRESET IN"
         };
-        println!(
-            "CURRENT\tALIAS\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE{limits_header}"
+        let alias_width = views
+            .iter()
+            .map(|entry| entry.account.alias.as_str().len())
+            .max()
+            .unwrap_or("ALIAS".len())
+            .max("ALIAS".len());
+        let color = std::io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none()
+            && supports_color::on(supports_color::Stream::Stdout).is_some();
+        let header = format!(
+            "CURRENT\t{:<alias_width$}\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE{limits_header}",
+            "ALIAS"
         );
+        let header_style = if color {
+            Style::new().bold().cyan()
+        } else {
+            Style::new()
+        };
+        println!("{}", header.style(header_style));
         for entry in views {
             let account = entry.account;
+            let alias = account.alias.as_str();
             let current = if account.current { "*" } else { "" };
             let status = match (account.enabled, account.authenticated) {
                 (false, _) => "disabled",
                 (true, false) => "logged-out",
                 (true, true) => "ready",
+            };
+            let status_style = if color {
+                match (account.enabled, account.authenticated) {
+                    (false, _) => Style::new().dimmed(),
+                    (true, false) => Style::new().yellow(),
+                    (true, true) => Style::new().green(),
+                }
+            } else {
+                Style::new()
+            };
+            let account_style = if color && account.current {
+                Style::new().bold().green()
+            } else {
+                Style::new()
             };
             let limits_columns = match entry.limits {
                 Some(limits) => {
@@ -200,12 +235,7 @@ fn render_list(
                         limits
                             .buckets
                             .iter()
-                            .filter(|bucket| {
-                                bucket.limit_id.as_deref() != Some("codex_bengalfox")
-                                    && !bucket.limit_name.as_deref().is_some_and(|name| {
-                                        name.to_ascii_lowercase().contains("spark")
-                                    })
-                            })
+                            .filter(|bucket| bucket.limit_id.as_deref() == Some("codex"))
                             .map(|bucket| {
                                 let name = bucket
                                     .limit_name
@@ -223,8 +253,23 @@ fn render_list(
                     } else {
                         format!("unknown ({})", limits.reason.unwrap_or("unavailable"))
                     };
+                    let (banked_count, expiry) = match &limits.banked_resets {
+                        Some(resets) => {
+                            let expiry = if resets.available_count == 0 {
+                                "none".to_string()
+                            } else if !resets.expiry_known {
+                                "unknown".to_string()
+                            } else if let Some(expires_at) = resets.soonest_expires_at {
+                                limits::reset_label(Some(expires_at))
+                            } else {
+                                "never".to_string()
+                            };
+                            (resets.available_count.to_string(), expiry)
+                        }
+                        None => ("unknown".to_string(), "unknown".to_string()),
+                    };
                     format!(
-                        "\t{summary}\t{}",
+                        "\t{banked_count:<13}\t{expiry:<23}\t{summary}\t{}",
                         limits::reset_countdown(
                             limits.next_reset_at,
                             chrono::Utc::now().timestamp()
@@ -233,9 +278,12 @@ fn render_list(
                 }
                 None => String::new(),
             };
+            let alias = format!("{alias:<alias_width$}");
             println!(
-                "{current}\t{}\t{status}\t{}\t{}\t{}{limits_columns}",
-                account.alias,
+                "{}\t{}\t{}\t{}\t{}\t{}{limits_columns}",
+                current.style(account_style),
+                alias.style(account_style),
+                status.style(status_style),
                 auth_mode_label(account.auth_mode),
                 account.priority,
                 account
