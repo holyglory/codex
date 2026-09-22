@@ -247,14 +247,14 @@ async fn verify_profile_model_thread_tools(source: CatalogSource) -> Result<()> 
     model.use_responses_lite = false;
     let mut global_model = model.clone();
     global_model.supports_search_tool = false;
-    write_models_cache_with_models(codex_home.path(), vec![global_model])?;
+    write_models_cache_with_models(codex_home.path(), vec![global_model]).await?;
     let profile_home = codex_home
         .path()
         .join("accounts")
         .join(profile.metadata.id.as_str());
     let expected_fetches = match source {
         CatalogSource::Cache => {
-            write_models_cache_with_models(&profile_home, vec![model.clone()])?;
+            write_models_cache_with_models(&profile_home, vec![model.clone()]).await?;
             0
         }
         CatalogSource::Remote => 1,
