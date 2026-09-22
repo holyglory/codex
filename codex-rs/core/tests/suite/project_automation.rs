@@ -792,15 +792,22 @@ async fn project_review_worker_uses_fresh_bounded_context_and_keeps_unfinished_j
     );
     assert_eq!(snapshot.forked_from_thread_id, None);
     let parent_profile = test.codex.config_snapshot().await;
-    let roots = if parent_profile.profile_workspace_roots.is_empty() {
-        &parent_profile.workspace_roots
+    let authority = if parent_profile.profile_workspace_roots.is_empty() {
+        parent_profile
+            .permission_profile
+            .clone()
+            .materialize_project_roots_with_workspace_roots(&parent_profile.workspace_roots)
     } else {
-        &parent_profile.profile_workspace_roots
+        let roots = parent_profile
+            .profile_workspace_roots
+            .iter()
+            .map(|root| root.as_uri().clone())
+            .collect::<Vec<_>>();
+        parent_profile
+            .permission_profile
+            .clone()
+            .materialize_project_roots_with_path_uris(&roots)
     };
-    let authority = parent_profile
-        .permission_profile
-        .clone()
-        .materialize_project_roots_with_workspace_roots(roots);
     let requested = codex_protocol::models::PermissionProfile::workspace_write_with(
         &[],
         parent_profile.permission_profile.network_sandbox_policy(),

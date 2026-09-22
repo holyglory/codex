@@ -95,6 +95,7 @@ async fn focused_policy_dedup_preserves_project_entries_and_provenance() -> io::
     let saved = original.clone();
     let expected = LoadedAgentsMd {
         user_instructions: None,
+        thread_instructions: None,
         entries: original.entries.clone(),
     };
     assert_eq!(
