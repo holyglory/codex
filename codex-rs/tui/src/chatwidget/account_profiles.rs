@@ -663,7 +663,7 @@ impl ChatWidget {
                 },
             ],
             footer_hint: Some(account_popup_hint_line()),
-            description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
+            description_layout: SelectionDescriptionLayout::HideWhenNarrow {
                 min_description_width: 28,
             },
             ..Default::default()

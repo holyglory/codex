@@ -78,6 +78,10 @@ struct AppServerArgs {
     /// Enable remote control for this app-server process without changing persistence.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
+
+    /// Save loaded threads during managed daemon shutdown.
+    #[arg(long, hide = true)]
+    managed_daemon: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,6 +98,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(debug_assertions)]
             disable_plugin_startup_tasks_for_tests,
             remote_control,
+            managed_daemon,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -107,6 +112,7 @@ fn main() -> anyhow::Result<()> {
         let mut runtime_options = AppServerRuntimeOptions {
             code_mode_host_transport: code_mode_host.into(),
             process_account: account,
+            managed_daemon,
             ..Default::default()
         };
         #[cfg(debug_assertions)]
@@ -120,7 +126,7 @@ fn main() -> anyhow::Result<()> {
                 (false, false) => codex_app_server::RemoteControlStartupMode::ResolvePersisted,
             };
 
-        run_main_with_transport_options(
+        let exit = run_main_with_transport_options(
             arg0_paths,
             config_overrides,
             loader_overrides,
@@ -132,6 +138,10 @@ fn main() -> anyhow::Result<()> {
             runtime_options,
         )
         .await?;
+        if exit == codex_app_server::AppServerExit::Forced {
+            // Runtime teardown can wait forever for blocked rollout I/O.
+            std::process::exit(0);
+        }
         Ok(())
     })
 }
