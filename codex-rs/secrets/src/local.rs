@@ -41,6 +41,7 @@ const SECRETS_VERSION: u8 = 1;
 const LOCAL_SECRETS_FILENAME: &str = "local.age";
 const CODEX_AUTH_SECRETS_FILENAME: &str = "codex_auth.age";
 const MCP_OAUTH_SECRETS_FILENAME: &str = "mcp_oauth.age";
+const GATEWAY_OAUTH_SECRETS_FILENAME: &str = "gateway_oauth.age";
 static MCP_OAUTH_CACHE: Mutex<Option<CachedMcpSecrets>> = Mutex::new(None);
 
 /// Selects the local encrypted file used by a `LocalSecretsBackend`.
@@ -55,6 +56,8 @@ pub enum LocalSecretsNamespace {
     CodexProfileAuthV1,
     /// OAuth credentials for external MCP servers.
     McpOAuth,
+    /// Gateway OAuth credentials, isolated from primary auth in file and encryption key.
+    GatewayOAuth,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -160,6 +163,7 @@ impl LocalSecretsBackend {
                 CODEX_AUTH_SECRETS_FILENAME
             }
             LocalSecretsNamespace::McpOAuth => MCP_OAUTH_SECRETS_FILENAME,
+            LocalSecretsNamespace::GatewayOAuth => GATEWAY_OAUTH_SECRETS_FILENAME,
         };
         self.secrets_dir().join(filename)
     }
@@ -247,11 +251,15 @@ impl LocalSecretsBackend {
         let account = match self.namespace {
             LocalSecretsNamespace::CodexProfileAuthV1 => format!(
                 "secrets|codex-profile-auth-v1|{}",
-                compute_keyring_account(&self.codex_home).trim_start_matches("secrets|")
+                compute_keyring_account(&self.codex_home, LocalSecretsNamespace::CodexAuth)
+                    .trim_start_matches("secrets|")
             ),
             LocalSecretsNamespace::ManagedSecrets
             | LocalSecretsNamespace::CodexAuth
-            | LocalSecretsNamespace::McpOAuth => compute_keyring_account(&self.codex_home),
+            | LocalSecretsNamespace::McpOAuth
+            | LocalSecretsNamespace::GatewayOAuth => {
+                compute_keyring_account(&self.codex_home, self.namespace)
+            }
         };
         let loaded = self
             .keyring_store
