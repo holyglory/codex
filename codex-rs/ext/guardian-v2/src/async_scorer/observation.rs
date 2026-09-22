@@ -41,6 +41,13 @@ impl GuardianV2Extension {
         if input.tool_name.is_default_namespace() && input.tool_name.name == "wait" {
             return;
         }
+        let auth_lease = input.turn_store.get::<codex_login::AuthManagerLease>();
+        if self.auth_resolver.is_some() && auth_lease.is_none() {
+            if let Some(progress) = input.thread_store.get::<GuardianV2ScoreProgress>() {
+                progress.fail_closed(SystemTime::now());
+            }
+            return;
+        }
         let classification_started_at = Instant::now();
         let Some(sampler) = input.thread_store.get::<LunaSampler>() else {
             return;
@@ -300,6 +307,7 @@ impl GuardianV2Extension {
         let score_authorization = ScoreAuthorization::current(&thread).await;
         let classification = Classification {
             classification_started_at,
+            auth_lease,
             sampler,
             guardian_config,
             score_progress,

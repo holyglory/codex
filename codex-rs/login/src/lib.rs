@@ -2,6 +2,10 @@ pub mod auth;
 pub mod auth_env_telemetry;
 pub mod test_support;
 pub mod token_data;
+pub use auth::WorkspaceRouting;
+pub use auth::WorkspaceRoutingRequest;
+pub use auth::WorkspaceRoutingResolver;
+pub use auth::WorkspaceRoutingSession;
 
 mod callback_params;
 mod device_code_auth;
@@ -27,8 +31,6 @@ pub use server::run_login_server;
 pub use success_page::CODEX_OPEN_APP_URL;
 pub use success_page::LoginSuccessPage;
 pub use success_page::LoginSuccessPageBrand;
-pub use gateway_auth::GatewayAuthConfig;
-pub use gateway_auth::GatewayAuthManager;
 
 pub use auth::AccountLease;
 pub use auth::AccountManagementError;
@@ -77,10 +79,6 @@ pub use auth::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
 pub use auth::RefreshTokenError;
 pub use auth::RouterExternalAuthState;
 pub use auth::SharedProfileAuthRouter;
-pub use auth::WorkspaceRouting;
-pub use auth::WorkspaceRoutingRequest;
-pub use auth::WorkspaceRoutingResolver;
-pub use auth::WorkspaceRoutingSession;
 pub use auth::UnauthorizedRecovery;
 pub use auth::default_client;
 pub use auth::enforce_login_restrictions;
@@ -110,3 +108,6 @@ pub use auth_env_telemetry::AuthEnvTelemetry;
 pub use auth_env_telemetry::collect_auth_env_telemetry;
 pub use outbound_proxy::AuthRouteConfig;
 pub use token_data::TokenData;
+
+pub use gateway_auth::GatewayAuthConfig;
+pub use gateway_auth::GatewayAuthManager;

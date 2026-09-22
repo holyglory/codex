@@ -234,7 +234,7 @@ impl ChatWidget {
             title: Some(title),
             items: vec![fact_detail(detail), back_item(back)],
             footer_hint: Some(local_usage_hint_line()),
-            description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
+            description_layout: SelectionDescriptionLayout::HideWhenNarrow {
                 min_description_width: 28,
             },
             ..Default::default()
@@ -424,7 +424,7 @@ fn response_params(response: LocalUsageResponse, query: LocalUsageQuery) -> Sele
         title: Some(title),
         items,
         footer_hint: Some(local_usage_hint_line()),
-        description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
+        description_layout: SelectionDescriptionLayout::HideWhenNarrow {
             min_description_width: 28,
         },
         ..Default::default()

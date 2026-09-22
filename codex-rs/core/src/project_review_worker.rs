@@ -22,9 +22,9 @@ use uuid::Uuid;
 
 use crate::CodexThread;
 use crate::ThreadManager;
-use crate::agent::AgentControl;
-use crate::agent::control::SpawnAgentOptions;
+use crate::agent::LocalAgentControl;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::types::SpawnAgentOptions;
 use crate::context::ContextualUserFragment;
 use crate::context::EventSubscriptionWakeContext;
 use crate::context::ProjectPerformanceReview;
@@ -36,7 +36,7 @@ struct ReviewWorkerLifecycle {
     worker_thread_id: ThreadId,
     project_id: String,
     job_id: Uuid,
-    control: AgentControl,
+    control: LocalAgentControl,
     state: crate::StateDbHandle,
     completion: OnceCell<()>,
 }
@@ -133,15 +133,22 @@ impl ThreadManager {
         let control = owner.session.services.agent_control.clone();
         let mut worker_config = (*config).clone();
         worker_config.ephemeral = false;
-        let authority_roots = if snapshot.profile_workspace_roots.is_empty() {
-            &snapshot.workspace_roots
+        let authority = if snapshot.profile_workspace_roots.is_empty() {
+            snapshot
+                .permission_profile
+                .clone()
+                .materialize_project_roots_with_workspace_roots(&snapshot.workspace_roots)
         } else {
-            &snapshot.profile_workspace_roots
+            let roots = snapshot
+                .profile_workspace_roots
+                .iter()
+                .map(|root| root.as_uri().clone())
+                .collect::<Vec<_>>();
+            snapshot
+                .permission_profile
+                .clone()
+                .materialize_project_roots_with_path_uris(&roots)
         };
-        let authority = snapshot
-            .permission_profile
-            .clone()
-            .materialize_project_roots_with_workspace_roots(authority_roots);
         let requested = codex_protocol::models::PermissionProfile::workspace_write_with(
             &[],
             snapshot.permission_profile.network_sandbox_policy(),

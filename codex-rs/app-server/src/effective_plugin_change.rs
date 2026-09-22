@@ -116,7 +116,10 @@ pub(crate) async fn reload_plugin_runtime_configs_without_mcp_prewarm(
         };
         let current_config = thread.config().await;
         match config_manager
-            .load_latest_config_for_thread(current_config.as_ref())
+            .load_latest_config_with_session_layers(
+                &current_config.config_layer_stack,
+                current_config.cwd.as_path(),
+            )
             .await
         {
             Ok(config) => {

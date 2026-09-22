@@ -1,8 +1,8 @@
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
-use codex_protocol::models::ImageReference;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::provider_usage::ProviderUsage;
 use serde_json::Value as JsonValue;
@@ -81,6 +81,9 @@ pub trait ToolOutput: Send {
     fn provider_usage(&self) -> Option<&ProviderUsage> {
         None
     }
+    /// Finalizes output using the same completed handler duration reported in tool-call logs.
+    /// Called before recording model-visible history; implementations must not measure time here.
+    fn set_handler_duration_ms(&mut self, _handler_duration_ms: u64) {}
 
     /// Whether this output contains external context that should disable memory generation when
     /// `memories.disable_on_external_context` is enabled.
@@ -121,8 +124,8 @@ pub trait ToolOutput: Send {
         response_input_to_code_mode_result(self.to_response_item("", payload))
     }
 
-    /// Reports configured source capture only after acceptance; `None` means no capture attempt.
-    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
+    /// Borrows original host-only metadata for recording, not for model output or logging.
+    fn tool_result_metadata(&self) -> Option<&JsonValue> {
         None
     }
 }
@@ -145,6 +148,10 @@ where
 
     fn provider_usage(&self) -> Option<&ProviderUsage> {
         (**self).provider_usage()
+    }
+
+    fn set_handler_duration_ms(&mut self, handler_duration_ms: u64) {
+        (**self).set_handler_duration_ms(handler_duration_ms);
     }
 
     fn contains_external_context(&self) -> bool {
@@ -175,8 +182,8 @@ where
         (**self).code_mode_result(payload)
     }
 
-    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
-        (**self).tool_result_sources()
+    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+        (**self).tool_result_metadata()
     }
 }
 
@@ -349,3 +356,7 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
             .join("\n"),
     )
 }
+
+#[cfg(test)]
+#[path = "tool_output_tests.rs"]
+mod tests;

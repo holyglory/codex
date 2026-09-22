@@ -6,6 +6,8 @@ use codex_install_context::InstallMethod;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
+    /// Replace the local daemon after restoring the terminal.
+    Daemon(DaemonUpdateSource),
     /// Update via `npm install -g @holyglory/codex@latest`.
     NpmGlobalLatest,
     /// Update via `bun install -g @holyglory/codex@latest`.
@@ -33,6 +35,7 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
+            UpdateAction::Daemon(source) => ("codex", source.command_args()),
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@holyglory/codex@latest"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@holyglory/codex@latest"]),
             UpdateAction::VitePlusGlobalLatest => {
@@ -148,6 +151,22 @@ mod tests {
                 shlex::split(&action.command_str()).expect("displayed command is executable"),
                 vec![command, verb, "-g", "@holyglory/codex@latest"]
             );
+        }
+    }
+}
+
+/// Package source explicitly selected by the user in the daemon menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonUpdateSource {
+    PublicStable,
+    ThisCli,
+}
+
+impl DaemonUpdateSource {
+    pub fn command_args(self) -> &'static [&'static str] {
+        match self {
+            Self::PublicStable => &["app-server", "daemon", "update"],
+            Self::ThisCli => &["app-server", "daemon", "update", "--from-cli", "--yes"],
         }
     }
 }
