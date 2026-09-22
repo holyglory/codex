@@ -17,6 +17,7 @@ pub(super) enum AccountErrorKind {
     NoResetCredit,
     ResetFailed,
     ResetUncertain,
+    ResetUnsupportedAuth,
     InvalidInput,
     CredentialStore,
     Registry,
@@ -49,6 +50,7 @@ impl AccountCommandError {
             AccountErrorKind::NoResetCredit => 25,
             AccountErrorKind::ResetFailed => 26,
             AccountErrorKind::ResetUncertain => 27,
+            AccountErrorKind::ResetUnsupportedAuth => 28,
             AccountErrorKind::DuplicateAccount => 19,
             AccountErrorKind::CredentialStore => 20,
             AccountErrorKind::Registry => 21,
@@ -78,6 +80,7 @@ impl AccountCommandError {
             AccountErrorKind::NoResetCredit => "noCredit",
             AccountErrorKind::ResetFailed => "resetFailed",
             AccountErrorKind::ResetUncertain => "resetUncertain",
+            AccountErrorKind::ResetUnsupportedAuth => "resetUnsupportedAuth",
             AccountErrorKind::InvalidInput => "invalidInput",
             AccountErrorKind::CredentialStore => "credentialStoreFailure",
             AccountErrorKind::Registry => "registryFailure",
@@ -105,6 +108,9 @@ impl AccountCommandError {
             AccountErrorKind::ResetFailed => "banked reset could not be applied",
             AccountErrorKind::ResetUncertain => {
                 "banked reset result is uncertain; retry with the same request id"
+            }
+            AccountErrorKind::ResetUnsupportedAuth => {
+                "banked resets require ChatGPT authentication"
             }
             AccountErrorKind::InvalidInput => "account command input is invalid",
             AccountErrorKind::CredentialStore => "credential storage operation failed",

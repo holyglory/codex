@@ -161,6 +161,19 @@ codex account auto off
 codex account priority set-all 1000
 ```
 
+Apply one banked reset to a specified profile with `codex account reset work`.
+The command applies immediately and selects the available credit that expires soonest;
+non-expiring credits are used last. Use `--credit-id CREDIT` to choose one explicitly,
+or `--json` for the outcome, windows reset, request identity and refreshed usage.
+
+If the response is uncertain, retry the same operation with
+`codex account reset work --credit-id CREDIT --request-id REQUEST`, using the
+identifiers printed by the original attempt. The replay reaches the service even
+when that credit has already been consumed; it does not select another credit.
+Confirmed resets and explicit no-op outcomes return zero. No credit, unsupported
+authentication, request failures and uncertain outcomes return nonzero. A refresh
+failure is reported separately and does not undo a confirmed reset.
+
 ### Inspect and maintain accounts
 
 | Command                                         | Purpose                                                           |
