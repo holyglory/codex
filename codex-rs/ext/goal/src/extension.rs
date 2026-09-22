@@ -364,6 +364,14 @@ where
                 return;
             };
 
+            // Capacity recovery is scheduled by the app-server wake lifecycle.
+            // Keep the goal active so the delayed retry can continue its work.
+            if matches!(input.error, CodexErrorInfo::ServerOverloaded)
+                && input.retryable_before_response
+            {
+                return;
+            }
+
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
                 // The turn has ended because the error was non-retryable or its

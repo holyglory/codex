@@ -163,7 +163,7 @@ impl PreparedTurnInputSettings {
         };
         if matches!(
             turn_trigger.as_deref(),
-            Some("event_subscription" | "project_review")
+            Some("capacity_retry" | "event_subscription" | "project_review")
         ) {
             turn_context
                 .extension_data

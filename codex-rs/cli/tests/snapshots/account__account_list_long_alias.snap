@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: human
+---
+CURRENT	ALIAS                  	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET IN
+	axel-marchenko-tt-eu-pp	ready	api-key	2		unknown      	unknown                	unknown (unsupportedAuthentication)	unknown
+*	alpha                  	ready	api-key	1	primary	unknown      	unknown                	unknown (unsupportedAuthentication)	unknown

@@ -14,6 +14,7 @@ use codex_app_server_protocol::EventSubscriptionListResponse;
 use codex_app_server_protocol::EventSubscriptionTriggerParams;
 use codex_app_server_protocol::EventSubscriptionTriggerResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionService;
 use codex_event_subscriptions::HeartbeatSpec;
@@ -72,6 +73,12 @@ impl EventSubscriptionRequestProcessor {
             event_types: filter.event_types.into_iter().collect(),
             labels: filter.labels,
         });
+        if filter
+            .as_ref()
+            .is_some_and(|filter| filter.source == CAPACITY_RETRY_SOURCE)
+        {
+            return Err(invalid_request("the capacity retry source is internal"));
+        }
         let source_cursor = params.source_cursor.map(source_cursor);
         let heartbeat = params
             .heartbeat
@@ -120,7 +127,7 @@ impl EventSubscriptionRequestProcessor {
             .limit
             .map(|limit| limit as usize)
             .unwrap_or(DEFAULT_LIST_LIMIT);
-        let page = self
+        let mut page = self
             .service()?
             .list(ListSubscriptionsQuery {
                 thread_id,
@@ -129,6 +136,12 @@ impl EventSubscriptionRequestProcessor {
             })
             .await
             .map_err(service_error)?;
+        page.data.retain(|subscription| {
+            subscription
+                .filter
+                .as_ref()
+                .is_none_or(|filter| filter.source != CAPACITY_RETRY_SOURCE)
+        });
         Ok(EventSubscriptionListResponse {
             data: page.data.into_iter().map(api_subscription).collect(),
             next_cursor: page.next_offset.map(|offset| offset.to_string()),
@@ -140,6 +153,15 @@ impl EventSubscriptionRequestProcessor {
         params: EventSubscriptionCancelParams,
     ) -> Result<EventSubscriptionCancelResponse, JSONRPCErrorError> {
         let subscription_id = parse_subscription_id(&params.subscription_id)?;
+        if let Some(state) = &self.state_db
+            && state
+                .event_subscriptions()
+                .is_capacity_retry_subscription(subscription_id)
+                .await
+                .map_err(|_| internal_error("event subscription storage is unavailable"))?
+        {
+            return Err(invalid_request("the capacity retry source is internal"));
+        }
         let cancelled = self
             .service()?
             .cancel(subscription_id)
@@ -157,6 +179,17 @@ impl EventSubscriptionRequestProcessor {
             .iter()
             .map(|id| parse_subscription_id(id))
             .collect::<Result<Vec<_>, _>>()?;
+        for subscription_id in &subscription_ids {
+            if let Some(state) = &self.state_db
+                && state
+                    .event_subscriptions()
+                    .is_capacity_retry_subscription(*subscription_id)
+                    .await
+                    .map_err(|_| internal_error("event subscription storage is unavailable"))?
+            {
+                return Err(invalid_request("the capacity retry source is internal"));
+            }
+        }
         let outcome = self
             .service()?
             .trigger(subscription_ids)
@@ -181,6 +214,9 @@ impl EventSubscriptionRequestProcessor {
         params: EventPublishParams,
     ) -> Result<EventPublishResponse, JSONRPCErrorError> {
         let event = params.event;
+        if event.source == CAPACITY_RETRY_SOURCE {
+            return Err(invalid_request("the capacity retry source is internal"));
+        }
         let outcome = self
             .service()?
             .publish(PublishedEvent {

@@ -256,6 +256,24 @@ impl UsageRuntime {
             attribution_provenance: provenance,
         };
         self.write_required_for(operation_id, store.begin_operation(&operation).await)?;
+        if matches!(provenance, AttributionProvenance::Unknown) {
+            let missing_declaration = NewCoverageEvent {
+                event_id: FactEventId::new(),
+                operation_id: Some(operation_id),
+                scope_kind: CoverageScopeKind::new("activity_declaration")
+                    .map_err(|_| unavailable())?,
+                state: CoverageState::Unknown,
+                reason_code: Some(
+                    CoverageReasonCode::new("missing_activity_declaration")
+                        .map_err(|_| unavailable())?,
+                ),
+                occurred_at_ms: started_at_ms,
+            };
+            self.write_required_for(
+                operation_id,
+                store.record_coverage(&missing_declaration).await,
+            )?;
+        }
         let tool_invocation = NewToolInvocation {
             id: tool_invocation_id,
             operation_id,
@@ -472,14 +490,18 @@ impl UsageRuntime {
                     .ok_or(MissingReworkTarget)?,
             ),
         };
-        let mut activities = self.tool_state.activities.lock().await;
-        let declaration = activities.entry(agent_activity_key(thread_id)).or_default();
-        declaration.staged = Some(DeclaredActivity {
-            phase,
-            activity,
-            rework_of_operation_id,
-        });
-        declaration.parent_inheritance_blocked = false;
+        let snapshot = {
+            let mut activities = self.tool_state.activities.lock().await;
+            let declaration = activities.entry(agent_activity_key(thread_id)).or_default();
+            declaration.staged = Some(DeclaredActivity {
+                phase,
+                activity,
+                rework_of_operation_id,
+            });
+            declaration.parent_inheritance_blocked = false;
+            declaration_snapshot(declaration)
+        };
+        self.persist_activity_declaration(thread_id, snapshot).await;
         Ok(())
     }
 
@@ -532,13 +554,18 @@ impl UsageRuntime {
     }
 
     pub(crate) async fn end_activity(&self, thread_id: &str) {
-        let mut declarations = self.tool_state.activities.lock().await;
-        *declarations
-            .entry(agent_activity_key(thread_id))
-            .or_default() = ActivityDeclaration {
-            parent_inheritance_blocked: true,
-            ..ActivityDeclaration::default()
+        let snapshot = {
+            let mut declarations = self.tool_state.activities.lock().await;
+            let declaration = declarations
+                .entry(agent_activity_key(thread_id))
+                .or_default();
+            *declaration = ActivityDeclaration {
+                parent_inheritance_blocked: true,
+                ..ActivityDeclaration::default()
+            };
+            declaration_snapshot(declaration)
         };
+        self.persist_activity_declaration(thread_id, snapshot).await;
     }
 
     pub(super) async fn activate_model_activity(
@@ -546,6 +573,10 @@ impl UsageRuntime {
         thread_id: &str,
         parent_thread_id: Option<&str>,
     ) -> (Phase, Activity, AttributionProvenance, Option<OperationId>) {
+        self.restore_activity_declaration(thread_id).await;
+        if let Some(parent_thread_id) = parent_thread_id {
+            self.restore_activity_declaration(parent_thread_id).await;
+        }
         let mut declarations = self.tool_state.activities.lock().await;
         let key = agent_activity_key(thread_id);
         let inherit_parent = {
@@ -576,6 +607,62 @@ impl UsageRuntime {
             active.rework_of_operation_id = None;
         }
         (phase, activity, provenance, rework_of_operation_id)
+    }
+
+    async fn restore_activity_declaration(&self, thread_id: &str) {
+        let key = agent_activity_key(thread_id);
+        if self.tool_state.activities.lock().await.contains_key(&key) {
+            return;
+        }
+        let Ok(store) = self.store().await else {
+            return;
+        };
+        let Ok(Some(record)) = store.activity_declaration(thread_id).await else {
+            return;
+        };
+        let declaration = ActivityDeclaration {
+            active: record
+                .active
+                .map(
+                    |(phase, activity, rework_of_operation_id)| DeclaredActivity {
+                        phase,
+                        activity,
+                        rework_of_operation_id,
+                    },
+                ),
+            staged: record
+                .staged
+                .map(
+                    |(phase, activity, rework_of_operation_id)| DeclaredActivity {
+                        phase,
+                        activity,
+                        rework_of_operation_id,
+                    },
+                ),
+            parent_inheritance_blocked: record.parent_inheritance_blocked,
+            ..ActivityDeclaration::default()
+        };
+        self.tool_state
+            .activities
+            .lock()
+            .await
+            .insert(key, declaration);
+    }
+
+    async fn persist_activity_declaration(
+        &self,
+        thread_id: &str,
+        declaration: ActivityDeclarationRecord,
+    ) {
+        let Ok(store) = self.store().await else {
+            return;
+        };
+        if let Err(error) = store
+            .save_activity_declaration(thread_id, &declaration)
+            .await
+        {
+            self.latch_write_failure("activity_declaration", None, error);
+        }
     }
 
     async fn current_tool_activity(
@@ -1086,6 +1173,19 @@ fn classification(
             )
         },
     )
+}
+
+fn declaration_snapshot(declaration: &ActivityDeclaration) -> ActivityDeclarationRecord {
+    ActivityDeclarationRecord {
+        active: declaration
+            .active
+            .map(|value| (value.phase, value.activity, value.rework_of_operation_id)),
+        staged: declaration
+            .staged
+            .map(|value| (value.phase, value.activity, value.rework_of_operation_id)),
+        parent_inheritance_blocked: declaration.parent_inheritance_blocked,
+        updated_at_ms: now_ms(),
+    }
 }
 
 fn agent_activity_key(thread_id: &str) -> String {

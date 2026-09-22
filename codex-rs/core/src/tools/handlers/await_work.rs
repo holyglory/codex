@@ -7,6 +7,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::HeartbeatSpec;
 use codex_event_subscriptions::NewSubscription;
@@ -67,6 +68,9 @@ impl ToolExecutor<ToolInvocation> for AwaitWorkHandler {
             }
             let mut args: Arguments = serde_json::from_str(arguments)
                 .map_err(|_| error("invalid event wait arguments"))?;
+            if args.source == CAPACITY_RETRY_SOURCE {
+                return Err(error("the capacity retry source is internal"));
+            }
             if args.source == "devcoordinator"
                 && (!args.labels.contains_key("repository_id")
                     || !(args.labels.contains_key("run_id")
