@@ -28,6 +28,7 @@ mod add;
 mod doctor;
 mod error;
 mod limits;
+mod reset;
 mod view;
 
 pub(crate) use error::print_error;
@@ -61,6 +62,8 @@ enum AccountAction {
     Add(AddArgs),
     /// Read service-reported rate-limit buckets.
     Limits(LimitsArgs),
+    /// Apply one banked reset credit to an account profile.
+    Reset(ResetArgs),
     /// Rename an account profile.
     Rename(RenameArgs),
     /// Edit account metadata.
@@ -99,6 +102,20 @@ struct LimitsArgs {
     /// Include every profile, preserving unavailable accounts as unknown.
     #[arg(long)]
     all: bool,
+}
+
+#[derive(Debug, Args)]
+struct ResetArgs {
+    #[arg(value_name = "ACCOUNT")]
+    account: String,
+
+    /// Explicitly select a banked reset credit.
+    #[arg(long)]
+    credit_id: Option<String>,
+
+    /// Replay a previous reset request using its original idempotency key.
+    #[arg(long, requires = "credit_id")]
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -279,6 +296,7 @@ async fn execute(
         AccountAction::Show(reference) => view::show(config, &store, &reference.account, json),
         AccountAction::Add(args) => add::run(config, &store, args, json).await,
         AccountAction::Limits(args) => limits::run(config, &store, args, json).await,
+        AccountAction::Reset(args) => reset::run(config, &store, args, json).await,
         AccountAction::Rename(args) => rename(config, &store, args, json),
         AccountAction::Edit(args) => edit(config, &store, args, json),
         AccountAction::Priority(args) => priority(config, &store, args, json),
