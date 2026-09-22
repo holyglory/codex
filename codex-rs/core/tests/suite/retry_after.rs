@@ -5,7 +5,6 @@ use codex_client::run_with_retry;
 use codex_http_client::Request;
 use codex_http_client::TransportError;
 use codex_login::CodexAuth;
-use codex_models_manager::bundled_models_response;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
