@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: "human.replace(countdown, \"[Codex reset countdown]\")"
 ---
-CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	LIMITS	RESET IN
-	beta	ready	api-key	2		unknown (unsupportedAuthentication)	unknown
-*	alpha	ready	chatgpt	1	primary	codex: 5m 42% used / 1h 84% used / individual 32% used	[Codex reset countdown]
+CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET IN
+	beta 	ready	api-key	2		unknown      	unknown                	unknown (unsupportedAuthentication)	unknown
+*	alpha	ready	chatgpt	1	primary	3            	2030-01-01 00:00:00 UTC	codex: 5m 42% used / 1h 84% used / individual 32% used	[Codex reset countdown]

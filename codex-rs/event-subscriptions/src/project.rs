@@ -6,6 +6,34 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+/// The identity source used to derive a durable project clock key.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectIdentityKind {
+    GitCommonDirectory,
+    WorkspacePath,
+}
+
+/// A candidate identity observed from the current workspace.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIdentityCandidate {
+    pub project_id: String,
+    pub kind: ProjectIdentityKind,
+}
+
+/// Ordered identities used to resolve one project clock.
+///
+/// The canonical candidate is preferred when creating a new clock. Aliases
+/// are provisional identities that may already own a clock from an earlier
+/// workspace state, such as before Git metadata existed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIdentityCandidates {
+    pub canonical: ProjectIdentityCandidate,
+    pub aliases: Vec<ProjectIdentityCandidate>,
+}
+
 pub const DAY_MS: i64 = 86_400_000;
 pub const MAX_PROJECT_TARGETS: usize = 32;
 

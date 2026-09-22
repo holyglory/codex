@@ -3,7 +3,7 @@ use super::WorldStateSection;
 use crate::context::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
-const INSTRUCTIONS: &str = "Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about this agent, call it before answering and ground the answer in its result: use `task_tree_summary` (`root_thread_id=\"current\"`, `include_descendants=true`) for the task tree, or `summary` for broader scopes. Map model-routed `/usage all|chat|repo` to `summary` scopes `all|current_chat|current_repository`. Do not search OpenAI documentation for local usage unless the user asks about official product behavior.";
+const INSTRUCTIONS: &str = "Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about this agent, call it before answering and ground the answer in its result: use `task_tree_summary` (`root_thread_id=\"current\"`, `include_descendants=true`) for the task tree, or `summary` for broader scopes. Map model-routed `/usage all|chat|repo` to `summary` scopes `all|current_chat|current_repository`. Before substantive work and whenever the work changes, declare the operational category with `usage_activity` before the next model request; use `heartbeat` during long segments and `end` when the activity stops. Keep coding, diagnosis, build validation, integration testing, browser QA, deployment, and review as separate declarations. Do not infer historical categories from commands; use exact operation corrections only. Do not search OpenAI documentation for local usage unless the user asks about official product behavior.";
 
 /// Whether built-in local usage guidance should be visible to the model.
 #[derive(Clone, Copy, Debug, Default)]

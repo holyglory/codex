@@ -41,6 +41,15 @@ pub(super) struct AccountLimitsJson {
     pub(super) buckets: Vec<RateLimitSnapshot>,
     pub(super) next_reset_at: Option<i64>,
     next_reset_scope: Option<&'static str>,
+    pub(super) banked_resets: Option<BankedResets>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BankedResets {
+    pub(super) available_count: i64,
+    pub(super) soonest_expires_at: Option<i64>,
+    pub(super) expiry_known: bool,
 }
 
 pub(super) async fn run(
@@ -146,16 +155,66 @@ async fn fetch_account_limits(
         &auth,
         config.http_client_factory(),
     );
-    let response =
-        match tokio::time::timeout(LIMIT_FETCH_TIMEOUT, client.get_rate_limits_many()).await {
-            Ok(Ok(snapshots)) => snapshots,
-            Ok(Err(_)) => return unknown(account, "requestFailed"),
-            Err(_) => return unknown(account, "requestTimedOut"),
-        };
-    if response.is_empty() || response.iter().any(invalid_snapshot) {
+    let response = match tokio::time::timeout(
+        LIMIT_FETCH_TIMEOUT,
+        client.get_rate_limits_with_reset_credits(),
+    )
+    .await
+    {
+        Ok(Ok(snapshots)) => snapshots,
+        Ok(Err(_)) => return unknown(account, "requestFailed"),
+        Err(_) => return unknown(account, "requestTimedOut"),
+    };
+    if response.rate_limits.is_empty() || response.rate_limits.iter().any(invalid_snapshot) {
         return unknown(account, "invalidResponse");
     }
-    let mut buckets = response;
+    let mut banked_resets = response
+        .rate_limit_reset_credits
+        .filter(|summary| summary.available_count >= 0)
+        .map(|summary| BankedResets {
+            available_count: summary.available_count,
+            soonest_expires_at: None,
+            expiry_known: summary.available_count == 0,
+        });
+    if banked_resets
+        .as_ref()
+        .is_none_or(|resets| resets.available_count > 0)
+        && let Ok(Ok(details)) =
+            tokio::time::timeout(LIMIT_FETCH_TIMEOUT, client.list_rate_limit_reset_credits()).await
+        && details.available_count >= 0
+    {
+        let mut available_count = 0;
+        let mut expiry_known = true;
+        let mut soonest_expires_at = None;
+        for credit in details
+            .credits
+            .iter()
+            .filter(|credit| credit.status == "available")
+        {
+            available_count += 1;
+            if let Some(expires_at) = &credit.expires_at {
+                match chrono::DateTime::parse_from_rfc3339(expires_at) {
+                    Ok(date) => {
+                        let timestamp = date.timestamp();
+                        soonest_expires_at = Some(
+                            soonest_expires_at
+                                .map_or(timestamp, |previous: i64| previous.min(timestamp)),
+                        );
+                    }
+                    Err(_) => expiry_known = false,
+                }
+            }
+        }
+        expiry_known &= available_count == details.available_count;
+        banked_resets = Some(BankedResets {
+            available_count: details.available_count,
+            soonest_expires_at: (expiry_known && details.available_count > 0)
+                .then_some(soonest_expires_at)
+                .flatten(),
+            expiry_known,
+        });
+    }
+    let mut buckets = response.rate_limits;
     buckets.sort_by(|left, right| {
         left.limit_id
             .cmp(&right.limit_id)
@@ -173,6 +232,7 @@ async fn fetch_account_limits(
         buckets,
         next_reset_at: next_reset.as_ref().map(|reset| reset.resets_at),
         next_reset_scope: next_reset.map(|reset| reset.scope),
+        banked_resets,
     }
 }
 
@@ -185,6 +245,7 @@ pub(super) fn unknown(account: &AccountMetadata, reason: &'static str) -> Accoun
         buckets: Vec::new(),
         next_reset_at: None,
         next_reset_scope: None,
+        banked_resets: None,
     }
 }
 

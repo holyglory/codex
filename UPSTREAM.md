@@ -7,8 +7,8 @@
 - Peeled commit: `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`
 - Selected: 2026-09-09
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.154.0+multi.3`
-- Downstream npm version: `0.154.0-multi.3`
+- Downstream Rust version: `0.154.0+multi.4`
+- Downstream npm version: `0.154.0-multi.4`
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic

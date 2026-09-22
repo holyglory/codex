@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use super::SqliteEventSubscriptionStore;
+use super::project_identity::canonical_key;
 use super::storage::next_revision;
 use super::storage::parse_uuid;
 use super::storage::upsert_alarm_wake;
@@ -131,7 +132,7 @@ impl SqliteEventSubscriptionStore {
         project_id: &str,
     ) -> Result<Option<ProjectAutomation>, StoreError> {
         let json = sqlx::query_scalar::<_, String>(
-            "SELECT state_json FROM project_automations WHERE project_id = ?",
+            "SELECT state_json FROM project_automations WHERE project_id = COALESCE((SELECT canonical_project_id FROM project_identity_aliases WHERE alias_id = ?1), ?1)",
         )
         .bind(project_id)
         .fetch_optional(self.pool.as_ref())
@@ -198,6 +199,8 @@ impl SqliteEventSubscriptionStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(store_error)?;
+        let project_id = canonical_key(&mut transaction, project_id).await?;
+        let project_id = project_id.as_str();
         let row = sqlx::query(
             "SELECT state_json, subscription_id FROM project_automations WHERE project_id = ?",
         )
@@ -362,8 +365,9 @@ impl SqliteEventSubscriptionStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(store_error)?;
+        let project_id = canonical_key(&mut transaction, project_id).await?;
         let json = sqlx::query_scalar::<_, String>("SELECT state_json FROM project_automations WHERE project_id = ? AND NOT EXISTS (SELECT 1 FROM project_review_workers WHERE worker_thread_id = ?)")
-            .bind(project_id).bind(thread_id.to_string()).fetch_optional(&mut *transaction).await.map_err(store_error)?;
+            .bind(&project_id).bind(thread_id.to_string()).fetch_optional(&mut *transaction).await.map_err(store_error)?;
         if let Some(json) = json {
             let mut project: ProjectAutomation =
                 serde_json::from_str(&json).map_err(store_error)?;
@@ -374,7 +378,7 @@ impl SqliteEventSubscriptionStore {
                 project.last_activity_at_ms = project.last_activity_at_ms.max(now_ms);
                 sqlx::query("UPDATE project_automations SET state_json = ? WHERE project_id = ?")
                     .bind(serde_json::to_string(&project).map_err(store_error)?)
-                    .bind(project_id)
+                    .bind(&project_id)
                     .execute(&mut *transaction)
                     .await
                     .map_err(store_error)?;
@@ -469,7 +473,7 @@ impl SqliteEventSubscriptionStore {
                 affected.push(project.owner_thread_id);
             }
             sqlx::query("UPDATE project_automations SET next_deadline_at_ms = ?, state_json = ? WHERE project_id = ?")
-                .bind(project.next_deadline()).bind(serde_json::to_string(&project).map_err(store_error)?).bind(project_id)
+                .bind(project.next_deadline()).bind(serde_json::to_string(&project).map_err(store_error)?).bind(&project_id)
                 .execute(&mut *transaction).await.map_err(store_error)?;
         }
         transaction.commit().await.map_err(store_error)?;

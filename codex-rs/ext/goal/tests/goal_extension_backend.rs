@@ -870,6 +870,62 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn terminal_capacity_error_keeps_goal_active_for_delayed_retry() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "finish the original work" }),
+        ))
+        .await?;
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::ServerOverloaded)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn capacity_error_after_output_blocks_goal_without_safe_replay() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "finish the original work" }),
+        ))
+        .await?;
+    harness
+        .notify_turn_error_with_retryability("turn-1", CodexErrorInfo::ServerOverloaded, false)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_execution_turns_block_goal_unless_a_tool_succeeds() -> anyhow::Result<()> {
     for (recovery_turn, status_only_turn, blocking_turn) in
         [(None, None, 3), (Some(2), None, 5), (None, Some(2), 4)]
@@ -1888,12 +1944,24 @@ impl GoalExtensionHarness {
     }
 
     async fn notify_turn_error(&self, turn_id: &str, error: CodexErrorInfo) {
+        self.notify_turn_error_with_retryability(turn_id, error, true)
+            .await;
+    }
+
+    async fn notify_turn_error_with_retryability(
+        &self,
+        turn_id: &str,
+        error: CodexErrorInfo,
+        retryable_before_response: bool,
+    ) {
         let turn_store = ExtensionData::new(turn_id);
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(TurnErrorInput {
                     turn_id,
                     error: error.clone(),
+                    session_source: &SessionSource::Cli,
+                    retryable_before_response,
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
                     turn_store: &turn_store,

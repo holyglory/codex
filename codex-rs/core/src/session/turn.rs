@@ -607,6 +607,9 @@ pub(crate) async fn run_turn(
                             return Err(err);
                         }
                         let error = err.to_codex_protocol_error();
+                        turn_context
+                            .extension_data
+                            .insert(TurnErrorAfterResponseStarted);
                         sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                             .await;
                         return Ok(None);
@@ -1584,11 +1587,19 @@ async fn run_sampling_request(
             != SamplingResponseProgress::OutputStarted
             && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
             && !crate::guardian::is_basic_session_source(&turn_context.session_source);
+        let terminal_capacity_after_output = response_progress
+            == SamplingResponseProgress::OutputStarted
+            && matches!(err.details(), CodexErrorDetails::ServerOverloaded);
         if !err.is_retryable() && !should_retry_server_overload {
+            if terminal_capacity_after_output {
+                turn_context
+                    .extension_data
+                    .insert(TurnErrorAfterResponseStarted);
+            }
             return Err(SamplingRequestFailure::new(err, response_progress));
         }
 
-        handle_retryable_response_stream_error(
+        let retry_result = handle_retryable_response_stream_error(
             &mut retry_state,
             max_retries,
             err,
@@ -1599,9 +1610,18 @@ async fn run_sampling_request(
         )
         .or_cancel(&cancellation_token)
         .await
-        .map_err(|_| SamplingRequestFailure::new(CodexErr::TurnAborted, response_progress))?
-        .map_err(|error| SamplingRequestFailure::new(error, response_progress))?;
-        turn_context.turn_timing_state.record_sampling_retry();
+        .map_err(|_| SamplingRequestFailure::new(CodexErr::TurnAborted, response_progress))?;
+        match retry_result {
+            Ok(()) => turn_context.turn_timing_state.record_sampling_retry(),
+            Err(error) => {
+                if terminal_capacity_after_output {
+                    turn_context
+                        .extension_data
+                        .insert(TurnErrorAfterResponseStarted);
+                }
+                return Err(SamplingRequestFailure::new(error, response_progress));
+            }
+        }
     }
 }
 
@@ -1750,6 +1770,8 @@ enum SamplingResponseProgress {
     Started,
     OutputStarted,
 }
+
+pub(crate) struct TurnErrorAfterResponseStarted;
 
 impl SamplingResponseProgress {
     fn note_event(&mut self, event: &ResponseEvent) {
@@ -2535,6 +2557,21 @@ async fn try_run_sampling_request(
         let event = match event {
             Some(Ok(event)) => {
                 response_progress.note_event(&event);
+                if matches!(
+                    event,
+                    ResponseEvent::OutputItemDone(_)
+                        | ResponseEvent::OutputItemAdded(_)
+                        | ResponseEvent::OutputTextDelta(_)
+                        | ResponseEvent::ToolCallInputDelta { .. }
+                        | ResponseEvent::ReasoningSummaryDelta { .. }
+                        | ResponseEvent::ReasoningSummaryDone { .. }
+                        | ResponseEvent::ReasoningContentDelta { .. }
+                        | ResponseEvent::ReasoningSummaryPartAdded { .. }
+                ) {
+                    turn_context
+                        .extension_data
+                        .insert(TurnErrorAfterResponseStarted);
+                }
                 event
             }
             Some(Err(err)) => break Err(err),

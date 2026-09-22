@@ -4,6 +4,9 @@ use std::time::UNIX_EPOCH;
 
 use codex_event_subscriptions::ProjectAutomation;
 use codex_event_subscriptions::ProjectAutomationCommand;
+use codex_event_subscriptions::ProjectIdentityCandidate;
+use codex_event_subscriptions::ProjectIdentityCandidates;
+use codex_event_subscriptions::ProjectIdentityKind;
 use codex_event_subscriptions::ProjectMode;
 use codex_event_subscriptions::WorkPurpose;
 use sha1::Digest;
@@ -19,20 +22,40 @@ use crate::tools::context::ToolInvocation;
 mod evidence;
 pub use evidence::validate_project_evidence;
 
-pub fn project_automation_id(cwd: &Path) -> String {
+pub fn project_identity_candidates(cwd: &Path) -> ProjectIdentityCandidates {
+    let canonical_workspace = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let workspace_id = format!(
+        "project-{:x}",
+        Sha1::digest(canonical_workspace.as_os_str().as_encoded_bytes())
+    );
     let mut root = cwd;
     loop {
         if let Some(common) = codex_usage::discover_git_common_dir(root) {
-            return format!("project-{:x}", Sha1::digest(common.as_str().as_bytes()));
+            return ProjectIdentityCandidates {
+                canonical: ProjectIdentityCandidate {
+                    project_id: format!("project-{:x}", Sha1::digest(common.as_str().as_bytes())),
+                    kind: ProjectIdentityKind::GitCommonDirectory,
+                },
+                aliases: vec![ProjectIdentityCandidate {
+                    project_id: workspace_id,
+                    kind: ProjectIdentityKind::WorkspacePath,
+                }],
+            };
         }
         let Some(parent) = root.parent() else { break };
         root = parent;
     }
-    let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    format!(
-        "project-{:x}",
-        Sha1::digest(canonical.as_os_str().as_encoded_bytes())
-    )
+    ProjectIdentityCandidates {
+        canonical: ProjectIdentityCandidate {
+            project_id: workspace_id,
+            kind: ProjectIdentityKind::WorkspacePath,
+        },
+        aliases: Vec::new(),
+    }
+}
+
+pub fn project_automation_id(cwd: &Path) -> String {
+    project_identity_candidates(cwd).canonical.project_id
 }
 
 pub fn project_automation_now_ms() -> i64 {
@@ -59,9 +82,13 @@ pub(crate) async fn ensure_project_enrollment(
     let Some(environment) = step.environments.primary() else {
         return Ok(None);
     };
-    let project_id = project_automation_id(&environment.cwd().to_path_buf());
+    let identities = project_identity_candidates(&environment.cwd().to_path_buf());
     let store = state.event_subscriptions();
     let thread_id = session.thread_id();
+    let project_id = store
+        .resolve_project_identity(&identities, project_automation_now_ms())
+        .await
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
     let previous = store.project_status(&project_id).await.map_err(|error| {
         FunctionCallError::RespondToModel(format!("Cannot read project scheduling state: {error}"))
     })?;
@@ -74,6 +101,14 @@ pub(crate) async fn ensure_project_enrollment(
         .await
         .map_err(|error| {
             FunctionCallError::RespondToModel(format!("Cannot enroll project work: {error}"))
+        })?;
+    store
+        .register_project_identity_aliases(&identities, &project_id, now_ms)
+        .await
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "Cannot persist project identity aliases: {error}"
+            ))
         })?;
     // Restore persisted declarations even if a previous runtime enrolled this task.
     session
@@ -107,9 +142,17 @@ pub(crate) async fn enforce_project_admission(
     let Some(environment) = invocation.step_context.environments.primary() else {
         return Ok(());
     };
-    let project_id = project_automation_id(&environment.cwd().to_path_buf());
+    let identities = project_identity_candidates(&environment.cwd().to_path_buf());
     let store = state.event_subscriptions();
     let now_ms = project_automation_now_ms();
+    let project_id = store
+        .resolve_project_identity(&identities, now_ms)
+        .await
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "Project identity state is unavailable: {error}"
+            ))
+        })?;
     let project = if admission_exempt {
         // Control tools must remain usable during a state-store outage. Their
         // optional accounting context becomes unknown instead of staying stale.
@@ -186,8 +229,12 @@ pub(crate) async fn observe_project_bottleneck(invocation: &ToolInvocation) {
     let observation = async {
         let state = invocation.session.state_db()?;
         let environment = invocation.step_context.environments.primary()?;
-        let project_id = project_automation_id(&environment.cwd().to_path_buf());
+        let identities = project_identity_candidates(&environment.cwd().to_path_buf());
         let store = state.event_subscriptions();
+        let project_id = store
+            .resolve_project_identity(&identities, project_automation_now_ms())
+            .await
+            .ok()?;
         let project = store.project_status(&project_id).await.ok()??;
         if project.paused || project.review.is_some() {
             return None;
