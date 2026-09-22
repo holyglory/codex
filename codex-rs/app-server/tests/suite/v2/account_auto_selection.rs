@@ -82,7 +82,7 @@ struct ManagedChatGptProfile {
 async fn desktop_first_turn_refreshes_cli_profiles_and_selects_eligible_account() -> Result<()> {
     let codex_home = TempDir::new()?;
     let backend = MockServer::start().await;
-    write_test_config(codex_home.path(), &backend.uri())?;
+    write_test_config(codex_home.path(), &backend.uri()).await?;
     let [alpha, beta, gamma] = persist_cli_profile_set(codex_home.path())?;
 
     mount_observed_probe(
@@ -192,7 +192,7 @@ async fn desktop_first_turn_refreshes_cli_profiles_and_selects_eligible_account(
 async fn desktop_turn_continues_on_backup_profile_after_clean_usage_limit() -> Result<()> {
     let codex_home = TempDir::new()?;
     let backend = MockServer::start().await;
-    write_test_config(codex_home.path(), &backend.uri())?;
+    write_test_config(codex_home.path(), &backend.uri()).await?;
     let [alpha, beta, gamma] = persist_cli_profile_set(codex_home.path())?;
     RegistryStore::new(codex_home.path())
         .compare_and_swap(/*expected_generation*/ 0, |registry| {
@@ -446,7 +446,7 @@ async fn desktop_turn_continues_on_backup_profile_after_clean_usage_limit() -> R
 async fn desktop_turn_does_not_fail_over_after_response_stream_starts() -> Result<()> {
     let codex_home = TempDir::new()?;
     let backend = MockServer::start().await;
-    write_test_config(codex_home.path(), &backend.uri())?;
+    write_test_config(codex_home.path(), &backend.uri()).await?;
     let [alpha, beta, gamma] = persist_cli_profile_set(codex_home.path())?;
     RegistryStore::new(codex_home.path())
         .compare_and_swap(/*expected_generation*/ 0, |registry| {
@@ -524,7 +524,7 @@ async fn desktop_first_turn_fails_without_model_request_when_all_profile_probes_
 {
     let codex_home = TempDir::new()?;
     let backend = MockServer::start().await;
-    write_test_config(codex_home.path(), &backend.uri())?;
+    write_test_config(codex_home.path(), &backend.uri()).await?;
     let profiles = persist_cli_profile_set(codex_home.path())?;
     for profile in &profiles {
         mount_failed_probe(&backend, profile, /*expected*/ 1..=2).await;
@@ -574,14 +574,14 @@ async fn desktop_first_turn_fails_without_model_request_when_all_profile_probes_
     Ok(())
 }
 
-fn write_test_config(codex_home: &Path, backend_uri: &str) -> Result<()> {
+async fn write_test_config(codex_home: &Path, backend_uri: &str) -> Result<()> {
     MockResponsesConfig::new(backend_uri)
         .with_root_config(&format!(
             "chatgpt_base_url = \"{backend_uri}\"\ncli_auth_credentials_store = \"file\""
         ))
         .with_provider_config("requires_openai_auth = true\nsupports_websockets = true")
         .write(codex_home)?;
-    write_models_cache(codex_home)?;
+    write_models_cache(codex_home).await?;
     Ok(())
 }
 
