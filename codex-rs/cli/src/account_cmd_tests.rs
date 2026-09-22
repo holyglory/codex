@@ -17,8 +17,8 @@ fn parser_exposes_only_implemented_account_commands() {
     assert_eq!(
         names,
         vec![
-            "list", "current", "show", "add", "limits", "rename", "edit", "priority", "use",
-            "enable", "disable", "remove", "auto", "doctor",
+            "list", "current", "show", "add", "limits", "reset", "rename", "edit", "priority",
+            "use", "enable", "disable", "remove", "auto", "doctor",
         ]
     );
 }
@@ -35,6 +35,26 @@ fn parser_accepts_json_after_nested_auto_action() {
             ..
         })
     ));
+}
+
+#[test]
+fn parser_requires_credit_id_when_replaying_reset() {
+    assert!(
+        AccountCommand::try_parse_from(["account", "reset", "alpha", "--request-id", "req"])
+            .is_err()
+    );
+    assert!(
+        AccountCommand::try_parse_from([
+            "account",
+            "reset",
+            "alpha",
+            "--credit-id",
+            "credit",
+            "--request-id",
+            "req"
+        ])
+        .is_ok()
+    );
 }
 
 #[test]
