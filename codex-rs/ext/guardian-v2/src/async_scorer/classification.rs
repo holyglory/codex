@@ -52,6 +52,7 @@ use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_tools::trusted_tool_context;
 
 pub(super) struct Classification {
+    pub(super) auth_lease: Option<Arc<codex_login::AuthManagerLease>>,
     pub(super) classification_started_at: Instant,
     pub(super) sampler: Arc<LunaSampler>,
     pub(super) guardian_config: GuardianV2Config,
@@ -94,6 +95,7 @@ enum ClassificationOutcome {
 impl Classification {
     pub(super) async fn run(self) {
         let Self {
+            auth_lease,
             classification_started_at,
             sampler,
             guardian_config,
@@ -238,16 +240,25 @@ impl Classification {
         let mut classification_risk = None;
         let mut classification_finished_at = None;
         let result: Result<ClassificationOutcome, String> = async {
+            let config = auth_lease
+                .as_ref()
+                .map(|lease| {
+                    super::extension::GuardianV2Extension::config_for_auth_lease(&config, lease)
+                })
+                .map_or(config.clone(), Arc::new);
+            let auth_manager = auth_lease.as_ref().map_or_else(
+                || manager.auth_manager(),
+                |lease| Arc::clone(lease.auth_manager()),
+            );
             let review_model = if config.guardian_policy_config.is_none() {
                 let review_model_id = review_model_override.as_deref().unwrap_or_else(|| {
                     create_model_provider(
                         config.model_provider.clone(),
-                        Some(manager.auth_manager()),
+                        Some(Arc::clone(&auth_manager)),
                     )
                     .approval_review_preferred_model()
                 });
-                let review_model = manager
-                    .get_models_manager()
+                let review_model = codex_core::build_models_manager(&config, auth_manager)
                     .get_model_info(review_model_id, &config.to_models_manager_config())
                     .await;
                 if review_model.used_fallback_model_metadata && review_model_override.is_none() {

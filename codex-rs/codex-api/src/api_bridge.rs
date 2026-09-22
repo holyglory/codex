@@ -102,16 +102,25 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 if status == http::StatusCode::BAD_REQUEST {
                     if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
                         && let Some(error) = parsed.get("error")
-                        && error.get("code").and_then(Value::as_str)
-                            == Some(CYBER_POLICY_ERROR_CODE)
+                        && let Some(code @ (CYBER_POLICY_ERROR_CODE | BIO_POLICY_ERROR_CODE)) =
+                            error.get("code").and_then(Value::as_str)
                     {
+                        let fallback_message = if code == BIO_POLICY_ERROR_CODE {
+                            BIO_POLICY_FALLBACK_MESSAGE
+                        } else {
+                            CYBER_POLICY_FALLBACK_MESSAGE
+                        };
                         let message = error
                             .get("message")
                             .and_then(Value::as_str)
                             .filter(|message| !message.trim().is_empty())
                             .map(str::to_string)
-                            .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
-                        CodexErr::new(CodexErrorDetails::CyberPolicy { message })
+                            .unwrap_or_else(|| fallback_message.to_string());
+                        if code == BIO_POLICY_ERROR_CODE {
+                            CodexErr::new(CodexErrorDetails::BioPolicy { message })
+                        } else {
+                            CodexErr::new(CodexErrorDetails::CyberPolicy { message })
+                        }
                     } else if body_text
                         .contains("The image data you provided does not represent a valid image")
                     {
@@ -150,6 +159,19 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                             });
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
+                        } else if err.error.error_type.as_deref() == Some("insufficient_quota")
+                            || matches!(
+                                err.error.code.as_deref(),
+                                Some(
+                                    "insufficient_quota"
+                                        | "credit_balance_exhausted"
+                                        | "organization_spend_limit_exceeded"
+                                        | "project_spend_limit_exceeded"
+                                        | "organization_usage_limit_exceeded"
+                                )
+                            )
+                        {
+                            return CodexErr::QuotaExceeded;
                         }
                     }
 
@@ -221,6 +243,8 @@ const X_ERROR_JSON_HEADER: &str = "x-error-json";
 const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
 const CYBER_POLICY_FALLBACK_MESSAGE: &str =
     "This request has been flagged for possible cybersecurity risk.";
+const BIO_POLICY_ERROR_CODE: &str = "bio_policy";
+const BIO_POLICY_FALLBACK_MESSAGE: &str = "This content was flagged for possible biological risk.";
 const MISALIGNMENT_POLICY_VIOLATION_ERROR_CODE: &str = "misalignment_policy_violation";
 const MISALIGNMENT_POLICY_VIOLATION_FALLBACK_MESSAGE: &str =
     "This request was blocked due to a misalignment policy violation.";
@@ -279,6 +303,7 @@ struct UsageErrorResponse {
 
 #[derive(Debug, Deserialize)]
 struct UsageErrorBody {
+    code: Option<String>,
     #[serde(rename = "type")]
     error_type: Option<String>,
     plan_type: Option<PlanType>,
