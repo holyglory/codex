@@ -20,6 +20,9 @@ pub use project::AutomationJobKind;
 pub use project::DeliveryObligation;
 pub use project::ProjectAutomation;
 pub use project::ProjectAutomationCommand;
+pub use project::ProjectIdentityCandidate;
+pub use project::ProjectIdentityCandidates;
+pub use project::ProjectIdentityKind;
 pub use project::ProjectMode;
 pub use project::WorkPurpose;
 
@@ -54,3 +57,8 @@ pub const MAX_LIST_LIMIT: usize = 100;
 pub const MAX_SUBSCRIPTIONS_PER_THREAD: usize = 128;
 pub const MAX_TOTAL_SUBSCRIPTIONS: usize = 4_096;
 pub const MAX_TRIGGER_SUBSCRIPTIONS: usize = 128;
+
+/// Internal source used for durable retries after a terminal model-capacity error.
+pub const CAPACITY_RETRY_SOURCE: &str = "codex.capacity_retry";
+/// Event type stored with capacity-retry subscriptions for identification.
+pub const CAPACITY_RETRY_EVENT_TYPE: &str = "capacity_retry";

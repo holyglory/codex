@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::function_tool::FunctionCallError;
-use crate::project_automation::project_automation_id;
 use crate::project_automation::project_automation_now_ms;
+use crate::project_automation::project_identity_candidates;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -66,9 +66,13 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
                 .primary()
                 .ok_or_else(|| error("project requires a working directory"))?;
             let cwd = environment.cwd().to_path_buf();
-            let project_id = project_automation_id(&cwd);
             let store = state.event_subscriptions();
             let now_ms = project_automation_now_ms();
+            let identities = project_identity_candidates(&cwd);
+            let project_id = store
+                .resolve_project_identity(&identities, now_ms)
+                .await
+                .map_err(|failure| error(&failure.to_string()))?;
             let capture_binding = matches!(
                 &args.command,
                 ProjectAutomationCommand::Bind { .. }
@@ -104,6 +108,10 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
                     .await
                     .map_err(|failure| error(&failure.to_string()))?
             };
+            store
+                .register_project_identity_aliases(&identities, &project_id, now_ms)
+                .await
+                .map_err(|failure| error(&failure.to_string()))?;
             if capture_binding {
                 invocation
                     .session

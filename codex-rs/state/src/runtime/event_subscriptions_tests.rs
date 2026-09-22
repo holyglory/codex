@@ -8,6 +8,8 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use codex_event_subscriptions::CAPACITY_RETRY_EVENT_TYPE;
+use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
 use codex_event_subscriptions::Clock;
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionService;
@@ -260,6 +262,52 @@ fn event(sequence: u64, occurred_at_ms: i64) -> PublishedEvent {
         labels: BTreeMap::from([("branch".to_string(), "main".to_string())]),
         occurred_at_ms,
     }
+}
+
+#[tokio::test]
+async fn capacity_retry_subscription_is_identified_and_cancelled() {
+    let (runtime, _home) = runtime().await;
+    let thread_id = ThreadId::new();
+    let subscription = runtime
+        .event_subscriptions()
+        .create(
+            NewSubscription {
+                thread_id,
+                filter: Some(EventFilter {
+                    source: CAPACITY_RETRY_SOURCE.to_string(),
+                    event_types: BTreeSet::from([CAPACITY_RETRY_EVENT_TYPE.to_string()]),
+                    labels: BTreeMap::new(),
+                }),
+                source_cursor: None,
+                heartbeat: Some(HeartbeatSpec {
+                    interval_ms: 1_000,
+                    first_deadline_at_ms: Some(2_000),
+                }),
+            },
+            /*now_ms*/ 1_000,
+        )
+        .await
+        .expect("capacity retry subscription");
+
+    assert!(
+        runtime
+            .event_subscriptions()
+            .is_capacity_retry_subscription(subscription.id)
+            .await
+            .expect("identify capacity retry")
+    );
+    runtime
+        .event_subscriptions()
+        .cancel_capacity_retry_subscriptions(thread_id)
+        .await
+        .expect("cancel capacity retry");
+    assert!(
+        !runtime
+            .event_subscriptions()
+            .is_capacity_retry_subscription(subscription.id)
+            .await
+            .expect("confirm cancellation")
+    );
 }
 
 #[tokio::test]

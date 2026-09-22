@@ -43,14 +43,35 @@ struct ReviewWorkerLifecycle {
 
 impl ThreadManager {
     /// Starts or resumes one persisted review worker without waiting for its review to finish.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "review admission must stay serialized with the owning task's Stop request"
-    )]
     pub async fn run_project_review_worker(
         &self,
         owner_thread_id: ThreadId,
         project_id: &str,
+    ) -> CodexResult<WakeDisposition> {
+        self.run_project_review_worker_with_admission(owner_thread_id, project_id, false)
+            .await
+    }
+
+    /// Runs a pending review after another subscription wake has already been
+    /// admitted for this owner. The review never creates the wake itself.
+    pub async fn run_project_review_worker_after_admitted_wake(
+        &self,
+        owner_thread_id: ThreadId,
+        project_id: &str,
+    ) -> CodexResult<WakeDisposition> {
+        self.run_project_review_worker_with_admission(owner_thread_id, project_id, true)
+            .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "review admission must stay serialized with the owning task's Stop request"
+    )]
+    async fn run_project_review_worker_with_admission(
+        &self,
+        owner_thread_id: ThreadId,
+        project_id: &str,
+        admitted_wake: bool,
     ) -> CodexResult<WakeDisposition> {
         let owner = self.get_thread(owner_thread_id).await?;
         let wake_run = owner.subscription_run_state();
@@ -87,7 +108,8 @@ impl ThreadManager {
         if project.paused || project.owner_thread_id != owner_thread_id {
             return Ok(WakeDisposition::DeferredUntilIdle);
         }
-        if !owner.has_running_user_work().await
+        if !admitted_wake
+            && !owner.has_running_user_work().await
             && !store
                 .project_review_background_allowed(owner_thread_id, project_id)
                 .await
