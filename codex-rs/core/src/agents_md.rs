@@ -318,7 +318,7 @@ impl LoadedAgentsMd {
     ) -> Option<Self> {
         let instructions = self.user_instructions.as_ref()?;
         if instructions.text.trim() != verified_core.trim()
-            || tokio::fs::canonicalize(instructions.source.as_path())
+            || tokio::fs::canonicalize(instructions.source.as_ref()?.as_path())
                 .await
                 .ok()?
                 .as_path()

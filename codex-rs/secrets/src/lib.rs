@@ -198,10 +198,12 @@ pub fn compute_keyring_account(codex_home: &Path, namespace: LocalSecretsNamespa
     // Separate keys also prevent concurrent first writes to the gateway and primary
     // stores from overwriting each other's newly generated encryption key.
     match namespace {
+        LocalSecretsNamespace::CodexProfileAuthV1 => {
+            format!("secrets|codex-profile-auth-v1|{short}")
+        }
         LocalSecretsNamespace::GatewayOAuth => format!("{home_account}|gateway-oauth"),
         LocalSecretsNamespace::ManagedSecrets
         | LocalSecretsNamespace::CodexAuth
-        | LocalSecretsNamespace::CodexProfileAuthV1
         | LocalSecretsNamespace::McpOAuth => home_account,
     }
 }

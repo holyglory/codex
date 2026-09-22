@@ -13,9 +13,9 @@ use tracing::warn;
 
 use crate::client::ModelClientSession;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::guardian::routes_approval_to_guardian;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::INITIAL_SUBMIT_ID;
+use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::session::SessionConfiguration;
 use crate::session::turn::build_prompt;
@@ -322,7 +322,7 @@ async fn schedule_startup_prewarm_inner(
         /*status*/ None,
     );
     let responses_metadata = session
-        .responses_metadata(&startup_turn_context, CodexResponsesRequestKind::Prewarm)
+        .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Prewarm)
         .await;
     let mut model_client = match &startup_turn_context.auth_manager {
         Some(auth_manager) => session
@@ -339,12 +339,15 @@ async fn schedule_startup_prewarm_inner(
     }
     let mut client_session = model_client.new_session();
     let websocket_warmup_started_at = Instant::now();
+    // Prewarm establishes the request baseline before the first turn can change effort.
     client_session
         .prewarm_websocket(
             &startup_prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
-            step_context.settings.reasoning_effort().cloned(),
+            session
+                .reasoning_effort_for_request(&step_context.settings, RequestEffortUsage::Sampling)
+                .await,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),
             &responses_metadata,
@@ -355,18 +358,5 @@ async fn schedule_startup_prewarm_inner(
         websocket_warmup_started_at.elapsed(),
         /*status*/ None,
     );
-    if routes_approval_to_guardian(&startup_turn_context) {
-        let guardian_session = Arc::clone(&session);
-        let guardian_parent_turn = Arc::clone(&startup_turn_context);
-        drop(tokio::spawn(async move {
-            if let Err(err) = guardian_session
-                .guardian_review_session
-                .initialize(Arc::clone(&guardian_session), guardian_parent_turn)
-                .await
-            {
-                warn!("failed to initialize guardian review session: {err:#}");
-            }
-        }));
-    }
     Ok(client_session)
 }

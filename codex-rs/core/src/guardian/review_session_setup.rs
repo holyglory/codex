@@ -238,7 +238,11 @@ pub async fn prepare_review_prewarm(
 ) -> anyhow::Result<PreparedGuardianContext> {
     let turn = parent
         .session
-        .new_startup_prewarm_turn_with_sub_id(crate::session::INITIAL_SUBMIT_ID.to_owned())
+        .new_startup_prewarm_turn_from_configuration(
+            crate::session::INITIAL_SUBMIT_ID.to_owned(),
+            parent.session.default_turn_configuration().await,
+            parent.session.services.turn_environments.snapshot().await,
+        )
         .await;
     prepare_prewarm(Arc::clone(&parent.session), turn).await
 }

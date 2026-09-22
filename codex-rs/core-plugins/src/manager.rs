@@ -102,6 +102,8 @@ use codex_config::skill_config_rules_from_stack;
 use codex_config::types::PluginConfig;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverableType;
+use codex_connectors::ConnectorSnapshot;
+use codex_connectors::PluginConnectorSource;
 use codex_hooks::plugin_hook_declarations;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
@@ -229,6 +231,25 @@ struct RecommendedPluginsCacheKey {
 struct CachedFeaturedPluginIds {
     expires_at: Instant,
     featured_plugin_ids: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RemoteInstalledPluginsAuthIdentity {
+    auth_mode: Option<AuthMode>,
+    account_id: Option<String>,
+    chatgpt_user_id: Option<String>,
+    is_workspace_account: Option<bool>,
+}
+
+impl RemoteInstalledPluginsAuthIdentity {
+    pub(crate) fn from_auth(auth: Option<&CodexAuth>) -> Self {
+        Self {
+            auth_mode: auth.map(CodexAuth::api_auth_mode),
+            account_id: auth.and_then(CodexAuth::get_account_id),
+            chatgpt_user_id: auth.and_then(CodexAuth::get_chatgpt_user_id),
+            is_workspace_account: auth.map(CodexAuth::is_workspace_account),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -504,6 +525,8 @@ pub struct PluginDetail {
     pub enabled: bool,
     pub skills: Vec<SkillMetadata>,
     pub disabled_skill_paths: HashSet<AbsolutePathBuf>,
+    /// Packaged onboarding path; callers apply visibility and enablement.
+    pub onboarding_skill: Option<AbsolutePathBuf>,
     pub hooks: Vec<PluginHookSummary>,
     pub apps: Vec<AppConnectorId>,
     pub app_category_by_id: HashMap<String, String>,
@@ -1136,6 +1159,53 @@ impl PluginsManager {
         }
     }
 
+    pub fn connector_snapshot(
+        &self,
+        sources: impl IntoIterator<Item = PluginConnectorSource>,
+        disabled_plugin_ids: &[String],
+        config: &PluginsConfigInput,
+    ) -> ConnectorSnapshot {
+        let auth = self.current_auth();
+        self.connector_snapshot_with_auth(sources, disabled_plugin_ids, config, auth.as_ref())
+    }
+
+    /// Applies plugin exclusions and canonical ownership from the current account's installed cache.
+    /// A canonical owner's bundle need not be installed on this host.
+    pub fn connector_snapshot_with_auth(
+        &self,
+        sources: impl IntoIterator<Item = PluginConnectorSource>,
+        disabled_plugin_ids: &[String],
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> ConnectorSnapshot {
+        let mut canonical_app_ids = HashSet::new();
+        if !disabled_plugin_ids.is_empty() {
+            let cache = match self.remote_installed_plugins_cache.read() {
+                Ok(cache) => cache,
+                Err(err) => err.into_inner(),
+            };
+            let identity = PluginAuthCacheIdentity::new(&config.chatgpt_base_url, auth);
+            if let Some(cache) = cache.get(&identity) {
+                canonical_app_ids = cache
+                    .plugins
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|plugin| {
+                        let app_id = plugin.canonical_app_id.as_ref()?;
+                        let plugin_id =
+                            PluginId::new(plugin.name.clone(), plugin.marketplace_name.clone())
+                                .ok()?;
+                        disabled_plugin_ids
+                            .contains(&plugin_id.as_key())
+                            .then(|| app_id.clone())
+                    })
+                    .collect();
+            }
+        }
+        ConnectorSnapshot::from_plugin_sources(sources, disabled_plugin_ids, canonical_app_ids)
+    }
+
     fn remote_installed_plugin_configs_with_auth(
         &self,
         config: &PluginsConfigInput,
@@ -1527,11 +1597,8 @@ impl PluginsManager {
             cache.reconciliation_generation = None;
             cache.generation = cache.generation.wrapping_add(1);
         }
-        // TODO(sites-migration): Remove exclusion publication once bundled Sites is retired.
-        let exclusion_changed = self.update_sites_exclusion(service_base_url, auth, &plugins);
-        let needs_effective_plugins_refresh = (is_reconcile
-            && std::mem::take(&mut cache.needs_effective_plugins_refresh))
-            || exclusion_changed;
+        let needs_effective_plugins_refresh =
+            is_reconcile && std::mem::take(&mut cache.needs_effective_plugins_refresh);
         if cache.plugins.as_ref() == Some(&plugins) {
             drop(caches);
             if needs_effective_plugins_refresh {
@@ -1539,10 +1606,17 @@ impl PluginsManager {
             }
             return Some(needs_effective_plugins_refresh);
         }
+        let metadata_changed = cache.plugins.as_ref().is_none_or(|previous| {
+            !crate::remote_metadata::installed_plugin_metadata_eq(previous, &plugins)
+        });
+        self.update_sites_exclusion(service_base_url, auth, &plugins);
         cache.plugins = Some(plugins);
         drop(caches);
-        self.clear_loaded_plugins_cache_for_auth(identity.auth_identity());
-        Some(true)
+        let changed = needs_effective_plugins_refresh || metadata_changed;
+        if changed {
+            self.clear_loaded_plugins_cache_for_auth(identity.auth_identity());
+        }
+        Some(changed)
     }
 
     #[cfg(test)]
@@ -2246,10 +2320,10 @@ impl PluginsManager {
 
     pub async fn install_plugin(
         &self,
-        config: &PluginsConfigInput,
+        config_layer_stack: &ConfigLayerStack,
         request: PluginInstallRequest,
     ) -> Result<PluginInstallOutcome, PluginInstallError> {
-        let resolved = self.resolve_installable_plugin(config, &request)?;
+        let resolved = self.resolve_installable_plugin(config_layer_stack, &request)?;
         let plugin_id = resolved.plugin_id.clone();
         match self.install_resolved_plugin(resolved).await {
             Ok(outcome) => Ok(outcome),
@@ -2267,7 +2341,7 @@ impl PluginsManager {
 
     fn resolve_installable_plugin(
         &self,
-        config: &PluginsConfigInput,
+        config_layer_stack: &ConfigLayerStack,
         request: &PluginInstallRequest,
     ) -> Result<ResolvedMarketplacePlugin, PluginInstallError> {
         let resolved = match find_installable_marketplace_plugin(
@@ -2281,15 +2355,6 @@ impl PluginsManager {
                 return Err(err.into());
             }
         };
-        if self.bundled_sites_is_hidden(config, &resolved.plugin_id.as_key()) {
-            let err = MarketplaceError::PluginNotFound {
-                plugin_name: resolved.plugin_id.plugin_name,
-                marketplace_name: resolved.plugin_id.marketplace_name,
-            };
-            self.track_plugin_install_resolution_failed(&err);
-            return Err(err.into());
-        }
-        let config_layer_stack = &config.config_layer_stack;
         if let Err(message) =
             MarketplacePolicy::from_requirements(config_layer_stack.requirements())
                 .validate_install(
@@ -2315,7 +2380,7 @@ impl PluginsManager {
         auth: Option<&CodexAuth>,
         request: PluginInstallRequest,
     ) -> Result<PluginInstallOutcome, PluginInstallError> {
-        let resolved = self.resolve_installable_plugin(config, &request)?;
+        let resolved = self.resolve_installable_plugin(&config.config_layer_stack, &request)?;
         let plugin_id = resolved.plugin_id.as_key();
         // This only forwards the backend mutation before the local install flow.
         if let Err(err) = crate::remote_legacy::enable_remote_plugin(
@@ -2649,10 +2714,9 @@ impl PluginsManager {
                     .into_iter()
                     .filter_map(|plugin| {
                         let plugin_key = format!("{}@{marketplace_name}", plugin.name);
-                        if excluded_plugin_ids.contains(&plugin_key) {
-                            return None;
-                        }
-                        if !seen_plugin_keys.insert(plugin_key.clone()) {
+                        if excluded_plugin_ids.contains(&plugin_key)
+                            || !seen_plugin_keys.insert(plugin_key.clone())
+                        {
                             return None;
                         }
                         if !self.restriction_product_matches(plugin.policy.products.as_deref()) {
@@ -2931,6 +2995,7 @@ impl PluginsManager {
                 enabled: plugin.enabled,
                 skills: Vec::new(),
                 disabled_skill_paths: HashSet::new(),
+                onboarding_skill: None,
                 hooks: Vec::new(),
                 apps: Vec::new(),
                 app_category_by_id: HashMap::new(),
@@ -3010,6 +3075,18 @@ impl PluginsManager {
         )
         .await
         .resolve(&skill_config_rules);
+        let onboarding_skill = manifest.paths.onboarding_skill.as_ref().and_then(|path| {
+            let plugin_root = source_path.canonicalize().ok()?;
+            let path = path.canonicalize().ok()?;
+            if !path.as_path().starts_with(plugin_root.as_path()) {
+                return None;
+            }
+            resolved_skills
+                .skills
+                .iter()
+                .any(|skill| skill.path_to_skills_md == path)
+                .then_some(path)
+        });
         let plugin_data_root = self.store.plugin_data_root(&plugin_id);
         let (hook_sources, _hook_load_warnings) = if manifest_format == PluginManifestFormat::Legacy
         {
@@ -3075,6 +3152,7 @@ impl PluginsManager {
             enabled: plugin.enabled,
             skills: resolved_skills.skills,
             disabled_skill_paths: resolved_skills.disabled_skill_paths,
+            onboarding_skill,
             hooks,
             apps,
             app_category_by_id,

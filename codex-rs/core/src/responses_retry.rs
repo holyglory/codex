@@ -5,7 +5,6 @@ use std::time::Duration;
 use crate::client::ModelClientSession;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use crate::util::backoff;
 use codex_client::RetryOperation;
 use codex_features::Feature;
 use codex_protocol::error::CodexErr;
@@ -49,8 +48,16 @@ impl Default for ResponsesStreamRetryState {
     }
 }
 
-/// Handles a retryable stream error and returns when the caller should retry.
-pub(crate) async fn handle_retryable_response_stream_error(
+/// Server retry advice retained after stream retries are exhausted. The turn ID
+/// prevents a reused Guardian session from applying advice from an earlier review.
+pub(crate) struct ExhaustedResponseRetry {
+    pub(crate) turn_id: String,
+    pub(crate) retry_at: Option<tokio::time::Instant>,
+}
+
+/// Returns `Ok(())` when the caller should retry the request loop, or the original error when
+/// it is terminal or the retry budget is exhausted.
+pub(crate) async fn handle_response_stream_error(
     retry_state: &mut ResponsesStreamRetryState,
     max_retries: u64,
     err: CodexErr,
@@ -62,6 +69,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
     let operation = match request {
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
+    };
+    let retry_count = retry_state.retries.saturating_add(1);
+    let is_server_overloaded = matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+        && !crate::guardian::is_basic_session_source(&turn_context.session_source);
+    let delay = match err.retry_delay(retry_count) {
+        Some(delay) => delay,
+        None if is_server_overloaded => Duration::ZERO,
+        None => return Err(err),
     };
 
     if turn_context
@@ -91,7 +106,6 @@ pub(crate) async fn handle_retryable_response_stream_error(
         return Ok(());
     }
 
-    let is_server_overloaded = matches!(err.details(), CodexErrorDetails::ServerOverloaded);
     if !is_server_overloaded
         && retry_state.retries >= max_retries
         && client_session.try_switch_fallback_transport(
@@ -125,7 +139,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
             SERVER_OVERLOADED_RETRY_DELAYS[retry_count as usize - 1]
                 .mul_f64(rand::rng().random_range(1.0..2.0))
         } else {
-            err.retry_delay().unwrap_or_else(|| backoff(retry_count))
+            delay
         };
         log_retry(request, turn_context, &err, retry_count, retry_limit, delay);
 
@@ -150,6 +164,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
         return Ok(());
     }
 
+    sess.services
+        .thread_extension_data
+        .insert(ExhaustedResponseRetry {
+            turn_id: turn_context.sub_id.clone(),
+            retry_at: err
+                .server_retry_delay()
+                .and_then(|delay| tokio::time::Instant::now().checked_add(delay)),
+        });
     Err(err)
 }
 

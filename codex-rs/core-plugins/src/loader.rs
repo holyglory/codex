@@ -137,6 +137,7 @@ pub(crate) async fn load_plugins_from_layer_stack(
     restriction_product: Option<Product>,
     remote_global_catalog_active: bool,
     skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
+    excluded_plugin_ids: &std::collections::BTreeSet<String>,
 ) -> Vec<LoadedPlugin<McpServerConfig>> {
     let skill_config_rules = skill_config_rules_from_stack(config_layer_stack);
     let RemoteInstalledPluginsSnapshot {
@@ -155,6 +156,7 @@ pub(crate) async fn load_plugins_from_layer_stack(
             remote_plugin_id_resolver: &remote_plugin_id_resolver,
             skill_root_loader,
         },
+        excluded_plugin_ids,
     )
     .await
 }
@@ -165,6 +167,7 @@ async fn load_plugins_from_layer_stack_with_scope(
     store: &PluginStore,
     remote_global_catalog_active: bool,
     scope: PluginLoadScope<'_>,
+    excluded_plugin_ids: &std::collections::BTreeSet<String>,
 ) -> Vec<LoadedPlugin<McpServerConfig>> {
     let configured_plugins = merge_configured_plugins_with_remote_installed(
         configured_plugins_from_stack(config_layer_stack, store.codex_home().as_path()),
@@ -178,6 +181,9 @@ async fn load_plugins_from_layer_stack_with_scope(
     let mut plugins = Vec::with_capacity(configured_plugins.len());
     let mut seen_mcp_server_names = HashMap::<String, String>::new();
     for (configured_name, plugin) in configured_plugins {
+        if excluded_plugin_ids.contains(&configured_name) {
+            continue;
+        }
         let loaded_plugin = load_plugin(configured_name.clone(), &plugin, store, &scope).await;
         for name in loaded_plugin.mcp_servers.keys() {
             if let Some(previous_plugin) =
@@ -201,6 +207,7 @@ async fn load_plugins_from_layer_stack_with_scope(
 pub async fn load_plugin_hooks_from_layer_stack(
     config_layer_stack: &ConfigLayerStack,
     extra_plugins: HashMap<String, PluginConfig>,
+    excluded_plugin_ids: &std::collections::BTreeSet<String>,
     store: &PluginStore,
     target_curated_marketplace: TargetCuratedMarketplace,
     remote_global_catalog_active: bool,
@@ -211,6 +218,7 @@ pub async fn load_plugin_hooks_from_layer_stack(
         store,
         remote_global_catalog_active,
         PluginLoadScope::HooksOnly,
+        excluded_plugin_ids,
     )
     .await;
     plugins.retain(|plugin| {
