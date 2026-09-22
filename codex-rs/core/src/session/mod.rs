@@ -2179,16 +2179,20 @@ impl Session {
         environment: Option<&TurnEnvironment>,
         auth: Option<&CodexAuth>,
     ) {
+        let disabled_plugin_ids = self.state.lock().await.active_disabled_plugin_ids.clone();
         let hooks_config = build_hooks_config(
             config,
             self.services.plugins_manager.as_ref(),
             environment,
             HookPluginAuth::Captured(auth),
-            &self.state.lock().await.active_disabled_plugin_ids,
+            &disabled_plugin_ids,
         )
         .await;
-        let hooks = self.hooks().reconfigured(hooks_config);
-        self.services.hooks.store(Arc::new(hooks));
+        let state = self.state.lock().await;
+        if state.active_disabled_plugin_ids == disabled_plugin_ids {
+            let hooks = self.hooks().reconfigured(hooks_config);
+            self.services.hooks.store(Arc::new(hooks));
+        }
     }
 
     pub(crate) async fn refresh_hooks_with_auth_lease(
