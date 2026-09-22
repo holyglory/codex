@@ -286,7 +286,7 @@ def _flatten_string_enum_one_of(definition: dict[str, Any]) -> bool:
     return True
 
 
-DISCRIMINATOR_KEYS = ("type", "method", "mode", "state", "status", "role", "reason")
+DISCRIMINATOR_KEYS = ("type", "method", "mode", "state", "status", "role", "reason", "action")
 
 
 def _to_pascal_case(value: str) -> str:

@@ -8,6 +8,7 @@ from typing import TypeAlias
 from pydantic import BaseModel
 
 from .v2_all import AccountLoginCompletedNotification
+from .v2_all import AccountProfileActiveChangedNotification
 from .v2_all import AccountRateLimitsUpdatedNotification
 from .v2_all import AccountUpdatedNotification
 from .v2_all import AgentMessageDeltaNotification
@@ -34,6 +35,7 @@ from .v2_all import ItemCompletedNotification
 from .v2_all import ItemGuardianApprovalReviewCompletedNotification
 from .v2_all import ItemGuardianApprovalReviewStartedNotification
 from .v2_all import ItemStartedNotification
+from .v2_all import LocalUsageUpdatedNotification
 from .v2_all import McpServerEventStreamNotification
 from .v2_all import McpServerOauthLoginCompletedNotification
 from .v2_all import McpServerStatusUpdatedNotification
@@ -90,6 +92,7 @@ from .v2_all import WindowsWorldWritableWarningNotification
 
 KnownNotificationPayload: TypeAlias = (
     AccountLoginCompletedNotification
+    | AccountProfileActiveChangedNotification
     | AccountRateLimitsUpdatedNotification
     | AccountUpdatedNotification
     | AgentMessageDeltaNotification
@@ -116,6 +119,7 @@ KnownNotificationPayload: TypeAlias = (
     | ItemGuardianApprovalReviewCompletedNotification
     | ItemGuardianApprovalReviewStartedNotification
     | ItemStartedNotification
+    | LocalUsageUpdatedNotification
     | McpServerEventStreamNotification
     | McpServerOauthLoginCompletedNotification
     | McpServerStatusUpdatedNotification
@@ -175,6 +179,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "account/login/completed": AccountLoginCompletedNotification,
     "account/rateLimits/updated": AccountRateLimitsUpdatedNotification,
     "account/updated": AccountUpdatedNotification,
+    "accountProfile/activeChanged": AccountProfileActiveChangedNotification,
     "app/list/updated": AppListUpdatedNotification,
     "autoApprovalReview/strictReviewRequired": StrictReviewRequiredNotification,
     "command/exec/outputDelta": CommandExecOutputDeltaNotification,
@@ -203,6 +208,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "item/reasoning/summaryTextDelta": ReasoningSummaryTextDeltaNotification,
     "item/reasoning/textDelta": ReasoningTextDeltaNotification,
     "item/started": ItemStartedNotification,
+    "localUsage/updated": LocalUsageUpdatedNotification,
     "mcpServer/event/stream/notification": McpServerEventStreamNotification,
     "mcpServer/oauthLogin/completed": McpServerOauthLoginCompletedNotification,
     "mcpServer/startupStatus/updated": McpServerStatusUpdatedNotification,

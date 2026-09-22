@@ -516,6 +516,24 @@ def test_python_codegen_schema_annotation_adds_stable_variant_titles() -> None:
         "NoneReasoningSummary",
     ]
 
+    automation_command_titles = [
+        variant.get("title") for variant in definitions["ProjectAutomationCommand"]["oneOf"]
+    ]
+    assert automation_command_titles == [
+        "LinkWorkProjectAutomationCommand",
+        "StatusProjectAutomationCommand",
+        "BindProjectAutomationCommand",
+        "ActivateDeliveryProjectAutomationCommand",
+        "PostponeProjectAutomationCommand",
+        "PauseProjectAutomationCommand",
+        "ResumeProjectAutomationCommand",
+        "RecordDeliveryProjectAutomationCommand",
+        "CompleteReviewProjectAutomationCommand",
+        "RequestReviewProjectAutomationCommand",
+        "TransferProjectAutomationCommand",
+        "CompleteProjectAutomationCommand",
+    ]
+
 
 def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     source = (ROOT / "scripts" / "update_sdk_artifacts.py").read_text()
