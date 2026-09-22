@@ -70,7 +70,6 @@ use crate::oauth::OAuthError;
 use crate::oauth::RefreshTokenGrant;
 use crate::oauth::TokenEncoding;
 use crate::oauth::TokenEndpoint;
-use crate::oauth::TokenErrorDetail;
 use crate::outbound_proxy::AuthRouteConfig;
 use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_account_user_id;
@@ -1841,34 +1840,41 @@ async fn request_chatgpt_token_refresh(
         .await
     {
         Ok(response) => Ok(response),
-        Err(OAuthError::Rejected(rejection)) => {
-            let status = rejection.status;
-            let detail = &rejection.detail;
-            tracing::error!(%status, ?detail, "Failed to refresh token");
-            let code = detail.error_code();
-            let is_invalid_grant_bad_request = status == StatusCode::BAD_REQUEST
-                && code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_grant"));
-            let failed = classify_refresh_token_failure(code, detail, is_invalid_grant_bad_request);
-            if status == StatusCode::UNAUTHORIZED
-                || failed.reason != RefreshTokenFailedReason::Other
-                || is_invalid_grant_bad_request
-            {
-                Err(RefreshTokenError::Permanent(failed))
-            } else {
-                Err(RefreshTokenError::Transient(std::io::Error::other(
-                    format!("Failed to refresh token: {status}: {detail}"),
-                )))
-            }
-        }
+        Err(OAuthError::Rejected(rejection)) => Err(refresh_failure_from_response(
+            rejection.status,
+            rejection.detail.error_code(),
+        )),
         Err(error @ (OAuthError::Transport(_) | OAuthError::InvalidResponse)) => {
             Err(RefreshTokenError::Transient(std::io::Error::other(error)))
         }
     }
 }
 
+fn refresh_failure_from_response(status: StatusCode, code: Option<&str>) -> RefreshTokenError {
+    let is_invalid_grant_bad_request = status == StatusCode::BAD_REQUEST
+        && code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_grant"));
+    let failed = classify_refresh_token_failure(code, is_invalid_grant_bad_request);
+    let is_permanent = status == StatusCode::UNAUTHORIZED
+        || failed.reason != RefreshTokenFailedReason::Other
+        || is_invalid_grant_bad_request;
+    tracing::error!(
+        %status,
+        reason = ?failed.reason,
+        backend_code_present = code.is_some(),
+        is_permanent,
+        "Failed to refresh token"
+    );
+    if is_permanent {
+        RefreshTokenError::Permanent(failed)
+    } else {
+        RefreshTokenError::Transient(std::io::Error::other(format!(
+            "Failed to refresh token: {status}"
+        )))
+    }
+}
+
 fn classify_refresh_token_failure(
     code: Option<&str>,
-    _detail: &TokenErrorDetail,
     is_invalid_grant_bad_request: bool,
 ) -> RefreshTokenFailedError {
     let normalized_code = code.map(str::to_ascii_lowercase);

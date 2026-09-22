@@ -1,6 +1,6 @@
-use crate::models::supported_models;
 use super::*;
 use crate::model_catalog::ModelCatalog;
+use crate::models::supported_models;
 use codex_config::ConfigPathContext;
 use codex_core::config::permission_profile_catalog;
 use codex_hooks::HookListEntryHandler;

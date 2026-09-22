@@ -103,20 +103,10 @@ fn refresh_failure_classification_and_tracing_exclude_backend_bodies() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let permanent = refresh_failure_from_response(
-        StatusCode::UNAUTHORIZED,
-        &json!({
-            "error": {
-                "code": "refresh_token_reused",
-                "detail": raw_body_secret,
-            }
-        })
-        .to_string(),
-    );
-    let transient = refresh_failure_from_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        &json!({ "error": raw_body_secret }).to_string(),
-    );
+    let permanent =
+        refresh_failure_from_response(StatusCode::UNAUTHORIZED, Some("refresh_token_reused"));
+    let transient =
+        refresh_failure_from_response(StatusCode::INTERNAL_SERVER_ERROR, Some(raw_body_secret));
 
     assert_eq!(
         permanent.failed_reason(),

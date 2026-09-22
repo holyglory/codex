@@ -47,9 +47,11 @@ pub struct WorkspaceRoutingRequest {
 /// Custom ChatGPT-auth destinations require successful discovery before independence
 /// can be established; a cache miss is not evidence of an independent destination.
 /// Implementations must reject failed discovery and changes to the selected account.
+/// Discovery uses the supplied credential owner, including when profiles share a resolver.
 pub trait WorkspaceRoutingResolver: Send + Sync {
     fn resolve(
         &self,
+        auth_manager: Arc<AuthManager>,
         request: WorkspaceRoutingRequest,
     ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>>;
 }
@@ -60,9 +62,16 @@ impl AuthManager {
         assert!(self.workspace_routing_resolver.set(resolver).is_ok());
     }
 
+    pub(crate) fn inherit_workspace_routing_resolver(&self, owner: &Self) {
+        if let Some(resolver) = owner.workspace_routing_resolver.get() {
+            self.workspace_routing_resolver
+                .get_or_init(|| resolver.clone());
+        }
+    }
+
     /// CLI callers without a discovery owner retain their existing routing behavior.
     pub async fn workspace_routing(
-        &self,
+        self: &Arc<Self>,
         auth: &CodexAuth,
         request: WorkspaceRoutingRequest,
     ) -> io::Result<Option<WorkspaceRouting>> {
@@ -74,7 +83,7 @@ impl AuthManager {
         let resolver = resolver
             .upgrade()
             .ok_or_else(|| io::Error::other("workspace routing owner is unavailable"))?;
-        let routing = resolver.resolve(request).await?;
+        let routing = resolver.resolve(Arc::clone(self), request).await?;
         // Discovery may recover expired credentials for the same owner. Model
         // client setup rebuilds routing and credentials after that revision change.
         if auth_changes.borrow().owner_generation != owner_generation
