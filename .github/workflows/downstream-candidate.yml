@@ -60,7 +60,7 @@ jobs:
         run: |
           python3 .github/scripts/test_archive_release_symbols.py -v
           python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
-          python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
+          python3 -m unittest discover -s scripts -p 'test_stage*.py'
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
