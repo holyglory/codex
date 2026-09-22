@@ -140,7 +140,9 @@ impl AccountRequestProcessor {
             .set_workspace_routing_resolver(Arc::downgrade(&resolver));
         let startup = processor.clone();
         tokio::spawn(async move {
-            let _ = startup.read_account(/*request*/ None).await;
+            if let Ok((processor, _lease)) = startup.active_profile_view().await {
+                let _ = processor.read_account(/*request*/ None).await;
+            }
         });
         processor
     }

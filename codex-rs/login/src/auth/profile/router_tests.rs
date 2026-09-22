@@ -1042,6 +1042,30 @@ async fn every_external_source_conflicts_without_exposing_values() {
 #[tokio::test]
 #[serial(codex_auth_env)]
 async fn shared_process_pin_survives_global_default_changes_across_turns() {
+    struct RoutingOwner(Mutex<Vec<String>>);
+
+    impl crate::WorkspaceRoutingResolver for RoutingOwner {
+        fn resolve(
+            &self,
+            manager: Arc<AuthManager>,
+            _request: crate::WorkspaceRoutingRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Option<crate::WorkspaceRouting>>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .expect("routing calls")
+                    .push(manager.auth_cached().expect("leased auth").get_token()?);
+                Ok(None)
+            })
+        }
+    }
+
     let home = tempdir().expect("temporary home");
     let (account_a, _) = seed_account(home.path(), "a", "a");
     let (account_b, _) = seed_account(home.path(), "b", "b");
@@ -1050,11 +1074,16 @@ async fn shared_process_pin_survives_global_default_changes_across_turns() {
         vec![account_a.clone(), account_b.clone()],
         /*default*/ 0,
     );
+    let upstream = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("upstream"));
+    let routing = Arc::new(RoutingOwner(Mutex::new(Vec::new())));
+    upstream.set_workspace_routing_resolver(Arc::downgrade(
+        &(routing.clone() as Arc<dyn crate::WorkspaceRoutingResolver>),
+    ));
     let shared = SharedProfileAuthRouter::new_pinned(
         config(home.path()),
         "a".to_string(),
         RouterExternalAuthState::default(),
-        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("upstream")),
+        upstream,
     );
 
     let first = shared
@@ -1075,6 +1104,25 @@ async fn shared_process_pin_survives_global_default_changes_across_turns() {
 
     assert_eq!(first.account_id(), &account_a.id);
     assert_eq!(second.account_id(), &account_a.id);
+    for lease in [&first, &second] {
+        let manager = lease.auth_manager();
+        manager
+            .workspace_routing(
+                &manager.auth_cached().expect("leased auth"),
+                crate::WorkspaceRoutingRequest {
+                    provider_base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+                    chatgpt_base_url: "https://chatgpt.com/backend-api".to_string(),
+                    previously_routed: false,
+                    session: None,
+                },
+            )
+            .await
+            .expect("profile routing");
+    }
+    assert_eq!(
+        *routing.0.lock().expect("routing calls"),
+        ["a-key", "a-key"]
+    );
     assert_eq!(
         RegistryStore::new(home.path())
             .read()

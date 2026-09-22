@@ -8,6 +8,7 @@ use codex_account_registry::AccountRegistry;
 use codex_account_registry::DEFAULT_ACCOUNT_PRIORITY;
 use codex_account_registry::OpaqueServiceId;
 use codex_account_registry::RegistryStore;
+use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AccountAutoSelectionPolicy;
 use codex_app_server_protocol::AccountAutoSelectionReadParams;
 use codex_app_server_protocol::AccountAutoSelectionReadResponse;
@@ -33,13 +34,17 @@ use codex_app_server_protocol::AccountProfileRemoveParams;
 use codex_app_server_protocol::AccountProfileRemoveResponse;
 use codex_app_server_protocol::AccountProfileUpdateParams;
 use codex_app_server_protocol::AccountProfileUpdateResponse;
+use codex_app_server_protocol::AccountRoutingOverride;
 use codex_app_server_protocol::CancelLoginAccountStatus;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::GetAccountParams;
+use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::WorkspaceRouting;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::ConfigBuilder;
 use codex_login::AuthDotJson;
@@ -49,6 +54,7 @@ use codex_login::ProfileAuthStorage;
 use codex_login::login_with_api_key_to_profile;
 use codex_login::token_data::TokenData;
 use codex_login::token_data::parse_chatgpt_jwt_claims;
+use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -835,6 +841,20 @@ async fn profile_rate_limits_preserve_multiple_buckets() -> Result<()> {
     )?;
     let account_id = seed_chatgpt_profile(codex_home.path(), "chatgpt-token", "workspace-1")?;
     Mock::given(method("GET"))
+        .and(path("/api/codex/accounts/check"))
+        .and(header("authorization", "Bearer chatgpt-token"))
+        .and(header("chatgpt-account-id", "workspace-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "accounts": [{
+                "id": "workspace-1",
+                "workspace_backend_origin": "https://chatgpt.com",
+                "account_routing_override": "NO_CONSTRAINT"
+            }],
+            "default_account_id": "workspace-1"
+        })))
+        .mount(&backend)
+        .await;
+    Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .and(header("authorization", "Bearer chatgpt-token"))
         .and(header("chatgpt-account-id", "workspace-1"))
@@ -881,6 +901,29 @@ async fn profile_rate_limits_preserve_multiple_buckets() -> Result<()> {
     assert_eq!(limits.data.len(), 2);
     assert_eq!(limits.data[0].limit_id.as_deref(), Some("codex"));
     assert_eq!(limits.data[1].limit_id.as_deref(), Some("codex_other"));
+    let account: GetAccountResponse = server
+        .request(|request_id| ClientRequest::GetAccount {
+            request_id,
+            params: GetAccountParams {
+                refresh_token: false,
+            },
+        })
+        .await?;
+    assert_eq!(
+        account,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: Some("profile@example.com".to_string()),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: true,
+            workspace_routing: Some(WorkspaceRouting {
+                chatgpt_account_id: "workspace-1".to_string(),
+                backend_origin: "https://chatgpt.com".to_string(),
+                account_routing_override: AccountRoutingOverride::NoConstraint,
+            }),
+        }
+    );
     Ok(())
 }
 
