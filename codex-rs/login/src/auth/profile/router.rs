@@ -25,6 +25,7 @@ use codex_account_selection::UnknownReason;
 use codex_account_selection::select_account;
 use codex_config::types::AuthCredentialsStoreMode;
 use thiserror::Error;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::Semaphore;
 
@@ -182,6 +183,7 @@ struct RouterInner {
     process_pin: Option<AccountId>,
     active_leases: Mutex<HashMap<AccountId, usize>>,
     workspace_routing_owner: OnceLock<Weak<AuthManager>>,
+    manager_reload: AsyncMutex<()>,
 }
 
 #[derive(Clone)]
@@ -315,6 +317,13 @@ impl SharedProfileAuthRouter {
                 )
             }
             None => {
+                // Passive reads keep legacy authentication on its singular path.
+                // Explicit profile management owns importing legacy credentials.
+                match RegistryStore::new(&self.inner.auth_config.codex_home).read() {
+                    Ok(_) => {}
+                    Err(RegistryStoreError::NotFound) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                }
                 match ProfileAuthRouter::open_for_management(self.inner.auth_config.clone()).await {
                     Ok(router) => Some(router),
                     Err(ProfileAuthRouterError::Registry(RegistryStoreError::NotFound)) => None,
@@ -769,6 +778,7 @@ impl ProfileAuthRouter {
                 process_pin: None,
                 active_leases: Mutex::new(HashMap::new()),
                 workspace_routing_owner: OnceLock::new(),
+                manager_reload: AsyncMutex::new(()),
             }),
         })
     }
@@ -806,11 +816,13 @@ impl ProfileAuthRouter {
                 process_pin,
                 active_leases: Mutex::new(HashMap::new()),
                 workspace_routing_owner: OnceLock::new(),
+                manager_reload: AsyncMutex::new(()),
             }),
         })
     }
 
     pub async fn reload_at_turn_boundary(&self) -> Result<u64, ProfileAuthRouterError> {
+        let _reload = self.inner.manager_reload.lock().await;
         for _ in 0..3 {
             let snapshot = self.inner.registry_store.read()?;
             let previous = self
@@ -886,6 +898,7 @@ impl ProfileAuthRouter {
         &self,
         account_id: &AccountId,
     ) -> Result<AccountLease, ProfileAuthRouterError> {
+        let _reload = self.inner.manager_reload.lock().await;
         for _ in 0..3 {
             let registry = self.inner.registry_store.read()?;
             let account = registry
