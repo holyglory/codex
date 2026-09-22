@@ -950,6 +950,14 @@ async fn startup_migrates_once_and_does_not_reimport() {
         AuthKeyringBackendKind::Direct,
     )
     .expect("save legacy auth");
+    let shared = SharedProfileAuthRouter::new(config(home.path()));
+    assert!(
+        shared
+            .router_if_configured()
+            .await
+            .expect("passive legacy lookup")
+            .is_none()
+    );
     let first = ProfileAuthRouter::open(router_config(home.path()))
         .await
         .expect("open migrated router");
