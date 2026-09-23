@@ -380,6 +380,7 @@ async fn installed_agent_plugin_uses_isolated_data_root_for_stdio_mcp() {
         Some(Product::Codex),
         /*remote_global_catalog_active*/ false,
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -590,6 +591,7 @@ enabled = true
         Some(Product::Codex),
         /*remote_global_catalog_active*/ false,
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await;
     let hooks_only = load_plugins_from_layer_stack_with_scope(
@@ -598,6 +600,7 @@ enabled = true
         &store,
         /*remote_global_catalog_active*/ false,
         PluginLoadScope::HooksOnly,
+        &std::collections::BTreeSet::new(),
     )
     .await;
 
