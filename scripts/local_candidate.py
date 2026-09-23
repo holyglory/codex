@@ -27,6 +27,7 @@ GATES = (
     "source-drift",
     "bazel-lock",
     "bazel-layout",
+    "native-inputs",
 )
 LANES = {
     "rust": ("clippy", "rust-tests", "linux-package"),
@@ -76,6 +77,8 @@ def digest(path):
 
 def commands(root, state, directory):
     python = shlex.quote(sys.executable)
+    native = [sys.executable, str(root / "scripts/cargo_native_inputs.py")]
+    native_cargo = [*native, "run", "--state", str(state), "--"]
     bazel = ["bash", ".github/scripts/run-bazel-ci.sh", "--"]
     cache = f"--disk_cache={state / 'bazel-actions'}"
     return {
@@ -89,7 +92,11 @@ def commands(root, state, directory):
         ),
         "format": (["just", "fmt-check"], root),
         "package-prerequisites": (
-            ["bash", "scripts/build_local_linux_candidate.sh", "--check"],
+            [
+                "bash",
+                "-euc",
+                "pkg-config --exists alsa && bash scripts/build_local_linux_candidate.sh --check",
+            ],
             root,
         ),
         "focused": ([sys.executable, "scripts/run_candidate_preflight.py"], root),
@@ -135,6 +142,7 @@ def commands(root, state, directory):
         ),
         "clippy": (
             [
+                *native_cargo,
                 "cargo",
                 "clippy",
                 "--locked",
@@ -146,7 +154,11 @@ def commands(root, state, directory):
             ],
             root / "codex-rs",
         ),
-        "rust-tests": (["just", "test", "--locked", "--no-tests=fail"], root),
+        "native-inputs": ([*native, "prepare", "--state", str(state)], root),
+        "rust-tests": (
+            [*native_cargo, "just", "test", "--locked", "--no-tests=fail"],
+            root,
+        ),
         "linux-package": (
             [
                 "bash",
