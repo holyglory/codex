@@ -1891,11 +1891,22 @@ impl PluginsManager {
         config: &PluginsConfigInput,
         auth: Option<&CodexAuth>,
     ) -> Result<RemoteInstalledPluginBundleSyncOutcome, RemoteInstalledPluginBundleSyncError> {
-        let _guard = self.acquire_remote_installed_plugin_sync_guard().await?;
         let (outcome, _) = self
-            .reconcile_remote_installed_plugins_after_acquiring_gate(config, auth)
+            .reconcile_remote_installed_plugins_with_changes(config, auth)
             .await?;
         Ok(outcome)
+    }
+
+    /// Returns whether published runtime metadata changed, even without downloaded bundles.
+    pub async fn reconcile_remote_installed_plugins_with_changes(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> Result<(RemoteInstalledPluginBundleSyncOutcome, bool), RemoteInstalledPluginBundleSyncError>
+    {
+        let _guard = self.acquire_remote_installed_plugin_sync_guard().await?;
+        self.reconcile_remote_installed_plugins_after_acquiring_gate(config, auth)
+            .await
     }
 
     async fn reconcile_remote_installed_plugins_after_acquiring_gate(

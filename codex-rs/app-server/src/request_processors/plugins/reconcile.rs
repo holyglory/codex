@@ -33,16 +33,20 @@ impl PluginRequestProcessor {
 
         // Match background bundle sync: remote_plugin controls catalog visibility, not sync.
         // The shared reconciler owns synchronization, auth checks, and cache publication.
-        let outcome = self
+        let (outcome, effective_plugins_changed) = self
             .thread_manager
             .plugins_manager()
-            .reconcile_remote_installed_plugins(&plugins_input, auth.as_ref())
+            .reconcile_remote_installed_plugins_with_changes(&plugins_input, auth.as_ref())
             .await
             .map_err(|err| {
                 internal_error(format!(
                     "failed to reconcile remote installed plugins: {err}"
                 ))
             })?;
+
+        if effective_plugins_changed || outcome.changed_local_cache() {
+            self.on_effective_plugins_changed(&auth_lease).await;
+        }
 
         let hooks_changed = outcome
             .changed_plugins

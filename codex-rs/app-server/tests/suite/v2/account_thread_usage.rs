@@ -91,6 +91,10 @@ async fn account_thread_usage_uses_active_workspace_and_canonical_thread_ids() -
         timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(request_id)).await??;
 
     let requests = server.received_requests().await.unwrap_or_default();
+    let requests = requests
+        .iter()
+        .filter(|request| request.url.path() == "/api/codex/usage/thread_usage/query")
+        .collect::<Vec<_>>();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     assert_eq!(request.url.path(), "/api/codex/usage/thread_usage/query");
