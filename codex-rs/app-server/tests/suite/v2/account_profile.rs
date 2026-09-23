@@ -157,7 +157,7 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         .await?;
     assert_eq!(auto_read.auto_selection, auto.auto_selection);
 
-    drop(server);
+    server.shutdown_gracefully().await?;
     let mut server = initialized_server(codex_home.path()).await?;
     let read: AccountProfileReadResponse = server
         .request(|request_id| ClientRequest::AccountProfileRead {
@@ -347,6 +347,8 @@ async fn activation_preserves_existing_lease_and_removal_rejects_in_use() -> Res
     assert_eq!(in_use.error.code, -32602);
     assert_eq!(in_use.error.message, "account profile is in use");
     drop(old_lease);
+    server.shutdown_gracefully().await?;
+    let mut server = initialized_server(codex_home.path()).await?;
     let _: AccountProfileRemoveResponse = server
         .request(|request_id| ClientRequest::AccountProfileRemove {
             request_id,

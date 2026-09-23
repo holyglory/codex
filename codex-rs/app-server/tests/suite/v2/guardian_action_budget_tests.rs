@@ -5,6 +5,10 @@ use pretty_assertions::assert_eq;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_async_action_requires_sync_review_and_later_scores_recover() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "guardian action budget uses host-local hooks and TCP fixtures"
+    );
     let state = Arc::new(MockResponsesState::default());
     let gates = [Arc::new(Notify::new()), Arc::new(Notify::new())];
     let parent_gates = gates.clone();
