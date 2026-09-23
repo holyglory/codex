@@ -1,14 +1,15 @@
 ---
 source: core/tests/suite/scenarios_agent_message_board.rs
-assertion_line: 88
-expression: "context_snapshot::format_context_snapshot(\"An active agent posts a shared decision, receives an ID-only notice, and fetches the text.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(), &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+expression: "context_snapshot::format_context_snapshot(\"An active agent posts a shared decision, receives an ID-only notice, and fetches the text.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: An active agent posts a shared decision, receives an ID-only notice, and fetches the text.
 
 ## Window 1
 -- request 1 (request) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
