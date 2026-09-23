@@ -23,6 +23,7 @@ use super::scroll_state::ScrollState;
 use super::selection_row_layout::SelectionDescriptionLayout;
 use super::selection_row_layout::build_full_line;
 use super::selection_row_layout::line_to_owned;
+use super::selection_row_layout::wrap_stacked_row;
 
 /// Render-ready representation of one row in a selection popup.
 ///
@@ -295,6 +296,13 @@ fn wrap_row_lines(
     width: u16,
     description_layout: SelectionDescriptionLayout,
 ) -> Vec<Line<'static>> {
+    if let SelectionDescriptionLayout::StackBelowWhenNarrow {
+        min_description_width,
+    } = description_layout
+        && usize::from(width).saturating_sub(desc_col) < usize::from(min_description_width)
+    {
+        return wrap_stacked_row(row, width);
+    }
     if desc_col > 0 && should_wrap_name_in_column(row) {
         let wrapped = wrap_two_column_row(row, desc_col, width);
         if !wrapped.is_empty() {
