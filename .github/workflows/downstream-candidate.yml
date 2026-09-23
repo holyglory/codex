@@ -126,7 +126,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
       - name: Verify the Linux sandbox prerequisite
         run: bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -142,12 +142,27 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --config imports_granularity=Item --check
       - uses: ./.github/actions/downstream-compiler-cache
+      - name: Prepare Bazel for pinned native Cargo inputs
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: downstream-candidate-cargo-native
+      - name: Prepare the pinned voice SDK and runtime for Cargo
+        working-directory: ${{ github.workspace }}
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
+            python3 scripts/cargo_native_inputs.py prepare --state "$RUNNER_TEMP/cargo-native"
       - name: Run complete Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Reclaim Clippy build output
         run: cargo clean
       - name: Run complete Rust suite
-        run: just test
+        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test
       - name: Regenerate schemas
         run: |
           just write-config-schema

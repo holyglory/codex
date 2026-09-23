@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import local_candidate as candidate
+import cargo_native_inputs as native
 
 
 class LocalCandidateTests(unittest.TestCase):
@@ -124,6 +125,59 @@ class LocalCandidateTests(unittest.TestCase):
             )
         execute.assert_not_called()
         self.assertFalse((self.directory / "state").exists())
+
+    def test_native_pkg_config_keeps_voice_probes_separate_from_platform_inputs(self):
+        executable = self.directory / "pkg-config"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json,os,sys\n"
+            "print(json.dumps([sys.argv[1:],os.environ.get('PKG_CONFIG_LIBDIR'),os.environ.get('PKG_CONFIG_PATH')]))\n"
+        )
+        executable.chmod(0o755)
+        environment = dict(
+            os.environ,
+            CODEX_CARGO_SYSTEM_PKG_CONFIG=str(executable),
+            CODEX_CARGO_VOICE_SDK=str(self.directory / "sdk"),
+            PKG_CONFIG_LIBDIR="platform-metadata",
+            PKG_CONFIG_PATH="host-metadata",
+        )
+        wrapper = Path(native.__file__).with_name("cargo_native_pkg_config.py")
+        for module in ("glib-2.0", "gstreamer-1.0", "gstreamer-app-1.0"):
+            result = subprocess.check_output(
+                [sys.executable, str(wrapper), "--modversion", module],
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(
+                json.loads(result),
+                [
+                    ["--define-prefix", "--modversion", module],
+                    str(self.directory / "sdk/lib/pkgconfig"),
+                    "",
+                ],
+            )
+        for module in ("alsa", "libcap", "glibc"):
+            result = subprocess.check_output(
+                [sys.executable, str(wrapper), "--modversion", module],
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(
+                json.loads(result),
+                [["--modversion", module], "platform-metadata", "host-metadata"],
+            )
+
+    def test_native_cargo_rejects_inputs_from_another_candidate(self):
+        (self.directory / "cargo-native-env.json").write_text(
+            json.dumps({"STABLE_GIT_COMMIT": "b" * 40})
+        )
+        with (
+            patch.object(native, "commit", return_value=self.commit),
+            patch.object(native.os, "execvpe") as execute,
+            self.assertRaisesRegex(ValueError, "another candidate"),
+        ):
+            native.run(self.directory, ["--", "cargo", "clippy"])
+        execute.assert_not_called()
 
     def test_receipt_rejects_missing_duplicate_failed_or_wrong_source_evidence(self):
         receipt = self.receipt()
