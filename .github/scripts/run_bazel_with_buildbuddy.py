@@ -45,6 +45,14 @@ def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     configured_startup_args = args[:command_idx]
     injected_args = []
 
+    # Finite acceptance runs must release inherited executor descriptors. A
+    # persistent Bazel server otherwise keeps the enclosing check open after exit.
+    if env.get("CODEX_BAZEL_BATCH") == "1" and not any(
+        arg in {"--batch", "--nobatch"} or arg.startswith("--batch=")
+        for arg in configured_startup_args
+    ):
+        injected_args.append("--batch")
+
     output_user_root = env.get("BAZEL_OUTPUT_USER_ROOT")
     if output_user_root and not any(
         arg.startswith("--output_user_root=") for arg in configured_startup_args

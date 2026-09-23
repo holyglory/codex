@@ -214,6 +214,18 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+        for explicit in ([], ["--batch"], ["--nobatch"], ["--batch=false"]):
+            with self.subTest(explicit=explicit):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_command(
+                        *explicit,
+                        "test",
+                        "//codex-rs/...",
+                        env={"CODEX_BAZEL_BATCH": "1"},
+                    ),
+                    ["bazel", *(explicit or ["--batch"]), "test", "//codex-rs/..."],
+                )
+
     def test_bazel_command_uses_configured_local_caches(self) -> None:
         env = {
             "BAZEL_REPO_CONTENTS_CACHE": "/tmp/bazel-repo-contents",
@@ -268,6 +280,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
         env.pop("BAZEL_OUTPUT_USER_ROOT", None)
         env.pop("BUILDBUDDY_API_KEY", None)
         env.pop("GITHUB_ACTIONS", None)
+        env.pop("CODEX_BAZEL_BATCH", None)
 
         result = subprocess.run(
             [
