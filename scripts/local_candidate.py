@@ -92,11 +92,7 @@ def commands(root, state, directory):
         ),
         "format": (["just", "fmt-check"], root),
         "package-prerequisites": (
-            [
-                "bash",
-                "-euc",
-                "pkg-config --exists alsa && bash scripts/build_local_linux_candidate.sh --check",
-            ],
+            ["bash", "scripts/build_local_linux_candidate.sh", "--check"],
             root,
         ),
         "focused": ([sys.executable, "scripts/run_candidate_preflight.py"], root),
@@ -133,6 +129,7 @@ def commands(root, state, directory):
                 "--test_tmpdir=/tmp/b",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
+                "--test_env=INSTA_UPDATE=no",
                 "--",
                 "//codex-rs/app-server-transport:app-server-transport-unit-tests",
                 "//codex-rs/external-agent-migration:external-agent-migration-unit-tests",
@@ -176,6 +173,7 @@ def commands(root, state, directory):
                 "--keep_going",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
+                "--test_env=INSTA_UPDATE=no",
                 "--test_timeout=300,600,1200,3600",
                 "--flaky_test_attempts=3",
                 "--test_tag_filters=-argument-comment-lint",
