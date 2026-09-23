@@ -75,6 +75,7 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
+use wiremock::matchers::query_param_is_missing;
 
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
 
@@ -1985,7 +1986,6 @@ async fn plugin_telemetry_metadata_uses_default_mcp_config_path() {
         &PluginId::parse("sample@test").expect("plugin id should parse"),
         &plugin_root.abs(),
         test_skill_root_loader().as_ref(),
-        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -2029,7 +2029,6 @@ async fn plugin_capability_summary_uses_manifest_mcp_server_objects() {
         &PluginId::parse("counter-sample@test").expect("plugin id should parse"),
         &plugin_root.abs(),
         test_skill_root_loader().as_ref(),
-        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -2345,7 +2344,6 @@ async fn install_plugin_materializes_default_command_skills() {
         /*restriction_product*/ None,
         /*plugin_skill_snapshots*/ None,
         test_skill_root_loader().as_ref(),
-        &std::collections::BTreeSet::new(),
     )
     .await
     .resolve(&SkillConfigRules::default());
@@ -2472,7 +2470,6 @@ async fn load_plugin_skills_dedupes_overlapping_manifest_roots() {
         /*restriction_product*/ None,
         /*plugin_skill_snapshots*/ None,
         test_skill_root_loader().as_ref(),
-        &std::collections::BTreeSet::new(),
     )
     .await
     .resolve(&SkillConfigRules::default());
@@ -3193,7 +3190,11 @@ async fn connector_snapshot_combines_plugin_exclusions_with_current_account_owne
     );
     let mut plugin = remote_installed_linear_plugin();
     plugin.canonical_app_id = Some("linear".to_string());
-    manager.write_remote_installed_plugins_cache(vec![plugin]);
+    manager.write_remote_installed_plugins_cache_with_auth(
+        &config,
+        vec![plugin],
+        manager.current_auth().as_ref(),
+    );
     assert_eq!(
         manager
             .connector_snapshot(sources.clone(), &disabled, &config)
@@ -7584,17 +7585,20 @@ remote_plugin = true
 "#,
     );
     let server = MockServer::start().await;
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let request_started = Arc::clone(&requested);
     Mock::given(method("GET"))
         .and(path("/backend-api/ps/plugins/installed"))
         .and(query_param("includeDownloadUrls", "true"))
-        .respond_with(
+        .respond_with(move |_: &wiremock::Request| {
+            request_started.notify_one();
             ResponseTemplate::new(200)
                 .set_delay(Duration::from_millis(200))
                 .set_body_json(serde_json::json!({
                     "plugins": [],
                     "pagination": {"next_page_token": null},
-                })),
-        )
+                }))
+        })
         .expect(1)
         .mount(&server)
         .await;
@@ -7624,6 +7628,9 @@ remote_plugin = true
         /*on_effective_plugins_changed*/ None,
     );
 
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), requested.notified())
+        .await
+        .expect("background request should start");
     let _guard = first_manager
         .acquire_remote_installed_plugin_sync_guard()
         .await
