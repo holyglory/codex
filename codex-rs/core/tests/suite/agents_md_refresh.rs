@@ -28,21 +28,8 @@ async fn failed_global_read_keeps_instructions_until_recovery() -> Result<()> {
     std::os::unix::fs::symlink(GLOBAL_AGENTS_FILENAME, &source)?;
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(GLOBAL_AGENTS_FILENAME, &source)?;
-    test.codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "keep instructions through the read failure".to_string(),
-            text_elements: Vec::new(),
-        }]))
+    test.submit_turn("keep instructions through the read failure")
         .await?;
-    loop {
-        match wait_for_event(&test.codex, |_| true).await {
-            EventMsg::Error(error) => {
-                anyhow::bail!("instruction refresh aborted the turn: {error:?}")
-            }
-            EventMsg::TurnComplete(_) => break,
-            _ => {}
-        }
-    }
     assert_eq!(
         test.codex.instruction_sources().await,
         vec![PathUri::from_abs_path(&source)],
