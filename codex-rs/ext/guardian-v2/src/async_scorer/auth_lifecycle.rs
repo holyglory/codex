@@ -123,11 +123,11 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             input
                 .thread_store
                 .insert(TrustedSkillRoots::from_config(input.config));
-            if !requires_turn_auth {
+            if let Some(standalone_sampler) = standalone_sampler {
                 let _ = input.thread_store.remove::<LunaSampler>();
-                let sampler = input.thread_store.get_or_init(|| {
-                    LunaSampler::new(standalone_sampler.expect("singular auth sampler"))
-                });
+                let sampler = input
+                    .thread_store
+                    .get_or_init(|| LunaSampler::new(standalone_sampler));
                 if template.scoring_enabled {
                     input.thread_store.insert(GuardianV2Enabled);
                 }

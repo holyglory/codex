@@ -128,17 +128,26 @@ pub(crate) fn log_plugin_load_errors(plugins: &[LoadedPlugin<McpServerConfig>]) 
 }
 
 /// Load configured plugins without applying auth-dependent runtime policies.
+pub(crate) struct PluginLoadContext<'a> {
+    pub restriction_product: Option<Product>,
+    pub remote_global_catalog_active: bool,
+    pub excluded_plugin_ids: &'a std::collections::BTreeSet<String>,
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn load_plugins_from_layer_stack(
     config_layer_stack: &ConfigLayerStack,
     remote_installed_plugins_snapshot: RemoteInstalledPluginsSnapshot,
     store: &PluginStore,
     plugin_skill_snapshots: Option<&SkillRootSnapshots<PluginSkillRoot>>,
-    restriction_product: Option<Product>,
-    remote_global_catalog_active: bool,
     skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
-    excluded_plugin_ids: &std::collections::BTreeSet<String>,
+    context: PluginLoadContext<'_>,
 ) -> Vec<LoadedPlugin<McpServerConfig>> {
+    let PluginLoadContext {
+        restriction_product,
+        remote_global_catalog_active,
+        excluded_plugin_ids,
+    } = context;
     let skill_config_rules = skill_config_rules_from_stack(config_layer_stack);
     let RemoteInstalledPluginsSnapshot {
         configs: extra_plugins,

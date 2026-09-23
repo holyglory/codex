@@ -7137,10 +7137,12 @@ async fn load_plugins_uses_project_config_files() {
         crate::remote_plugin_id_resolver::RemoteInstalledPluginsSnapshot::default(),
         &PluginStore::new(codex_home.path().to_path_buf()),
         /*plugin_skill_snapshots*/ None,
-        Some(Product::Codex),
-        /*remote_global_catalog_active*/ false,
         test_skill_root_loader().as_ref(),
-        &std::collections::BTreeSet::new(),
+        crate::loader::PluginLoadContext {
+            restriction_product: Some(Product::Codex),
+            remote_global_catalog_active: false,
+            excluded_plugin_ids: &std::collections::BTreeSet::new(),
+        },
     )
     .await;
 
