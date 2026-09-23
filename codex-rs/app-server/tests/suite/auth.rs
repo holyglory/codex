@@ -529,6 +529,14 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
         }
     );
 
+    let migration_request = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+        })
+        .await?;
+    let _: GetAccountResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(migration_request)).await??;
+
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("recovered-access-token")
