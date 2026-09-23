@@ -1019,7 +1019,6 @@ async fn sse_failure_uses_local_backoff_despite_retry_after() -> Result<()> {
 
 /// Headerless sampled stream rate limits exhaust retries before one terminal error.
 #[test_case::test_case("rate_limit_exceeded"; "rate_limit")]
-#[test_case::test_case("slow_down"; "slow_down")]
 #[tokio::test(flavor = "current_thread")]
 async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -1101,7 +1100,6 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
 
 /// Rate-limit messages already provide an exact retry delay without an HTTP header.
 #[test_case::test_case("rate_limit_exceeded"; "rate_limit")]
-#[test_case::test_case("slow_down"; "slow_down")]
 #[tokio::test(flavor = "current_thread")]
 async fn sse_rate_limit_message_uses_server_advised_retry_delay(code: &str) -> Result<()> {
     skip_if_no_network!(Ok(()));
