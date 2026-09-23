@@ -333,6 +333,8 @@ fn known_segment_name(text: &str, source: TextSource<'_>) -> Option<String> {
                 | "apps_instructions"
                 | "skills_instructions"
                 | "plugins_instructions"
+                | "usage_stats_instructions"
+                | "project_automation_instructions"
                 | "model_switch"
                 | "personality_spec"
         ) | (TextSource::Message("user"), "environment_context")
