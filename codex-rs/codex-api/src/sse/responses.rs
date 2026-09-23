@@ -1229,7 +1229,6 @@ mod tests {
                         }),
                     ],
                 )
-                | ("slow_down", [Err(ApiError::ServerOverloaded)])
                 | (
                     "unknown_error",
                     [
@@ -1241,6 +1240,7 @@ mod tests {
                 ) => {
                     assert_eq!((actual.as_str(), *delay), (message, None));
                 }
+                ("slow_down", [Err(ApiError::ServerOverloaded)]) => {}
                 _ => panic!("unexpected events for {code}: {events:?}"),
             }
         }
