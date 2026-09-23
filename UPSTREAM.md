@@ -2,13 +2,13 @@
 
 - Repository: `https://github.com/openai/codex.git`
 - Remote name: `upstream`
-- Release tag: `rust-v0.154.0`
-- Annotated tag object: `36eab01061df3cde5f95ec20a526777b430091ba`
-- Peeled commit: `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`
-- Selected: 2026-09-09
+- Release tag: `rust-v0.156.1`
+- Annotated tag object: `81e8e29b2956dfe9b092c63953a9ed282781e77c`
+- Peeled commit: `b412ff32c417f855c2b2d1581b77058eed87c84b`
+- Selected: 2026-09-23
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.154.0+multi.1`
-- Downstream npm version: `0.154.0-multi.1`
+- Downstream Rust version: `0.156.1+multi.1`
+- Downstream npm version: `0.156.1-multi.1`
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic
@@ -40,6 +40,10 @@ compile probe, but it never moves `main` or `upstream-sync`.
 5. Regenerate schemas, exports, and Cargo/Bazel locks from the resolved source.
 6. Run focused downstream checks, one fresh complete Rust pass, complete Bazel
    validation, local Linux packaging, and the six-platform candidate workflow.
+   Reconcile the candidate with delivered downstream outcomes in Coordinator.
+   Preserve capacity recovery through `suite::retry_after` and the packaged
+   `test_capacity_response_recovers_in_same_turn` check; an upstream test that
+   expects immediate failure does not replace this downstream requirement.
 7. Push the exact tested candidate, then update `main` only with a freshly
    observed `--force-with-lease` value. Verify the archive tag and default branch
    before deleting fork-owned temporary branches.
