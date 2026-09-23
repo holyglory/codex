@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,61 @@ def pkg_config_command(arguments, environment):
         environment["PKG_CONFIG_LIBDIR"] = str(sdk / "lib/pkgconfig")
         environment["PKG_CONFIG_PATH"] = ""
         arguments = ["--define-prefix", *arguments]
+    elif "alsa" in arguments and (prefix := environment.get("CODEX_CARGO_ALSA_PREFIX")):
+        environment["PKG_CONFIG_LIBDIR"] = str(
+            Path(prefix) / "lib/x86_64-linux-gnu/pkgconfig"
+        )
+        environment["PKG_CONFIG_PATH"] = ""
+        arguments = [
+            f"--define-variable=prefix={prefix}",
+            f"--define-variable=libdir={prefix}/lib/x86_64-linux-gnu",
+            f"--define-variable=includedir={prefix}/include",
+            *arguments,
+        ]
     return [executable, *arguments], environment
+
+
+def alsa_inputs(state, pkg_config):
+    if subprocess.run([pkg_config, "--exists", "alsa"]).returncode == 0:
+        return {}
+    # Stage matching development inputs without changing the host installation.
+    version = subprocess.check_output(
+        ["dpkg-query", "-W", "-f=${Version}", "libasound2t64:amd64"], text=True
+    ).strip()
+    root = state / ("alsa-" + hashlib.sha256(version.encode()).hexdigest()[:12])
+    prefix = root / "usr"
+    if not (prefix / "lib/x86_64-linux-gnu/pkgconfig/alsa.pc").is_file():
+        with tempfile.TemporaryDirectory(
+            prefix="alsa-download-", dir=state
+        ) as directory:
+            subprocess.run(
+                ["apt-get", "download", f"libasound2-dev:amd64={version}"],
+                cwd=directory,
+                check=True,
+            )
+            archives = list(Path(directory).glob("*.deb"))
+            if len(archives) != 1:
+                raise ValueError("Expected one matching ALSA development package")
+            subprocess.run(
+                ["dpkg-deb", "--extract", str(archives[0]), str(root)], check=True
+            )
+    library_dir = prefix / "lib/x86_64-linux-gnu"
+    shutil.copy2(
+        Path("/usr/lib/x86_64-linux-gnu/libasound.so.2").resolve(strict=True),
+        library_dir / "libasound.so.2",
+    )
+    alias = library_dir / "libasound.so"
+    alias.unlink(missing_ok=True)
+    alias.symlink_to("libasound.so.2")
+    environment = {
+        "CODEX_CARGO_SYSTEM_PKG_CONFIG": pkg_config,
+        "CODEX_CARGO_ALSA_PREFIX": str(prefix),
+    }
+    command, probe_environment = pkg_config_command(
+        ["--exists", "alsa"], {**os.environ, **environment}
+    )
+    subprocess.run(command, env=probe_environment, check=True)
+    return {"CODEX_CARGO_ALSA_PREFIX": str(prefix)}
 
 
 def prepare(state):
@@ -48,7 +103,8 @@ def prepare(state):
     system_pkg_config = shutil.which("pkg-config")
     if not system_pkg_config:
         raise ValueError("pkg-config is required for native Cargo inputs")
-    subprocess.run([system_pkg_config, "--exists", "alsa"], check=True)
+    state.mkdir(parents=True, exist_ok=True)
+    platform_environment = alsa_inputs(state, system_pkg_config)
     command = ["bash", ".github/scripts/run-bazel-ci.sh", "--", "build"]
     if cache := os.environ.get("LOCAL_BAZEL_CACHE"):
         command.append(f"--disk_cache={cache}")
@@ -81,6 +137,7 @@ def prepare(state):
     ):
         raise ValueError("Native SDK does not match the candidate's pinned sources")
     environment = {
+        **platform_environment,
         "CODEX_CARGO_SYSTEM_PKG_CONFIG": system_pkg_config,
         "CODEX_CARGO_VOICE_SDK": str(sdk),
         "CODEX_TEST_VOICE_RUNTIME": str(runtime),
