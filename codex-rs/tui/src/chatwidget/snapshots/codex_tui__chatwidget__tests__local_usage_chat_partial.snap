@@ -4,8 +4,9 @@ expression: rendered
 ---
   Current chat statistics
 
-› 1. Report                usageSummary v1 · database schema 3
-                           · taxonomy 1
+
+› 1. Report                usageSummary v1 · database schema 3 ·
+                           taxonomy 1
   2. Scope                 current chat (thread)
   3. Account               primary
   4. Time range            10 to 20 ms UTC
@@ -13,5 +14,5 @@ expression: rendered
       Coverage events:
   6. capture_started       2
       Token observations:
-
+↓
   enter select · esc back

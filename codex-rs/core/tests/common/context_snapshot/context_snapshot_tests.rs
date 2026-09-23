@@ -650,6 +650,8 @@ fn rewritten_segments_share_one_tag_format_and_keep_compaction_data() {
     let items = [
         developer("apps_instructions", "Apps guidance"),
         developer("plugins_instructions", "Plugins guidance"),
+        developer("usage_stats_instructions", "Usage guidance"),
+        developer("project_automation_instructions", "Project guidance"),
         message(
             "developer",
             "You are judging one planned coding-agent action.\nRoutine guidance.",
@@ -677,6 +679,8 @@ fn rewritten_segments_share_one_tag_format_and_keep_compaction_data() {
         [
             "<APPS_INSTRUCTIONS>",
             "<PLUGINS_INSTRUCTIONS>",
+            "<USAGE_STATS_INSTRUCTIONS>",
+            "<PROJECT_AUTOMATION_INSTRUCTIONS>",
             "<GUARDIAN_INSTRUCTIONS>",
             "<AGENTS_MD>",
             "<SUMMARIZATION_PROMPT>",
