@@ -266,6 +266,7 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
             let gathered = Arc::new(Notify::new());
             let mut settings = SettingEngine::default();
             settings.set_lite(/*lite*/ true);
+            settings.set_include_loopback_candidate(/*allow_loopback*/ true);
             let mut media = MediaEngine::default();
             media.register_default_codecs()?;
             let builder = PeerConnectionBuilder::new()
@@ -278,9 +279,9 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
                     started,
                 }));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec!["127.0.0.1:0"])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec!["127.0.0.1:0"])
             }
             .build()
             .await?;
