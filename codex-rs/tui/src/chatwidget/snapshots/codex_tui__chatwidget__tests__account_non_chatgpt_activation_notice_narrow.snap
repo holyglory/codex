@@ -5,21 +5,21 @@ expression: "render_bottom_popup(&chat, 40)"
   Accounts
 
   Search accounts
+
 › ● metered (current)
-                       metered@example
-                       .com · Plus ·
+                       metered@example.c
+                       om · Plus ·
                        signed in ·
-                       enabled ·
-                       default ·
-                       priority 10 ·
+                       enabled · default
+                       · priority 10 ·
                        limits unknown
   Add account
   Automatic selection  on · policy:
-                       Priority ·
-                       higher numbers
-                       drain first;
-                       smaller numbers
-                       drain last
+                       Priority · higher
+                       numbers drain
+                       first; smaller
+                       numbers drain
+                       last
 
   metered is now the default account,
   but automatic selection uses only
