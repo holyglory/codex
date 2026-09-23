@@ -8,6 +8,19 @@ use super::parse_codex_version;
 #[test]
 fn resolves_managed_install_as_package_layout_changes() -> std::io::Result<()> {
     let codex_home = tempfile::tempdir()?;
+    assert_eq!(
+        managed_codex_bin(codex_home.path()),
+        codex_home
+            .path()
+            .join("packages/app-server-daemon/current/bin")
+            .join(managed_codex_file_name())
+    );
+    let legacy_state = codex_home.path().join("app-server-daemon");
+    std::fs::create_dir(&legacy_state)?;
+    std::fs::write(
+        legacy_state.join("app-server.stderr.log"),
+        b"prior launch fixture",
+    )?;
     let current = codex_home.path().join("packages/standalone/current");
     let flat = current.join(managed_codex_file_name());
     let packaged = current.join("bin").join(managed_codex_file_name());
