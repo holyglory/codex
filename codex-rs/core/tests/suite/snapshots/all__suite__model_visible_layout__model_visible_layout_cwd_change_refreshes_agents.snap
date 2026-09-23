@@ -6,7 +6,7 @@ Scenario: Second turn changes cwd to a directory with different AGENTS.md and re
 
 ## Window 1
 -- request 1 (turn; First Request (agents_one)) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
     [03] <USAGE_STATS_INSTRUCTIONS>
