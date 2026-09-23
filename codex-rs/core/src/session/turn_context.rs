@@ -1258,7 +1258,9 @@ impl Session {
             .map(|lease| Arc::clone(lease.auth_manager()))
             .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
         let turn_auth = if profile_auth_error.is_none() {
-            turn_auth_manager.auth().await
+            // Context construction only needs metadata. Credential resolution is bounded
+            // during catalog refresh and enforced again by the actual model request.
+            turn_auth_manager.auth_cached()
         } else {
             None
         };
