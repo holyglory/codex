@@ -84,7 +84,7 @@ impl Transport {
     }
 
     #[doc(hidden)]
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub async fn new_for_tests() -> Result<Self> {
         Self::with_runtime(
             Arc::new(crate::transport_runtime::VoiceRuntime::default()),
