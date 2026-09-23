@@ -59,7 +59,7 @@ fn map_api_error_uses_capacity_recovery_for_service_unavailable() {
             CodexErrorInfo::ServerOverloaded,
             false,
         ),
-        ("slow_down", CodexErrorInfo::RateLimitExceeded, true),
+        ("slow_down", CodexErrorInfo::ServerOverloaded, false),
         ("unknown_error", CodexErrorInfo::Other, true),
     ] {
         let err = map_api_error(ApiError::Transport(TransportError::Http {

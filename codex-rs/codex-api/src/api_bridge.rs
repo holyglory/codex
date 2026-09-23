@@ -76,21 +76,6 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             } => {
                 let body_text = body.unwrap_or_default();
 
-                if status == http::StatusCode::SERVICE_UNAVAILABLE
-                    && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text)
-                    && let Some(error) = parsed.get("error")
-                {
-                    if error.get("code").and_then(Value::as_str) == Some("slow_down") {
-                        return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
-                            error
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                        ));
-                    }
-                }
-
                 if (status == http::StatusCode::BAD_REQUEST
                     || status == http::StatusCode::FORBIDDEN)
                     && let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
@@ -244,7 +229,7 @@ pub(crate) fn is_server_overloaded_transport_error(err: &TransportError) -> bool
                     value
                         .pointer("/error/code")
                         .and_then(serde_json::Value::as_str),
-                    Some("server_is_overloaded")
+                    Some("server_is_overloaded" | "slow_down")
                 )
             })
 }
