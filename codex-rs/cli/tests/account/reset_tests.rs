@@ -34,7 +34,17 @@ fn credit(id: &str, expiry: Option<&str>) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn account_reset_recovers_lost_reply_without_consuming_another_credit() -> Result<()> {
-    for delayed in [false, true] {
+    #[derive(Clone, Copy)]
+    enum LostReply {
+        ServerError,
+        Timeout,
+        RejectedRetry,
+    }
+    for lost_reply in [
+        LostReply::ServerError,
+        LostReply::Timeout,
+        LostReply::RejectedRetry,
+    ] {
         let server = MockServer::start().await;
         let fixture = reset_fixture(&server).await?;
         let before = RegistryStore::new(fixture.home.path()).read()?;
@@ -81,11 +91,13 @@ async fn account_reset_recovers_lost_reply_without_consuming_another_credit() ->
                     assert_eq!(body, calls[0]);
                 }
                 calls.push(body);
-                if delayed && calls.len() == 1 {
+                if matches!(lost_reply, LostReply::Timeout) && calls.len() == 1 {
                     ResponseTemplate::new(200)
                         .set_delay(Duration::from_secs(11))
                         .set_body_json(serde_json::json!({"code":"reset", "windows_reset":2}))
-                } else if !delayed && calls.len() <= 2 {
+                } else if matches!(lost_reply, LostReply::RejectedRetry) && calls.len() == 2 {
+                    ResponseTemplate::new(401)
+                } else if !matches!(lost_reply, LostReply::Timeout) && calls.len() <= 2 {
                     ResponseTemplate::new(500)
                 } else {
                     ResponseTemplate::new(200).set_body_json(
@@ -100,13 +112,17 @@ async fn account_reset_recovers_lost_reply_without_consuming_another_credit() ->
             codex_command(fixture.home.path())?
                 .args(["account", "reset", fixture.beta.id.as_str(), "--json"])
                 .assert()
-                .code(if delayed { 0 } else { 27 }),
+                .code(if matches!(lost_reply, LostReply::Timeout) {
+                    0
+                } else {
+                    27
+                }),
         )?;
         assert_eq!(output["account"], "beta");
         assert_eq!(output["creditId"], "soon");
         assert_eq!(
             output["outcome"],
-            if delayed {
+            if matches!(lost_reply, LostReply::Timeout) {
                 "alreadyRedeemed"
             } else {
                 "uncertain"
@@ -255,6 +271,20 @@ async fn account_reset_filters_invalid_credits_and_retains_backend_outcomes() ->
 async fn account_reset_rejects_unavailable_accounts_without_consumption() -> Result<()> {
     let server = MockServer::start().await;
     let fixture = reset_fixture(&server).await?;
+    for (credit_id, request_id) in [("   ", "replay"), ("credit", "   ")] {
+        codex_command(fixture.home.path())?
+            .args([
+                "account",
+                "reset",
+                "beta",
+                "--credit-id",
+                credit_id,
+                "--request-id",
+                request_id,
+            ])
+            .assert()
+            .code(16);
+    }
     codex_command(fixture.home.path())?
         .args(["account", "reset", "missing"])
         .assert()
