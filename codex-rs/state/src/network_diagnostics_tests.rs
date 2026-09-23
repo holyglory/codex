@@ -59,7 +59,26 @@ async fn network_queue_overflow_is_reported_in_retained_evidence() -> anyhow::Re
             details: BTreeMap::new(),
         });
     }
-    sink.flush().await;
+    // Flush is bounded and reports incomplete durability on busy storage. Wait
+    // for the accepted burst before inspecting its loss marker and exact count.
+    tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 60), async {
+        loop {
+            sink.flush().await;
+            let latest = query(
+                &sqlite,
+                NetworkQuery {
+                    limit: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            if latest.data.first().is_some_and(|event| event.id == 4096) {
+                return Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(/*millis*/ 50)).await;
+        }
+    })
+    .await??;
     let first = query(
         &sqlite,
         NetworkQuery {
