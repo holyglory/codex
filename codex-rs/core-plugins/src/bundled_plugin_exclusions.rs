@@ -32,6 +32,50 @@ fn read_exclusions(path: &Path) -> BundledPluginExclusions {
 }
 
 impl PluginsManager {
+    /// Installs a local plugin using exclusions owned by the captured account.
+    pub async fn install_plugin_for_config(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+        request: PluginInstallRequest,
+    ) -> Result<PluginInstallOutcome, PluginInstallError> {
+        let resolved = self.resolve_installable_plugin(&config.config_layer_stack, &request)?;
+        self.reject_excluded_plugin(config, auth, &resolved.plugin_id)?;
+        let plugin_id = resolved.plugin_id.clone();
+        match self.install_resolved_plugin(resolved).await {
+            Ok(outcome) => Ok(outcome),
+            Err(err) => {
+                self.track_plugin_install_failed(
+                    &plugin_id,
+                    plugin_install_error_type(&err),
+                    err.sub_error_type(),
+                    err.to_string(),
+                );
+                Err(err)
+            }
+        }
+    }
+
+    pub(super) fn reject_excluded_plugin(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+        plugin_id: &PluginId,
+    ) -> Result<(), PluginInstallError> {
+        if self
+            .excluded_bundled_plugin_ids_with_auth(config, auth)
+            .contains(&plugin_id.as_key())
+        {
+            let error = MarketplaceError::PluginNotFound {
+                plugin_name: plugin_id.plugin_name.clone(),
+                marketplace_name: plugin_id.marketplace_name.clone(),
+            };
+            self.track_plugin_install_resolution_failed(&error);
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
     // Temporary direct-access guard using the same exclusion state as catalog/runtime loading.
     pub(super) fn bundled_sites_is_hidden(
         &self,
