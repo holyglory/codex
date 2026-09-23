@@ -254,7 +254,28 @@ async fn verify_profile_model_thread_tools(source: CatalogSource) -> Result<()> 
         .join(profile.metadata.id.as_str());
     let expected_fetches = match source {
         CatalogSource::Cache => {
-            write_models_cache_with_models(&profile_home, vec![model.clone()]).await?;
+            let config = codex_core::config::ConfigBuilder::default()
+                .loader_overrides(codex_config::LoaderOverrides::without_managed_config_for_tests())
+                .codex_home(codex_home.path().to_path_buf())
+                .build()
+                .await?;
+            let auth = codex_login::CodexAuth::from_auth_storage(
+                &profile_home,
+                config.cli_auth_credentials_store_mode,
+                Some(&config.chatgpt_base_url),
+                config.auth_keyring_backend_kind(),
+                &codex_login::test_support::transport_default_auth_route_config(),
+            )
+            .await?;
+            let cache = codex_model_provider::test_support::models_cache_entry(
+                &config.model_provider,
+                auth.as_ref(),
+                vec![model.clone()],
+            );
+            std::fs::write(
+                profile_home.join("models_cache.json"),
+                serde_json::to_string_pretty(&cache)?,
+            )?;
             0
         }
         CatalogSource::Remote => 1,
