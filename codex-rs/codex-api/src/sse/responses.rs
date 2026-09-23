@@ -763,6 +763,84 @@ async fn process_sse_with_treatment(
     }
 }
 
+fn try_parse_retry_after(err: &Error) -> Option<Duration> {
+    if !matches!(
+        err.code.as_deref(),
+        Some("rate_limit_exceeded" | "slow_down")
+    ) {
+        return None;
+    }
+
+    let re = rate_limit_regex();
+    if let Some(message) = &err.message
+        && let Some(captures) = re.captures(message)
+    {
+        let seconds = captures.get(1);
+        let unit = captures.get(2);
+
+        if let (Some(value), Some(unit)) = (seconds, unit) {
+            let value = value.as_str().parse::<f64>().ok()?;
+            let unit = unit.as_str().to_ascii_lowercase();
+
+            if unit == "s" || unit.starts_with("second") {
+                return Some(Duration::from_secs_f64(value));
+            } else if unit == "ms" {
+                return Some(Duration::from_millis(value as u64));
+            }
+        }
+    }
+    None
+}
+
+fn is_context_window_error(error: &Error) -> bool {
+    error.code.as_deref() == Some("context_length_exceeded")
+}
+
+fn is_quota_exceeded_error(error: &Error) -> bool {
+    matches!(
+        error.code.as_deref(),
+        Some(
+            "insufficient_quota"
+                | "credit_balance_exhausted"
+                | "organization_spend_limit_exceeded"
+                | "project_spend_limit_exceeded"
+        )
+    )
+}
+
+fn is_usage_not_included(error: &Error) -> bool {
+    error.code.as_deref() == Some("usage_not_included")
+}
+
+fn is_cyber_policy_error(error: &Error) -> bool {
+    error.code.as_deref() == Some("cyber_policy")
+}
+
+fn is_server_overloaded_error(error: &Error) -> bool {
+    matches!(
+        error.code.as_deref(),
+        Some("server_is_overloaded" | "slow_down")
+    )
+}
+
+fn cyber_policy_fallback_message() -> String {
+    "This request has been flagged for possible cybersecurity risk.".to_string()
+}
+
+fn cyber_policy_message(message: Option<String>) -> String {
+    message
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(cyber_policy_fallback_message)
+}
+
+fn rate_limit_regex() -> &'static regex_lite::Regex {
+    static RE: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+    #[expect(clippy::unwrap_used)]
+    RE.get_or_init(|| {
+        regex_lite::Regex::new(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)").unwrap()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1159,7 +1237,7 @@ mod tests {
             let events = collect_events(&[sse.as_bytes()]).await;
             match (code, events.as_slice()) {
                 (
-                    "rate_limit_exceeded" | "slow_down",
+                    "rate_limit_exceeded",
                     [
                         Err(ApiError::RateLimitExceeded {
                             message: actual,
@@ -1167,6 +1245,7 @@ mod tests {
                         }),
                     ],
                 )
+                | ("slow_down", [Err(ApiError::ServerOverloaded)])
                 | (
                     "unknown_error",
                     [
