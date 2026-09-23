@@ -36,7 +36,7 @@ fn reset_uses_main_codex_and_prioritizes_exhausted_then_used_windows() {
 fn missing_main_quota_or_blocked_reset_stays_unknown() {
     let spark = quota("codex_bengalfox", 0.0, 0.0);
     assert_eq!(
-        next_codex_limit_reset(&[spark.clone()], /*observed_at*/ 100),
+        next_codex_limit_reset(std::slice::from_ref(&spark), /*observed_at*/ 100),
         None
     );
     for reset in [None, Some(99), Some(100)] {
