@@ -4,12 +4,13 @@ expression: "render_bottom_popup(&chat, 40)"
 ---
   Automatic account selection
 
+
      Status: off
 › 1. Turn on
      Policy: Priority
      Priority order: higher numbers
-     drain first; smaller numbers
-     drain last
+     drain first; smaller numbers drain
+     last
      Eligible: Managed ChatGPT OAuth
      only
      Stale/unknown limits

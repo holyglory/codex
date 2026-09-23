@@ -54,6 +54,11 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
+    codex_login::migrate_legacy_auth_if_needed(
+        home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?;
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::from_api_key("model-route"))
@@ -203,6 +208,11 @@ async fn agent_lists_and_mutates_priorities_without_credential_exposure() -> Res
     save_auth(
         home.path(),
         &legacy_auth(credential),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?;
+    codex_login::migrate_legacy_auth_if_needed(
+        home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
