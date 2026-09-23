@@ -203,7 +203,7 @@ async fn capture_reaches_remote_rtp_and_mute_discards_queued_and_partial_audio()
             .build()
             .await
             .unwrap();
-        let mut local = Transport::new().await.unwrap();
+        let mut local = Transport::new_for_tests().await.unwrap();
         remote
             .set_remote_description(
                 RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap(),
