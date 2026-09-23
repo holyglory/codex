@@ -159,9 +159,9 @@ async fn account_reset_filters_invalid_credits_and_retains_backend_outcomes() ->
             credit("expired", Some("2025-01-01T00:00:00Z")),
             credit("invalid", Some("bad-date")),
             unsupported,
-            credit("permanent", None),
-            credit("z-tie", Some("2030-01-01T00:00:00Z")),
-            credit("a-tie", Some("2030-01-01T03:00:00+03:00")),
+            credit("a-later", Some("2030-01-01T00:00:00.900000001Z")),
+            credit("z-tie", Some("2030-01-01T00:00:00.100000001Z")),
+            credit("a-tie", Some("2030-01-01T03:00:00.100000001+03:00")),
         ];
         Mock::given(method("GET"))
             .and(path("/api/codex/rate-limit-reset-credits"))
@@ -230,6 +230,24 @@ async fn account_reset_filters_invalid_credits_and_retains_backend_outcomes() ->
         }
         server.verify().await;
     }
+    let server = MockServer::start().await;
+    let fixture = reset_fixture(&server).await?;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "available_count":1, "credits":[credit("   ", None)]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    codex_command(fixture.home.path())?
+        .args(["account", "reset", "beta"])
+        .assert()
+        .code(25);
     Ok(())
 }
 

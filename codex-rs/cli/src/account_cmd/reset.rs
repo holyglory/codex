@@ -249,7 +249,7 @@ fn select_credit(
     for credit in credits {
         if credit.status != "available"
             || credit.reset_type != "codex_rate_limits"
-            || credit.id.is_empty()
+            || credit.id.trim().is_empty()
             || credit.id.len() > 512
             || credit.id.chars().any(char::is_control)
         {
@@ -270,14 +270,15 @@ fn select_credit(
                 if date <= now || date <= granted {
                     continue;
                 }
-                Some(date.timestamp())
+                Some(date)
             }
         };
         candidates.push((credit, expires));
     }
     candidates.sort_by(|(left, le), (right, re)| {
-        le.unwrap_or(i64::MAX)
-            .cmp(&re.unwrap_or(i64::MAX))
+        le.is_none()
+            .cmp(&re.is_none())
+            .then_with(|| le.cmp(re))
             .then_with(|| left.id.cmp(&right.id))
     });
     candidates
