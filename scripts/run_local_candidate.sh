@@ -20,6 +20,11 @@ environment_root="$state/test-environment"
 runuser -u "$test_user" -- mkdir -p "$environment_root/tmp" "$environment_root/system-config"
 test -z "$(ls -A "$environment_root/system-config")"
 mount --bind "$environment_root/tmp" /tmp
+# The privileged socket directory must not have a second path through the bulk
+# volume backing /tmp. Keep ordinary test scratch on disk and isolate only sockets.
+socket_root="/tmp/codex-daemon-$(id -u "$test_user")"
+runuser -u "$test_user" -- mkdir -p "$socket_root"
+mount -t tmpfs -o "mode=0700,uid=$(id -u "$test_user"),gid=$(id -g "$test_user")" tmpfs "$socket_root"
 mount --bind "$environment_root/system-config" /etc/codex
 mount -o remount,bind,ro /etc/codex
 test ! -e /etc/codex/config.toml
