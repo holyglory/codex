@@ -161,14 +161,15 @@ async fn guardian_saves_each_completed_review_before_releasing_its_action() -> a
         })
         .build_with_auto_env(&server)
         .await?;
-    let command = json!({
-        "cmd": "true", "sandbox_permissions": "require_escalated",
-        "justification": "Run the authorized command.",
-    })
-    .to_string();
     let approval = r#"{"risk_level":"low","user_authorization":"high","outcome":"allow"}"#;
     let mut turns = Vec::new();
     for index in 0..2 {
+        let command = json!({
+            "cmd": format!("printf reviewed > guardian-review-{index}.txt"),
+            "sandbox_permissions": "require_escalated",
+            "justification": "Run the authorized command.",
+        })
+        .to_string();
         turns.push(responses::sse(vec![
             responses::ev_function_call(&format!("command-{index}"), "exec_command", &command),
             responses::ev_completed(&format!("parent-{index}")),
@@ -211,11 +212,19 @@ async fn guardian_saves_each_completed_review_before_releasing_its_action() -> a
             timeout(
                 Duration::from_millis(50),
                 wait_for_event(&test.codex, |event| {
-                    matches!(event, EventMsg::ExecCommandBegin(_))
+                    matches!(event, EventMsg::ExecCommandEnd(_))
                 })
             )
             .await
             .is_err()
+        );
+        let proof = test.workspace_path_uri(format!("guardian-review-{}.txt", review - 1))?;
+        assert!(
+            test.fs()
+                .read_file_text(&proof, Default::default(), /*sandbox*/ None)
+                .await
+                .is_err(),
+            "the reviewed command ran before its review was saved"
         );
         assert_eq!(mock.requests().len(), review * 2);
         pending.complete.send(()).expect("finish save");
@@ -223,6 +232,12 @@ async fn guardian_saves_each_completed_review_before_releasing_its_action() -> a
             matches!(event, EventMsg::ExecCommandEnd(_))
         })
         .await;
+        assert_eq!(
+            test.fs()
+                .read_file_text(&proof, Default::default(), /*sandbox*/ None)
+                .await?,
+            "reviewed"
+        );
     }
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))

@@ -75,6 +75,15 @@ fn private_tmp_fixture() {
         .unwrap();
     assert!(mount.status.success(), "{mount:?}");
     let root = codex_uds::prepare_shared_daemon_socket_directory().unwrap();
+    // The outer test runner may back /tmp with a disk also mounted elsewhere.
+    // Isolate the reserved socket root so the valid case has no such alias;
+    // the explicit alias below still exercises fail-closed detection.
+    let mount = std::process::Command::new("mount")
+        .args(["-t", "tmpfs", "-o", "mode=0700", "tmpfs"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(mount.status.success(), "{mount:?}");
     let endpoint = root.join("rpc.sock");
     let _daemon = UnixListener::bind(&endpoint).unwrap();
     let _other = UnixListener::bind("/tmp/other.sock").unwrap();

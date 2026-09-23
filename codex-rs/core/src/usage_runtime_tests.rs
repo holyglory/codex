@@ -147,7 +147,33 @@ async fn provider_usage_is_deduplicated_and_reported_content_free() {
             .sum::<u64>(),
         2
     );
-    assert_eq!(summary.coverage.overall_state, "complete");
+    // The provider evidence is complete, but this fixture has no work declaration.
+    assert_eq!(
+        summary.coverage,
+        codex_usage::CoverageSummary {
+            overall_state: "unknown".into(),
+            event_counts: vec![
+                codex_usage::CoverageCount {
+                    state: "capture_started".into(),
+                    count: 1
+                },
+                codex_usage::CoverageCount {
+                    state: "complete".into(),
+                    count: 1
+                },
+                codex_usage::CoverageCount {
+                    state: "unknown".into(),
+                    count: 1
+                },
+            ],
+            token_observation_counts: vec![codex_usage::CoverageCount {
+                state: "complete".into(),
+                count: 2,
+            }],
+            has_gaps: true,
+            unfinished_operations: 0,
+        }
+    );
 }
 
 #[cfg(unix)]

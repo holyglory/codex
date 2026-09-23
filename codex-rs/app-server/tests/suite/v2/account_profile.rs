@@ -287,6 +287,14 @@ async fn pinned_server_reports_and_logs_out_only_the_process_active_profile() ->
     assert!(!secondary.is_default);
     assert!(secondary.is_active);
 
+    // Complete the startup account read before testing an idle credential mutation.
+    let read_id = server
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+        })
+        .await?;
+    let _: GetAccountResponse =
+        timeout(Duration::from_secs(10), server.read_response(read_id)).await??;
     let logout_id = server.send_logout_account_request().await?;
     let _: LogoutAccountResponse =
         timeout(Duration::from_secs(10), server.read_response(logout_id)).await??;

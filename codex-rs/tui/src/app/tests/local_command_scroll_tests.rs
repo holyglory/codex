@@ -450,7 +450,7 @@ async fn usage_picker_opens_analytics_without_moving_the_background_transcript()
     let follow = events.try_recv().expect("usage command follow event");
     assert_matches!(&follow, AppEvent::FollowTranscript);
     app.handle_event(&mut tui, &mut server, follow).await?;
-    assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("View analytics"));
+    assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Show usage"));
     while events.try_recv().is_ok() {}
     app.transcript_view
         .jump_to_entry(&app.transcript_cells, /*index*/ 0);
