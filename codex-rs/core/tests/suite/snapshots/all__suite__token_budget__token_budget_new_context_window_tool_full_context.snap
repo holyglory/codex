@@ -6,9 +6,11 @@ Scenario: New context window tool installs fresh full context before the next fo
 
 ## Window 1
 -- request 1 (turn; Final Follow-Up Request) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     <context_window>
     Agent name: /root

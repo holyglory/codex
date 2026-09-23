@@ -64,7 +64,9 @@ async fn assert_unauthorized_after_recovery(outcome: RefreshOutcome, expected_re
     let auth = CodexAuth::from_external_chatgpt_tokens(
         "e30.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWEifX0.test", "account-a", Some("plus"),
     ).unwrap();
-    let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+    let codex_home = tempfile::tempdir().expect("isolated auth home");
+    let auth_manager =
+        AuthManager::from_auth_for_testing_with_home(auth.clone(), codex_home.path().to_path_buf());
     let credentials = Arc::new(ExternalCredentials {
         auth: auth.clone(),
         outcome,
