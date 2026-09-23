@@ -18,25 +18,42 @@ async fn failed_global_read_keeps_instructions_until_recovery() -> Result<()> {
     )
     .await;
     let home = Arc::new(TempDir::new()?);
-    let source = write_global_file(&home, GLOBAL_AGENTS_FILENAME, GLOBAL_INSTRUCTIONS)?;
+    let source = write_global_file(&home, GLOBAL_AGENTS_OVERRIDE_FILENAME, GLOBAL_INSTRUCTIONS)?;
     let mut builder = test_codex().with_home(Arc::clone(&home));
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn("initial instructions").await?;
 
     std::fs::remove_file(&source)?;
     #[cfg(unix)]
-    std::os::unix::fs::symlink(GLOBAL_AGENTS_FILENAME, &source)?;
+    std::os::unix::fs::symlink(GLOBAL_AGENTS_OVERRIDE_FILENAME, &source)?;
     #[cfg(windows)]
-    std::os::windows::fs::symlink_file(GLOBAL_AGENTS_FILENAME, &source)?;
-    test.submit_turn("keep instructions through the read failure")
+    std::os::windows::fs::symlink_file(GLOBAL_AGENTS_OVERRIDE_FILENAME, &source)?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "keep instructions through the read failure".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::Error(error) => {
+                anyhow::bail!("instruction refresh aborted the turn: {error:?}")
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
     assert_eq!(
         test.codex.instruction_sources().await,
         vec![PathUri::from_abs_path(&source)],
     );
 
     std::fs::remove_file(&source)?;
-    write_global_file(&home, GLOBAL_AGENTS_FILENAME, NEW_GLOBAL_INSTRUCTIONS)?;
+    write_global_file(
+        &home,
+        GLOBAL_AGENTS_OVERRIDE_FILENAME,
+        NEW_GLOBAL_INSTRUCTIONS,
+    )?;
     test.submit_turn("load recovered instructions").await?;
     let initial = expected_provider_only_instruction_fragment(GLOBAL_INSTRUCTIONS);
     let replacement = expected_provider_only_instruction_fragment(&format!(
