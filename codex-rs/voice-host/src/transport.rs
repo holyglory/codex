@@ -126,8 +126,8 @@ impl Transport {
                 .with_tcp_addrs(vec!["127.0.0.1:0"]);
         } else {
             builder = builder
-                .with_udp_addrs(vec!["0.0.0.0:0", "[::]:0"])
-                .with_tcp_addrs(vec!["0.0.0.0:0", "[::]:0"]);
+                .with_udp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"])
+                .with_tcp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"]);
         }
         let connection: Arc<dyn PeerConnection> = Arc::new(
             builder

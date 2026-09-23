@@ -26,7 +26,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         return None;
     }
 
-    update_action::get_update_action()?;
+    let action = update_action::get_update_action()?;
+    if matches!(action, update_action::UpdateAction::Daemon(_)) {
+        return None;
+    }
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
 
@@ -63,9 +66,6 @@ async fn check_for_update(
         ClientRouteClass::Other,
     )
     .with_legacy_custom_ca_fallback();
-    if matches!(action, Some(UpdateAction::Daemon(_))) {
-        return Ok(());
-    }
     // npm latest is the approved fork channel. GitHub releases may be absent,
     // and the six platform versions must never be mistaken for the root.
     let package_info = client_pool
