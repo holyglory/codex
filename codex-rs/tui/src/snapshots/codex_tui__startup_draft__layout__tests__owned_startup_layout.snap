@@ -1,10 +1,11 @@
 ---
 source: tui/src/startup_draft_layout_tests.rs
-expression: startup_layout
+assertion_line: 33
+expression: "crate::test_support::normalize_cli_version(format!(\"cursor={:?}\\n{frame}\",\nlayout.cursor_pos(area)),)"
 ---
 cursor=Some((13, 12))
 ╭───────────────────────────────────────╮       
-│ >_ OpenAI Codex (v<VERSION>)              │       
+│ >_ OpenAI Codex (v<VERSION>)          │       
 │                                       │       
 │ model:     loading   /model to change │       
 │ directory: loading                    │       
