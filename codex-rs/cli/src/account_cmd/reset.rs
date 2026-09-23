@@ -58,7 +58,7 @@ pub(super) async fn run(
         .into_iter()
         .flatten()
     {
-        if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        if value.trim().is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
             return Err(AccountCommandError::new(AccountErrorKind::InvalidInput));
         }
     }
@@ -87,7 +87,8 @@ pub(super) async fn run(
     );
     // A replay must reach the idempotent endpoint even if the credit is already redeemed or
     // expired. Requiring it to still be available would prevent recovery after a lost response.
-    let credit_id = if args.request_id.is_some() {
+    let replay = args.request_id.is_some();
+    let credit_id = if replay {
         args.credit_id
             .ok_or_else(|| AccountCommandError::new(AccountErrorKind::InvalidInput))?
     } else {
@@ -121,7 +122,7 @@ pub(super) async fn run(
         refresh_error: None,
     };
     let mut failure = Some(AccountErrorKind::ResetUncertain);
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let response = tokio::time::timeout(
             RESET_REQUEST_TIMEOUT,
             client.consume_rate_limit_reset_credit_by_id(&report.request_id, &report.credit_id),
@@ -146,8 +147,12 @@ pub(super) async fn run(
                     .and_then(RequestError::status)
                     .is_some_and(|status| matches!(status.as_u16(), 400 | 401 | 403 | 404)) =>
             {
-                report.outcome = "failed";
-                failure = Some(AccountErrorKind::ResetFailed);
+                // A rejection only proves this attempt failed. An earlier attempt or
+                // replayed operation may already have consumed this credit.
+                if attempt == 0 && !replay {
+                    report.outcome = "failed";
+                    failure = Some(AccountErrorKind::ResetFailed);
+                }
                 break;
             }
             Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
