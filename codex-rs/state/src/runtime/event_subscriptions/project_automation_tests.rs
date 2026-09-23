@@ -49,6 +49,24 @@ async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
 async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subscription() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
+    let identities = ProjectIdentityCandidates {
+        canonical: ProjectIdentityCandidate {
+            project_id: "project-git".into(),
+            kind: ProjectIdentityKind::GitCommonDirectory,
+        },
+        aliases: vec![ProjectIdentityCandidate {
+            project_id: "project-provisional".into(),
+            kind: ProjectIdentityKind::WorkspacePath,
+        }],
+    };
+    assert_eq!(
+        store
+            .resolve_project_identity(&identities, 1)
+            .await
+            .unwrap(),
+        "project-git"
+    );
+    assert!(store.project_status("project-git").await.unwrap().is_none());
     let provisional = store
         .project_command(
             "project-provisional",
@@ -101,19 +119,7 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
         .await
         .unwrap();
     let resolved = store
-        .resolve_project_identity(
-            &ProjectIdentityCandidates {
-                canonical: ProjectIdentityCandidate {
-                    project_id: "project-git".into(),
-                    kind: ProjectIdentityKind::GitCommonDirectory,
-                },
-                aliases: vec![ProjectIdentityCandidate {
-                    project_id: "project-provisional".into(),
-                    kind: ProjectIdentityKind::WorkspacePath,
-                }],
-            },
-            300,
-        )
+        .resolve_project_identity(&identities, 300)
         .await
         .unwrap();
     assert_eq!(resolved, "project-git");
