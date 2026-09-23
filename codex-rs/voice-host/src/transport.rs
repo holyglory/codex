@@ -84,6 +84,7 @@ impl Transport {
     }
 
     #[doc(hidden)]
+    #[cfg(test)]
     pub async fn new_for_tests() -> Result<Self> {
         Self::with_runtime(
             Arc::new(crate::transport_runtime::VoiceRuntime::default()),
@@ -92,6 +93,7 @@ impl Transport {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn with_runtime_for_tests(
         runtime: Arc<dyn webrtc::runtime::Runtime>,
     ) -> Result<Self> {
