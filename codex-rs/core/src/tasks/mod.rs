@@ -840,6 +840,8 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
+        let saved_guardian_completion =
+            matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
         self.persist_rollout_items(&[RolloutItem::EventMsg(event.clone())])
             .await;
 
@@ -855,6 +857,12 @@ impl Session {
                 false
             }
         };
+        // A private Guardian review must not release its approval until the terminal event
+        // and transcript are durably flushed. Keep the active turn cleared first so the
+        // reviewer can accept another request as soon as the parent receives the decision.
+        if saved_guardian_completion && let Err(err) = self.flush_rollout().await {
+            warn!("failed to flush completed Guardian review: {err}");
+        }
         self.send_persisted_event(turn_context.as_ref(), event)
             .await;
         if cleared_active_turn {
@@ -862,7 +870,7 @@ impl Session {
         }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.
-        if let Err(err) = self.flush_rollout().await {
+        if !saved_guardian_completion && let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         if cleared_active_turn {
