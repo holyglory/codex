@@ -117,7 +117,7 @@ impl ChatWidget {
             view_id: Some(USAGE_MENU_VIEW_ID),
             title: Some("Usage".to_string()),
             footer_hint: Some(usage_hint_line(&self.bottom_pane.list_keymap(), "open")),
-            description_layout: SelectionDescriptionLayout::HideWhenNarrow {
+            description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
                 min_description_width: 24,
             },
             items,
