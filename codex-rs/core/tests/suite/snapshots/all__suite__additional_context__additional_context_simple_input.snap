@@ -6,8 +6,10 @@ Scenario: additional context is inserted before the user turn input.
 
 ## Window 1
 -- request 1 (turn; Request) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     <automation_info>run one</automation_info>
 02:message/user:
