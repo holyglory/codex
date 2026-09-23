@@ -7803,7 +7803,7 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
             if plugin_name == "sites" && marketplace_name == "openai-bundled"
     ));
     assert!(matches!(
-        manager.install_plugin(&config.config_layer_stack, install_request.clone()).await,
+        manager.install_plugin_for_config(&config, Some(&auth), install_request.clone()).await,
         Err(PluginInstallError::Marketplace(MarketplaceError::PluginNotFound { plugin_name, marketplace_name }))
             if plugin_name == "sites" && marketplace_name == "openai-bundled"
     ));
@@ -7890,7 +7890,7 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
         .await
         .unwrap();
     restarted
-        .install_plugin(&config.config_layer_stack, install_request)
+        .install_plugin_for_config(&config, Some(&auth), install_request)
         .await
         .unwrap();
 }
