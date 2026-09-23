@@ -67,6 +67,11 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::Transport(ref transport) if is_server_overloaded_transport_error(transport) => {
             CodexErr::ServerOverloaded
         }
+        ApiError::Transport(ref transport) if is_server_slow_down_transport_error(transport) => {
+            CodexErr::new(CodexErrorDetails::RateLimitExceeded(
+                "retry later".to_string(),
+            ))
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -229,8 +234,28 @@ pub(crate) fn is_server_overloaded_transport_error(err: &TransportError) -> bool
                     value
                         .pointer("/error/code")
                         .and_then(serde_json::Value::as_str),
-                    Some("server_is_overloaded" | "slow_down")
+                    Some("server_is_overloaded")
                 )
+            })
+}
+
+fn is_server_slow_down_transport_error(err: &TransportError) -> bool {
+    let TransportError::Http {
+        status,
+        body: Some(body),
+        ..
+    } = err
+    else {
+        return false;
+    };
+    *status == http::StatusCode::SERVICE_UNAVAILABLE
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value
+                    .pointer("/error/code")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("slow_down")
             })
 }
 
