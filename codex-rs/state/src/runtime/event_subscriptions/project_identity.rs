@@ -48,6 +48,11 @@ impl SqliteEventSubscriptionStore {
             } else if exists && project_exists(&mut tx, &canonical).await? {
                 merge_project(&mut tx, &alias.project_id, &canonical).await?;
             }
+            // Reading a previously unseen project must not create aliases whose
+            // parent does not exist yet. Enrollment registers them after binding.
+            if !project_exists(&mut tx, &canonical).await? {
+                continue;
+            }
             sqlx::query("INSERT INTO project_identity_aliases(alias_id,canonical_project_id,alias_kind,canonical_identity_id,created_at_ms,last_seen_at_ms) VALUES(?,?,?,?,?,?) ON CONFLICT(alias_id) DO UPDATE SET canonical_project_id=excluded.canonical_project_id,last_seen_at_ms=excluded.last_seen_at_ms")
                 .bind(&alias.project_id).bind(&canonical).bind(kind(alias.kind)).bind(&canonical).bind(now_ms).bind(now_ms)
                 .execute(&mut *tx).await.map_err(store_error)?;
