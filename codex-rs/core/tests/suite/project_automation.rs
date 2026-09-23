@@ -95,6 +95,10 @@ async fn allow_background_review(test: &TestCodex, project: &ProjectAutomation) 
 #[tokio::test]
 async fn stopping_owner_interrupts_review_and_suspends_its_permission() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "project reviews require a host-local project context"
+    );
     let server = start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
     let project = request_review(&test).await?;
