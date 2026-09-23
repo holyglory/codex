@@ -152,6 +152,18 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
         params: LoginAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if matches!(params, LoginAccountParams::ChatgptAuthTokens { .. })
+            && self
+                .profile_auth_router
+                .router_if_configured()
+                .await
+                .map_err(super::account_profile_processor::router_error)?
+                .is_some()
+        {
+            return Err(invalid_request(
+                "externally managed ChatGPT authentication cannot be attached to a local account profile",
+            ));
+        }
         let processor = self.active_profile_management_view().await?;
         processor.login_v2(request_id, params).await.map(|()| None)
     }
