@@ -16,15 +16,17 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (4; hash=8f44dd235bfe4473):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=0fc6c2a32798a2ec
+  tools (4; hash=d5957942626b8da0):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=c01c1b5f672af84f
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [04] <APPS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:

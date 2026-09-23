@@ -6,8 +6,10 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -15,8 +17,10 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
 
 ## Window 2 (after request 1: settings changed (parallel_tool_calls, tools))
 -- request 2 (compaction) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -28,8 +32,10 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
 
 ## Window 3 (after request 2: input diverged at item 03, settings changed (parallel_tool_calls, tools))
 -- request 3 (turn) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:

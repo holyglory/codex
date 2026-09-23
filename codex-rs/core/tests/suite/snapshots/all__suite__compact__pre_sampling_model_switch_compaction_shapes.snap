@@ -6,8 +6,10 @@ Scenario: Pre-sampling compaction on model switch to a smaller context window: c
 
 ## Window 1
 -- request 1 (turn; Initial Request (Previous Model)) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -15,8 +17,10 @@ Scenario: Pre-sampling compaction on model switch to a smaller context window: c
 
 ## Window 2 (after request 1: settings changed (parallel_tool_calls, tools))
 -- request 2 (compaction; Pre-sampling Compaction Request) --
-00:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+00:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -33,9 +37,11 @@ Scenario: Pre-sampling compaction on model switch to a smaller context window: c
 01:message/user:
     <COMPACTION_SUMMARY>
     PRE_SAMPLING_SUMMARY
-02:message/developer[2]:
+02:message/developer[4]:
     [01] <MODEL_SWITCH>
     [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:
