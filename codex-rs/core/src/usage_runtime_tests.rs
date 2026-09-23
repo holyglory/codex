@@ -167,7 +167,7 @@ async fn provider_usage_is_deduplicated_and_reported_content_free() {
                 },
             ],
             token_observation_counts: vec![codex_usage::CoverageCount {
-                state: "complete".into(),
+                state: "partial".into(),
                 count: 2,
             }],
             has_gaps: true,
