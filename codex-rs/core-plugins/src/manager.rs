@@ -975,10 +975,12 @@ impl PluginsManager {
             self.remote_installed_plugins_snapshot_with_auth(config, auth),
             &self.store,
             Some(&plugin_skill_snapshots),
-            self.restriction_product,
-            remote_global_catalog_active,
             self.skill_root_loader.as_ref(),
-            &cache_key.excluded_plugin_ids,
+            crate::loader::PluginLoadContext {
+                restriction_product: self.restriction_product,
+                remote_global_catalog_active,
+                excluded_plugin_ids: &cache_key.excluded_plugin_ids,
+            },
         )
         .await;
         loaded_cache_metrics::record_duration(
