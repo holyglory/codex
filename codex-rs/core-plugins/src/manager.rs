@@ -1599,20 +1599,21 @@ impl PluginsManager {
         }
         let needs_effective_plugins_refresh =
             is_reconcile && std::mem::take(&mut cache.needs_effective_plugins_refresh);
+        let exclusions_changed = self.update_sites_exclusion(service_base_url, auth, &plugins);
         if cache.plugins.as_ref() == Some(&plugins) {
             drop(caches);
-            if needs_effective_plugins_refresh {
+            let changed = needs_effective_plugins_refresh || exclusions_changed;
+            if changed {
                 self.clear_loaded_plugins_cache_for_auth(identity.auth_identity());
             }
-            return Some(needs_effective_plugins_refresh);
+            return Some(changed);
         }
         let metadata_changed = cache.plugins.as_ref().is_none_or(|previous| {
             !crate::remote_metadata::installed_plugin_metadata_eq(previous, &plugins)
         });
-        self.update_sites_exclusion(service_base_url, auth, &plugins);
         cache.plugins = Some(plugins);
         drop(caches);
-        let changed = needs_effective_plugins_refresh || metadata_changed;
+        let changed = needs_effective_plugins_refresh || metadata_changed || exclusions_changed;
         if changed {
             self.clear_loaded_plugins_cache_for_auth(identity.auth_identity());
         }
