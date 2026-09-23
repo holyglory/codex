@@ -65,6 +65,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
 
   preflight:
     name: Critical producer and consumer regressions
