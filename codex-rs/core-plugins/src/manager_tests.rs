@@ -1985,6 +1985,7 @@ async fn plugin_telemetry_metadata_uses_default_mcp_config_path() {
         &PluginId::parse("sample@test").expect("plugin id should parse"),
         &plugin_root.abs(),
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -2028,6 +2029,7 @@ async fn plugin_capability_summary_uses_manifest_mcp_server_objects() {
         &PluginId::parse("counter-sample@test").expect("plugin id should parse"),
         &plugin_root.abs(),
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -2343,6 +2345,7 @@ async fn install_plugin_materializes_default_command_skills() {
         /*restriction_product*/ None,
         /*plugin_skill_snapshots*/ None,
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await
     .resolve(&SkillConfigRules::default());
@@ -2469,6 +2472,7 @@ async fn load_plugin_skills_dedupes_overlapping_manifest_roots() {
         /*restriction_product*/ None,
         /*plugin_skill_snapshots*/ None,
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await
     .resolve(&SkillConfigRules::default());
@@ -3164,6 +3168,7 @@ enabled = true
 #[tokio::test]
 async fn connector_snapshot_combines_plugin_exclusions_with_current_account_ownership() {
     let codex_home = TempDir::new().unwrap();
+    let config = load_config(codex_home.path(), codex_home.path()).await;
     let auth_manager = test_auth_manager(Some(AuthMode::Chatgpt));
     let manager = test_plugins_manager_with_auth_manager(
         codex_home.path().to_path_buf(),
@@ -3182,7 +3187,7 @@ async fn connector_snapshot_combines_plugin_exclusions_with_current_account_owne
     let local_exclusion = HashSet::from(["local-connector".to_string()]);
     assert_eq!(
         manager
-            .connector_snapshot(sources.clone(), &disabled)
+            .connector_snapshot(sources.clone(), &disabled, &config)
             .disabled_connector_ids(),
         &local_exclusion,
     );
@@ -3191,20 +3196,24 @@ async fn connector_snapshot_combines_plugin_exclusions_with_current_account_owne
     manager.write_remote_installed_plugins_cache(vec![plugin]);
     assert_eq!(
         manager
-            .connector_snapshot(sources.clone(), &disabled)
+            .connector_snapshot(sources.clone(), &disabled, &config)
             .disabled_connector_ids(),
         &HashSet::from(["linear".to_string(), "local-connector".to_string()]),
     );
     assert!(
         manager
-            .connector_snapshot(sources.clone(), &["linear@another-marketplace".to_string()])
+            .connector_snapshot(
+                sources.clone(),
+                &["linear@another-marketplace".to_string()],
+                &config
+            )
             .disabled_connector_ids()
             .is_empty()
     );
     set_test_auth_mode(&auth_manager, Some(AuthMode::ApiKey)).await;
     assert_eq!(
         manager
-            .connector_snapshot(sources, &disabled)
+            .connector_snapshot(sources, &disabled, &config)
             .disabled_connector_ids(),
         &local_exclusion,
     );
@@ -7130,6 +7139,7 @@ async fn load_plugins_uses_project_config_files() {
         Some(Product::Codex),
         /*remote_global_catalog_active*/ false,
         test_skill_root_loader().as_ref(),
+        &std::collections::BTreeSet::new(),
     )
     .await;
 
@@ -7617,6 +7627,52 @@ remote_plugin = true
     let _guard = first_manager
         .acquire_remote_installed_plugin_sync_guard()
         .await
+        .expect("background bundle sync should finish");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn sites_migration_throttles_absence_without_blocking_normal_sync() {
+    let home = TempDir::new().unwrap();
+    write_file(
+        &home.path().join(CONFIG_TOML_FILE),
+        "[features]\nplugins = true\nremote_plugin = true\n",
+    );
+    let server = MockServer::start().await;
+    let mut config = load_config(home.path(), home.path()).await;
+    config.chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let manager = test_plugins_manager_with_options(
+        home.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    );
+    let auth = manager.auth_manager.auth_cached().unwrap();
+    let installed_path = "/backend-api/ps/plugins/installed";
+    let failed_check = Mock::given(method("GET"))
+        .and(path(installed_path))
+        .respond_with(ResponseTemplate::new(503))
+        .mount_as_scoped(&server)
+        .await;
+    assert!(
+        manager
+            .ensure_sites_migration_ready(&config, Some(&auth))
+            .await
+            .is_err()
+    );
+    drop(failed_check);
+    Mock::given(method("GET"))
+        .and(path(installed_path))
+        .and(query_param_is_missing("includeDownloadUrls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "plugins": [], "pagination": {"next_page_token": null}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // An unrelated startup download must not block a successful Sites-absence check.
+    let unrelated_sync = manager
+        .acquire_remote_installed_plugin_sync_guard()
+        .await
         .unwrap();
     for _ in 0..2 {
         assert!(
@@ -7740,7 +7796,7 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
             if plugin_name == "sites" && marketplace_name == "openai-bundled"
     ));
     assert!(matches!(
-        manager.install_plugin(&config, install_request.clone()).await,
+        manager.install_plugin(&config.config_layer_stack, install_request.clone()).await,
         Err(PluginInstallError::Marketplace(MarketplaceError::PluginNotFound { plugin_name, marketplace_name }))
             if plugin_name == "sites" && marketplace_name == "openai-bundled"
     ));
@@ -7827,7 +7883,7 @@ async fn sites_migration_persists_only_exclusion_without_repeating_rollout() {
         .await
         .unwrap();
     restarted
-        .install_plugin(&config, install_request)
+        .install_plugin(&config.config_layer_stack, install_request)
         .await
         .unwrap();
 }
@@ -8098,6 +8154,7 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
             stale_refresh_generation,
             Vec::new(),
             /*auth*/ None,
+            /*service_base_url*/ "",
             RemoteInstalledPluginsCachePublication::Refresh,
         ),
         None
@@ -8108,6 +8165,7 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
             reconcile_generation,
             vec![remote_installed_linear_plugin()],
             /*auth*/ None,
+            /*service_base_url*/ "",
             RemoteInstalledPluginsCachePublication::Reconcile,
         ),
         Some(true)
@@ -8133,6 +8191,7 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
             refresh_generation,
             vec![remote_installed_plugin("beta")],
             /*auth*/ None,
+            /*service_base_url*/ "",
             RemoteInstalledPluginsCachePublication::Refresh,
         ),
         Some(true)
@@ -8146,6 +8205,7 @@ fn reconciliation_fences_refresh_publication_and_recovers_after_cancellation() {
             retry_generation,
             vec![remote_installed_plugin("beta")],
             /*auth*/ None,
+            /*service_base_url*/ "",
             RemoteInstalledPluginsCachePublication::Reconcile,
         ),
         Some(true)

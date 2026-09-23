@@ -31,6 +31,7 @@ fn image_response_retains_presence_preserving_usage() {
             created: 1,
             data: vec![ImageData {
                 b64_json: "fixture".to_string(),
+                generation_id: None,
             }],
             background: None,
             quality: None,

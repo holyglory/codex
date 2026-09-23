@@ -422,6 +422,7 @@ fn generated_output_exposes_content_free_provider_usage() {
         created: 1,
         data: vec![codex_api::ImageData {
             b64_json: RESULT.to_string(),
+            generation_id: None,
         }],
         background: Some(ImageBackground::Opaque),
         quality: None,
