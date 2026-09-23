@@ -70,7 +70,9 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             .await
             .unwrap();
             remote.add_track(remote_audio.track.clone()).await.unwrap();
-            let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
+            let mut local = Transport::with_runtime_for_tests(runtime.clone())
+                .await
+                .unwrap();
             let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
             remote.set_remote_description(offer).await.unwrap();
             let answer = remote.create_answer(/*options*/ None).await.unwrap();
@@ -152,7 +154,7 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
 
 #[tokio::test]
 async fn rejects_excess_or_invalid_candidates_before_mutating_peer() {
-    let mut peer = Transport::new().await.unwrap();
+    let mut peer = Transport::new_for_tests().await.unwrap();
     let offer = peer.offer().await.unwrap();
     let header = offer
         .lines()
@@ -200,7 +202,7 @@ async fn rejects_excess_or_invalid_candidates_before_mutating_peer() {
 
 #[tokio::test]
 async fn invalid_answer_is_redacted_and_peer_can_close() {
-    let mut peer = Transport::new().await.unwrap();
+    let mut peer = Transport::new_for_tests().await.unwrap();
     peer.offer().await.unwrap();
     assert_eq!(
         peer.apply_answer("synthetic-secret-invalid-sdp".into())
