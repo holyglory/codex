@@ -78,17 +78,16 @@ impl Transport {
     pub(crate) async fn new() -> Result<Self> {
         Self::with_runtime(
             Arc::new(crate::transport_runtime::VoiceRuntime::default()),
-            false,
+            /*loopback*/ false,
         )
         .await
     }
 
-    #[doc(hidden)]
-    #[allow(dead_code)]
-    pub async fn new_for_tests() -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) async fn new_for_tests() -> Result<Self> {
         Self::with_runtime(
             Arc::new(crate::transport_runtime::VoiceRuntime::default()),
-            true,
+            /*loopback*/ true,
         )
         .await
     }
@@ -97,7 +96,7 @@ impl Transport {
     pub(crate) async fn with_runtime_for_tests(
         runtime: Arc<dyn webrtc::runtime::Runtime>,
     ) -> Result<Self> {
-        Self::with_runtime(runtime, true).await
+        Self::with_runtime(runtime, /*loopback*/ true).await
     }
 
     async fn with_runtime(

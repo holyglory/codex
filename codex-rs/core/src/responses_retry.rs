@@ -71,7 +71,8 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
     let retry_count = retry_state.retries.saturating_add(1);
-    let is_server_overloaded = matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+    let is_server_overloaded = matches!(request, ResponsesStreamRequest::Sampling)
+        && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
         && !crate::guardian::is_basic_session_source(&turn_context.session_source);
     let delay = match err.retry_delay(retry_count) {
         Some(delay) => delay,

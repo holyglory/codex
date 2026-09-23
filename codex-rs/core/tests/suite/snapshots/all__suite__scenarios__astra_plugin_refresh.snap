@@ -16,8 +16,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=fbbc8f2ad7c8ce86):
-        - namespace/functions; hash=e7db0a45c4ec3157
+00:additional_tools/developer (3; hash=383e970f6fc0d4fb):
+        - namespace/functions; hash=6cec0ed12c74d462
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -49,7 +49,7 @@ Settings:
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[2]:
+02:message/developer[4]:
     [01] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
@@ -73,6 +73,10 @@ Settings:
         Never use the `request_user_input` tool for permission requests or permission-related escalations.
 
         If explicit user input is required for another reason before progress can safely continue, do not use th... as a textual assistant message.</collaboration_mode> [hash=8213052bde4a62b2]
+    [03] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=ed6c3a743d9b8184]
+        </usage_stats_instructions>
+    [04] <project_automation_instructions>For substantive project work use project_automation to bind the current...odel status checks.</project_automation_instructions> [hash=3a5683150cf50445]
 03:message/developer:
     <multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -113,8 +117,8 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 00)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=175a24d9dd32c0c4):
-        - namespace/functions; hash=8c17932a39355f2d
+00:additional_tools/developer (3; hash=ab557d7396b33e1b):
+        - namespace/functions; hash=9adcbb76e87b56da
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -146,7 +150,7 @@ Settings: same as window 1
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[2]:
+02:message/developer[4]:
     [01] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
@@ -170,6 +174,10 @@ Settings: same as window 1
         Never use the `request_user_input` tool for permission requests or permission-related escalations.
 
         If explicit user input is required for another reason before progress can safely continue, do not use th... as a textual assistant message.</collaboration_mode> [hash=8213052bde4a62b2]
+    [03] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=ed6c3a743d9b8184]
+        </usage_stats_instructions>
+    [04] <project_automation_instructions>For substantive project work use project_automation to bind the current...odel status checks.</project_automation_instructions> [hash=3a5683150cf50445]
 03:message/developer:
     <multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
