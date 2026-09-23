@@ -4,6 +4,7 @@ expression: "render_bottom_popup(&chat, 38)"
 ---
   All local statistics
 
+↑
       Classifications (provenance
       first):
   18. implementation/coding
@@ -11,8 +12,7 @@ expression: "render_bottom_popup(&chat, 38)"
       count 5
   19. Repository participation
       operations 5 · tools 3 ·
-      additive no · participation
-      only
+      additive no · participation only
   20. Formula · wall time
       wall formula
   21. Formula · tokens
