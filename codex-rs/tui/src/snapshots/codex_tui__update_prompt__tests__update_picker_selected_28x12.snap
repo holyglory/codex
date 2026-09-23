@@ -3,8 +3,8 @@ source: tui/src/update_prompt.rs
 expression: rendered
 ---
 
-  Update available ·
-  0.156.0+multi.1 → 9.9.9
+  Update available · 0.0.0
+  → 9.9.9
   Fork source:
   https://github.com/holyg
   lory/codex
