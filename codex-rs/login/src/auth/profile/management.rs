@@ -67,7 +67,16 @@ pub enum AccountManagementError {
 pub fn read_managed_accounts(
     config: &AuthConfig,
 ) -> Result<ManagedAccountSnapshot, AccountManagementError> {
-    let registry = read_or_empty(&RegistryStore::new(&config.codex_home))?;
+    let store = RegistryStore::new(&config.codex_home);
+    if matches!(store.read(), Err(RegistryStoreError::NotFound)) {
+        crate::migrate_legacy_auth_if_needed(
+            &config.codex_home,
+            config.auth_credentials_store_mode,
+            config.keyring_backend_kind,
+        )
+        .map_err(|_| AccountManagementError::RegistryUnavailable)?;
+    }
+    let registry = read_or_empty(&store)?;
     snapshot(config, registry)
 }
 
