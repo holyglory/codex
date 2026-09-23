@@ -2382,6 +2382,7 @@ impl PluginsManager {
         request: PluginInstallRequest,
     ) -> Result<PluginInstallOutcome, PluginInstallError> {
         let resolved = self.resolve_installable_plugin(&config.config_layer_stack, &request)?;
+        self.reject_excluded_plugin(config, auth, &resolved.plugin_id)?;
         let plugin_id = resolved.plugin_id.as_key();
         // This only forwards the backend mutation before the local install flow.
         if let Err(err) = crate::remote_legacy::enable_remote_plugin(

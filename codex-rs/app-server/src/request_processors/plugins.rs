@@ -1559,7 +1559,7 @@ impl PluginRequestProcessor {
         };
 
         let result = match plugins_manager
-            .install_plugin(&config.config_layer_stack, request)
+            .install_plugin_for_config(&config.plugins_config_input(), auth.as_ref(), request)
             .await
         {
             Ok(result) => result,
