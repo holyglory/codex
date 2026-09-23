@@ -11,6 +11,9 @@ use std::path::PathBuf;
 
 /// Returns the fixed executor-local directory that every sandbox must hide.
 pub fn shared_daemon_socket_directory() -> io::Result<PathBuf> {
+    if let Some(directory) = std::env::var_os("CODEX_DAEMON_SOCKET_DIR") {
+        return Ok(PathBuf::from(directory));
+    }
     // Resolve the system alias /tmp -> /private/tmp on macOS.
     let temporary_root = fs::canonicalize("/tmp")?;
     let uid = unsafe { libc::geteuid() };
