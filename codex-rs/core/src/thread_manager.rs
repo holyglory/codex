@@ -868,6 +868,11 @@ impl ThreadManager {
             .cloned()
             .collect::<Vec<_>>();
         for thread in threads {
+            thread
+                .session
+                .services
+                .mcp_runtime
+                .invalidate_resource_caches();
             thread.session.mark_mcp_runtime_dirty_without_prewarm();
         }
     }
@@ -887,6 +892,11 @@ impl ThreadManager {
             .cloned()
             .collect::<Vec<_>>();
         for thread in threads {
+            thread
+                .session
+                .services
+                .mcp_runtime
+                .invalidate_resource_caches();
             thread.session.mark_mcp_runtime_dirty_without_prewarm();
             thread
                 .session
