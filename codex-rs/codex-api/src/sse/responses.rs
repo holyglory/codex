@@ -815,7 +815,10 @@ fn is_cyber_policy_error(error: &Error) -> bool {
 }
 
 fn is_server_overloaded_error(error: &Error) -> bool {
-    error.code.as_deref() == Some("server_is_overloaded")
+    matches!(
+        error.code.as_deref(),
+        Some("server_is_overloaded" | "slow_down")
+    )
 }
 
 fn cyber_policy_fallback_message() -> String {
@@ -1224,7 +1227,7 @@ mod tests {
             let events = collect_events(&[sse.as_bytes()]).await;
             match (code, events.as_slice()) {
                 (
-                    "rate_limit_exceeded" | "slow_down",
+                    "rate_limit_exceeded",
                     [
                         Err(ApiError::RateLimitExceeded {
                             message: actual,
@@ -1232,6 +1235,7 @@ mod tests {
                         }),
                     ],
                 )
+                | ("slow_down", [Err(ApiError::ServerOverloaded)])
                 | (
                     "unknown_error",
                     [
