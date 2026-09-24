@@ -305,7 +305,7 @@ jobs:
     # Publication still requires every validation and packaging job to succeed.
     needs: [identity, preflight]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
     permissions:
       contents: read
       id-token: write
