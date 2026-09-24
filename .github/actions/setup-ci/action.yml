@@ -84,6 +84,11 @@ runs:
       with:
         tool: just@1.51.0
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      with:
+        version: "0.11.3"
+
     # Some integration tests spawn DotSlash from a stable system path rather
     # than inheriting the action-local PATH entry.
     - name: Make DotSlash available in PATH (Unix)

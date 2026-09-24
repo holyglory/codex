@@ -228,6 +228,11 @@ jobs:
             test \
             --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
             --test_tmpdir="$CODEX_BAZEL_TEST_TMPDIR" \
+            --sandbox_writable_path=/tmp \
+            --sandbox_tmpfs_path=/tmp \
+            --test_env=TMPDIR=/tmp \
+            --test_env=TEST_TMPDIR=/tmp \
+            --test_env=HOME=/tmp/codex-test-home \
             --keep_going \
             --local_test_jobs=2 \
             --test_env=RUST_TEST_THREADS=1 \
