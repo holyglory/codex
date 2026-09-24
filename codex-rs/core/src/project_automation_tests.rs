@@ -24,6 +24,9 @@ fn project_identity_is_shared_by_worktrees_and_never_contains_a_raw_path() {
 
 #[test]
 fn project_identity_exposes_workspace_alias_before_git_metadata_appears() {
+    #[cfg(target_os = "linux")]
+    let root = tempfile::tempdir_in("/var/tmp").unwrap();
+    #[cfg(not(target_os = "linux"))]
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
