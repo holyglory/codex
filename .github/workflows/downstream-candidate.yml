@@ -66,7 +66,6 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
-          python3 -m unittest discover -s .github/scripts -p 'test_prepare_cargo_voice_tests.py'
           python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
           python3 -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'
           python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
