@@ -182,6 +182,8 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         .await?;
     assert!(second_change.generation > first_change.generation);
 
+    server.shutdown_gracefully().await?;
+    let mut server = initialized_server(codex_home.path()).await?;
     let removed: AccountProfileRemoveResponse = server
         .request(|request_id| ClientRequest::AccountProfileRemove {
             request_id,
