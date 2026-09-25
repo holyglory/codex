@@ -1,106 +1,127 @@
-name: downstream-compiler-cache-probe
-
+name: downstream-linux-build-probe
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/npm-compiler-cache-probe]
-    paths:
-      - .github/scripts/probe_compiler_cache_persistence.py
-      - .github/scripts/compiler_cache_write_diagnostics.py
-      - .github/scripts/compiler_cache_health.py
-      - .github/scripts/install_retrying_sccache.py
-      - .github/patches/sccache-0.16.0-gha-retry.patch
-      - .github/scripts/test_probe_compiler_cache_persistence.py
-      - .github/actions/probe-compiler-cache/action.yml
-      - .github/actions/downstream-compiler-cache/action.yml
-      - .github/workflows/downstream-compiler-cache-probe.yml
-
 permissions:
   contents: read
-
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 jobs:
-  windows-host-build:
-    if: github.repository == 'holyglory/codex'
+  linux-build:
+    name: Build ${{ matrix.target }}
+    # Diagnose repeated runner shutdowns on the already validated product source.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: ./.github/actions/setup-msvc-env
-        with:
-          target: ${{ matrix.target }}
-      - uses: ./.github/actions/downstream-compiler-cache
-      - name: Verify the installed native tool and setup helpers
-        shell: bash
-        run: |
-          "$SCCACHE_PATH" --version
-          python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
-
-  linux-host-build:
-    if: github.repository == 'holyglory/codex'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+          ref: b592b0a78933c178fb5e80cdda2f4b4f709ae783
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          targets: aarch64-unknown-linux-musl
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+          targets: ${{ matrix.target }}
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.14.0
           use-cache: false
-      - name: Configure the real product cross-compiler environment
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
         shell: bash
         env:
-          TARGET: aarch64-unknown-linux-musl
-        run: bash .github/scripts/install-musl-build-tools.sh
-      - name: Build the native cache tool from a cold directory
+          TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils pkg-config libcap-dev zstd
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - uses: ./.github/actions/downstream-compiler-cache
+        with:
+          backend: persistent
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Build and hash bundled bwrap
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-bwrap.json" --defer-health -- \
+            cargo build --locked --target "$TARGET" --release --bin bwrap
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
+      - name: Build product binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          (while true; do
+            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            free -m
+            ps -C rustc -o comm=,rss=,pcpu= || true
+            sleep 15
+          done) &
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true' EXIT
+          args=(
+            cargo build --locked --target "$TARGET" --release
+            --bin codex
+            --bin codex-app-server
+            --bin codex-code-mode-host
+          )
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-product.json" --defer-health -- "${args[@]}"
+      - name: Verify the native fork updater without changing any installation
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 "${GITHUB_WORKSPACE}/scripts/check_fork_update.py" \
+            --codex-binary "${CARGO_TARGET_DIR}/${TARGET}/release/codex"
+      - name: Verify compiler-cache health
+        run: |
+          for receipt in "$RUNNER_TEMP"/compiler-cache-*.json; do
+            python3 "${GITHUB_WORKSPACE}/.github/scripts/compiler_cache_health.py" --file "$receipt" --backend bazel-http
+          done
+      - name: Preserve resource failure information
+        if: always()
         shell: bash
         run: |
-          python3 .github/scripts/install_retrying_sccache.py \
-            --install-dir "$RUNNER_TEMP/native-sccache-proof" \
-            --build-root "$RUNNER_TEMP/native-sccache-build"
-      - name: Verify host isolation and actual cache-read recovery
-        shell: bash
-        env:
-          SCCACHE_TEST_BINARY: ${{ env.SCCACHE_PATH }}
-        run: python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
-
-  populate:
-    if: github.repository == 'holyglory/codex'
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+          free -m
+          sudo dmesg --ctime | tail -35 || true
+      - name: Retain proof
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          persist-credentials: false
-      - uses: ./.github/actions/probe-compiler-cache
-        with:
-          mode: populate
-
-  consume:
-    if: always() && github.repository == 'holyglory/codex'
-    needs: populate
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/probe-compiler-cache
-        with:
-          mode: consume
+          name: linux-build-proof-${{ matrix.target }}
+          path: ${{ runner.temp }}/compiler-cache-*.json
