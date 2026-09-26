@@ -1,7 +1,7 @@
 ---
 source: cli/tests/account.rs
-expression: "human.replace(countdown, \"[Codex reset countdown]\")"
+expression: "human.replace(countdown,\n\"[Codex reset countdown]\").replace(expiry, \"[Banked expiry countdown]\")"
 ---
-CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET IN
-	beta 	ready	api-key	2		unknown      	unknown                	unknown (unsupportedAuthentication)	unknown
-*	alpha	ready	chatgpt	1	primary	3            	2030-01-01 00:00:00 UTC	codex: 5m 42% used / 1h 84% used / individual 32% used	[Codex reset countdown]
+ALIAS 	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
+*alpha	1	primary	3            	[Banked expiry countdown]	84%	[Codex reset countdown]
+ beta 	2		unknown      	unknown  	unknown (unsupportedAuthentication)	unknown
