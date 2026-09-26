@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: normalized
 ---
-CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET IN
-	beta 	ready	chatgpt	2		unknown      	unknown                	codex: 7d 61% used	[Codex reset countdown]
-*	alpha	ready	chatgpt	1	primary	unknown      	unknown                	codex: 7d 100% used	[Codex reset countdown]
+ALIAS 	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
+ beta 	2		unknown      	unknown  	61%	[Codex reset countdown]
+*alpha	1	primary	unknown      	unknown  	100%	[Codex reset countdown]

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::io::IsTerminal;
 
 use codex_account_registry::AccountAlias;
@@ -182,24 +183,26 @@ fn render_list(
             println!("No account profiles configured.");
             return Ok(());
         }
-        let limits_header = if limits.is_empty() {
-            ""
-        } else {
-            "\tBANKED RESETS\tSOONEST EXPIRY (UTC)\tLIMITS\tRESET IN"
-        };
+        let mut views = views;
+        views.sort_by(compare_human_accounts);
         let alias_width = views
             .iter()
             .map(|entry| entry.account.alias.as_str().len())
             .max()
             .unwrap_or("ALIAS".len())
             .max("ALIAS".len());
+        let alias_column_width = alias_width + 1;
         let color = std::io::stdout().is_terminal()
             && std::env::var_os("NO_COLOR").is_none()
             && supports_color::on(supports_color::Stream::Stdout).is_some();
-        let header = format!(
-            "CURRENT\t{:<alias_width$}\tSTATUS\tAUTH\tPRIORITY (HIGHER DRAINS FIRST)\tNOTE{limits_header}",
-            "ALIAS"
-        );
+        let header = if limits.is_empty() {
+            format!("{:<alias_column_width$}\tPRIORITY\tNOTE", "ALIAS")
+        } else {
+            format!(
+                "{:<alias_column_width$}\tPRIORITY\tNOTE\tBANKED RESETS\tEXPIRY IN\tLIMITS\tRESET IN",
+                "ALIAS"
+            )
+        };
         let header_style = if color {
             Style::new().bold().cyan()
         } else {
@@ -208,48 +211,22 @@ fn render_list(
         println!("{}", header.style(header_style));
         for entry in views {
             let account = entry.account;
-            let alias = account.alias.as_str();
-            let current = if account.current { "*" } else { "" };
-            let status = match (account.enabled, account.authenticated) {
-                (false, _) => "disabled",
-                (true, false) => "logged-out",
-                (true, true) => "ready",
-            };
-            let status_style = if color {
-                match (account.enabled, account.authenticated) {
-                    (false, _) => Style::new().dimmed(),
-                    (true, false) => Style::new().yellow(),
-                    (true, true) => Style::new().green(),
-                }
-            } else {
-                Style::new()
-            };
             let account_style = if color && account.current {
                 Style::new().bold().green()
             } else {
                 Style::new()
             };
+            let alias = format!(
+                "{}{:<alias_width$}",
+                if account.current { "*" } else { " " },
+                account.alias.as_str()
+            );
             let limits_columns = match entry.limits {
                 Some(limits) => {
                     let summary = if limits.state == "observed" {
-                        limits
-                            .buckets
-                            .iter()
-                            .filter(|bucket| bucket.limit_id.as_deref() == Some("codex"))
-                            .map(|bucket| {
-                                let name = bucket
-                                    .limit_name
-                                    .as_deref()
-                                    .or(bucket.limit_id.as_deref())
-                                    .unwrap_or("codex");
-                                format!(
-                                    "{}: {}",
-                                    safe_human_text(name),
-                                    limits::bucket_summary(bucket)
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("; ")
+                        limits::codex_usage_percent(limits)
+                            .map(|percent| styled_usage_percent(percent, color))
+                            .unwrap_or_else(|| "unknown".to_string())
                     } else {
                         format!("unknown ({})", limits.reason.unwrap_or("unavailable"))
                     };
@@ -260,16 +237,26 @@ fn render_list(
                             } else if !resets.expiry_known {
                                 "unknown".to_string()
                             } else if let Some(expires_at) = resets.soonest_expires_at {
-                                limits::reset_label(Some(expires_at))
+                                limits::reset_countdown_days_hours(
+                                    Some(expires_at),
+                                    chrono::Utc::now().timestamp(),
+                                )
                             } else {
                                 "never".to_string()
                             };
-                            (resets.available_count.to_string(), expiry)
+                            let banked_count = resets.available_count.to_string();
+                            let banked_count = format!("{banked_count:<13}");
+                            let banked_count = if color && resets.available_count > 0 {
+                                banked_count.style(Style::new().bold().green()).to_string()
+                            } else {
+                                banked_count
+                            };
+                            (banked_count, expiry)
                         }
-                        None => ("unknown".to_string(), "unknown".to_string()),
+                        None => (format!("{:<13}", "unknown"), "unknown".to_string()),
                     };
                     format!(
-                        "\t{banked_count:<13}\t{expiry:<23}\t{summary}\t{}",
+                        "\t{banked_count}\t{expiry:<9}\t{summary}\t{}",
                         limits::reset_countdown(
                             limits.next_reset_at,
                             chrono::Utc::now().timestamp()
@@ -278,13 +265,9 @@ fn render_list(
                 }
                 None => String::new(),
             };
-            let alias = format!("{alias:<alias_width$}");
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}{limits_columns}",
-                current.style(account_style),
+                "{}\t{}\t{}{limits_columns}",
                 alias.style(account_style),
-                status.style(status_style),
-                auth_mode_label(account.auth_mode),
                 account.priority,
                 account
                     .note
@@ -296,6 +279,72 @@ fn render_list(
         }
         Ok(())
     }
+}
+
+fn compare_human_accounts(left: &AccountListEntry<'_>, right: &AccountListEntry<'_>) -> Ordering {
+    let left_usage = left.limits.and_then(limits::codex_usage_percent);
+    let right_usage = right.limits.and_then(limits::codex_usage_percent);
+    let left_group = usage_group(left_usage);
+    let right_group = usage_group(right_usage);
+    left_group
+        .cmp(&right_group)
+        .then_with(|| {
+            if left_group == 0 {
+                left_usage
+                    .unwrap_or(100.0)
+                    .total_cmp(&right_usage.unwrap_or(100.0))
+            } else {
+                Ordering::Equal
+            }
+        })
+        .then_with(|| {
+            if left_group == 1 {
+                banked_count(right).cmp(&banked_count(left))
+            } else {
+                Ordering::Equal
+            }
+        })
+        .then_with(|| reset_at(left).cmp(&reset_at(right)))
+        .then_with(|| right.account.priority.cmp(&left.account.priority))
+        .then_with(|| left.account.alias.cmp(&right.account.alias))
+        .then_with(|| left.account.id.cmp(&right.account.id))
+}
+
+fn usage_group(usage: Option<f64>) -> u8 {
+    match usage {
+        Some(percent) if percent < 100.0 => 0,
+        Some(_) => 1,
+        None => 2,
+    }
+}
+
+fn banked_count(entry: &AccountListEntry<'_>) -> i64 {
+    entry
+        .limits
+        .and_then(|limits| limits.banked_resets.as_ref())
+        .map_or(-1, |resets| resets.available_count)
+}
+
+fn reset_at(entry: &AccountListEntry<'_>) -> i64 {
+    entry
+        .limits
+        .and_then(|limits| limits.next_reset_at)
+        .unwrap_or(i64::MAX)
+}
+
+fn styled_usage_percent(percent: f64, color: bool) -> String {
+    let text = format!("{percent:.0}%");
+    if !color {
+        return text;
+    }
+    let style = if percent >= 67.0 {
+        Style::new().red()
+    } else if percent >= 34.0 {
+        Style::new().yellow()
+    } else {
+        Style::new().green()
+    };
+    text.style(style).to_string()
 }
 
 pub(super) fn current(

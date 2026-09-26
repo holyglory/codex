@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: "String::from_utf8_lossy(&restricted.get_output().stdout)"
 ---
-CURRENT	ALIAS	STATUS	AUTH	PRIORITY (HIGHER DRAINS FIRST)	NOTE	BANKED RESETS	SOONEST EXPIRY (UTC)	LIMITS	RESET IN
-	beta 	ready	api-key	2		unknown      	unknown                	unknown (unsupportedAuthentication)	unknown
-*	alpha	ready	chatgpt	1	primary	0            	none                   	codex: limit reached	unknown
+ALIAS 	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
+*alpha	1	primary	0            	none     	100%	unknown
+ beta 	2		unknown      	unknown  	unknown (unsupportedAuthentication)	unknown
