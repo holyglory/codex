@@ -315,6 +315,26 @@ pub(super) fn reset_countdown(reset: Option<i64>, now: i64) -> String {
     }
 }
 
+pub(super) fn reset_countdown_days_hours(reset: Option<i64>, now: i64) -> String {
+    let Some(reset) = reset else {
+        return "unknown".into();
+    };
+    let seconds = reset.saturating_sub(now);
+    if seconds <= 0 {
+        return "now".into();
+    }
+    let hours = seconds / (60 * 60);
+    let days = hours / 24;
+    let hours = hours % 24;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        "<1h".into()
+    }
+}
+
 pub(super) fn window_label(window: Option<&RateLimitWindow>) -> String {
     match window {
         Some(window) => format!(
@@ -341,35 +361,35 @@ pub(super) fn window_usage_label(window: Option<&RateLimitWindow>) -> String {
     }
 }
 
-pub(super) fn bucket_summary(bucket: &RateLimitSnapshot) -> String {
-    let mut parts = bucket
+pub(super) fn codex_usage_percent(limits: &AccountLimitsJson) -> Option<f64> {
+    limits
+        .buckets
+        .iter()
+        .filter(|bucket| bucket.limit_id.as_deref() == Some("codex"))
+        .filter_map(bucket_usage_percent)
+        .max_by(f64::total_cmp)
+}
+
+fn bucket_usage_percent(bucket: &RateLimitSnapshot) -> Option<f64> {
+    let window_usage = bucket
         .primary
         .iter()
         .chain(bucket.secondary.iter())
-        .map(|window| window_usage_label(Some(window)))
-        .collect::<Vec<_>>();
-    if let Some(limit) = &bucket.individual_limit {
-        parts.push(format!(
-            "individual {}% used",
-            100 - limit.remaining_percent
-        ));
-    }
-    if parts.is_empty() {
-        parts.push(
-            if bucket.spend_control_reached == Some(true)
-                || bucket.rate_limit_reached_type.is_some()
-                || bucket
-                    .credits
-                    .as_ref()
-                    .is_some_and(|credits| !credits.has_credits && !credits.unlimited)
-            {
-                "limit reached".into()
-            } else {
-                "unknown".into()
-            },
-        );
-    }
-    parts.join(" / ")
+        .map(|window| window.used_percent);
+    let individual_usage = bucket
+        .individual_limit
+        .as_ref()
+        .map(|limit| f64::from(100 - limit.remaining_percent).clamp(0.0, 100.0));
+    let usage = window_usage.chain(individual_usage).max_by(f64::total_cmp);
+    usage.or_else(|| {
+        (bucket.spend_control_reached == Some(true)
+            || bucket.rate_limit_reached_type.is_some()
+            || bucket
+                .credits
+                .as_ref()
+                .is_some_and(|credits| !credits.has_credits && !credits.unlimited))
+        .then_some(100.0)
+    })
 }
 
 #[cfg(test)]
