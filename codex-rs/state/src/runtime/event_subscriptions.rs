@@ -27,6 +27,9 @@ use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+mod alarm_routes;
+mod alarm_work;
+mod alarms;
 mod attention;
 mod await_work;
 mod owned_wait;
@@ -41,20 +44,22 @@ use storage::*;
 #[derive(Clone)]
 pub struct SqliteEventSubscriptionStore {
     pool: Arc<SqlitePool>,
-    project_changed: Arc<tokio::sync::Notify>,
+    deadline_changed: Arc<tokio::sync::Notify>,
     event_changed: Arc<tokio::sync::Notify>,
     source_changed: Arc<tokio::sync::Notify>,
     wait_requests: Arc<Mutex<BTreeMap<Uuid, owned_wait::WaitRequest>>>,
+    alarm_delivery_available: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SqliteEventSubscriptionStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self {
             pool,
-            project_changed: Arc::new(tokio::sync::Notify::new()),
+            deadline_changed: Arc::new(tokio::sync::Notify::new()),
             event_changed: Arc::new(tokio::sync::Notify::new()),
             source_changed: Arc::new(tokio::sync::Notify::new()),
             wait_requests: Arc::new(Mutex::new(BTreeMap::new())),
+            alarm_delivery_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -105,6 +110,15 @@ impl SqliteEventSubscriptionStore {
     pub(crate) async fn delete_thread(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
         self.detach_project_thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE alarms SET state='cancelled' WHERE thread_id=? AND state IN ('armed','due','delivered')").bind(thread_id.to_string()).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM alarm_work_operations WHERE thread_id=?")
+            .bind(thread_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE alarm_work SET active_count=0 WHERE thread_id=?")
+            .bind(thread_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM thread_wake_policy_state WHERE thread_id = ?")
             .bind(thread_id.to_string())
             .execute(&mut *tx)
@@ -125,6 +139,8 @@ impl SqliteEventSubscriptionStore {
             .rows_affected()
             != 0;
         tx.commit().await?;
+        self.source_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(deleted)
     }
 }
@@ -133,11 +149,11 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
     async fn process_wait_requests(&self) -> Result<(), StoreError> {
         self.process_owned_wait_requests().await
     }
-    async fn restore_project_jobs(&self) -> Result<(), StoreError> {
-        self.restore_unfinished_project_jobs().await
+    async fn restore_runtime(&self) -> Result<(), StoreError> {
+        self.restore_alarm_runtime().await
     }
     async fn wait_for_change(&self) {
-        self.project_changed.notified().await;
+        self.deadline_changed.notified().await;
     }
     async fn create(
         &self,
@@ -214,7 +230,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
         .await
         .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         self.source_changed.notify_one();
         Ok(Subscription {
             id,
@@ -271,7 +287,8 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
         .map_err(store_error)?;
         if managed {
             return Err(StoreError::Unavailable(
-                "use project pause or completion for a managed project schedule".into(),
+                "legacy project scheduling is inactive; its records are retained for migration"
+                    .into(),
             ));
         }
         let mut tx = self
@@ -279,6 +296,8 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(store_error)?;
+        sqlx::query("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('armed','due','delivered')")
+            .bind(id.to_string()).execute(&mut *tx).await.map_err(store_error)?;
         sqlx::query("DELETE FROM event_subscription_pending_wakes WHERE subscription_id = ?")
             .bind(id.to_string())
             .execute(&mut *tx)
@@ -312,7 +331,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
                 .map_err(store_error)?;
         }
         tx.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         self.event_changed.notify_waiters();
         self.source_changed.notify_one();
         Ok(cancelled)
@@ -492,7 +511,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
             affected.insert(thread_id);
         }
         tx.commit().await.map_err(store_error)?;
-        affected.extend(self.collect_project_deadlines(now_ms).await?);
+        affected.extend(self.collect_alarm_deadlines(now_ms).await?);
         if !affected.is_empty() {
             self.event_changed.notify_waiters();
         }
@@ -500,7 +519,7 @@ impl EventSubscriptionStore for SqliteEventSubscriptionStore {
     }
 
     async fn next_heartbeat_deadline(&self) -> Result<Option<i64>, StoreError> {
-        sqlx::query_scalar("SELECT MIN(deadline) FROM (SELECT next_heartbeat_at_ms AS deadline FROM event_subscriptions UNION ALL SELECT next_deadline_at_ms AS deadline FROM project_automations)")
+        sqlx::query_scalar("SELECT MIN(deadline) FROM (SELECT next_heartbeat_at_ms AS deadline FROM event_subscriptions UNION ALL SELECT due_at_ms FROM alarms WHERE state='armed' UNION ALL SELECT expires_at_ms FROM alarms WHERE state IN ('armed','due','delivered') UNION ALL SELECT w.observed_at_ms+MAX(0,a.active_target_ms-w.accumulated_ms) FROM alarms a JOIN alarm_work w ON w.thread_id=a.thread_id WHERE a.state='armed' AND a.active_target_ms IS NOT NULL AND w.active_count>0)")
             .fetch_one(self.pool.as_ref())
             .await
             .map_err(store_error)

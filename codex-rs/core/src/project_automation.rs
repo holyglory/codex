@@ -3,20 +3,15 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_event_subscriptions::ProjectAutomation;
-use codex_event_subscriptions::ProjectAutomationCommand;
 use codex_event_subscriptions::ProjectIdentityCandidate;
 use codex_event_subscriptions::ProjectIdentityCandidates;
 use codex_event_subscriptions::ProjectIdentityKind;
-use codex_event_subscriptions::ProjectMode;
-use codex_event_subscriptions::WorkPurpose;
 use sha1::Digest;
 use sha1::Sha1;
 
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::tools::code_mode::is_exec_tool_name;
-use crate::tools::context::ToolInvocation;
 
 #[path = "project_automation_evidence.rs"]
 mod evidence;
@@ -92,193 +87,14 @@ pub(crate) async fn ensure_project_enrollment(
     let previous = store.project_status(&project_id).await.map_err(|error| {
         FunctionCallError::RespondToModel(format!("Cannot read project scheduling state: {error}"))
     })?;
-    let was_bound = previous
-        .as_ref()
-        .is_some_and(|project| project.threads.contains_key(&thread_id.to_string()));
-    let now_ms = project_automation_now_ms();
-    let project = store
-        .project_enroll_thread(&project_id, thread_id, step.turn.parent_thread_id, now_ms)
-        .await
-        .map_err(|error| {
-            FunctionCallError::RespondToModel(format!("Cannot enroll project work: {error}"))
-        })?;
-    store
-        .register_project_identity_aliases(&identities, &project_id, now_ms)
-        .await
-        .map_err(|error| {
-            FunctionCallError::RespondToModel(format!(
-                "Cannot persist project identity aliases: {error}"
-            ))
-        })?;
-    // Restore persisted declarations even if a previous runtime enrolled this task.
     session
         .services
         .usage_runtime
-        .restore_work_context(Some(&project), thread_id)
-        .await;
-    if !was_bound && project.threads.contains_key(&thread_id.to_string()) {
-        crate::project_work_context::capture_project_work_binding(
-            &step.turn.config.codex_home,
-            &project,
-            thread_id,
-            now_ms,
-        )
-        .await;
-    }
-    Ok(Some(project))
-}
-
-pub(crate) async fn enforce_project_admission(
-    invocation: &ToolInvocation,
-) -> Result<(), FunctionCallError> {
-    if !invocation.turn.config.local_control_tools_enabled {
-        return Ok(());
-    }
-    let admission_exempt = invocation.tool_name.name == "project_automation"
-        || is_exec_tool_name(&invocation.tool_name);
-    let Some(state) = invocation.session.state_db() else {
-        return Ok(());
-    };
-    let Some(environment) = invocation.step_context.environments.primary() else {
-        return Ok(());
-    };
-    let identities = project_identity_candidates(&environment.cwd().to_path_buf());
-    let store = state.event_subscriptions();
-    let now_ms = project_automation_now_ms();
-    let project_id = store
-        .resolve_project_identity(&identities, now_ms)
-        .await
-        .map_err(|error| {
-            FunctionCallError::RespondToModel(format!(
-                "Project identity state is unavailable: {error}"
-            ))
-        })?;
-    let project = if admission_exempt {
-        // Control tools must remain usable during a state-store outage. Their
-        // optional accounting context becomes unknown instead of staying stale.
-        tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            store.project_status(&project_id),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .flatten()
-    } else {
-        store.project_status(&project_id).await.map_err(|error| {
-            FunctionCallError::RespondToModel(format!("Project deadline state is unavailable: {error}. Diagnose or restore the scheduling store before new implementation."))
-        })?
-    };
-    invocation
-        .session
+        .bind_alarm_store(store.clone());
+    session
         .services
         .usage_runtime
-        .restore_work_context(project.as_ref(), invocation.session.thread_id())
+        .restore_work_context(previous.as_ref(), thread_id)
         .await;
-    if admission_exempt {
-        return Ok(());
-    }
-    if let Some(project) = project {
-        let purpose = project
-            .threads
-            .get(&invocation.session.thread_id().to_string())
-            .copied()
-            .unwrap_or(WorkPurpose::Implementation);
-        let read_only_control = matches!(
-            invocation.tool_name.name.as_str(),
-            "usage_stats"
-                | "usage_activity"
-                | "list_mcp_resources"
-                | "list_mcp_resource_templates"
-                | "read_mcp_resource"
-                | "view_image"
-                | "read_thread"
-                | "list_threads"
-                | "wait_threads"
-                | "wait"
-                | "write_stdin"
-                | "await_work"
-        );
-        if project.mode_for_thread(invocation.session.thread_id(), now_ms)
-            == ProjectMode::RecoveryOnly
-            && purpose == WorkPurpose::Implementation
-            && !read_only_control
-        {
-            return Err(FunctionCallError::RespondToModel(
-                "The project reached its delivery hard-stop deadline. Ordinary implementation is paused; continue necessary delivery diagnosis, repair, checks and publication by binding purpose=recovery. Specification/analysis work is not a delivery obligation. Only verified delivery evidence or an explicit user postponement clears this deadline; do not relabel ordinary implementation to bypass it.".into(),
-            ));
-        }
-        if project.mode(now_ms) == ProjectMode::Paused
-            && (!read_only_control || invocation.tool_name.name == "await_work")
-        {
-            return Err(FunctionCallError::RespondToModel("This project is explicitly paused. Preserve existing results; resume only when the user resumes the work.".into()));
-        }
-        store
-            .project_activity(&project_id, invocation.session.thread_id(), now_ms)
-            .await
-            .map_err(|error| {
-                FunctionCallError::RespondToModel(format!(
-                    "Cannot persist project activity: {error}"
-                ))
-            })?;
-    }
-    Ok(())
+    Ok(previous)
 }
-
-pub(crate) async fn observe_project_bottleneck(invocation: &ToolInvocation) {
-    let observation = async {
-        let state = invocation.session.state_db()?;
-        let environment = invocation.step_context.environments.primary()?;
-        let identities = project_identity_candidates(&environment.cwd().to_path_buf());
-        let store = state.event_subscriptions();
-        let project_id = store
-            .resolve_project_identity(&identities, project_automation_now_ms())
-            .await
-            .ok()?;
-        let project = store.project_status(&project_id).await.ok()??;
-        if project.paused || project.review.is_some() {
-            return None;
-        }
-        let now_ms = project_automation_now_ms();
-        let usage = codex_usage::UsageStore::open(&invocation.turn.config.codex_home)
-            .await
-            .ok()?;
-        let packet = usage
-            .performance_review_packet(codex_usage::PerformanceReviewQuery {
-                repository_id: None,
-                thread_id: Some(
-                    codex_usage::ThreadId::new(invocation.session.thread_id().to_string()).ok()?,
-                ),
-                time_range: Some(
-                    codex_usage::UtcTimeRange::new(project.review_window_start_ms, now_ms).ok()?,
-                ),
-                include_descendants: true,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
-        let candidate = packet.candidates.iter().find(|candidate| {
-            candidate
-                .measured_interval_ms
-                .is_some_and(|duration| duration >= 60_000)
-        })?;
-        let reference = format!("usage-operation:{}", candidate.evidence.operation_id);
-        store
-            .project_command(
-                &project_id,
-                invocation.session.thread_id(),
-                Some(project.revision),
-                ProjectAutomationCommand::RequestReview {
-                    evidence_ref: reference,
-                },
-                now_ms,
-            )
-            .await
-            .ok()
-    };
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), observation).await;
-}
-
-#[cfg(test)]
-#[path = "project_automation_tests.rs"]
-mod tests;

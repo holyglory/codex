@@ -1,6 +1,8 @@
+#[cfg(test)]
 use codex_event_subscriptions::ProjectAutomation;
 use codex_event_subscriptions::StoreError;
 use codex_protocol::ThreadId;
+#[cfg(test)]
 use uuid::Uuid;
 
 use super::SqliteEventSubscriptionStore;
@@ -17,6 +19,7 @@ impl SqliteEventSubscriptionStore {
         rows.into_iter().map(parse_thread_id).collect()
     }
 
+    #[cfg(test)]
     pub async fn claim_project_review_worker(
         &self,
         project_id: &str,

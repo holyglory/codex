@@ -1,4 +1,5 @@
 mod account_management;
+mod alarms;
 pub(crate) mod apply_patch;
 pub(crate) mod apply_patch_spec;
 mod await_work;
@@ -21,6 +22,7 @@ pub(crate) mod new_context_window_spec;
 mod plan;
 pub(crate) mod plan_spec;
 mod project_automation;
+pub use alarms::AlarmHandler;
 mod request_permissions;
 mod request_plugin_install;
 pub(crate) mod request_plugin_install_spec;

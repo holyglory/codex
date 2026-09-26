@@ -20,7 +20,7 @@ use super::world_state::EnvironmentsState;
 const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     UserInstructions::matches_text,
     super::world_state::AgentsMdState::matches_focused_policy,
-    super::ProjectPerformanceReview::matches_text,
+    super::is_legacy_project_review,
     EnvironmentsState::matches_text,
     AdditionalContextUserFragment::matches_text,
     AgentMessageBoardNotification::matches_text,

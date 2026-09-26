@@ -1451,13 +1451,26 @@ impl UnifiedExecProcessManager {
         );
         inject_session_env(&mut env, context.session.session_id());
         env.remove("DEVCOORDINATOR_WORK_CONTEXT");
+        env.remove("CODEX_ALARM_CONTEXT");
+        env.remove("CODEX_ALARM_ACTIVATION");
         if let Ok(Some(work)) = tokio::time::timeout(
             Duration::from_millis(250),
             crate::project_work_context::execution_context(context, &cwd),
         )
         .await
         {
-            env.insert("DEVCOORDINATOR_WORK_CONTEXT".into(), work);
+            env.insert("DEVCOORDINATOR_WORK_CONTEXT".into(), work.work);
+            if !request.turn_environment.environment.is_remote() {
+                if let Some(alarm) = work.alarm {
+                    env.insert("CODEX_ALARM_CONTEXT".into(), alarm);
+                }
+                if let Some(path) = work
+                    .activation
+                    .and_then(|path| path.as_path().to_str().map(str::to_owned))
+                {
+                    env.insert("CODEX_ALARM_ACTIVATION".into(), path);
+                }
+            }
         }
         inject_apply_patch_env(&mut env, &turn.config.features);
         let active_permission_profile = request.turn_environment.active_permission_profile();

@@ -73,6 +73,7 @@ pub(crate) struct UsageRuntime {
     process_id: ProcessId,
     process_started_at_ms: i64,
     store: OnceCell<Arc<UsageStore>>,
+    alarm_store: StdOnceLock<codex_state::SqliteEventSubscriptionStore>,
     faulted: AtomicBool,
     fault_generation: AtomicU64,
     fault_recovery_allowed: AtomicBool,
@@ -181,6 +182,7 @@ impl UsageRuntime {
             process_id: ProcessId::new(),
             process_started_at_ms: now_ms(),
             store: OnceCell::new(),
+            alarm_store: StdOnceLock::new(),
             faulted: AtomicBool::new(false),
             fault_generation: AtomicU64::new(0),
             fault_recovery_allowed: AtomicBool::new(true),
@@ -686,6 +688,12 @@ impl UsageAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.runtime
+            .alarm_work(
+                self.operation_id,
+                codex_event_subscriptions::AlarmWorkEvent::Finish,
+            )
+            .await;
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let Some(finish) = self.pending.finish(
             status,
@@ -878,3 +886,6 @@ pub(crate) use repository::repository_safe_label;
 pub(crate) use tool::ToolAttemptContext;
 pub(crate) use tool::UsageActivityRelation;
 pub(crate) use tool::UsageToolDescriptor;
+
+#[path = "usage_runtime_alarm.rs"]
+mod alarm;

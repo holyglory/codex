@@ -512,12 +512,34 @@ async fn handle_approved_mcp_tool_call(
                     if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
                         tool_input = rewritten_arguments.clone();
                     }
-                    let request_meta = build_mcp_tool_call_request_meta(
+                    let mut request_meta = build_mcp_tool_call_request_meta(
                         step_context,
                         &server,
                         call_id,
                         Some(&metadata),
                     );
+                    if matches!(server.as_str(), "devcoordinator" | "devcoordinator2")
+                        && let Some(environment) = step_context.environments.primary()
+                        && let Some(work) = crate::project_work_context::runtime_work_context(
+                            sess,
+                            step_context,
+                            call_id,
+                            environment.cwd(),
+                        )
+                        .await
+                        && let Ok(mut work) = serde_json::from_str::<serde_json::Value>(&work)
+                    {
+                        if work.get("alarm").is_some_and(|value| !value.is_null())
+                            && !crate::project_work_context::activate_mcp_route(sess).await
+                        {
+                            work.as_object_mut().map(|object| object.remove("alarm"));
+                        }
+                        let meta = request_meta.get_or_insert_with(|| serde_json::json!({}));
+                        if let Some(meta) = meta.as_object_mut() {
+                            meta.insert("devcoordinator/work_context".into(), work);
+                        }
+                    }
+
                     let request_meta = with_mcp_tool_call_ids_meta(
                         request_meta,
                         &sess.thread_id.to_string(),

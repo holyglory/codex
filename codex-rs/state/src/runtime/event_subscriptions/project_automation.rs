@@ -1,26 +1,38 @@
+#[cfg(test)]
 use codex_event_subscriptions::AutomationJobKind;
 use codex_event_subscriptions::ProjectAutomation;
+#[cfg(test)]
 use codex_event_subscriptions::ProjectAutomationCommand;
+#[cfg(test)]
 use codex_event_subscriptions::PublishedEvent;
+#[cfg(test)]
 use codex_event_subscriptions::SourceCursor;
 use codex_event_subscriptions::StoreError;
 use codex_protocol::ThreadId;
 use sqlx::Row;
+#[cfg(test)]
 use std::collections::BTreeMap;
+#[cfg(test)]
 use uuid::Uuid;
 
 use super::SqliteEventSubscriptionStore;
+#[cfg(test)]
 use super::project_identity::canonical_key;
+#[cfg(test)]
 use super::storage::next_revision;
+#[cfg(test)]
 use super::storage::parse_uuid;
+#[cfg(test)]
 use super::storage::upsert_alarm_wake;
 
 fn store_error(error: impl std::fmt::Display) -> StoreError {
     StoreError::Unavailable(error.to_string())
 }
 
+#[cfg(test)]
 const MAX_PROJECTS: i64 = 1024;
 
+#[cfg(test)]
 enum ProjectCommandOrigin {
     Requested,
     Enrollment { parent_thread_id: Option<ThreadId> },
@@ -78,7 +90,7 @@ impl SqliteEventSubscriptionStore {
             }
             project.revision += 1;
             sqlx::query("UPDATE project_automations SET revision = ?, next_deadline_at_ms = ?, state_json = ? WHERE project_id = ?")
-                .bind(project.revision as i64).bind(project.next_deadline()).bind(serde_json::to_string(&project).map_err(store_error)?).bind(&project_id)
+                .bind(project.revision as i64).bind(None::<i64>).bind(serde_json::to_string(&project).map_err(store_error)?).bind(&project_id)
                 .execute(&mut *transaction).await.map_err(store_error)?;
             sqlx::query("INSERT INTO project_automation_history (project_id, revision, at_ms, command_json) VALUES (?, ?, ?, ?)")
                 .bind(&project_id).bind(project.revision as i64).bind(observed_at_ms)
@@ -86,10 +98,11 @@ impl SqliteEventSubscriptionStore {
                 .execute(&mut *transaction).await.map_err(store_error)?;
         }
         transaction.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn restore_unfinished_project_jobs(&self) -> Result<(), StoreError> {
         let mut transaction = self
             .pool
@@ -142,6 +155,7 @@ impl SqliteEventSubscriptionStore {
             .transpose()
     }
 
+    #[cfg(test)]
     pub async fn project_command(
         &self,
         project_id: &str,
@@ -161,6 +175,7 @@ impl SqliteEventSubscriptionStore {
         .await
     }
 
+    #[cfg(test)]
     pub async fn project_enroll_thread(
         &self,
         project_id: &str,
@@ -182,6 +197,7 @@ impl SqliteEventSubscriptionStore {
         .await
     }
 
+    #[cfg(test)]
     async fn apply_project_command(
         &self,
         project_id: &str,
@@ -350,10 +366,11 @@ impl SqliteEventSubscriptionStore {
             .bind(project_id).bind(project.revision as i64).bind(now_ms).bind(serialized)
             .execute(&mut *transaction).await.map_err(store_error)?;
         transaction.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(project)
     }
 
+    #[cfg(test)]
     pub async fn project_activity(
         &self,
         project_id: &str,
@@ -388,6 +405,7 @@ impl SqliteEventSubscriptionStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn collect_project_deadlines(
         &self,
         now_ms: i64,

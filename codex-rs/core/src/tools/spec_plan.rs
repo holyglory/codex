@@ -1110,6 +1110,15 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(UsageActivityHandler);
         registry.add(UsageStatsHandler);
         registry.add(ProjectAutomationHandler);
+        for name in [
+            "alarm_set",
+            "alarm_list",
+            "alarm_status",
+            "alarm_ack",
+            "alarm_cancel",
+        ] {
+            registry.add(crate::tools::handlers::AlarmHandler(name));
+        }
         registry.add(AwaitWorkHandler);
         registry.add(AccountManagementHandler);
     }

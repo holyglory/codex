@@ -29,7 +29,7 @@ const FS_CHANGED_NOTIFICATION_DEBOUNCE: Duration = Duration::from_millis(200);
 #[derive(Clone)]
 pub(crate) struct FsWatchManager {
     outgoing: Arc<OutgoingMessageSender>,
-    file_watcher: Arc<FileWatcher>,
+    pub(crate) file_watcher: Arc<FileWatcher>,
     state: Arc<AsyncMutex<FsWatchState>>,
 }
 

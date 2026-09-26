@@ -42,8 +42,10 @@ impl CodexThread {
             item.reasons
                 .contains(&codex_event_subscriptions::WakeReason::Manual)
         });
-        let expected: ResponseItem =
-            ContextualUserFragment::into(EventSubscriptionWakeContext::new(wake.clone()));
+        let expected: ResponseItem = ContextualUserFragment::into(
+            EventSubscriptionWakeContext::load(wake.clone(), self.session.state_db().as_deref())
+                .await,
+        );
         let history = self.session.clone_history().await;
         let delivered = history.raw_items().any(|item| match (item, &expected) {
             (
@@ -99,8 +101,10 @@ impl CodexThread {
         &self,
         wake: WakeBatch,
     ) -> CodexResult<StartIfIdleSubmission> {
-        let response_item =
-            ContextualUserFragment::into(EventSubscriptionWakeContext::new(wake.clone()));
+        let response_item = ContextualUserFragment::into(
+            EventSubscriptionWakeContext::load(wake.clone(), self.session.state_db().as_deref())
+                .await,
+        );
         let newly_queued = self
             .session
             .remember_subscription_wake_input(&response_item, wake)
@@ -288,14 +292,6 @@ impl crate::session::session::Session {
                 .stop_pending
                 .store(/*val*/ false, std::sync::atomic::Ordering::Release),
             Err(error) => tracing::warn!(%error, "failed to persist suspended wake permissions"),
-        }
-        match store.project_review_workers_for_owner(self.thread_id).await {
-            Ok(workers) => {
-                for worker in workers {
-                    let _ = self.services.agent_control.interrupt_agent(worker).await;
-                }
-            }
-            Err(error) => tracing::warn!(%error, "failed to find owned project review workers"),
         }
     }
 }
