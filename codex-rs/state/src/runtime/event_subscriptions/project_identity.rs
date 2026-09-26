@@ -58,7 +58,7 @@ impl SqliteEventSubscriptionStore {
                 .execute(&mut *tx).await.map_err(store_error)?;
         }
         tx.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(canonical)
     }
 
