@@ -404,6 +404,11 @@ impl FileWatcher {
         }
     }
 
+    /// Whether this instance has an operating-system event backend.
+    pub fn is_live(&self) -> bool {
+        self.inner.is_some()
+    }
+
     /// Adds a new subscriber and returns both its registration handle and its
     /// dedicated event receiver.
     pub fn add_subscriber(self: &Arc<Self>) -> (FileWatcherSubscriber, Receiver) {

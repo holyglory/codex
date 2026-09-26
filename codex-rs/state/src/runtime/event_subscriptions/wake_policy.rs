@@ -118,7 +118,7 @@ impl SqliteEventSubscriptionStore {
             .execute(&mut *tx).await.map_err(store_error)?;
         let result = read_policy(&mut tx, change.thread_id).await?;
         tx.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(result)
     }
 
@@ -160,7 +160,7 @@ impl SqliteEventSubscriptionStore {
                 .bind(thread_id.to_string()).execute(&mut *tx).await.map_err(store_error)?;
         }
         tx.commit().await.map_err(store_error)?;
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         Ok(())
     }
 
@@ -186,6 +186,14 @@ impl SqliteEventSubscriptionStore {
             .await
             .map_err(store_error)?;
         for item in delivered {
+            if let Some(event) = &item.event
+                && event.source == "codex.alarm"
+                && event.cursor.sequence <= through_revision as u64
+            {
+                sqlx::query("UPDATE alarms SET state='delivered',delivered_at_ms=? WHERE id=? AND thread_id=? AND state='due'")
+                    .bind(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)).bind(&event.id).bind(thread_id.to_string())
+                    .execute(&mut *tx).await.map_err(store_error)?;
+            }
             if let Some(event) = &item.event
                 && event.source == "codex.project"
                 && event.cursor.sequence <= through_revision as u64

@@ -8,11 +8,10 @@
 mod apply_patch;
 mod project_automation;
 mod project_work_context;
-pub use project_work_context::capture_project_work_binding;
-mod project_review_worker;
 pub use project_automation::project_automation_id;
 pub use project_automation::project_automation_now_ms;
 pub use project_automation::validate_project_evidence;
+pub use project_work_context::capture_project_work_binding;
 mod apps;
 mod client;
 mod client_common;

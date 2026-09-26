@@ -272,6 +272,11 @@ async fn prompt_tools_are_consistent_across_requests(
         "usage_activity",
         "usage_stats",
         "project_automation",
+        "alarm_set",
+        "alarm_list",
+        "alarm_status",
+        "alarm_ack",
+        "alarm_cancel",
         "await_work",
         "account_management",
     ];

@@ -1,6 +1,14 @@
 //! Provider-neutral, durable event subscriptions and shared-deadline scheduling.
 
+mod alarm;
 mod project;
+pub use alarm::Alarm;
+pub use alarm::AlarmPage;
+pub use alarm::AlarmSpec;
+pub use alarm::AlarmState;
+pub use alarm::AlarmWorkEvent;
+pub use alarm::OperationOutcome;
+pub use alarm::OperationResult;
 mod service;
 mod types;
 mod wake_policy;

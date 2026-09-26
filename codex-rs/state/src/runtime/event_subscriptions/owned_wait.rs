@@ -38,7 +38,7 @@ impl Drop for WaitRegistration {
             request.cancelled = true;
         }
         drop(requests);
-        self.store.project_changed.notify_one();
+        self.store.deadline_changed.notify_one();
     }
 }
 
@@ -103,7 +103,7 @@ impl SqliteEventSubscriptionStore {
             id,
             store: self.clone(),
         };
-        self.project_changed.notify_one();
+        self.deadline_changed.notify_one();
         let subscription = tokio::time::timeout(std::time::Duration::from_secs(5),receiver)
             .await
             .map_err(|_| StoreError::Unavailable("event wait scheduler did not accept the wait; use a running persistent app-server".into()))?

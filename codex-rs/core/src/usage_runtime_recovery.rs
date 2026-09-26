@@ -38,10 +38,16 @@ impl UsageRuntime {
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
         {
+            self.start_alarm_work(model_attempt.operation_id, context.thread_id, true)
+                .await;
             return model_attempt;
         }
-        self.begin_buffered_model_attempt(&context, &work_context)
-            .await
+        let attempt = self
+            .begin_buffered_model_attempt(&context, &work_context)
+            .await;
+        self.start_alarm_work(attempt.operation_id, context.thread_id, true)
+            .await;
+        attempt
     }
 
     pub(crate) async fn begin_tool_attempt(
@@ -59,10 +65,14 @@ impl UsageRuntime {
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(tool_attempt) = self.begin_tool_attempt_once(&context, &work_context).await
         {
+            self.start_alarm_tool(&tool_attempt, &context).await;
             return tool_attempt;
         }
-        self.begin_buffered_tool_attempt(&context, &work_context)
-            .await
+        let attempt = self
+            .begin_buffered_tool_attempt(&context, &work_context)
+            .await;
+        self.start_alarm_tool(&attempt, &context).await;
+        attempt
     }
 
     pub(super) async fn recover_after_write_failure(&self) -> Result<(), CodexErr> {

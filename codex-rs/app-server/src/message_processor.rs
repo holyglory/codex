@@ -605,11 +605,14 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             state_db.clone(),
         );
+        let fs_watch_manager = FsWatchManager::new(outgoing.clone());
         let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
             state_db.as_ref().map(|state| {
                 crate::coordinator_event_bridge::CoordinatorEventBridge::spawn(
                     Arc::new(state.event_subscriptions().clone()),
                     Arc::new(service.clone()),
+                    config.codex_home.clone(),
+                    Arc::clone(&fs_watch_manager.file_watcher),
                 )
             })
         });
@@ -700,7 +703,7 @@ impl MessageProcessor {
             EnvironmentRequestProcessor::new(thread_manager.environment_manager());
         let fs_processor = FsRequestProcessor::new(
             Arc::clone(&environment_manager_for_requests),
-            FsWatchManager::new(outgoing.clone()),
+            fs_watch_manager,
         );
         let windows_sandbox_processor = WindowsSandboxRequestProcessor::new(
             outgoing.clone(),

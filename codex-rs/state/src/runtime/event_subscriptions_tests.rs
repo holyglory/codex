@@ -631,3 +631,321 @@ async fn deleting_thread_state_removes_its_subscriptions_and_pending_wakes() {
     );
     service.shutdown().await;
 }
+
+fn alarm_spec(key: &str) -> codex_event_subscriptions::AlarmSpec {
+    codex_event_subscriptions::AlarmSpec {
+        dedupe_key: key.into(),
+        project_id: Some("project".into()),
+        workstream_id: Some("work".into()),
+        subject: "Check the result".into(),
+        summary: "Read bounded evidence, then acknowledge delivery.".into(),
+        absolute_at_ms: None,
+        relative_ms: Some(100),
+        active_work_ms: None,
+        operation_result: None,
+        expires_at_ms: None,
+    }
+}
+
+#[tokio::test]
+async fn alarms_persist_deduplicate_and_deliver_after_inactive_resume() {
+    use codex_event_subscriptions::AlarmState;
+    let (runtime, _home) = runtime().await;
+    let store = runtime.event_subscriptions();
+    let thread = ThreadId::new();
+    let relative = store
+        .set_alarm(thread, alarm_spec("relative"), 1000)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .set_alarm(thread, alarm_spec("relative"), 1010)
+            .await
+            .unwrap(),
+        relative
+    );
+    let mut repeated = alarm_spec("relative");
+    repeated.relative_ms = Some(200);
+    repeated.summary = "Updated wording for the same obligation".into();
+    assert_eq!(
+        store.set_alarm(thread, repeated, 1011).await.unwrap(),
+        relative
+    );
+
+    let mut absolute = alarm_spec("absolute");
+    absolute.relative_ms = None;
+    absolute.absolute_at_ms = Some(1100);
+    let absolute = store.set_alarm(thread, absolute, 1000).await.unwrap();
+    store.restore_runtime().await.unwrap();
+    let clock = TestClock::new(1100);
+    let sink = RecordingWakeSink::new(WakeDisposition::DeferredUntilResume);
+    let service = EventSubscriptionService::spawn(store.clone(), sink.clone(), clock.clone());
+    sink.wait_for_count(1).await;
+    assert_eq!(
+        store
+            .alarm_status(thread, relative.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Due
+    );
+    sink.set_disposition(WakeDisposition::Started);
+    service.notify_thread_ready(thread);
+    sink.wait_for_count(2).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if store
+                .alarm_status(thread, relative.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state
+                == AlarmState::Delivered
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    service.shutdown().await;
+    assert_eq!(
+        store
+            .alarm_status(thread, relative.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Delivered
+    );
+    let ack = store
+        .acknowledge_alarm(thread, relative.id, 1150)
+        .await
+        .unwrap();
+    assert_eq!(ack.state, AlarmState::Acknowledged);
+    assert_eq!(
+        store
+            .acknowledge_alarm(thread, relative.id, 1200)
+            .await
+            .unwrap(),
+        ack
+    );
+    assert!(
+        store
+            .acknowledge_alarm(ThreadId::new(), absolute.id, 1200)
+            .await
+            .is_err()
+    );
+    store.cancel_alarm(thread, absolute.id, 1200).await.unwrap();
+    let restarted = EventSubscriptionService::spawn(store.clone(), sink.clone(), clock);
+    restarted.shutdown().await;
+    assert!(store.pending_wake(thread).await.unwrap().is_none());
+    assert_eq!(
+        store.list_alarms(thread, 0, 10).await.unwrap().data.len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
+    use codex_event_subscriptions::AlarmWorkEvent as Work;
+    let (runtime, _home) = runtime().await;
+    let store = runtime.event_subscriptions();
+    let thread = ThreadId::new();
+    let mut spec = alarm_spec("work");
+    spec.relative_ms = None;
+    spec.active_work_ms = Some(100);
+    let alarm = store.set_alarm(thread, spec, 1000).await.unwrap();
+    store
+        .observe_alarm_work(
+            "model",
+            Work::Start {
+                thread_id: thread,
+                eligible: true,
+            },
+            1000,
+        )
+        .await
+        .unwrap();
+    store
+        .observe_alarm_work(
+            "wrapper",
+            Work::Start {
+                thread_id: thread,
+                eligible: false,
+            },
+            1010,
+        )
+        .await
+        .unwrap();
+    store
+        .observe_alarm_work(
+            "tool",
+            Work::Start {
+                thread_id: thread,
+                eligible: true,
+            },
+            1020,
+        )
+        .await
+        .unwrap();
+    store
+        .observe_alarm_work("model", Work::Finish, 1040)
+        .await
+        .unwrap();
+    store
+        .observe_alarm_work("tool", Work::Wait, 1050)
+        .await
+        .unwrap();
+    assert!(store.collect_due_heartbeats(9000).await.unwrap().is_empty());
+    store
+        .observe_alarm_work("tool", Work::Resume, 9000)
+        .await
+        .unwrap();
+    store
+        .observe_alarm_work("tool", Work::Finish, 9025)
+        .await
+        .unwrap();
+    store.restore_runtime().await.unwrap();
+    assert!(
+        store
+            .collect_due_heartbeats(20000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .observe_alarm_work(
+            "model2",
+            Work::Start {
+                thread_id: thread,
+                eligible: true,
+            },
+            20000,
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .collect_due_heartbeats(20024)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.collect_due_heartbeats(20025).await.unwrap(),
+        vec![thread]
+    );
+    assert_eq!(
+        store
+            .pending_wake(thread)
+            .await
+            .unwrap()
+            .unwrap()
+            .wake
+            .items[0]
+            .subscription_id,
+        alarm.id
+    );
+    assert!(
+        store
+            .collect_due_heartbeats(20026)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn result_alarms_match_terminal_metadata_and_keep_cancelled_reminders_quiet() {
+    use codex_event_subscriptions::AlarmState;
+    use codex_event_subscriptions::OperationOutcome;
+    use codex_event_subscriptions::OperationResult;
+    let (runtime, _home) = runtime().await;
+    let store = runtime.event_subscriptions();
+    let thread = ThreadId::new();
+    let result = OperationResult {
+        operation_id: "call-1".into(),
+        tool_name: "build".into(),
+        outcome_class: OperationOutcome::Failed,
+        result_code: Some("tool".into()),
+    };
+    let mut spec = alarm_spec("failed");
+    spec.relative_ms = None;
+    spec.operation_result = Some(result.clone());
+    let alarm = store.set_alarm(thread, spec.clone(), 1000).await.unwrap();
+    let mut success = result.clone();
+    success.operation_id = "different-call".into();
+    success.outcome_class = OperationOutcome::Completed;
+    store
+        .observe_alarm_result(thread, &success, 1010)
+        .await
+        .unwrap();
+    assert!(store.collect_due_heartbeats(1050).await.unwrap().is_empty());
+    store
+        .observe_alarm_result(thread, &result, 1060)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.collect_due_heartbeats(1060).await.unwrap(),
+        vec![thread]
+    );
+    assert_eq!(
+        store
+            .alarm_status(thread, alarm.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Due
+    );
+    spec.dedupe_key = "late-registration".into();
+    let late = store.set_alarm(thread, spec, 1070).await.unwrap();
+    store.cancel_alarm(thread, late.id, 1071).await.unwrap();
+    let mut expiring = alarm_spec("expiry");
+    expiring.expires_at_ms = Some(1090);
+    let expiry = store.set_alarm(thread, expiring, 1080).await.unwrap();
+    store.collect_due_heartbeats(1200).await.unwrap();
+    assert_eq!(
+        store
+            .alarm_status(thread, expiry.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Expired
+    );
+    let generic = store
+        .set_alarm(thread, alarm_spec("subscription-cancel"), 1200)
+        .await
+        .unwrap();
+    assert!(store.cancel(generic.id).await.unwrap());
+    assert_eq!(
+        store
+            .alarm_status(thread, generic.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Cancelled
+    );
+    let pending = store.pending_wake(thread).await.unwrap().unwrap();
+    assert_eq!(pending.wake.items.len(), 1);
+    assert_eq!(
+        pending.wake.items[0].event.as_ref().unwrap().labels,
+        BTreeMap::from([("alarm_id".into(), alarm.id.to_string())])
+    );
+    store.delete_thread(thread).await.unwrap();
+    assert!(store.collect_due_heartbeats(9999).await.unwrap().is_empty());
+    assert_eq!(
+        store
+            .alarm_status(thread, alarm.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        AlarmState::Cancelled
+    );
+}

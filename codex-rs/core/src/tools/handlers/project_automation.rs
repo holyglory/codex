@@ -35,11 +35,11 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
     fn spec(&self) -> ToolSpec {
         ToolSpec::Function(ResponsesApiTool {
             name: "project_automation".into(),
-            description: "Manage durable project clocks through Codex's scheduler. Bind purpose discussion/specification/analysis/implementation/recovery before substantial work. Specifications and analysis get reviews only, never delivery alarms. Delivery requires a meaningful authorized preliminary result. At delivery_due start delivery and continue development; only hard_stop blocks ordinary implementation. Use status before mutations and expected_revision. Commands use action: status; bind{purpose,workstream?}; link_work{outcome_id?,experiment_ref?,clear_outcome?,clear_experiment?}; activate_delivery{target,surface,acceptance,delivery_interval_ms?,hard_stop_interval_ms?}; postpone{target,delivery_due_at_ms,hard_stop_at_ms,authorization_ref}; pause{target?,authorization_ref}; resume{target?}; record_delivery{target,delivered_at_ms,evidence_ref}; request_review{evidence_ref}; complete_review{job_id,decision_ref}; transfer{owner_thread_id,authorization_ref}; complete{outcome_ref}. Omitted work links are preserved; clear flags remove only the named link. Postponements require explicit user direction; evidence refs must identify qualified Coordinator records. Review completion requires a recorded reasoned intervention or justified no-change decision, not token totals.".into(),
+            description: "Read legacy project clock state for migration using command {action:status}. Scheduling and mutations are retired. Use alarm_set for reminders and DevCoordinator2 for reviews.".into(),
             strict: false, defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
                 ("command".into(), JsonSchema::object(BTreeMap::new(), None, Some(true.into()))),
-                ("expected_revision".into(), JsonSchema::number(Some("Revision returned by status; required for mutations other than first bind.".into()))),
+                ("expected_revision".into(), JsonSchema::number(Some("Not accepted by the legacy reader.".into()))),
             ]), Some(vec!["command".into()]), Some(false.into())), output_schema: None,
         })
     }
@@ -57,6 +57,13 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
             }
             let args: Arguments = serde_json::from_str(arguments)
                 .map_err(|_| error("invalid typed project command"))?;
+            if !matches!(args.command, ProjectAutomationCommand::Status)
+                || args.expected_revision.is_some()
+            {
+                return Err(error(
+                    "project_automation is read-only migration evidence; use alarms and Coordinator review operations",
+                ));
+            }
             let state = invocation.session.state_db().ok_or_else(|| {
                 error("durable project scheduling requires the persistent state store")
             })?;
@@ -73,66 +80,22 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
                 .resolve_project_identity(&identities, now_ms)
                 .await
                 .map_err(|failure| error(&failure.to_string()))?;
-            let capture_binding = matches!(
-                &args.command,
-                ProjectAutomationCommand::Bind { .. }
-                    | ProjectAutomationCommand::LinkWork { .. }
-                    | ProjectAutomationCommand::ActivateDelivery { .. }
-            );
-            let project = if matches!(args.command, ProjectAutomationCommand::Status) {
-                store
-                    .project_status(&project_id)
-                    .await
-                    .map_err(|failure| error(&failure.to_string()))?
-                    .ok_or_else(|| error("project not yet enrolled; bind its purpose"))?
-            } else {
-                let expected = store
-                    .project_status(&project_id)
-                    .await
-                    .map_err(|failure| error(&failure.to_string()))?;
-                crate::project_automation::validate_project_evidence(
-                    &args.command,
-                    &cwd,
-                    expected.as_ref(),
-                )
+            let Some(project) = store
+                .project_status(&project_id)
                 .await
-                .map_err(|failure| error(&failure))?;
-                store
-                    .project_command(
-                        &project_id,
-                        invocation.session.thread_id(),
-                        args.expected_revision,
-                        args.command,
-                        now_ms,
-                    )
-                    .await
-                    .map_err(|failure| error(&failure.to_string()))?
+                .map_err(|failure| error(&failure.to_string()))?
+            else {
+                return Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                    json!({"migration":"no_legacy_state","schedulingActive":false}).to_string(),
+                    Some(true),
+                )));
             };
-            store
-                .register_project_identity_aliases(&identities, &project_id, now_ms)
-                .await
-                .map_err(|failure| error(&failure.to_string()))?;
-            if capture_binding {
-                invocation
-                    .session
-                    .services
-                    .usage_runtime
-                    .restore_work_context(Some(&project), invocation.session.thread_id())
-                    .await;
-                crate::project_work_context::capture_project_work_binding(
-                    &invocation.turn.config.codex_home,
-                    &project,
-                    invocation.session.thread_id(),
-                    now_ms,
-                )
-                .await;
-            }
             let targets = project.delivery.values().map(|target| json!({"target":target.target,"workstream":target.workstream,"deliveryDueAtMs":target.delivery_due_at_ms,"hardStopAtMs":target.hard_stop_at_ms,"deliveredAtMs":target.delivered_at_ms,"paused":target.paused,"jobId":target.job.as_ref().map(|job|job.id),"jobKind":target.job.as_ref().map(|job|job.kind)})).collect::<Vec<_>>();
             let thread_id = invocation.session.thread_id().to_string();
-            let value = json!({"projectId":project.project_id,"revision":project.revision,"mode":project.mode(now_ms),"taskMode":project.mode_for_thread(invocation.session.thread_id(),now_ms),"completed":project.completed,"ownerThreadId":project.owner_thread_id,"purpose":project.threads.get(&thread_id),"outcomeId":project.thread_outcomes.get(&thread_id),"experimentRef":project.thread_experiments.get(&thread_id),"nextReviewAtMs":project.next_review_at_ms,"reviewWindowStartMs":project.review_window_start_ms,"review":project.review,"delivery":targets});
+            let value = json!({"migration":"retained_legacy_state","schedulingActive":false,"projectId":project.project_id,"revision":project.revision,"mode":project.mode(now_ms),"taskMode":project.mode_for_thread(invocation.session.thread_id(),now_ms),"completed":project.completed,"ownerThreadId":project.owner_thread_id,"purpose":project.threads.get(&thread_id),"outcomeId":project.thread_outcomes.get(&thread_id),"experimentRef":project.thread_experiments.get(&thread_id),"nextReviewAtMs":project.next_review_at_ms,"reviewWindowStartMs":project.review_window_start_ms,"review":project.review,"delivery":targets});
             let output = serde_json::to_string(&value)
                 .map_err(|_| error("cannot serialize project result"))?;
-            if output.len() > 16384 {
+            if output.len() > 8192 {
                 return Err(error(
                     "project result exceeds the safe bound; use the paginated CLI evidence interface",
                 ));
