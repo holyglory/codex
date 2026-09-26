@@ -208,9 +208,14 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
     let second_account = lines.next().expect("second account");
     let first_columns = first_account.split('\t').collect::<Vec<_>>();
     let second_columns = second_account.split('\t').collect::<Vec<_>>();
-    assert_eq!(first_columns[2], "ready");
-    assert_eq!(second_columns[2], "ready");
-    assert_eq!(first_columns[1].len(), second_columns[1].len());
+    assert_eq!(first_columns.len(), 7);
+    assert_eq!(second_columns.len(), 7);
+    assert_eq!(first_columns[0].len(), second_columns[0].len());
+    assert_eq!(first_columns[0].trim(), long_alias.as_str());
+    assert_eq!(second_columns[0].trim(), "*alpha");
+    assert!(!human.contains("STATUS"));
+    assert!(!human.contains("AUTH"));
+    assert!(human.contains("\tPRIORITY\t"));
     insta::assert_snapshot!("account_list_long_alias", human);
     assert!(!human.contains('\x1b'));
     let program = codex_utils_cargo_bin::cargo_bin("codex")?;
@@ -271,6 +276,158 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_list_colors_usage_and_prioritizes_banked_resets() -> Result<()> {
+    let server = MockServer::start().await;
+    let fixture = fixture(/*beta_authenticated*/ true)?;
+    let now = chrono::Utc::now().timestamp();
+    let gamma = AccountMetadata::new(
+        "gamma".parse::<AccountAlias>()?,
+        AuthMode::Chatgpt,
+        chrono::Utc::now(),
+    );
+    std::fs::write(
+        fixture.home.path().join("config.toml"),
+        format!(
+            "cli_auth_credentials_store = \"file\"\nchatgpt_base_url = \"{}\"\n",
+            server.uri()
+        ),
+    )?;
+    for account in [&fixture.alpha, &fixture.beta] {
+        ProfileAuthStorage::new(
+            fixture.home.path(),
+            account.id.clone(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::Direct,
+        )?
+        .save(&chatgpt_auth(account.alias.as_str())?)?;
+    }
+    ProfileAuthStorage::new(
+        fixture.home.path(),
+        gamma.id.clone(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::Direct,
+    )?
+    .save(&chatgpt_auth(gamma.alias.as_str())?)?;
+    RegistryStore::new(fixture.home.path()).compare_and_swap(
+        /*expected_generation*/ 0,
+        |registry| {
+            for account in &mut registry.accounts {
+                account.auth_mode = AuthMode::Chatgpt;
+            }
+            registry.accounts.push(gamma.clone());
+        },
+    )?;
+
+    for (alias, used, reset, available_count) in [
+        ("alpha", 50, now + 2 * 86400, 0),
+        ("beta", 100, now + 4 * 86400, 1),
+        ("gamma", 0, now + 86400, 0),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/codex/usage"))
+            .and(header("authorization", format!("Bearer access-{alias}")))
+            .and(header("chatgpt-account-id", format!("workspace-{alias}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plan_type": "pro",
+                "rate_limit_reset_credits": {"available_count": available_count},
+                "rate_limit": {
+                    "allowed": used < 100,
+                    "limit_reached": used == 100,
+                    "primary_window": {
+                        "used_percent": used,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 0,
+                        "reset_at": reset
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let expiry = chrono::DateTime::from_timestamp(now + 3 * 86400 + 2 * 3600, 0)
+        .expect("valid fixture timestamp")
+        .to_rfc3339();
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .and(header("authorization", "Bearer access-beta"))
+        .and(header("chatgpt-account-id", "workspace-beta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "available_count": 1,
+            "credits": [{
+                "id": "beta-credit",
+                "status": "available",
+                "reset_type": "codex_rate_limits",
+                "granted_at": "2026-09-01T00:00:00Z",
+                "expires_at": expiry,
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let program = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    for key in [
+        "CODEX_API_KEY",
+        "CODEX_ACCESS_TOKEN",
+        "OPENAI_API_KEY",
+        "NO_COLOR",
+        "CLICOLOR",
+        "CLICOLOR_FORCE",
+        "FORCE_COLOR",
+    ] {
+        env.remove(key);
+    }
+    env.insert(
+        "CODEX_HOME".to_string(),
+        fixture.home.path().to_string_lossy().into_owned(),
+    );
+    env.insert("TERM".to_string(), "xterm-256color".to_string());
+    let spawned = codex_utils_pty::spawn_pty_process(
+        program.to_str().unwrap(),
+        &["account".to_string(), "list".to_string()],
+        fixture.home.path(),
+        &env,
+        /*arg0*/ &None,
+        codex_utils_pty::TerminalSize {
+            rows: 24,
+            cols: 240,
+        },
+        &[],
+    )
+    .await?;
+    let session = spawned.session;
+    let mut stdout_rx = spawned.stdout_rx;
+    let (code, output) = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 30), async {
+        let mut output = Vec::new();
+        while let Some(bytes) = stdout_rx.recv().await {
+            output.extend(bytes);
+        }
+        Ok::<_, anyhow::Error>((spawned.exit_rx.await?, String::from_utf8(output)?))
+    })
+    .await??;
+    drop(session);
+    assert_eq!(code, 0);
+    assert!(output.contains("\x1b[32m0%"));
+    assert!(output.contains("\x1b[33m50%"));
+    assert!(output.contains("\x1b[31m100%"));
+    assert!(output.contains("\x1b[32;1m1"));
+    let ansi = regex_lite::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]")?;
+    let human = ansi.replace_all(&output, "").replace('\r', "");
+    let rows = human.lines().skip(1).collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].split('\t').next().unwrap().trim(), "gamma");
+    assert_eq!(rows[1].split('\t').next().unwrap().trim(), "*alpha");
+    assert_eq!(rows[2].split('\t').next().unwrap().trim(), "beta");
+    let beta_columns = rows[2].split('\t').map(str::trim).collect::<Vec<_>>();
+    assert_eq!(beta_columns[3], "1");
+    assert_days_hours_countdown(beta_columns[4]);
+    server.verify().await;
     Ok(())
 }
 
@@ -783,18 +940,29 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     let human = String::from_utf8(human.get_output().stdout.clone())?;
     assert!(!human.contains("gpt-reserve"));
     assert!(!human.contains("Spark"));
-    assert!(human.contains("2030-01-01 00:00:00 UTC"));
-    let countdown = human
+    assert!(!human.contains("codex:"));
+    assert!(!human.contains("used"));
+    assert!(human.contains("84%"));
+    let alpha_line = human
         .lines()
-        .last()
-        .unwrap()
-        .split('\t')
-        .next_back()
+        .find(|line| {
+            line.split('\t')
+                .next()
+                .is_some_and(|alias| alias.trim().trim_start_matches('*') == "alpha")
+        })
         .unwrap();
+    let alpha_columns = alpha_line.split('\t').map(str::trim).collect::<Vec<_>>();
+    assert_eq!(alpha_columns[3], "3");
+    assert_days_hours_countdown(alpha_columns[4]);
+    assert_eq!(alpha_columns[5], "84%");
+    let countdown = alpha_columns[6];
     assert_reset_countdown(countdown, /*reset*/ 1893456000, before)?;
+    let expiry = alpha_columns[4];
     insta::assert_snapshot!(
         "account_list_limits",
-        human.replace(countdown, "[Codex reset countdown]")
+        human
+            .replace(countdown, "[Codex reset countdown]")
+            .replace(expiry, "[Banked expiry countdown]")
     );
 
     codex_command(fixture.home.path())?
@@ -914,19 +1082,25 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
         let human = String::from_utf8(human.get_output().stdout.clone())?;
         let columns = human
             .lines()
-            .last()
+            .find(|line| {
+                line.split('\t')
+                    .next()
+                    .is_some_and(|alias| alias.trim().trim_start_matches('*') == "alpha")
+            })
             .unwrap()
             .split('\t')
             .map(str::trim)
             .collect::<Vec<_>>();
         assert_eq!(
-            (columns[6], columns[7]),
+            (columns[3], columns[4]),
             (
                 expected["availableCount"].to_string().as_str(),
                 expiry_label
             )
         );
-        assert!(human.contains("codex: 5m 42% used"));
+        assert!(human.contains("42%"));
+        assert!(!human.contains("codex:"));
+        assert!(!human.contains("used"));
         server.verify().await;
     }
     Ok(())
@@ -950,6 +1124,17 @@ fn assert_reset_countdown(countdown: &str, reset: i64, before: i64) -> Result<()
         "{countdown} does not match main Codex reset {reset}"
     );
     Ok(())
+}
+
+fn assert_days_hours_countdown(countdown: &str) {
+    assert_ne!(countdown, "unknown");
+    assert_ne!(countdown, "none");
+    assert_ne!(countdown, "never");
+    for part in countdown.split_whitespace() {
+        let (number, unit) = part.split_at(part.len() - 1);
+        assert!(matches!(unit, "d" | "h"));
+        assert!(number.parse::<i64>().is_ok());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1014,6 +1199,12 @@ async fn account_list_keeps_each_accounts_weekly_reset_with_identical_unused_spa
         .assert()
         .success();
     let human = String::from_utf8(output.get_output().stdout.clone())?;
+    let listed_aliases = human
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').next().unwrap().trim().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(listed_aliases, ["beta", "*alpha"]);
     let mut normalized = human.clone();
     for (account, _, reset) in accounts {
         let data = report["accounts"]
@@ -1027,7 +1218,11 @@ async fn account_list_keeps_each_accounts_weekly_reset_with_identical_unused_spa
         assert_eq!(data["limits"]["buckets"].as_array().unwrap().len(), 2);
         let line = human
             .lines()
-            .find(|line| line.split('\t').nth(1).map(str::trim) == Some(account.alias.as_str()))
+            .find(|line| {
+                line.split('\t').next().is_some_and(|alias| {
+                    alias.trim().trim_start_matches('*') == account.alias.as_str()
+                })
+            })
             .unwrap();
         let countdown = line.split('\t').next_back().unwrap();
         assert_reset_countdown(countdown, reset, before)?;
