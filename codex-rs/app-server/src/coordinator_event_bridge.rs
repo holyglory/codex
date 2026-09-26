@@ -1,3 +1,7 @@
+#[path = "coordinator_activation.rs"]
+mod activation;
+#[path = "coordinator_alarm.rs"]
+mod alarm;
 use chrono::DateTime;
 use codex_event_subscriptions::EventSubscriptionService;
 use codex_event_subscriptions::PublishedEvent;
@@ -27,6 +31,7 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Owns a read-only watcher, with parent-death containment on Linux and Windows.
 /// Other platforms guarantee cleanup only through cancellation or Rust drop.
 pub(crate) struct CoordinatorEventBridge {
+    store: Arc<SqliteEventSubscriptionStore>,
     cancellation: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -35,21 +40,39 @@ impl CoordinatorEventBridge {
     pub(crate) fn spawn(
         store: Arc<SqliteEventSubscriptionStore>,
         service: Arc<EventSubscriptionService>,
+        home: codex_utils_absolute_path::AbsolutePathBuf,
+        file_watcher: Arc<codex_file_watcher::FileWatcher>,
     ) -> Self {
+        let source_installed = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|directory| {
+                directory
+                    .join(if cfg!(windows) {
+                        "devcoordinator2.exe"
+                    } else {
+                        "devcoordinator2"
+                    })
+                    .is_file()
+            })
+        });
+        store.set_alarm_delivery_available(source_installed && file_watcher.is_live());
+        let activation = activation::Activation::new(&home, file_watcher);
         let cancellation = CancellationToken::new();
         let task = tokio::spawn(run_bridge(
-            store,
+            Arc::clone(&store),
             service,
             CliEventSource,
             cancellation.clone(),
+            Some(activation),
         ));
         Self {
+            store,
             cancellation,
             task: Mutex::new(Some(task)),
         }
     }
 
     pub(crate) fn cancel(&self) {
+        self.store.set_alarm_delivery_available(false);
         self.cancellation.cancel();
     }
 
@@ -83,6 +106,14 @@ enum SourceError {
 /// Read-only source transport; cancellation must stop and reap owned children.
 /// Implementations return only bounded event metadata, never source diagnostics.
 trait EventSource: Send + 'static {
+    /// Reconcile current native obligations without discarding other event cursors.
+    fn reconcile(
+        &mut self,
+        _cancellation: CancellationToken,
+    ) -> impl Future<Output = Result<Option<SourceBatch>, SourceError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
     fn wait(
         &mut self,
         cursor: Option<u64>,
@@ -93,6 +124,13 @@ trait EventSource: Send + 'static {
 struct CliEventSource;
 
 impl EventSource for CliEventSource {
+    async fn reconcile(
+        &mut self,
+        cancellation: CancellationToken,
+    ) -> Result<Option<SourceBatch>, SourceError> {
+        alarm::reconcile(&cancellation).await
+    }
+
     async fn wait(
         &mut self,
         cursor: Option<u64>,
@@ -120,7 +158,7 @@ impl EventSource for CliEventSource {
             "--limit",
             "16",
             "--filter",
-            r#"{"filter_id":"codex","categories":["test","deployment"]}"#,
+            r#"{"filter_id":"codex","categories":["test","deployment","other"]}"#,
         ]);
         if let Some(cursor) = cursor {
             command.args(["--cursor", &cursor.to_string()]);
@@ -218,8 +256,12 @@ enum OwnedEvent {
         repository_id: Option<String>,
         deployment_id: String,
     },
+    Other {
+        kind: String,
+        review: Option<alarm::ReviewReminder>,
+    },
     #[serde(other)]
-    Other,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -266,7 +308,14 @@ fn decode_envelope(bytes: &[u8], after: Option<u64>) -> Result<SourceBatch, Sour
                 repository_id,
                 deployment_id,
             } => (kind, repository_id, "deployment_id", deployment_id),
-            OwnedEvent::Other => continue,
+            OwnedEvent::Other {
+                kind,
+                review: Some(reminder),
+            } if kind == "review.reminder" => {
+                events.push(reminder.event(record.cursor, &record.occurred_at)?);
+                continue;
+            }
+            OwnedEvent::Other { .. } | OwnedEvent::Unknown => continue,
         };
         let mut labels = BTreeMap::from([(job_key.to_owned(), job_id)]);
         if let Some(repository_id) = repository_id {
@@ -302,6 +351,7 @@ async fn run_bridge(
     service: Arc<EventSubscriptionService>,
     mut source: impl EventSource,
     cancellation: CancellationToken,
+    mut activation: Option<activation::Activation>,
 ) {
     let mut progress = BTreeMap::<Uuid, Option<u64>>::new();
     let mut subscriptions = Vec::<Subscription>::new();
@@ -316,6 +366,14 @@ async fn run_bridge(
                     result.map_err(|_| SourceError::Unavailable)?
                 }
             };
+            if let Some(activation) = &activation
+                && let Err(error) = activation.drain(&store).await
+            {
+                tracing::warn!(
+                    ?error,
+                    "native route activation unavailable; clients retain message delivery"
+                );
+            }
             let active: HashSet<_> = subscriptions
                 .iter()
                 .map(|subscription| subscription.id)
@@ -330,10 +388,36 @@ async fn run_bridge(
                         .map(|cursor| cursor.sequence)
                 });
             }
+            let unresolved_native = subscriptions
+                .iter()
+                .filter(|subscription| {
+                    progress.get(&subscription.id) == Some(&None)
+                        && subscription
+                            .filter
+                            .as_ref()
+                            .is_some_and(|filter| filter.event_types.contains("review.reminder"))
+                })
+                .map(|subscription| subscription.id)
+                .collect::<Vec<_>>();
+            if !unresolved_native.is_empty()
+                && let Some(batch) = source.reconcile(cancellation.child_token()).await?
+            {
+                for event in batch.events {
+                    alarm::deliver(&store, &service, &subscriptions, &event).await?;
+                }
+                for id in unresolved_native {
+                    store
+                        .advance_event_route(id, batch.cursor)
+                        .await
+                        .map_err(|_| SourceError::Unavailable)?;
+                    progress.insert(id, Some(batch.cursor));
+                }
+            }
             if progress.is_empty() {
                 tokio::select! {
                     _ = cancellation.cancelled() => return Err(SourceError::Cancelled),
                     _ = store.await_source_change() => return Ok(()),
+                    _ = activation::changed(&mut activation) => return Ok(()),
                 }
             }
             let cursor = progress.values().flatten().copied().min();
@@ -352,6 +436,11 @@ async fn run_bridge(
                     let _ = waiting.await;
                     return Err(SourceError::Cancelled);
                 }
+                _ = activation::changed(&mut activation) => {
+                    request_cancel.cancel();
+                    let _ = waiting.await;
+                    return Ok(());
+                }
                 _ = store.await_source_change() => {
                     request_cancel.cancel();
                     let _ = waiting.await;
@@ -361,6 +450,10 @@ async fn run_bridge(
             };
             let batch = result?;
             for event in batch.events {
+                if event.event_type == "review.reminder" {
+                    alarm::deliver(&store, &service, &subscriptions, &event).await?;
+                    continue;
+                }
                 if subscriptions.iter().any(|subscription| {
                     subscription
                         .filter
@@ -437,6 +530,7 @@ async fn run_bridge(
                     _ = cancellation.cancelled() => return,
                     _ = store.await_source_change() => {},
                     _ = tokio::time::sleep(retry) => {},
+                    _ = activation::changed(&mut activation) => {},
                 }
                 retry = retry.saturating_mul(2).min(RETRY_MAX);
             }

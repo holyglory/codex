@@ -16,7 +16,6 @@ use crate::error_code::invalid_request;
 mod mapping;
 
 pub(crate) struct ProjectAutomationRequestProcessor {
-    codex_home: codex_utils_absolute_path::AbsolutePathBuf,
     state_db: Option<StateDbHandle>,
     service: Option<native::EventSubscriptionService>,
     thread_store: Arc<dyn ThreadStore>,
@@ -25,14 +24,13 @@ pub(crate) struct ProjectAutomationRequestProcessor {
 
 impl ProjectAutomationRequestProcessor {
     pub(crate) fn new(
-        codex_home: codex_utils_absolute_path::AbsolutePathBuf,
+        _codex_home: codex_utils_absolute_path::AbsolutePathBuf,
         state_db: Option<StateDbHandle>,
         service: Option<native::EventSubscriptionService>,
         thread_store: Arc<dyn ThreadStore>,
         thread_manager: Arc<codex_core::ThreadManager>,
     ) -> Self {
         Self {
-            codex_home,
             state_db,
             service,
             thread_store,
@@ -44,6 +42,15 @@ impl ProjectAutomationRequestProcessor {
         &self,
         params: api::ProjectAutomationCommandParams,
     ) -> Result<api::ProjectAutomationCommandResponse, api::JSONRPCErrorError> {
+        if params
+            .command
+            .as_ref()
+            .is_some_and(|command| !matches!(command, api::ProjectAutomationCommand::Status))
+        {
+            return Err(invalid_request(
+                "project clocks are retired; use generic alarms and Coordinator review operations",
+            ));
+        }
         let capability = self
             .state_db
             .as_ref()
@@ -59,7 +66,7 @@ impl ProjectAutomationRequestProcessor {
                 project: None,
             });
         }
-        let (Some(state_db), Some(service)) = (&self.state_db, &self.service) else {
+        let (Some(state_db), Some(_service)) = (&self.state_db, &self.service) else {
             return Err(invalid_request(
                 "project automation requires local control tools and the durable local state database",
             ));
@@ -89,92 +96,14 @@ impl ProjectAutomationRequestProcessor {
             return Err(invalid_params("invalid projectId"));
         }
         let now_ms = codex_core::project_automation_now_ms();
-        let command = params
-            .command
-            .unwrap_or(api::ProjectAutomationCommand::Status);
         let store = state_db.event_subscriptions();
-        let project = if matches!(command, api::ProjectAutomationCommand::Status) {
-            if params.expected_revision.is_some() {
-                return Err(invalid_params("status does not accept expectedRevision"));
-            }
-            store
-                .project_status(&project_id)
-                .await
-                .map_err(store_error)?
-        } else {
-            let (thread_id, cwd) = thread
-                .ok_or_else(|| invalid_params("threadId is required for project mutations"))?;
-            if !matches!(command, api::ProjectAutomationCommand::Bind { .. })
-                && params.expected_revision.is_none()
-            {
-                return Err(invalid_params("project mutations require expectedRevision"));
-            }
-            if let api::ProjectAutomationCommand::Transfer {
-                owner_thread_id, ..
-            } = &command
-            {
-                let owner_cwd = self
-                    .persistent_thread_cwd(parse_thread_id(owner_thread_id)?)
-                    .await?;
-                if codex_core::project_automation_id(&owner_cwd) != project_id {
-                    return Err(invalid_params(
-                        "new owner does not belong to the project scope",
-                    ));
-                }
-            }
-            let command = mapping::native_command(command)?;
-            let expected = store
-                .project_status(&project_id)
-                .await
-                .map_err(store_error)?;
-            codex_core::validate_project_evidence(&command, &cwd, expected.as_ref())
-                .await
-                .map_err(invalid_params)?;
-            let capture_binding = matches!(
-                &command,
-                native::ProjectAutomationCommand::Bind { .. }
-                    | native::ProjectAutomationCommand::LinkWork { .. }
-                    | native::ProjectAutomationCommand::ActivateDelivery { .. }
-            );
-            let project = match store
-                .project_command(
-                    &project_id,
-                    thread_id,
-                    params.expected_revision,
-                    command,
-                    now_ms,
-                )
-                .await
-            {
-                Ok(project) => project,
-                Err(error) => {
-                    if let Some(expected_revision) = params.expected_revision
-                        && store
-                            .project_status(&project_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .is_some_and(|project| project.revision != expected_revision)
-                    {
-                        return Err(invalid_params(
-                            "project revision changed; read current status before retrying",
-                        ));
-                    }
-                    return Err(store_error(error));
-                }
-            };
-            if capture_binding {
-                codex_core::capture_project_work_binding(
-                    self.codex_home.as_path(),
-                    &project,
-                    thread_id,
-                    now_ms,
-                )
-                .await;
-            }
-            service.notify_thread_ready(project.owner_thread_id);
-            Some(project)
-        };
+        if params.expected_revision.is_some() {
+            return Err(invalid_params("status does not accept expectedRevision"));
+        }
+        let project = store
+            .project_status(&project_id)
+            .await
+            .map_err(store_error)?;
         Ok(api::ProjectAutomationCommandResponse {
             capability,
             project: project.map(|project| mapping::api_project(project, now_ms)),

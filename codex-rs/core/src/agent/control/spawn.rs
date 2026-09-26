@@ -44,11 +44,10 @@ struct SpawnedThreadResult {
 ///
 /// V2 communication spawns keep the communication and its context paired so centralized
 /// submission and lifecycle logging cannot receive one without the other. User input and
-/// host-annotated context remain distinct so automation does not become new user authorization.
+/// communications remain distinct so automation does not become new user authorization.
 #[allow(clippy::large_enum_variant)]
 enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
-    Context(ResponseItem),
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
@@ -262,23 +261,6 @@ impl LocalAgentControl {
         ))
         .await?;
         Ok(spawned_agent.thread_id)
-    }
-
-    /// Spawns with host-annotated context rather than relabeling automation as user input.
-    pub(crate) async fn spawn_agent_with_context(
-        &self,
-        config: Config,
-        context: ResponseItem,
-        session_source: Option<SessionSource>,
-        options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
-        Box::pin(self.spawn_agent_internal(
-            config,
-            SpawnInitialInput::Context(context),
-            session_source,
-            options,
-        ))
-        .await
     }
 
     /// Spawn an agent thread with some metadata.
@@ -847,24 +829,6 @@ impl LocalAgentControl {
         };
         let input_admission_started_at = Instant::now();
         match initial_input {
-            SpawnInitialInput::Context(context) => {
-                let submission = new_thread
-                    .thread
-                    .start_turn_if_idle(
-                        TurnInputRequest::new(codex_protocol::turn_input::TurnInput::ResponseItem(
-                            context,
-                        ))
-                        .on_start(start_options),
-                    )
-                    .await?;
-                if let codex_protocol::turn_input::StartIfIdleSubmission::NotSubmitted { reason } =
-                    submission
-                {
-                    return Err(CodexErr::InvalidRequest(format!(
-                        "agent context was not submitted: {reason:?}"
-                    )));
-                }
-            }
             SpawnInitialInput::UserInput(input) => {
                 self.send_input(new_thread.thread_id, input, start_options)
                     .await?;

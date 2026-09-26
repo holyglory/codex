@@ -62,14 +62,24 @@ impl Fixture {
     }
 
     fn start(&self, source: impl EventSource) -> CoordinatorEventBridge {
+        self.start_with_activation(source, /*activation*/ None)
+    }
+
+    fn start_with_activation(
+        &self,
+        source: impl EventSource,
+        activation: Option<activation::Activation>,
+    ) -> CoordinatorEventBridge {
         let cancellation = CancellationToken::new();
         let task = tokio::spawn(run_bridge(
             Arc::clone(&self.store),
             Arc::clone(&self.service),
             source,
             cancellation.clone(),
+            activation,
         ));
         CoordinatorEventBridge {
+            store: Arc::clone(&self.store),
             cancellation,
             task: Mutex::new(Some(task)),
         }
@@ -671,5 +681,192 @@ async fn shutdown_joins_the_watcher_and_reaps_its_owned_child() {
     bridge.cancel();
     bridge.shutdown().await.unwrap();
     assert_eq!(reaped.recv().await, Some(true));
+    fixture.finish(bridge).await;
+}
+
+#[tokio::test]
+async fn coordinator_review_event_becomes_one_durable_alarm_without_a_worker() {
+    let fixture = Fixture::new().await;
+    let owner = ThreadId::new();
+    fixture
+        .store
+        .ensure_event_route(
+            owner,
+            EventFilter {
+                source: "devcoordinator".into(),
+                event_types: BTreeSet::from([
+                    "review.reminder".into(),
+                    "source.unavailable".into(),
+                    "source.cursor_stale".into(),
+                ]),
+                labels: BTreeMap::from([("owner_thread_id".into(), owner.to_string())]),
+            },
+            1000,
+        )
+        .await
+        .unwrap();
+    let subscriptions = fixture.store.coordinator_subscriptions().await.unwrap();
+    let envelope = json!({"protocol":2,"ok":true,"data":{"cursor":42,"events":[{"event":{"cursor":42,"occurred_at":"2026-09-26T00:00:00Z","event":{"category":"other","data":{"kind":"review.reminder","review":{"version":1,"reminder_id":"review-7","repository_id":"r1234567890abcdef","workstream_id":"implementation","owner_thread_id":owner.to_string(),"alarm_namespace":"codex.review.v1","window_start_ms":1000,"window_end_ms":86401000,"due_at_ms":86401000,"last_completed_receipt":null,"escalation":false}}}}}]}});
+    let (requests, mut received) = mpsc::channel(8);
+    let bridge = fixture.start(FixtureSource(requests));
+    let request = next_request(&mut received).await;
+    let batch = decode_envelope(&serde_json::to_vec(&envelope).unwrap(), request.cursor).unwrap();
+    let event = batch.events[0].clone();
+    request.reply.send(Ok(batch)).unwrap();
+    let subsequent = next_request(&mut received).await;
+    assert_eq!(subsequent.cursor, Some(42));
+    alarm::deliver(&fixture.store, &fixture.service, &subscriptions, &event)
+        .await
+        .unwrap();
+    let page = fixture.store.list_alarms(owner, 0, 5).await.unwrap();
+    assert_eq!(page.data.len(), 1);
+    let alarm = &page.data[0];
+    assert_eq!(alarm.spec.workstream_id.as_deref(), Some("implementation"));
+    assert_eq!(alarm.spec.absolute_at_ms, Some(86401000));
+    assert!(alarm.spec.summary.contains("review.record"));
+    assert!(alarm.spec.summary.contains("from_at_ms=1000"));
+    assert!(alarm.spec.summary.contains("explicit user override"));
+    let wake = timeout(
+        Duration::from_secs(5),
+        fixture.store.await_subscription(owner, alarm.id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(wake.event.unwrap().source, "codex.alarm");
+    assert!(
+        fixture
+            .store
+            .project_status("r1234567890abcdef")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    fixture.finish(bridge).await;
+}
+
+struct RecoveringSource {
+    recovered: Option<SourceBatch>,
+    requests: mpsc::Sender<Request>,
+}
+impl EventSource for RecoveringSource {
+    async fn reconcile(
+        &mut self,
+        _cancellation: CancellationToken,
+    ) -> Result<Option<SourceBatch>, SourceError> {
+        Ok(self.recovered.take())
+    }
+    async fn wait(
+        &mut self,
+        cursor: Option<u64>,
+        cancellation: CancellationToken,
+    ) -> Result<SourceBatch, SourceError> {
+        FixtureSource(self.requests.clone())
+            .wait(cursor, cancellation)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn review_reconciliation_preserves_another_subscription_cursor() {
+    let fixture = Fixture::new().await;
+    let other = fixture
+        .subscribe("run_id", "run-existing", "test.finished", 41)
+        .await;
+    let owner = ThreadId::new();
+    fixture
+        .store
+        .ensure_event_route(
+            owner,
+            EventFilter {
+                source: "devcoordinator".into(),
+                event_types: BTreeSet::from(["review.reminder".into()]),
+                labels: BTreeMap::from([("owner_thread_id".into(), owner.to_string())]),
+            },
+            1000,
+        )
+        .await
+        .unwrap();
+    let reminder:alarm::ReviewReminder=serde_json::from_value(json!({"version":1,"reminder_id":"review-recovered","repository_id":"r1234567890abcdef","workstream_id":null,"owner_thread_id":owner.to_string(),"alarm_namespace":"codex.review.v1","window_start_ms":1000,"window_end_ms":86401000,"due_at_ms":90001000,"last_completed_receipt":null,"escalation":true})).unwrap();
+    let event = reminder.event(50, "2026-09-26T00:00:00Z").unwrap();
+    let (requests, mut received) = mpsc::channel(8);
+    let bridge = fixture.start(RecoveringSource {
+        recovered: Some(SourceBatch {
+            cursor: 50,
+            events: vec![event],
+        }),
+        requests,
+    });
+    let request = next_request(&mut received).await;
+    assert_eq!(request.cursor, Some(41));
+    assert_eq!(
+        fixture
+            .store
+            .list_alarms(owner, 0, 5)
+            .await
+            .unwrap()
+            .data
+            .len(),
+        1
+    );
+    request
+        .reply
+        .send(decode_envelope(
+            &completion(43, "test", "run_id", "run-existing", "test.finished"),
+            Some(41),
+        ))
+        .unwrap();
+    let wake = timeout(
+        Duration::from_secs(5),
+        fixture.store.await_subscription(other.thread_id, other.id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(wake.event.unwrap().cursor.sequence, 43);
+    fixture.finish(bridge).await;
+}
+
+#[tokio::test]
+async fn native_cli_activation_is_lazy_and_uses_the_existing_file_watcher() {
+    let fixture = Fixture::new().await;
+    let home = AbsolutePathBuf::from_absolute_path(fixture._directory.path()).unwrap();
+    let watcher = Arc::new(codex_file_watcher::FileWatcher::new().unwrap());
+    let activation = activation::Activation::new(&home, watcher);
+    let directory = home.join("alarm-activations");
+    tokio::fs::create_dir(directory.as_path()).await.unwrap();
+    tokio::fs::write(
+        directory.join("unrelated.txt").as_path(),
+        b"ordinary output",
+    )
+    .await
+    .unwrap();
+    activation.drain(&fixture.store).await.unwrap();
+    assert!(
+        fixture
+            .store
+            .coordinator_subscriptions()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (requests, mut received) = mpsc::channel(8);
+    let bridge = fixture.start_with_activation(FixtureSource(requests), Some(activation));
+    assert!(
+        timeout(Duration::from_millis(50), received.recv())
+            .await
+            .is_err()
+    );
+    let owner = ThreadId::new();
+    let marker = directory.join(owner.to_string());
+    tokio::fs::write(marker.as_path(), b"codex.alarm-route.v1\n")
+        .await
+        .unwrap();
+    let request = next_request(&mut received).await;
+    assert_eq!(request.cursor, None);
+    assert!(!marker.as_path().exists());
+    let routes = fixture.store.coordinator_subscriptions().await.unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].thread_id, owner);
     fixture.finish(bridge).await;
 }

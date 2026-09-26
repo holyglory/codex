@@ -81,6 +81,7 @@ pub(crate) struct UsageToolAttempt {
     pub(super) runtime: Arc<UsageRuntime>,
     pub(super) operation_id: OperationId,
     pub(super) key: String,
+    pub(super) alarm_context: (String, String, String),
     pub(super) source_event_id: FactEventId,
     pub(super) started: Instant,
     pub(super) finished: AtomicBool,
@@ -91,6 +92,7 @@ pub(crate) struct UsageToolAttempt {
 }
 
 pub(crate) struct UsageWaitSpan {
+    record_detail: bool,
     runtime: Arc<UsageRuntime>,
     id: codex_usage::ActivitySpanId,
     operation_id: OperationId,
@@ -341,6 +343,11 @@ impl UsageRuntime {
             source_event_id: FactEventId::new(),
             started: Instant::now(),
             finished: AtomicBool::new(false),
+            alarm_context: (
+                context.thread_id.into(),
+                context.call_id.into(),
+                context.descriptor.safe_name.into(),
+            ),
             cancellation_token: context.cancellation_token.clone(),
             repository_bucket: repository_resolution.bucket,
             pending,
@@ -428,12 +435,26 @@ impl UsageRuntime {
         else {
             return Ok(None);
         };
+        let id = codex_usage::ActivitySpanId::new();
+        let mut span = UsageWaitSpan {
+            record_detail: false,
+            runtime: Arc::clone(self),
+            id,
+            operation_id: active.operation_id,
+            finished: AtomicBool::new(false),
+            event_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        self.alarm_work(
+            active.operation_id,
+            codex_event_subscriptions::AlarmWorkEvent::Wait,
+        )
+        .await;
         if !active.durable {
             tracing::warn!(
                 stage = "tool_wait_span",
                 "usage accounting detail was deferred; work will continue"
             );
-            return Ok(None);
+            return Ok(Some(span));
         }
         let store = match self.store().await {
             Ok(store) => store,
@@ -442,10 +463,9 @@ impl UsageRuntime {
                     &active.pending,
                 )))
                 .await;
-                return Ok(None);
+                return Ok(Some(span));
             }
         };
-        let id = codex_usage::ActivitySpanId::new();
         if let Err(error) = store
             .begin_activity_span(&codex_usage::NewActivitySpan {
                 id,
@@ -460,15 +480,10 @@ impl UsageRuntime {
                 &active.pending,
             )))
             .await;
-            return Ok(None);
+            return Ok(Some(span));
         }
-        Ok(Some(UsageWaitSpan {
-            runtime: Arc::clone(self),
-            id,
-            operation_id: active.operation_id,
-            finished: AtomicBool::new(false),
-            event_gate: Arc::new(tokio::sync::Semaphore::new(1)),
-        }))
+        span.record_detail = true;
+        Ok(Some(span))
     }
 
     pub(crate) async fn stage_activity(
@@ -698,6 +713,10 @@ fn promote_staged_activity(declaration: &mut ActivityDeclaration) {
 }
 
 impl UsageToolAttempt {
+    pub(crate) fn set_alarm_tool_name(&mut self, name: &str) {
+        self.alarm_context.2 = name.to_owned();
+    }
+
     pub(crate) async fn record_provider_usage(&self, usage: &ProviderUsage) {
         let observations = self.pending.record_provider_usage(
             self.source_event_id,
@@ -734,6 +753,16 @@ impl UsageToolAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.runtime
+            .alarm_tool_result(
+                &self.alarm_context.0,
+                self.operation_id,
+                &self.alarm_context.1,
+                &self.alarm_context.2,
+                status,
+                error,
+            )
+            .await;
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let Some(finish) = self.pending.finish(status, error, duration_ns) else {
             return;
@@ -846,20 +875,28 @@ impl Drop for UsageToolAttempt {
         } else {
             TerminalStatus::Interrupted
         };
-        let Some(finish) = self.pending.finish(
-            status,
-            Some(if cancelled {
-                ErrorCategory::Cancelled
-            } else {
-                ErrorCategory::Tool
-            }),
-            duration_ns,
-        ) else {
+        let error = if cancelled {
+            ErrorCategory::Cancelled
+        } else {
+            ErrorCategory::Tool
+        };
+        let Some(finish) = self.pending.finish(status, Some(error), duration_ns) else {
             return;
         };
         let pending = Arc::clone(&self.pending);
         let durable = self.durable;
+        let alarm_context = self.alarm_context.clone();
         drop(handle.spawn(async move {
+            runtime
+                .alarm_tool_result(
+                    &alarm_context.0,
+                    operation_id,
+                    &alarm_context.1,
+                    &alarm_context.2,
+                    status,
+                    Some(error),
+                )
+                .await;
             if !durable {
                 runtime.tool_state.active_tools.lock().await.remove(&key);
                 runtime
@@ -920,6 +957,17 @@ impl UsageWaitSpan {
     }
 
     async fn record_event(&self, kind: codex_usage::ActivitySpanEventKind) {
+        if matches!(kind, codex_usage::ActivitySpanEventKind::Ended) {
+            self.runtime
+                .alarm_work(
+                    self.operation_id,
+                    codex_event_subscriptions::AlarmWorkEvent::Resume,
+                )
+                .await;
+        }
+        if !self.record_detail {
+            return;
+        }
         let Some(store) = self.runtime.store.get() else {
             self.runtime.latch_operation_fault(self.operation_id);
             return;
@@ -948,11 +996,21 @@ impl Drop for UsageWaitSpan {
             self.runtime.latch_operation_fault(self.operation_id);
             return;
         };
+        let record_detail = self.record_detail;
         let runtime = Arc::clone(&self.runtime);
         let activity_span_id = self.id;
         let operation_id = self.operation_id;
         let event_gate = Arc::clone(&self.event_gate);
         drop(handle.spawn(async move {
+            runtime
+                .alarm_work(
+                    operation_id,
+                    codex_event_subscriptions::AlarmWorkEvent::Resume,
+                )
+                .await;
+            if !record_detail {
+                return;
+            }
             let Ok(_event_permit) = event_gate.acquire().await else {
                 runtime.latch_operation_fault(operation_id);
                 return;

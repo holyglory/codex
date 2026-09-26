@@ -63,7 +63,7 @@ pub trait EventSubscriptionStore: Clone + Send + Sync + 'static {
     fn process_wait_requests(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
         std::future::ready(Ok(()))
     }
-    fn restore_project_jobs(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+    fn restore_runtime(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
         std::future::ready(Ok(()))
     }
     fn wait_for_change(&self) -> impl Future<Output = ()> + Send {
@@ -363,7 +363,7 @@ async fn run_scheduler<S, W, C>(
     let mut retries = HashMap::<ThreadId, RetryState>::new();
     let mut dispatches = JoinSet::<DispatchFinished>::new();
     let mut wait_request_retry_at = None;
-    if let Err(error) = store.restore_project_jobs().await {
+    if let Err(error) = store.restore_runtime().await {
         tracing::warn!(%error, "failed to restore unfinished project automation jobs");
     }
     match store.pending_thread_ids().await {

@@ -112,36 +112,8 @@ impl AppServerSubscriptionWakeSink {
             if let Some(event) = &item.event
                 && event.source == "codex.project"
             {
-                let project = match event.labels.get("project") {
-                    Some(id) => self
-                        .store
-                        .project_status(id)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                    None => None,
-                };
-                let valid = project.is_some_and(|project| {
-                    !project.paused
-                        && !project.completed
-                        && project.owner_thread_id == wake.thread_id
-                        && if event.event_type == "performance_review_due" {
-                            project.review.as_ref().is_some_and(|job| {
-                                job.id.to_string() == event.id && job.decision_ref.is_none()
-                            })
-                        } else {
-                            project.delivery.values().any(|target| {
-                                !target.paused
-                                    && target.job.as_ref().is_some_and(|job| {
-                                        job.id.to_string() == event.id
-                                            && !job.notification_delivered
-                                    })
-                            })
-                        }
-                });
-                if !valid {
-                    obsolete.push(item.clone());
-                    continue;
-                }
+                obsolete.push(item.clone());
+                continue;
             }
             let manual = item.reasons.contains(&WakeReason::Manual)
                 && self
@@ -194,34 +166,13 @@ impl WakeSink for AppServerSubscriptionWakeSink {
         if run.stop_pending.load(Ordering::Acquire) {
             return Ok(WakeDisposition::DeferredUntilResume);
         }
-        let (mut eligible, mut discarded) = self
+        let (eligible, mut discarded) = self
             .select_wakes(&wake, thread.has_running_user_work().await)
             .await?;
-        let has_admitted_non_review_wake = eligible.iter().any(|item| {
-            !item.event.as_ref().is_some_and(|event| {
-                event.source == "codex.project" && event.event_type == "performance_review_due"
-            })
-        });
-        if has_admitted_non_review_wake {
-            let (follow_up_reviews, _) = self.select_wakes(&wake, /*running*/ true).await?;
-            for review in follow_up_reviews.into_iter().filter(|item| {
-                item.event.as_ref().is_some_and(|event| {
-                    event.source == "codex.project" && event.event_type == "performance_review_due"
-                })
-            }) {
-                if !eligible
-                    .iter()
-                    .any(|item| item.subscription_id == review.subscription_id)
-                {
-                    eligible.push(review);
-                }
-            }
-        }
         let mut delivered = Vec::new();
         let mut queued = false;
         let mut retry_wakes = Vec::new();
         let mut normal = Vec::new();
-        let mut reviews = Vec::new();
         for item in eligible {
             if self
                 .store
@@ -230,12 +181,6 @@ impl WakeSink for AppServerSubscriptionWakeSink {
                 .map_err(|error| error.to_string())?
             {
                 retry_wakes.push(item);
-            } else if let Some(event) = &item.event
-                && event.source == "codex.project"
-                && event.event_type == "performance_review_due"
-                && let Some(project) = event.labels.get("project")
-            {
-                reviews.push((project.clone(), item));
             } else {
                 normal.push(item);
             }
@@ -323,26 +268,6 @@ impl WakeSink for AppServerSubscriptionWakeSink {
             }
         }
         drop(dispatch);
-        // Review admission is checked again under the same owner's dispatch lock.
-        for (project, item) in reviews {
-            let result = if has_admitted_non_review_wake {
-                thread_manager
-                    .run_project_review_worker_after_admitted_wake(wake.thread_id, &project)
-                    .await
-            } else {
-                thread_manager
-                    .run_project_review_worker(wake.thread_id, &project)
-                    .await
-            }
-            .map_err(|error| error.to_string())?;
-            match result {
-                WakeDisposition::Started => delivered.push(item),
-                WakeDisposition::Queued
-                | WakeDisposition::DeferredUntilIdle
-                | WakeDisposition::DeferredUntilResume
-                | WakeDisposition::Handled { .. } => {}
-            }
-        }
         Ok(if !delivered.is_empty() || !discarded.is_empty() {
             WakeDisposition::Handled {
                 delivered,
@@ -418,13 +343,7 @@ where
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         self.notify(input.thread_store.level_id());
-        Box::pin(async move {
-            match codex_core::CodexThread::project_review_worker_idle(input.thread_store).await {
-                Ok(Some(owner_thread_id)) => self.service.notify_thread_ready(owner_thread_id),
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "project review idle handling failed"),
-            }
-        })
+        Box::pin(async {})
     }
 }
 

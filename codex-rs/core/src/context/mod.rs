@@ -13,7 +13,7 @@ mod environment_context;
 mod environments_instructions;
 mod event_subscription_wake;
 mod project_performance_review;
-pub(crate) use project_performance_review::ProjectPerformanceReview;
+pub(crate) use project_performance_review::is_legacy_project_review;
 mod guardian_approved_action;
 mod guardian_assistant_context;
 mod guardian_budget_omission;

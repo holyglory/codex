@@ -330,6 +330,11 @@ impl UsageRuntime {
             source_event_id: FactEventId::new(),
             started: Instant::now(),
             finished: AtomicBool::new(false),
+            alarm_context: (
+                context.thread_id.into(),
+                context.call_id.into(),
+                context.descriptor.safe_name.into(),
+            ),
             cancellation_token: context.cancellation_token.clone(),
             repository_bucket: RepositoryBucket::Unknown,
             pending,
