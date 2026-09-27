@@ -41,7 +41,7 @@ impl TurnContext {
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: Some(Arc::clone(&auth_manager)),
             initial_settings: Arc::clone(&self.initial_settings),
-            next_step_input: arc_swap::ArcSwap::from(self.next_step_input.load_full()),
+            next_step_settings: arc_swap::ArcSwap::from(self.next_step_settings.load_full()),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),
             account_lease: Some(account_lease),

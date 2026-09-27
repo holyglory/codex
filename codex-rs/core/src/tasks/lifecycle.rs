@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use codex_analytics::TurnAnalyticsMetadata;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::TurnStartPhase;
@@ -44,6 +45,8 @@ impl Session {
         {
             self.resume_subscription_work().await;
         }
+        let metadata: Arc<dyn TurnAnalyticsMetadata> = turn_context.turn_metadata_state.clone();
+        turn_context.extension_data.insert(metadata);
         let collaboration_mode = turn_context.collaboration_mode();
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             if contributor.turn_start_phase(&self.services.thread_extension_data) != phase {
