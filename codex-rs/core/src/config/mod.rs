@@ -2268,7 +2268,7 @@ pub async fn load_global_mcp_servers(
     load_global_mcp_servers_with_overrides(codex_home, LoaderOverrides::default()).await
 }
 
-pub(crate) async fn load_global_mcp_servers_with_overrides(
+async fn load_global_mcp_servers_with_overrides(
     codex_home: &Path,
     loader_overrides: LoaderOverrides,
 ) -> std::io::Result<BTreeMap<String, McpServerConfig>> {

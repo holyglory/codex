@@ -6,6 +6,7 @@ use codex_event_subscriptions::StoreError;
 use super::SqliteEventSubscriptionStore;
 use super::storage::store_error;
 
+#[cfg(test)]
 pub(super) async fn canonical_key(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     project_id: &str,
