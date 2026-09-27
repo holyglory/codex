@@ -53,6 +53,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             })
         }
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+        ApiError::InvalidPrompt { message } =>
+            CodexErr::new(CodexErrorDetails::InvalidPrompt { message }),
         ApiError::CyberPolicy { message } => {
             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
         }
@@ -204,6 +206,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 CodexErr::ConnectionFailed(ConnectionFailedError { source })
             }
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
+            TransportError::Policy(error) => CodexErr::Stream(error.to_string()),
             error @ TransportError::ResponseTooLarge { .. } => {
                 CodexErr::InvalidRequest(error.to_string())
             }

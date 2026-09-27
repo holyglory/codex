@@ -106,6 +106,7 @@ where
                     TransportError::RetryLimit => "retry_exhausted",
                     TransportError::ResponseTooLarge { .. } => "response_too_large",
                     TransportError::Http { .. } => "http_status",
+                    TransportError::Policy(_) => "network_policy",
                 };
                 tracing::warn!(target: "codex.network_diagnostics", event = "http_transport_failure",
                     transport = "http", attempt, kind, origin = origin.as_deref(),
