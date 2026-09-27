@@ -1,7 +1,7 @@
 ---
 source: cli/tests/account.rs
-expression: "human.replace(countdown,\n\"[Codex reset countdown]\").replace(expiry, \"[Banked expiry countdown]\")"
+expression: "human.replace(countdown,\n\"[Codex reset countdown]\").replace(banked, \"[Banked reset]\")"
 ---
-ALIAS 	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
-*alpha	1	primary	3            	[Banked expiry countdown]	84%	[Codex reset countdown]
- beta 	2		unknown      	unknown  	unknown (unsupportedAuthentication)	unknown
+ALIAS   PRIORITY  NOTE     BANKED RESETS  LIMITS                               RESET IN
+*alpha  1         primary  [Banked reset]  84%                                  [Codex reset countdown]
+ beta   2                  unknown        unknown (unsupportedAuthentication)  unknown
