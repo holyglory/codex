@@ -25,9 +25,9 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
         - ["cargo", "test"]
         </permissions instructions>
     [02] <usage_stats_instructions>
-        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=ed6c3a743d9b8184]
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
         </usage_stats_instructions>
-    [03] <project_automation_instructions>For substantive project work use project_automation to bind the current...odel status checks.</project_automation_instructions> [hash=3a5683150cf50445]
+    [03] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
 01:message/user[2]:
     [01] # AGENTS.md instructions
 
@@ -91,9 +91,9 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
         - ["cargo", "test"]
         </permissions instructions>
     [02] <usage_stats_instructions>
-        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=ed6c3a743d9b8184]
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
         </usage_stats_instructions>
-    [03] <project_automation_instructions>For substantive project work use project_automation to bind the current...odel status checks.</project_automation_instructions> [hash=3a5683150cf50445]
+    [03] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
 01:message/user[2]:
     [01] # AGENTS.md instructions
 
