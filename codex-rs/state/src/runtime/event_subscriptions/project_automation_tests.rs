@@ -250,7 +250,7 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
         )
         .await
         .unwrap();
-    store.collect_project_deadlines(500).await.unwrap();
+    store.collect_due_heartbeats(500).await.unwrap();
     let worker = ThreadId::new();
     let job_id = Uuid::now_v7();
     sqlx::query(
