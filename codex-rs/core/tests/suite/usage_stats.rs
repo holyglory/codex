@@ -615,6 +615,10 @@ text(JSON.stringify(result));
                 .expect("code mode feature");
             config
                 .features
+                .enable(Feature::CodeModeHost)
+                .expect("code mode host feature");
+            config
+                .features
                 .enable(Feature::TokenBudget)
                 .expect("token budget feature");
             config.model_context_window = Some(10_000);

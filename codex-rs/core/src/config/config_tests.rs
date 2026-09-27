@@ -108,6 +108,16 @@ use tempfile::tempdir;
 
 use super::*;
 use core_test_support::PathBufExt;
+
+async fn load_global_mcp_servers_for_tests(
+    codex_home: &Path,
+) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
+    load_global_mcp_servers_with_overrides(
+        codex_home,
+        LoaderOverrides::without_managed_config_for_tests(),
+    )
+    .await
+}
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
 use core_test_support::test_absolute_path;
@@ -6875,7 +6885,7 @@ async fn managed_config_overrides_oauth_store_mode() -> anyhow::Result<()> {
 async fn load_global_mcp_servers_returns_empty_if_missing() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
 
-    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    let servers = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     assert!(servers.is_empty());
 
     Ok(())
@@ -6923,7 +6933,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
         &[ConfigEdit::ReplaceMcpServers(servers.clone())],
     )?;
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     assert_eq!(loaded.len(), 1);
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
@@ -6956,7 +6966,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
         codex_home.path(),
         &[ConfigEdit::ReplaceMcpServers(empty.clone())],
     )?;
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     assert!(loaded.is_empty());
 
     Ok(())
@@ -7012,7 +7022,7 @@ startup_timeout_ms = 2500
 "#,
     )?;
 
-    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    let servers = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = servers.get("docs").expect("docs entry");
     assert_eq!(docs.startup_timeout_sec, Some(Duration::from_millis(2500)));
 
@@ -7310,7 +7320,7 @@ bearer_token = "secret"
 "#,
     )?;
 
-    let err = load_global_mcp_servers(codex_home.path())
+    let err = load_global_mcp_servers_for_tests(codex_home.path())
         .await
         .expect_err("bearer_token entries should be rejected");
 
@@ -7378,7 +7388,7 @@ ZIG_VAR = "3"
 "#
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::Stdio {
@@ -7451,7 +7461,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
         "serialized config missing env_vars field:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::Stdio { env_vars, .. } => {
@@ -7517,7 +7527,7 @@ async fn replace_mcp_servers_serializes_sourced_env_vars() -> anyhow::Result<()>
         "serialized config missing sourced env_vars field:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     assert_eq!(loaded, servers);
 
     Ok(())
@@ -7572,7 +7582,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
         "serialized config missing cwd field:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::Stdio { cwd, .. } => {
@@ -7635,7 +7645,7 @@ startup_timeout_sec = 2.0
 "#
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::StreamableHttp {
@@ -7716,7 +7726,7 @@ X-Auth = "DOCS_AUTH"
 "#
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::StreamableHttp {
@@ -7834,7 +7844,7 @@ url = "https://example.com/mcp"
 "#
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::StreamableHttp {
@@ -7952,7 +7962,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
         "serialized config should not add bearer token to logs:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::StreamableHttp {
@@ -8032,7 +8042,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
         "serialized config missing disabled flag:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     assert!(!docs.enabled);
 
@@ -8086,7 +8096,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
         "serialized config missing required flag:\n{serialized}"
     );
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     assert!(docs.required);
 
@@ -8138,7 +8148,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
     assert!(serialized.contains(r#"enabled_tools = ["allowed"]"#));
     assert!(serialized.contains(r#"disabled_tools = ["blocked"]"#));
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     assert_eq!(
         docs.enabled_tools.as_ref(),
@@ -8203,7 +8213,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
     assert!(serialized.contains(r#"client_id = "eci-prd-pub-codex-123""#));
     assert!(serialized.contains(r#"oauth_resource = "https://resource.example.com""#));
 
-    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let loaded = load_global_mcp_servers_for_tests(codex_home.path()).await?;
     let docs = loaded.get("docs").expect("docs entry");
     assert_eq!(
         docs.oauth_resource.as_deref(),

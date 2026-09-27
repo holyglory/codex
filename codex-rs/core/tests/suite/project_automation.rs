@@ -95,6 +95,31 @@ async fn alarms_tools_persist_nudge_and_ack_only_delivery() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_project_store_does_not_abort_model_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let response = core_test_support::responses::mount_sse_once(
+        &server,
+        core_test_support::responses::sse(vec![
+            core_test_support::responses::ev_response_created("response-1"),
+            core_test_support::responses::ev_completed("response-1"),
+        ]),
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build_with_auto_env(&server)
+        .await?;
+    let state = test.codex.state_db().context("persistent test state")?;
+    state.close().await;
+
+    test.submit_turn("continue even when project scheduling storage is unavailable")
+        .await?;
+    response.single_request();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn alarm_result_trigger_observes_the_real_tool_terminal_without_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;

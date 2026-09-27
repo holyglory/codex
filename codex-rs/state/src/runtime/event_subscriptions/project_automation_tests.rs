@@ -46,6 +46,158 @@ async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
 }
 
 #[tokio::test]
+async fn project_identity_resolution_renames_foreign_key_children() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let provisional = store
+        .project_command(
+            "project-workspace",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    let worker = ThreadId::new();
+    let job_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO project_review_workers
+         (project_id, job_id, worker_thread_id, claimed_at_ms)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind("project-workspace")
+    .bind(job_id.to_string())
+    .bind(worker.to_string())
+    .bind(101_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_identity_aliases
+         (alias_id, canonical_project_id, alias_kind, canonical_identity_id,
+          created_at_ms, last_seen_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind("project-workspace")
+    .bind("project-workspace")
+    .bind("workspace_path")
+    .bind("project-workspace")
+    .bind(101_i64)
+    .bind(101_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+
+    let resolved = store
+        .resolve_project_identity(
+            &ProjectIdentityCandidates {
+                canonical: ProjectIdentityCandidate {
+                    project_id: "project-git".into(),
+                    kind: ProjectIdentityKind::GitCommonDirectory,
+                },
+                aliases: vec![ProjectIdentityCandidate {
+                    project_id: "project-workspace".into(),
+                    kind: ProjectIdentityKind::WorkspacePath,
+                }],
+            },
+            200,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, "project-git");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT project_id FROM project_review_workers WHERE job_id = ?",
+        )
+        .bind(job_id.to_string())
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT canonical_project_id FROM project_identity_aliases
+             WHERE alias_id = ?",
+        )
+        .bind("project-workspace")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
+    assert_eq!(
+        store
+            .project_status("project-git")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        provisional.revision
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn project_identity_resolution_enrolls_new_canonical_with_workspace_alias() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let candidates = ProjectIdentityCandidates {
+        canonical: ProjectIdentityCandidate {
+            project_id: "project-git".into(),
+            kind: ProjectIdentityKind::GitCommonDirectory,
+        },
+        aliases: vec![ProjectIdentityCandidate {
+            project_id: "project-workspace".into(),
+            kind: ProjectIdentityKind::WorkspacePath,
+        }],
+    };
+
+    assert_eq!(
+        store
+            .resolve_project_identity(&candidates, 100)
+            .await
+            .unwrap(),
+        "project-git"
+    );
+    let project = store
+        .project_enroll_thread("project-git", owner, None, 101)
+        .await
+        .unwrap();
+    store
+        .register_project_identity_aliases(&candidates, "project-git", 101)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .project_status("project-workspace")
+            .await
+            .unwrap()
+            .unwrap(),
+        project
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subscription() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
@@ -92,7 +244,36 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
         )
         .await
         .unwrap();
-    store.collect_due_heartbeats(500).await.unwrap();
+    store.collect_project_deadlines(500).await.unwrap();
+    let worker = ThreadId::new();
+    let job_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO project_review_workers
+         (project_id, job_id, worker_thread_id, claimed_at_ms)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind("project-provisional")
+    .bind(job_id.to_string())
+    .bind(worker.to_string())
+    .bind(500_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_identity_aliases
+         (alias_id, canonical_project_id, alias_kind, canonical_identity_id,
+          created_at_ms, last_seen_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind("project-provisional")
+    .bind("project-provisional")
+    .bind("workspace_path")
+    .bind("project-provisional")
+    .bind(500_i64)
+    .bind(500_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
     let canonical = store
         .project_command(
             "project-git",
@@ -157,12 +338,29 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
     .await
     .unwrap();
     assert_eq!(alias_target, "project-git");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT project_id FROM project_review_workers WHERE job_id = ?",
+        )
+        .bind(job_id.to_string())
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
     assert!(merged.review.is_some());
     let pending = store.pending_wake(owner).await.unwrap().unwrap();
     assert_eq!(pending.wake.items.len(), 1);
     assert_eq!(
         pending.wake.items[0].event.as_ref().unwrap().event_type,
         "performance_review_due"
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -412,7 +610,7 @@ async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
         .await
         .unwrap();
     store.collect_due_heartbeats(1100).await.unwrap();
-    store.restore_project_jobs().await.unwrap();
+    store.restore_unfinished_project_jobs().await.unwrap();
     assert_eq!(
         store.collect_due_heartbeats(1200).await.unwrap(),
         vec![owner]
@@ -423,7 +621,7 @@ async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
         .await
         .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
-    store.restore_project_jobs().await.unwrap();
+    store.restore_unfinished_project_jobs().await.unwrap();
     assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
     assert_eq!(
         store.collect_due_heartbeats(2100).await.unwrap(),

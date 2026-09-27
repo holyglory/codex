@@ -31,6 +31,10 @@ impl SqliteEventSubscriptionStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(store_error)?;
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let canonical = candidates.canonical.project_id.clone();
         for alias in &candidates.aliases {
             if alias.project_id == canonical {
@@ -104,7 +108,35 @@ async fn rename_project(
     from: &str,
     to: &str,
 ) -> Result<(), StoreError> {
-    sqlx::query("UPDATE project_automations SET project_id=?, state_json=json_set(state_json,'$.projectId',?) WHERE project_id=?").bind(to).bind(to).bind(from).execute(&mut **tx).await.map_err(store_error)?;
+    sqlx::query("UPDATE project_automations SET project_id=?, state_json=json_set(state_json,'$.projectId',?) WHERE project_id=?")
+        .bind(to)
+        .bind(to)
+        .bind(from)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    sqlx::query("UPDATE project_review_workers SET project_id=? WHERE project_id=?")
+        .bind(to)
+        .bind(from)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    sqlx::query(
+        "UPDATE project_identity_aliases SET canonical_project_id=? WHERE canonical_project_id=?",
+    )
+    .bind(to)
+    .bind(from)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    sqlx::query(
+        "UPDATE project_identity_conflicts SET canonical_project_id=? WHERE canonical_project_id=?",
+    )
+    .bind(to)
+    .bind(from)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
     sqlx::query("UPDATE project_automation_history SET project_id=? WHERE project_id=?")
         .bind(to)
         .bind(from)
@@ -175,6 +207,43 @@ async fn merge_project(
     )
     .bind(&target_sub)
     .bind(&source_sub)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    sqlx::query(
+        "DELETE FROM project_review_workers
+         WHERE project_id = ?
+           AND EXISTS (
+               SELECT 1 FROM project_review_workers AS target
+               WHERE target.project_id = ?
+                 AND (target.job_id = project_review_workers.job_id
+                      OR target.worker_thread_id = project_review_workers.worker_thread_id)
+           )",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    sqlx::query("UPDATE project_review_workers SET project_id=? WHERE project_id=?")
+        .bind(to)
+        .bind(from)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    sqlx::query(
+        "UPDATE project_identity_aliases SET canonical_project_id=? WHERE canonical_project_id=?",
+    )
+    .bind(to)
+    .bind(from)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    sqlx::query(
+        "UPDATE project_identity_conflicts SET canonical_project_id=? WHERE canonical_project_id=?",
+    )
+    .bind(to)
+    .bind(from)
     .execute(&mut **tx)
     .await
     .map_err(store_error)?;
