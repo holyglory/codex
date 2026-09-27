@@ -2265,6 +2265,13 @@ where
 pub async fn load_global_mcp_servers(
     codex_home: &Path,
 ) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
+    load_global_mcp_servers_with_overrides(codex_home, LoaderOverrides::default()).await
+}
+
+pub(crate) async fn load_global_mcp_servers_with_overrides(
+    codex_home: &Path,
+    loader_overrides: LoaderOverrides,
+) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
     // In general, Config::load_with_cli_overrides() should be used to load the
     // full config with requirements.toml applied, but in this case, we need
     // access to the raw TOML in order to warn the user about deprecated fields.
@@ -2281,7 +2288,7 @@ pub async fn load_global_mcp_servers(
         codex_home,
         cwd,
         &cli_overrides,
-        LoaderOverrides::default(),
+        loader_overrides,
         &codex_config::NoopThreadConfigLoader,
     )
     .await?;
