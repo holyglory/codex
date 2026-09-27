@@ -406,6 +406,7 @@ impl SqliteEventSubscriptionStore {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) async fn collect_project_deadlines(
         &self,
         now_ms: i64,

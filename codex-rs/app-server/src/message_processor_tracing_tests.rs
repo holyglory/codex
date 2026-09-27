@@ -252,7 +252,9 @@ pub(super) async fn build_test_processor(
     let config_manager = ConfigManager::new(
         config.codex_home.to_path_buf(),
         Vec::new(),
-        LoaderOverrides::without_managed_config_for_tests(),
+        LoaderOverrides::with_managed_config_path_for_tests(
+            config.codex_home.join("managed_config.toml").to_path_buf(),
+        ),
         /*strict_config*/ false,
         CloudConfigBundleLoader::default(),
         Arg0DispatchPaths::default(),
