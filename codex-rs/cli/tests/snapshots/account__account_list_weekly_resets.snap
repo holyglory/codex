@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: normalized
 ---
-ALIAS 	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
- beta 	2		unknown      	unknown  	61%	[Codex reset countdown]
-*alpha	1	primary	unknown      	unknown  	100%	[Codex reset countdown]
+ALIAS   PRIORITY  NOTE     BANKED RESETS  LIMITS  RESET IN
+*alpha  1         primary  unknown        100%    [Codex reset countdown]
+ beta   2                  unknown        61%     [Codex reset countdown]
