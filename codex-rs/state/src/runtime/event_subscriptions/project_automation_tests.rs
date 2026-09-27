@@ -412,7 +412,7 @@ async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
         .await
         .unwrap();
     store.collect_due_heartbeats(1100).await.unwrap();
-    store.restore_project_jobs().await.unwrap();
+    store.restore_unfinished_project_jobs().await.unwrap();
     assert_eq!(
         store.collect_due_heartbeats(1200).await.unwrap(),
         vec![owner]
@@ -423,7 +423,7 @@ async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
         .await
         .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
-    store.restore_project_jobs().await.unwrap();
+    store.restore_unfinished_project_jobs().await.unwrap();
     assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
     assert_eq!(
         store.collect_due_heartbeats(2100).await.unwrap(),
