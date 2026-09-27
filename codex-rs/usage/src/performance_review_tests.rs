@@ -2,6 +2,8 @@ use super::*;
 use crate::*;
 use pretty_assertions::assert_eq;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 #[path = "performance_review_work_tests.rs"]
 mod work;
@@ -308,6 +310,85 @@ async fn factual_ownership_deduplicates_covered_tokens_and_typed_tool_groups() {
         .await
         .expect("disable disposable derived cache");
     assert_eq!(fixture.packet().await, packet);
+}
+
+#[tokio::test]
+async fn long_lived_declaration_diagnostic_is_aggregate_and_precise() {
+    let fixture = Fixture::new().await;
+    let now_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis(),
+    )
+    .expect("milliseconds");
+    let old_ms = now_ms - LONG_LIVED_DECLARATION_THRESHOLD_MS - 1;
+    for (thread_id, active_phase, active_activity, staged_phase, staged_activity, updated_at_ms) in [
+        (
+            "old-active",
+            Some("implementation"),
+            Some("coding"),
+            None,
+            None,
+            old_ms,
+        ),
+        (
+            "fresh-active",
+            Some("implementation"),
+            Some("coding"),
+            None,
+            None,
+            now_ms,
+        ),
+        ("ended", None, None, None, None, old_ms),
+        (
+            "staged-only",
+            None,
+            None,
+            Some("testing"),
+            Some("integration_testing"),
+            old_ms,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO activity_declarations(
+                thread_id, active_phase, active_activity, active_rework_of_operation_id,
+                staged_phase, staged_activity, staged_rework_of_operation_id,
+                parent_inheritance_blocked, updated_at_ms
+             ) VALUES (?, ?, ?, NULL, ?, ?, NULL, 0, ?)",
+        )
+        .bind(thread_id)
+        .bind(active_phase)
+        .bind(active_activity)
+        .bind(staged_phase)
+        .bind(staged_activity)
+        .bind(updated_at_ms)
+        .execute(&fixture.store.pool)
+        .await
+        .expect("declaration");
+    }
+
+    let packet = fixture.packet().await;
+    assert_eq!(
+        packet.diagnostics.long_lived_declarations,
+        LongLivedDeclarationDiagnostic {
+            threshold_ms: LONG_LIVED_DECLARATION_THRESHOLD_MS
+                .try_into()
+                .expect("threshold"),
+            count: 1,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&packet.diagnostics).expect("diagnostic json"),
+        serde_json::json!({
+            "longLivedDeclarations": {
+                "thresholdMs": LONG_LIVED_DECLARATION_THRESHOLD_MS,
+                "count": 1
+            }
+        })
+    );
+    assert!(packet.operations.is_empty());
+    assert!(packet.tokens.is_empty());
 }
 
 #[tokio::test]

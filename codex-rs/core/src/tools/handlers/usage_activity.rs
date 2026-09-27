@@ -251,7 +251,7 @@ fn usage_activity_spec() -> ToolSpec {
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: "usage_activity".to_string(),
-        description: "Declare the category for upcoming work or append an enum-only correction to stored usage. Use set before the next model request, heartbeat periodically while it remains active, end when it stops, and correct_classification with target_id plus phase/activity for historical correction. Set relation=rework_previous only for an explicit redo of the prior model operation. Declarations activate only at the next model request; do not include prose or task content."
+        description: "Declare the category for upcoming work or append an enum-only correction to stored usage. Use set before the first model request and at every phase boundary; a replacement set ends the prior phase when the staged declaration activates, so use end only when work stops without a replacement. Use heartbeat periodically while the declaration remains active, and correct_classification with target_id plus phase/activity for historical correction. Translation or catalog authoring uses documentation_authoring, translation or catalog review uses review_feedback, rendered journeys use browser_qa, and native repair uses diagnosis, build_validation, or integration_testing for the current step. Reserve verification_review for final independent acceptance. Set relation=rework_previous only for an explicit redo of the prior model operation. Declarations activate only at the next model request; do not include prose or task content."
             .to_string(),
         strict: false,
         defer_loading: None,

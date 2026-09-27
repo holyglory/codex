@@ -25,10 +25,26 @@ pub struct PerformanceReviewPacket {
     pub links: ReviewLinks,
     pub candidates: Vec<ReviewCandidate>,
     pub coverage: ReviewCoverage,
+    pub diagnostics: ReviewDiagnostics,
     pub work_bindings: ReviewWorkBindings,
     pub outcomes: crate::OutcomeReport,
     pub evidence: ReviewEvidence,
     pub interpretation: &'static str,
+}
+
+pub(crate) const LONG_LIVED_DECLARATION_THRESHOLD_MS: i64 = 60 * 60 * 1_000;
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDiagnostics {
+    pub long_lived_declarations: LongLivedDeclarationDiagnostic,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LongLivedDeclarationDiagnostic {
+    pub threshold_ms: u64,
+    pub count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
