@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageDetailListQuery;
@@ -608,6 +609,10 @@ text(JSON.stringify(result));
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_model_info_override("gpt-5.5", |model_info| {
+            model_info.tool_mode = Some(ToolMode::CodeMode);
+        })
         .with_config(|config| {
             config
                 .features
