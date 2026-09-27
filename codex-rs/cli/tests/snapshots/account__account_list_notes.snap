@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: human
+---
+ALIAS                     PRIORITY    NOTE                               BANKED RESETS  LIMITS                               RESET IN
+*alpha                    1           週次 確認 équipe with a long note  unknown        unknown (unsupportedAuthentication)  unknown
+ axel-marchenko-tt-eu-pp  4294967295                                     unknown        unknown (unsupportedAuthentication)  unknown
