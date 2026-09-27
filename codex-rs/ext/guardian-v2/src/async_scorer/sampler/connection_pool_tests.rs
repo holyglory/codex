@@ -379,6 +379,7 @@ struct RoutingPolicy(Mutex<Option<WorkspaceRouting>>);
 impl WorkspaceRoutingResolver for RoutingPolicy {
     fn resolve(
         &self,
+        _auth: Arc<AuthManager>,
         _request: WorkspaceRoutingRequest,
     ) -> ModelProviderFuture<'_, std::io::Result<Option<WorkspaceRouting>>> {
         Box::pin(async { Ok(self.0.lock().unwrap().clone()) })

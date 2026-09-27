@@ -54,7 +54,7 @@ use tokio::sync::mpsc;
 use tracing_subscriber::layer::SubscriberExt;
 use wiremock::MockServer;
 
-const TEST_CONNECTION_ID: ConnectionId = ConnectionId(7);
+pub(super) const TEST_CONNECTION_ID: ConnectionId = ConnectionId(7);
 
 struct TestTracing {
     exporter: InMemorySpanExporter,
@@ -236,7 +236,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
         .await?)
 }
 
-async fn build_test_processor(
+pub(super) async fn build_test_processor(
     config: Arc<Config>,
 ) -> (
     Arc<MessageProcessor>,
@@ -440,7 +440,7 @@ fn assert_has_internal_descendant_at_min_depth(
     );
 }
 
-async fn read_response<T: serde::de::DeserializeOwned>(
+pub(super) async fn read_response<T: serde::de::DeserializeOwned>(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> T {

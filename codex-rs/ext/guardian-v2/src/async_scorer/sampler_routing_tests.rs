@@ -31,7 +31,11 @@ type RoutingFuture<'a> = ModelProviderFuture<'a, std::io::Result<Option<Workspac
 struct UnavailableRouting;
 
 impl WorkspaceRoutingResolver for UnavailableRouting {
-    fn resolve(&self, _request: WorkspaceRoutingRequest) -> RoutingFuture<'_> {
+    fn resolve(
+        &self,
+        _auth: Arc<AuthManager>,
+        _request: WorkspaceRoutingRequest,
+    ) -> RoutingFuture<'_> {
         Box::pin(async { Err(std::io::Error::other("discovery unavailable")) })
     }
 }
@@ -86,7 +90,11 @@ impl ExternalAuth for AuthAfterRouting {
 }
 
 impl WorkspaceRoutingResolver for AuthAfterRouting {
-    fn resolve(&self, _request: WorkspaceRoutingRequest) -> RoutingFuture<'_> {
+    fn resolve(
+        &self,
+        _auth: Arc<AuthManager>,
+        _request: WorkspaceRoutingRequest,
+    ) -> RoutingFuture<'_> {
         Box::pin(async {
             self.resolved.store(/*val*/ true, Ordering::SeqCst);
             Ok(None)
@@ -162,7 +170,11 @@ async fn classification_retries_refreshes_but_never_switches_accounts() -> Resul
 struct ChangedBootstrap(AtomicBool);
 
 impl WorkspaceRoutingResolver for ChangedBootstrap {
-    fn resolve(&self, request: WorkspaceRoutingRequest) -> RoutingFuture<'_> {
+    fn resolve(
+        &self,
+        _auth: Arc<AuthManager>,
+        request: WorkspaceRoutingRequest,
+    ) -> RoutingFuture<'_> {
         Box::pin(async move {
             if request.previously_routed {
                 Err(std::io::Error::other(
