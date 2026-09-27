@@ -176,6 +176,7 @@ impl ImageGenerationTool {
             (
                 format!("image generation failed: {}", error.message()),
                 usage_limit_failure(error.codex_error()),
+                error.imagegen_request_id().map(str::to_string),
             )
         })
         .and_then(|(response, imagegen_request_id)| {
@@ -183,20 +184,22 @@ impl ImageGenerationTool {
                 .data
                 .first()
                 .and_then(|data| data.generation_id.clone());
-            first_generated_image(response).map(|(result, background, usage)| {
-                (
-                    result,
-                    background,
-                    imagegen_request_id,
-                    generation_id,
-                    usage,
-                )
-            })
+            first_generated_image(response)
+                .map_err(|(message, failure)| (message, failure, imagegen_request_id.clone()))
+                .map(|(result, background, usage)| {
+                    (
+                        result,
+                        background,
+                        imagegen_request_id,
+                        generation_id,
+                        usage,
+                    )
+                })
         });
         let (result, transparent_background, imagegen_request_id, generation_id, provider_usage) =
             match result {
                 Ok(result) => result,
-                Err((message, failure)) => {
+                Err((message, failure, imagegen_request_id)) => {
                     let item = ImageGenerationItem {
                         id: call.call_id.clone(),
                         status: "failed".to_string(),
@@ -205,7 +208,7 @@ impl ImageGenerationTool {
                         transparent_background: None,
                         failure,
                         saved_path: None,
-                        imagegen_request_id: None,
+                        imagegen_request_id,
                         generation_id: None,
                     };
                     let legacy_event = legacy_end_event(&item);
@@ -217,7 +220,9 @@ impl ImageGenerationTool {
             };
         let saved_path = save_image_generation_result(
             self.save_root.as_ref(),
-            call.environments.first(),
+            call.environments
+                .iter()
+                .find(|environment| environment.cwd.to_abs_path().is_ok()),
             &self.thread_id,
             &call.call_id,
             &result,
@@ -339,7 +344,8 @@ async fn save_image_generation_result(
         }
         None => {
             let environment = environment?;
-            let output_dir = environment.cwd.join("generated_images");
+            let cwd = environment.cwd.to_abs_path().ok()?;
+            let output_dir = cwd.join("generated_images");
             let save_result: io::Result<AbsolutePathBuf> = async {
                 let result = result.trim();
                 if result.len() > MAX_EXECUTOR_GENERATED_IMAGE_BASE64_BYTES {
@@ -358,8 +364,7 @@ async fn save_image_generation_result(
                     ));
                 }
 
-                let artifact_path =
-                    image_generation_artifact_path(&environment.cwd, session_id, call_id);
+                let artifact_path = image_generation_artifact_path(&cwd, session_id, call_id);
                 let path = output_dir.join(artifact_path.as_path().file_name().unwrap_or_default());
                 let sandbox = Some(&environment.file_system_sandbox_context);
                 if let Some(parent) = path.parent() {
@@ -459,7 +464,10 @@ async fn request_for_call_args(
             }));
         }
         (false, None) => {
-            let Some(environment) = environments.first() else {
+            let Some(environment) = environments
+                .iter()
+                .find(|environment| environment.cwd.to_abs_path().is_ok())
+            else {
                 return Err(FunctionCallError::RespondToModel(
                     "referenced image paths are unavailable in this session".to_string(),
                 ));

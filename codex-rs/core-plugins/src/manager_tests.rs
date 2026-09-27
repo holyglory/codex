@@ -130,6 +130,7 @@ fn plugins_config_input_with_requirements(
         /*remote_plugin_enabled*/ false,
         String::new(),
         test_http_client_factory(),
+        /*product_sku*/ None,
     )
 }
 
@@ -181,6 +182,7 @@ fn curated_repo_sync_stays_deferred_for_remote_chatgpt_catalog() {
         /*remote_plugin_enabled*/ true,
         "https://chatgpt.com".to_string(),
         test_http_client_factory(),
+        /*product_sku*/ None,
     );
     let manager = Arc::new(test_plugins_manager_with_options(
         tmp.path().to_path_buf(),
@@ -894,6 +896,7 @@ fn remote_installed_plugin_in_marketplace(
     marketplace_name: &str,
 ) -> RemoteInstalledPlugin {
     RemoteInstalledPlugin {
+        extensions: None,
         canonical_app_id: None,
         marketplace_name: marketplace_name.to_string(),
         id: format!("plugins~Plugin_{name}"),
@@ -3036,6 +3039,7 @@ async fn plugin_cache_reuses_effective_configurations() {
             /*remote_plugin_enabled*/ false,
             "https://chatgpt.com".to_string(),
             test_http_client_factory(),
+            /*product_sku*/ None,
         )
     };
     let manager = test_plugins_manager(codex_home.path().to_path_buf());
@@ -3313,6 +3317,7 @@ async fn plugins_for_config_discards_in_flight_load_after_account_change() {
         /*remote_plugin_enabled*/ true,
         String::new(),
         test_http_client_factory(),
+        /*product_sku*/ None,
     );
     let account_a = CodexAuth::from_external_chatgpt_tokens(
         "header.e30.test",
@@ -7343,6 +7348,7 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
             service_config: RemotePluginServiceConfig::new(
                 "https://example.com".to_string(),
                 test_http_client_factory(),
+                /*product_sku*/ None,
             ),
             auth_job: manager.legacy_auth_job(/*auth*/ None),
             notify: RemoteInstalledPluginsCacheRefreshNotify::IfCacheChanged,

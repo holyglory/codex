@@ -2187,11 +2187,14 @@ async fn run_exec_server_command(
         let direct_transport = cmd.remote_transport == ExecServerRemoteTransport::Direct;
         let (_otel, telemetry) = exec_server_telemetry::init(Some(&config));
         let auth_provider = if cmd.aws_sigv4 {
-            exec_server_auth::aws_sigv4_auth_provider(codex_aws_auth::AwsAuthConfig {
-                profile: cmd.aws_profile,
-                region: cmd.aws_region,
-                service: cmd.aws_service,
-            })
+            exec_server_auth::aws_sigv4_auth_provider(
+                codex_aws_auth::AwsAuthConfig {
+                    profile: cmd.aws_profile,
+                    region: cmd.aws_region,
+                    service: cmd.aws_service,
+                },
+                config.http_client_factory(),
+            )
             .await?
         } else {
             load_exec_server_remote_auth_provider(&config, &base_url, cmd.use_agent_identity_auth)
@@ -2601,7 +2604,7 @@ async fn run_debug_prompt_input_command(
             include_instructions: config.include_skill_instructions,
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: config.bundled_skills_enabled(),
-            orchestrator_skills_enabled: config.orchestrator_skills_enabled,
+            cloud_skill_enabled: config.cloud_skill_enabled,
             shadow_selection_enabled: config
                 .features
                 .enabled(codex_features::Feature::SkillSearch),

@@ -217,6 +217,7 @@ impl GuardianV2Extension {
     ) -> LunaSampler {
         LunaSampler::new(LunaSamplerConfig {
             provider: create_model_provider(config.model_provider.clone(), Some(auth_manager)),
+            workspace_routing: config.workspace_routing_context(),
             http_client_factory: config.http_client_factory(),
             agent_identity_policy: if config.features.enabled(Feature::UseAgentIdentity) {
                 AgentIdentityAuthPolicy::ChatGptAuth
