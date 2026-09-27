@@ -66,9 +66,6 @@ mod daemon_telemetry;
 mod desktop_app;
 mod doctor;
 mod event_subscriptions_cmd;
-#[cfg(test)]
-#[path = "exec_server_args_tests.rs"]
-mod exec_server_args_tests;
 mod exec_server_auth;
 mod exec_server_telemetry;
 mod marketplace_cmd;

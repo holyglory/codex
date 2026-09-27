@@ -7517,6 +7517,7 @@ fn installed_refresh_coalescing_never_merges_cross_profile_requests() {
             service_config: RemotePluginServiceConfig::new(
                 "https://example.com".to_string(),
                 test_http_client_factory(),
+                /*product_sku*/ None,
             ),
             auth_job: manager.legacy_auth_job(Some(auth)),
             notify: RemoteInstalledPluginsCacheRefreshNotify::IfCacheChanged,
