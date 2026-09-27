@@ -164,12 +164,7 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
     .unwrap();
     assert_eq!(alias_target, "project-git");
     assert!(merged.review.is_some());
-    let pending = store.pending_wake(owner).await.unwrap().unwrap();
-    assert_eq!(pending.wake.items.len(), 1);
-    assert_eq!(
-        pending.wake.items[0].event.as_ref().unwrap().event_type,
-        "performance_review_due"
-    );
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -256,7 +251,7 @@ async fn automatic_enrollment_inherits_concurrent_children_without_reopening_com
 }
 
 #[tokio::test]
-async fn deadlines_persist_and_share_the_subscription_scheduler() {
+async fn delivery_metadata_persists_without_a_project_local_scheduler() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
     let project = store
@@ -288,25 +283,7 @@ async fn deadlines_persist_and_share_the_subscription_scheduler() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        store.next_heartbeat_deadline().await.unwrap(),
-        Some(1_001_000)
-    );
-    assert_eq!(
-        store.collect_due_heartbeats(1_001_000).await.unwrap(),
-        vec![owner]
-    );
-    let persisted = store
-        .project_status("project-alpha")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(persisted.mode(1_001_000), ProjectMode::DeliveryDue);
-    let pending = store.pending_wake(owner).await.unwrap().unwrap();
-    assert_eq!(
-        pending.wake.items[0].event.as_ref().unwrap().event_type,
-        "delivery_due"
-    );
+    assert_eq!(store.next_heartbeat_deadline().await.unwrap(), None);
     assert!(
         store
             .collect_due_heartbeats(1_001_000)
@@ -314,9 +291,19 @@ async fn deadlines_persist_and_share_the_subscription_scheduler() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        store.collect_due_heartbeats(1_002_000).await.unwrap(),
-        vec![owner]
+    let persisted = store
+        .project_status("project-alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.mode(1_001_000), ProjectMode::DeliveryDue);
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
+    assert!(
+        store
+            .collect_due_heartbeats(1_002_000)
+            .await
+            .unwrap()
+            .is_empty()
     );
     assert_eq!(
         store
@@ -342,7 +329,7 @@ async fn deadlines_persist_and_share_the_subscription_scheduler() {
 }
 
 #[tokio::test]
-async fn specification_has_no_delivery_and_postponement_is_atomic() {
+async fn specification_has_no_delivery_or_project_local_scheduler() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
     let project = store
@@ -359,9 +346,12 @@ async fn specification_has_no_delivery_and_postponement_is_atomic() {
         .await
         .unwrap();
     store.project_activity("spec", owner, 101).await.unwrap();
-    assert_eq!(
-        store.collect_due_heartbeats(7 * 86_400_000).await.unwrap(),
-        vec![owner]
+    assert!(
+        store
+            .collect_due_heartbeats(7 * 86_400_000)
+            .await
+            .unwrap()
+            .is_empty()
     );
     let restored = store.project_status("spec").await.unwrap().unwrap();
     assert_eq!(restored.mode(7 * 86_400_000), ProjectMode::PerformanceOnly);
@@ -385,7 +375,7 @@ async fn specification_has_no_delivery_and_postponement_is_atomic() {
 }
 
 #[tokio::test]
-async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
+async fn delivery_metadata_survives_restart_without_local_project_jobs() {
     let (store, _directory) = store().await;
     let owner = ThreadId::new();
     let project = store
@@ -417,24 +407,11 @@ async fn pending_project_jobs_recover_but_delivered_alarms_do_not_repeat() {
         )
         .await
         .unwrap();
-    store.collect_due_heartbeats(1100).await.unwrap();
     store.restore_unfinished_project_jobs().await.unwrap();
-    assert_eq!(
-        store.collect_due_heartbeats(1200).await.unwrap(),
-        vec![owner]
-    );
-    let pending = store.pending_wake(owner).await.unwrap().unwrap();
-    store
-        .acknowledge_wake(owner, pending.through_revision)
-        .await
-        .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
     store.restore_unfinished_project_jobs().await.unwrap();
     assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
-    assert_eq!(
-        store.collect_due_heartbeats(2100).await.unwrap(),
-        vec![owner]
-    );
+    assert!(store.collect_due_heartbeats(2100).await.unwrap().is_empty());
     store
         .project_command(
             "recover",
