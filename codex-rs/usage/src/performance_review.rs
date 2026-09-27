@@ -10,6 +10,8 @@ use crate::detail_query_support::optional_uuid;
 use crate::detail_query_support::required_enum;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 #[path = "performance_review_pages.rs"]
 mod pages;
@@ -201,6 +203,17 @@ impl UsageStore {
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
         let work_bindings = work::read(transaction.as_mut(), &query, &source).await?;
         let outcomes = crate::outcomes::read(transaction.as_mut(), &query, &source).await?;
+        let long_lived_declarations = query::long_lived_declaration_count(
+            transaction.as_mut(),
+            &query,
+            &source,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+                .unwrap_or(i64::MAX),
+        )
+        .await?;
         transaction
             .commit()
             .await
@@ -243,6 +256,14 @@ impl UsageStore {
             critical_path: "not_collected",
             repeated_input_comparison: "not_collected",
         };
+        let diagnostics = ReviewDiagnostics {
+            long_lived_declarations: LongLivedDeclarationDiagnostic {
+                threshold_ms: LONG_LIVED_DECLARATION_THRESHOLD_MS
+                    .try_into()
+                    .map_err(|_| UsageStoreError::DatabaseValueOutOfRange)?,
+                count: long_lived_declarations,
+            },
+        };
         let packet = PerformanceReviewPacket {
             schema_version: 1,
             kind: "performanceReview",
@@ -265,9 +286,10 @@ impl UsageStore {
             links,
             candidates,
             coverage,
+            diagnostics,
             work_bindings,
             outcomes,
-            interpretation: "Candidates are signals, not diagnoses or measured waste. Critical path and avoidability are unknown. Manual waits and deliberate validation are not waste. Interval sums are effort, not elapsed wall time; waits overlap operation effort. Token categories and provenances overlap: never add total, input, cached, output, or reasoning categories together. Facts deduplicate by owner, source event, category and provenance; covered tools retain request ownership. Windows clip intervals and select facts by observation time. Evidence IDs reference operations; select one details family and follow its nextCursor. Omitted groups remain in paginated evidence. Collection gaps may be unobservable; zero recorded gaps does not prove complete capture.",
+            interpretation: "Candidates are signals, not diagnoses or measured waste. Critical path and avoidability are unknown. Manual waits and deliberate validation are not waste. Interval sums are effort, not elapsed wall time; waits overlap operation effort. Token categories and provenances overlap: never add total, input, cached, output, or reasoning categories together. Facts deduplicate by owner, source event, category and provenance; covered tools retain request ownership. Windows clip intervals and select facts by observation time. Long-lived declaration diagnostics are aggregate read-only signals and never relabel historical facts. Evidence IDs reference operations; select one details family and follow its nextCursor. Omitted groups remain in paginated evidence. Collection gaps may be unobservable; zero recorded gaps does not prove complete capture.",
         };
         pages::remember(self, &query, packet)
     }

@@ -89,6 +89,7 @@ async fn performance_review_resolves_current_thread_without_optional_arguments()
         .expect("packet");
     assert_eq!(output["evidence"]["thread_id"], "spec");
     assert_eq!(output["coverage"]["rawOperations"], 0);
+    assert_eq!(output["diagnostics"]["longLivedDeclarations"]["count"], 0);
     assert!(serde_json::to_vec(&output).expect("json").len() <= 12 * 1024);
     bounded_output(output).expect("bounded result");
     let request = serde_json::from_value(json!({

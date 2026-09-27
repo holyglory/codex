@@ -1,3 +1,4 @@
+use super::LONG_LIVED_DECLARATION_THRESHOLD_MS;
 use super::PerformanceReviewQuery;
 use sqlx::QueryBuilder;
 use sqlx::Sqlite;
@@ -11,6 +12,50 @@ pub(crate) enum ClassificationSource {
 pub(crate) struct Selection {
     pub classification: ClassificationSource,
     pub operation_ids: Option<Vec<String>>,
+}
+
+pub(crate) async fn long_lived_declaration_count(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+    now_ms: i64,
+) -> Result<u64, crate::UsageStoreError> {
+    let cutoff_ms = now_ms.saturating_sub(LONG_LIVED_DECLARATION_THRESHOLD_MS);
+    let count = if query.thread_id.is_none()
+        && query.repository_id.is_none()
+        && source.operation_ids.is_none()
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM activity_declarations
+             WHERE active_phase IS NOT NULL AND active_activity IS NOT NULL
+               AND updated_at_ms <= ?",
+        )
+        .bind(cutoff_ms)
+        .fetch_one(connection)
+        .await
+        .map_err(crate::UsageStoreError::Database)?
+    } else {
+        let mut builder = selection(query, source);
+        builder.push(
+            " SELECT COUNT(*) FROM activity_declarations declaration
+              WHERE declaration.active_phase IS NOT NULL
+                AND declaration.active_activity IS NOT NULL
+                AND declaration.updated_at_ms <= ",
+        );
+        builder.push_bind(cutoff_ms);
+        builder.push(
+            " AND EXISTS (SELECT 1 FROM scoped operation
+                         WHERE operation.thread_id = declaration.thread_id)",
+        );
+        builder
+            .build_query_scalar::<i64>()
+            .fetch_one(connection)
+            .await
+            .map_err(crate::UsageStoreError::Database)?
+    };
+    count
+        .try_into()
+        .map_err(|_| crate::UsageStoreError::DatabaseValueOutOfRange)
 }
 
 // Freeze the relevant operation identities once per read transaction. This avoids
