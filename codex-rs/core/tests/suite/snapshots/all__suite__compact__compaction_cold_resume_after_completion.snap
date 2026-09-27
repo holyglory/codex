@@ -7,9 +7,11 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <COLLABORATION_MODE>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -35,9 +37,11 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 
 ## Window 2 (after request 1: settings changed (parallel_tool_calls, tools))
 -- request 2 (compaction) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <COLLABORATION_MODE>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -67,9 +71,11 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 
 ## Window 3 (after request 2: input diverged at item 04, settings changed (parallel_tool_calls, tools))
 -- request 3 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <COLLABORATION_MODE>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
 01:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
