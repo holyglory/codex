@@ -125,11 +125,16 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 if status == http::StatusCode::BAD_REQUEST {
                     if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
                         && let Some(error) = parsed.get("error")
-                        && let Some(code @ (CYBER_POLICY_ERROR_CODE | BIO_POLICY_ERROR_CODE)) =
-                            error.get("code").and_then(Value::as_str)
+                        && let Some(
+                            code @ (CYBER_POLICY_ERROR_CODE
+                            | BIO_POLICY_ERROR_CODE
+                            | INVALID_PROMPT_ERROR_CODE),
+                        ) = error.get("code").and_then(Value::as_str)
                     {
                         let fallback_message = if code == BIO_POLICY_ERROR_CODE {
                             BIO_POLICY_FALLBACK_MESSAGE
+                        } else if code == INVALID_PROMPT_ERROR_CODE {
+                            INVALID_PROMPT_FALLBACK_MESSAGE
                         } else {
                             CYBER_POLICY_FALLBACK_MESSAGE
                         };
@@ -141,6 +146,8 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                             .unwrap_or_else(|| fallback_message.to_string());
                         if code == BIO_POLICY_ERROR_CODE {
                             CodexErr::new(CodexErrorDetails::BioPolicy { message })
+                        } else if code == INVALID_PROMPT_ERROR_CODE {
+                            CodexErr::new(CodexErrorDetails::InvalidPrompt { message })
                         } else {
                             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
                         }
@@ -278,6 +285,8 @@ const X_ERROR_JSON_HEADER: &str = "x-error-json";
 const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
 const CYBER_POLICY_FALLBACK_MESSAGE: &str =
     "This request has been flagged for possible cybersecurity risk.";
+const INVALID_PROMPT_ERROR_CODE: &str = "invalid_prompt";
+const INVALID_PROMPT_FALLBACK_MESSAGE: &str = "Invalid request.";
 const BIO_POLICY_ERROR_CODE: &str = "bio_policy";
 const BIO_POLICY_FALLBACK_MESSAGE: &str = "This content was flagged for possible biological risk.";
 const MISALIGNMENT_POLICY_VIOLATION_ERROR_CODE: &str = "misalignment_policy_violation";
