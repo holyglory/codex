@@ -337,6 +337,8 @@ async-stream = "0.3.6"
 aws-config = "1"
 aws-credential-types = "1"
 aws-sigv4 = "1"
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
+aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 aws-types = "1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22.1"
@@ -490,6 +492,9 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "time",
     "uuid",
 ] }
+# Workspace crates use these offline macro/driver declarations.
+sqlx-macros = { version = "=0.9.0", default-features = false, features = ["derive", "migrate"] }
+sqlx-sqlite = { version = "=0.9.0", default-features = false, features = ["offline"] }
 starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
 strum_macros = "0.28.0"
