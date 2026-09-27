@@ -140,7 +140,7 @@ pub(super) async fn run_main_inner(
                 &validation_target,
                 &validation_bootstrap,
                 &codex_home,
-                &embedded_network_policy,
+                &embedded_network_policy.clone(),
             )
             .await?
         } else {
@@ -338,7 +338,7 @@ pub(super) async fn run_main_inner(
             &app_server_target,
             &bootstrap_config,
             &codex_home,
-            &embedded_network_policy,
+            &embedded_network_policy.clone(),
         ))
         .await??;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
@@ -477,7 +477,7 @@ pub(super) async fn run_main_inner(
                 &app_server_target,
                 &arg0_paths,
                 cloud_config_bundle.clone(),
-                &embedded_network_policy,
+                &embedded_network_policy.clone(),
             ))
             .await?
             .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -876,7 +876,7 @@ pub(super) async fn run_main_inner(
         log_db,
         state_db,
         environment_manager,
-        embedded_network_policy,
+        embedded_network_policy.clone(),
         managed_worktree.clone(),
         daemon_startup_warning,
         launch_telemetry,

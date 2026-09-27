@@ -137,6 +137,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
             /*state_db*/ None,
             Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
             /*process_account*/ None,
+            Default::default(),
         )
         .await?;
         let mut server = AppServerSession::new(

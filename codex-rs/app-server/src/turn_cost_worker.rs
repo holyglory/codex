@@ -463,12 +463,18 @@ impl WorkerRuntime {
         match &self.backend {
             TurnCostBackend::OpenAi(fallback_auth_manager) => {
                 let auth_manager = auth_manager.unwrap_or(fallback_auth_manager);
-                let Some(auth) = auth_manager.auth().await else {
+                let Some((auth, captured_factory)) =
+                    auth_manager.auth_with_http_client_factory().await
+                else {
                     return Ok(None);
                 };
+                let http_client_factory = self
+                    .config
+                    .http_client_factory()
+                    .with_network_policy(captured_factory.network_policy().clone());
                 if auth.is_chatgpt_auth() {
                     return self
-                        .query_chatgpt_turn_costs(&auth, turn_ids)
+                        .query_chatgpt_turn_costs(&auth, http_client_factory, turn_ids)
                         .await
                         .map(Some);
                 }
@@ -483,7 +489,7 @@ impl WorkerRuntime {
                 let client = BackendClient::from_auth(
                     self.config.chatgpt_base_url.clone(),
                     &auth,
-                    self.config.http_client_factory(),
+                    http_client_factory,
                 );
                 client
                     .query_api_key_turn_costs(turn_ids, &provider.headers)
@@ -491,6 +497,12 @@ impl WorkerRuntime {
                     .map(Some)
             }
             TurnCostBackend::ModelProvider(model_provider) => {
+                let http_client_factory = self.config.http_client_factory().with_network_policy(
+                    self.config
+                        .application_network_policy
+                        .clone()
+                        .for_current_account(),
+                );
                 if model_provider.info().requires_openai_auth {
                     let Some(auth) = model_provider.auth().await else {
                         return Ok(None);
@@ -508,11 +520,8 @@ impl WorkerRuntime {
                     .await
                     .map_err(|error| RequestError::Other(error.into()))?;
                 let endpoint = provider.url_for_path("analytics/codex/turn-costs");
-                let client = BackendClient::new(
-                    provider.base_url.clone(),
-                    self.config.http_client_factory(),
-                )
-                .with_auth_provider(auth);
+                let client = BackendClient::new(provider.base_url.clone(), http_client_factory)
+                    .with_auth_provider(auth);
                 client
                     .query_api_key_turn_costs_at(&endpoint, turn_ids, &provider.headers)
                     .await
