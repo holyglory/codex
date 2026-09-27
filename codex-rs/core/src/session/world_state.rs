@@ -135,10 +135,16 @@ impl Session {
                 .and_then(|instructions| instructions.end.as_deref()),
         ));
         let mut policy_applicability: Vec<&str> = Vec::new();
-        if let Some(project) =
-            crate::project_automation::ensure_project_enrollment(self, step_context)
-                .await
-                .map_err(|error| CodexErr::Fatal(error.to_string()))?
+        let project = match crate::project_automation::ensure_project_enrollment(self, step_context)
+            .await
+        {
+            Ok(project) => project,
+            Err(error) => {
+                tracing::warn!(%error, "project scheduling state is unavailable; continuing without persisted project context");
+                None
+            }
+        };
+        if let Some(project) = project
             && let Some(purpose) = project.threads.get(&self.thread_id().to_string())
         {
             policy_applicability.push(match purpose {

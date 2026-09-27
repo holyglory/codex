@@ -6,10 +6,10 @@ use codex_event_subscriptions::ProjectAutomation;
 use codex_event_subscriptions::ProjectIdentityCandidate;
 use codex_event_subscriptions::ProjectIdentityCandidates;
 use codex_event_subscriptions::ProjectIdentityKind;
+use codex_event_subscriptions::StoreError;
 use sha1::Digest;
 use sha1::Sha1;
 
-use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 
@@ -64,7 +64,7 @@ pub fn project_automation_now_ms() -> i64 {
 pub(crate) async fn ensure_project_enrollment(
     session: &Session,
     step: &StepContext,
-) -> Result<Option<ProjectAutomation>, FunctionCallError> {
+) -> Result<Option<ProjectAutomation>, StoreError> {
     if !step.turn.config.local_control_tools_enabled
         || step.turn.config.ephemeral
         || crate::guardian::is_basic_session_source(&step.turn.session_source)
@@ -82,11 +82,8 @@ pub(crate) async fn ensure_project_enrollment(
     let thread_id = session.thread_id();
     let project_id = store
         .resolve_project_identity(&identities, project_automation_now_ms())
-        .await
-        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
-    let previous = store.project_status(&project_id).await.map_err(|error| {
-        FunctionCallError::RespondToModel(format!("Cannot read project scheduling state: {error}"))
-    })?;
+        .await?;
+    let previous = store.project_status(&project_id).await?;
     session
         .services
         .usage_runtime
