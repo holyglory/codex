@@ -108,16 +108,6 @@ use tempfile::tempdir;
 
 use super::*;
 use core_test_support::PathBufExt;
-
-async fn load_global_mcp_servers_for_tests(
-    codex_home: &Path,
-) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
-    load_global_mcp_servers_with_overrides(
-        codex_home,
-        LoaderOverrides::without_managed_config_for_tests(),
-    )
-    .await
-}
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
 use core_test_support::test_absolute_path;
@@ -133,6 +123,16 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
+
+async fn load_global_mcp_servers_for_tests(
+    codex_home: &Path,
+) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
+    load_global_mcp_servers_with_overrides(
+        codex_home,
+        LoaderOverrides::without_managed_config_for_tests(),
+    )
+    .await
+}
 
 fn stdio_mcp(command: &str) -> McpServerConfig {
     stdio_mcp_with_args(command, &[])
