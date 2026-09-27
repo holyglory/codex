@@ -32,33 +32,47 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (7; hash=9ca29162272b7d54):
+  tools (17; hash=05c8ae1688aefa24):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+    - function/usage_activity: Declare the category for upcoming work or append an enum-only correction to stored usage. Use set...; args=[action, activity, phase, relation, target_id]; hash=740c43c2dd54c7ed
+    - function/usage_stats: Read the private, content-free local usage collector. Summaries retain totals and paginate detail...; args=[account, action, agent_id, cursor_id, cursor_sort_value, detail, from_at_ms, include_descendants, limit, outcome_cursor, outcome_limit, repository, root_thread_id, scope, thread_id, to_at_ms]; hash=bd050e2efea083bb
+    - function/project_automation: Read legacy project clock state for migration using command {action:status}. Scheduling and mutat...; args=[command, expected_revision]; hash=ba1664a0bcde44da
+    - function/alarm_set: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[absolute_at_ms, active_work_ms, dedupe_key, expires_at_ms, operation_result, project_id, relative_ms, subject, summary, workstream_id]; hash=0f94442a933b9a02
+    - function/alarm_list: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[limit, offset]; hash=5926af42905f1dea
+    - function/alarm_status: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=56fc632b8cb88f58
+    - function/alarm_ack: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=b5e32bd6aea4e381
+    - function/alarm_cancel: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=32d76dc4805df5f0
+    - function/await_work: Wait without model polling for a real provider-neutral event or an expected-event deadline. The p...; args=[after_sequence, deadline_at_ms, event_types, labels, source]; hash=df45672360ef66fd
+    - function/account_management: Manage existing local account profiles and inspect current service limits. Use list before mutati...; args=[account, action, expected_generation, limit, mode, new_alias, offset, priority, refresh_service_usage]; hash=c9a55ef1e5cd2546
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
     - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
-00:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+00:message/developer[3]:
+    [01] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
 
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
+    [02] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
+        </usage_stats_instructions>
+    [03] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
 01:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -160,24 +174,28 @@ Settings: relative to window 1
 ## Window 3 (after request 2: input diverged at item 00)
 Settings: same as window 1
 -- request 3 (turn) --
-00:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+00:message/developer[3]:
+    [01] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
 
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
+    [02] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
+        </usage_stats_instructions>
+    [03] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
 01:message/user:
     <environment_context>
       <cwd><CWD></cwd>
