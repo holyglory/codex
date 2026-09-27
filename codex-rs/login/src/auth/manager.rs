@@ -370,7 +370,9 @@ impl From<RefreshTokenError> for std::io::Error {
         match err {
             RefreshTokenError::Permanent(failed) => std::io::Error::other(failed),
             RefreshTokenError::Transient(inner) => inner,
-            RefreshTokenError::Policy(error) => std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
+            RefreshTokenError::Policy(error) => {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, error)
+            }
         }
     }
 }
@@ -3030,7 +3032,10 @@ impl AuthManager {
 
     /// Returns the application network policy for downstream clients.
     pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
-        self.auth_route_config.http_client_factory().network_policy().clone()
+        self.auth_route_config
+            .http_client_factory()
+            .network_policy()
+            .clone()
     }
 
     pub fn runtime_config(&self) -> AuthRuntimeConfig {

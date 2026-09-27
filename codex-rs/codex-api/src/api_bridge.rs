@@ -72,8 +72,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             })
         }
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
-        ApiError::InvalidPrompt { message } =>
-            CodexErr::new(CodexErrorDetails::InvalidPrompt { message }),
+        ApiError::InvalidPrompt { message } => {
+            CodexErr::new(CodexErrorDetails::InvalidPrompt { message })
+        }
         ApiError::CyberPolicy { message } => {
             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
         }
