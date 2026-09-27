@@ -280,6 +280,9 @@ static NEXT_DUMMY_AUTH_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error)]
 pub enum RefreshTokenError {
+    /// Denied by application policy; neither retry nor cache as a credential failure.
+    #[error(transparent)]
+    Policy(#[from] codex_http_client::NetworkPolicyDenied),
     #[error("{0}")]
     Permanent(#[from] RefreshTokenFailedError),
     #[error(transparent)]
@@ -357,7 +360,7 @@ impl RefreshTokenError {
     pub fn failed_reason(&self) -> Option<RefreshTokenFailedReason> {
         match self {
             Self::Permanent(error) => Some(error.reason),
-            Self::Transient(_) => None,
+            Self::Transient(_) | Self::Policy(_) => None,
         }
     }
 }
@@ -367,6 +370,7 @@ impl From<RefreshTokenError> for std::io::Error {
         match err {
             RefreshTokenError::Permanent(failed) => std::io::Error::other(failed),
             RefreshTokenError::Transient(inner) => inner,
+            RefreshTokenError::Policy(error) => std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
         }
     }
 }
@@ -2654,6 +2658,13 @@ impl AuthManager {
         self.auth_cached()
     }
 
+    /// Refreshes auth, then captures credentials and their account-bound factory together.
+    pub async fn auth_with_http_client_factory(&self) -> Option<(CodexAuth, HttpClientFactory)> {
+        self.auth().await;
+        let cached = self.inner.read().ok()?;
+        Some((cached.auth.clone()?, self.http_client_factory()))
+    }
+
     pub async fn agent_identity_auth(
         &self,
         policy: AgentIdentityAuthPolicy,
@@ -2830,7 +2841,7 @@ impl AuthManager {
                             }
                             cached_auth
                         }
-                        RefreshTokenError::Transient(_) => None,
+                        RefreshTokenError::Transient(_) | RefreshTokenError::Policy(_) => None,
                     }
                 }
             };
@@ -3012,6 +3023,16 @@ impl AuthManager {
     }
 
     /// Returns policy only; independent credential managers own their own state and lifecycle.
+    /// Returns the shared HTTP client factory used by auth-owned clients.
+    pub fn http_client_factory(&self) -> HttpClientFactory {
+        self.auth_route_config.http_client_factory().clone()
+    }
+
+    /// Returns the application network policy for downstream clients.
+    pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
+        self.auth_route_config.http_client_factory().network_policy().clone()
+    }
+
     pub fn runtime_config(&self) -> AuthRuntimeConfig {
         AuthRuntimeConfig {
             codex_home: self.codex_home.clone(),
