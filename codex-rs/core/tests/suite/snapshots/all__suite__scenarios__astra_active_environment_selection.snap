@@ -6,8 +6,8 @@ Scenario: Astra starts in one workspace, switches for the next step of the activ
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=a54e67018899e049):
-        - namespace/functions; hash=dead25325ac79c67
+00:additional_tools/developer (3; hash=3bb1a502686f02e2):
+        - namespace/functions; hash=a885a7482b81e65d
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -39,7 +39,7 @@ Scenario: Astra starts in one workspace, switches for the next step of the activ
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[2]:
+02:message/developer[4]:
     [01] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
@@ -73,6 +73,10 @@ Scenario: Astra starts in one workspace, switches for the next step of the activ
 
         Never use the `request_user_input` tool for permission requests or permission-related escalations.
         </collaboration_mode>
+    [03] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
+        </usage_stats_instructions>
+    [04] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
 03:message/developer:
     <multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
