@@ -39,6 +39,12 @@ async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0007_generic_alarms.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     (
         SqliteEventSubscriptionStore::new(std::sync::Arc::new(pool)),
         directory,
