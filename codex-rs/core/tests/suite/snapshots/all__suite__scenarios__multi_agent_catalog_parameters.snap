@@ -69,7 +69,6 @@ Settings:
         If `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.
 
         Never use the `request_user_input` tool for permission requests or permission-related escalations.
-
         </collaboration_mode>
     [03] <usage_stats_instructions>
         Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
