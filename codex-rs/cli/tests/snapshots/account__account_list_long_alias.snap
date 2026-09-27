@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: human
 ---
-ALIAS                   	PRIORITY	NOTE	BANKED RESETS	EXPIRY IN	LIMITS	RESET IN
- axel-marchenko-tt-eu-pp	2		unknown      	unknown  	unknown (unsupportedAuthentication)	unknown
-*alpha                  	1	primary	unknown      	unknown  	unknown (unsupportedAuthentication)	unknown
+ALIAS                     PRIORITY    BANKED RESETS  LIMITS                               RESET IN
+*alpha                    1           unknown        unknown (unsupportedAuthentication)  unknown
+ axel-marchenko-tt-eu-pp  4294967295  unknown        unknown (unsupportedAuthentication)  unknown

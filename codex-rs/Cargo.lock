@@ -2739,6 +2739,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-segmentation",
+ "unicode-width 0.2.1",
  "url",
  "uuid",
  "vt100",
