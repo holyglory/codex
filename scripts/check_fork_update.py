@@ -8,6 +8,11 @@ import subprocess
 import tempfile
 
 
+# Rosetta can take over a minute to start the x86_64 release binary on an
+# Apple-silicon runner before it reaches the package-manager shim.
+UPDATE_SMOKE_TIMEOUT_SECONDS = 120
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-binary", required=True, type=Path)
@@ -52,7 +57,7 @@ def main() -> None:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=30,
+                timeout=UPDATE_SMOKE_TIMEOUT_SECONDS,
                 check=False,
             )
             arguments = receipt.read_text().splitlines() if receipt.exists() else []
