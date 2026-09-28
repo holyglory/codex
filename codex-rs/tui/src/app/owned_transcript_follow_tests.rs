@@ -51,8 +51,10 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
             let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
             insta::assert_snapshot!(
                 "running_without_composer_hint",
-                crate::chatwidget::tests::helpers::normalize_snapshot_paths(
-                    super::tests::buffer_text(buffer)
+                crate::chatwidget::tests::helpers::normalize_status_elapsed(
+                    crate::chatwidget::tests::helpers::normalize_snapshot_paths(
+                        super::tests::buffer_text(buffer),
+                    ),
                 ),
             );
         }

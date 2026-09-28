@@ -68,6 +68,13 @@ pub(crate) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     }
 }
 
+pub(crate) fn normalize_status_elapsed(text: impl Into<String>) -> String {
+    let regex = regex_lite::Regex::new(r"[•◦] Working \([0-9]+s").expect("valid status regex");
+    regex
+        .replace_all(&text.into(), "• Working (0s")
+        .into_owned()
+}
+
 /// Normalize command-center fixture paths without moving fixed pane separators.
 /// Pad after each complete pane so group counts and destination hints keep their spacing.
 pub(crate) fn normalize_agent_center_snapshot(text: impl AsRef<str>) -> String {
