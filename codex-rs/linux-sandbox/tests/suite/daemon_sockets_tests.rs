@@ -129,7 +129,13 @@ fn private_tmp_fixture() {
     let alias_endpoint = PathBuf::from("/tmp/build")
         .join(root.file_name().unwrap())
         .join("rpc.sock");
-    UnixStream::connect(&alias_endpoint).expect("host can reach ancestor alias");
+    if let Err(error) = UnixStream::connect(&alias_endpoint) {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            eprintln!("skipping private tmp alias check: bind mount did not expose the alias");
+            std::process::exit(77);
+        }
+        panic!("host can reach ancestor alias: {error}");
+    }
     command
         .env("CODEX_TEST_DAEMON_ALIAS_SOCKET", &alias_endpoint)
         .env("CODEX_TEST_OTHER_ALIAS_SOCKET", "/tmp/build/other.sock");

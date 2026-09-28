@@ -126,7 +126,9 @@ async fn usage_notice_preserves_composer_geometry_and_restores_tip_on_recovery()
     }
     insta::assert_snapshot!(
         "composer_usage_notice",
-        crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join("\n\n")),
+        crate::chatwidget::tests::helpers::normalize_status_elapsed(
+            crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join("\n\n")),
+        ),
     );
     Ok(())
 }

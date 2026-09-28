@@ -37,9 +37,9 @@ max-threads = 1
 max-threads = 1
 
 # Higher concurrency causes integration test timeouts under resource contention
-# on common developer machines.
+# on the release acceptance machine.
 [test-groups.app_server_integration_local]
-max-threads = 4
+max-threads = 1
 
 [test-groups.core_apply_patch_cli_integration]
 max-threads = 1
