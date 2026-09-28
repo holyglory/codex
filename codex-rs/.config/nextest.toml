@@ -44,6 +44,11 @@ max-threads = 1
 [test-groups.core_apply_patch_cli_integration]
 max-threads = 1
 
+# These end-to-end tests launch subprocesses or exercise terminal state and
+# become flaky when run beside a full release-test fanout.
+[test-groups.release_acceptance_process_heavy]
+max-threads = 1
+
 [test-groups.windows_sandbox_legacy_sessions]
 max-threads = 1
 
@@ -91,6 +96,14 @@ test-group = 'core_apply_patch_cli_integration'
 # Serialize them to avoid exhausting Windows session/global desktop resources in CI.
 filter = 'package(codex-windows-sandbox) & test(legacy_)'
 test-group = 'windows_sandbox_legacy_sessions'
+
+[[profile.default.overrides]]
+filter = 'package(codex-core) & test(tools::runtimes::tests::snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials)'
+test-group = 'release_acceptance_process_heavy'
+
+[[profile.default.overrides]]
+filter = 'package(codex-tui) & (test(app::agents_overview::tests::restored_server_permission_profile_survives_cd_without_turn_override) | test(suite::directory_trust::connected_trust_cancellation_and_acceptance_control_task_creation) | test(suite::daemon_compatibility::incompatible_daemon_falls_back_for_default_and_explicit_features))'
+test-group = 'release_acceptance_process_heavy'
 
 [[profile.default.overrides]]
 # This Codex-home startup path still exceeded the broader Windows-heavy ceiling
