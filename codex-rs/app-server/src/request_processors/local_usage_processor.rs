@@ -709,7 +709,7 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
         | UsageStoreError::TokenCountOutOfRange
         | UsageStoreError::DatabaseValueOutOfRange
         | UsageStoreError::AggregateOverflow
-        | UsageStoreError::TaskTreeTooLarge => {
+        | UsageStoreError::TaskTreeTooLarge | UsageStoreError::ReportTooLarge => {
             internal_error("local usage request could not be completed")
         }
     }
