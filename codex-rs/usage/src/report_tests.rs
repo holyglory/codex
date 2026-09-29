@@ -1,3 +1,6 @@
+#[path = "report_cache_backfill_tests.rs"]
+mod backfill_tests;
+
 use super::*;
 use crate::StructuredUsageSummary;
 use crate::facts::*;
