@@ -10,7 +10,7 @@ mod time;
 const MAX_GROUPS: usize = 16_384;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum ReportSource { CachedAll, Canonical }
+enum ReportSource { CachedAll, CachedScoped, Canonical }
 
 impl UsageStore {
     pub(crate) async fn bounded_usage_summary(&self, mut query: UsageSummaryQuery) -> Result<UsageSummary, UsageStoreError> {
@@ -28,8 +28,8 @@ impl UsageStore {
             (None, None) => UsageSummaryScope::All,
         };
         let include_global = matches!(scope, UsageSummaryScope::All) && query.account_profile_ref.is_none() && family.is_none();
-        let source = if include_global && query.time_range.is_none() && crate::report_cache::is_ready(&self.pool).await.unwrap_or(false) {
-            ReportSource::CachedAll
+        let source = if crate::report_cache::is_ready(&self.pool).await.unwrap_or(false) {
+            if include_global && query.time_range.is_none() { ReportSource::CachedAll } else { ReportSource::CachedScoped }
         } else { ReportSource::Canonical };
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
         // Five store connections at 8 MiB each leave room for bounded returned
@@ -44,7 +44,7 @@ impl UsageStore {
         let provider_tokens_by_activity = activity_aggregates(&mut tx, source).await?;
         let token_counts = rows(&mut tx, match source {
             ReportSource::CachedAll => "SELECT coverage_state AS state, observation_count AS n FROM _usage_report_token_coverage ORDER BY coverage_state",
-            ReportSource::Canonical => "SELECT coverage_state AS state, SUM(observation_count) AS n FROM _usage_tokens GROUP BY coverage_state ORDER BY coverage_state",
+            ReportSource::CachedScoped | ReportSource::Canonical => "SELECT coverage_state AS state, SUM(observation_count) AS n FROM _usage_tokens GROUP BY coverage_state ORDER BY coverage_state",
         }).await?;
         let token_observation_counts = counts(token_counts)?;
         let event_rows = sqlx::query(r#"
@@ -89,6 +89,7 @@ impl UsageStore {
         let overall_state = if !has_evidence {"unobserved"} else if has_gaps {"unknown"} else {"complete"}.to_string();
         let database_schema_version = count(sqlx::query_scalar("SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations").fetch_one(&mut *tx).await.map_err(database_error)?)?;
         tx.commit().await.map_err(database_error)?;
+        sqlx::query("PRAGMA temp_store = FILE").execute(&mut *connection).await.map_err(database_error)?;
         Ok(UsageSummary {database_schema_version,taxonomy_version:TAXONOMY_VERSION,scope,time_range:query.time_range,
             coverage:CoverageSummary {overall_state,event_counts,token_observation_counts,has_gaps,unfinished_operations},
             tokens,provider_tokens_by_activity,timing,
@@ -101,7 +102,7 @@ impl UsageStore {
 async fn token_aggregates(connection: &mut SqliteConnection, source: ReportSource) -> Result<Vec<TokenAggregate>, UsageStoreError> {
     rows(connection, match source {
         ReportSource::CachedAll => "SELECT category_path,repository_bucket,measurement_provenance,measured_tokens AS measured,unknown_observations AS unknowns,observation_count AS n,has_gap AS gap,aggregate_overflow AS overflow FROM _usage_report_token_aggregates ORDER BY category_path,repository_bucket,measurement_provenance",
-        ReportSource::Canonical => "SELECT category_path,repository_bucket,measurement_provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,SUM(observation_count) AS n,MAX(coverage_state <> 'complete') AS gap,0 AS overflow FROM _usage_tokens GROUP BY category_path,repository_bucket,measurement_provenance ORDER BY category_path,repository_bucket,measurement_provenance" }).await?
+        ReportSource::CachedScoped | ReportSource::Canonical => "SELECT category_path,repository_bucket,measurement_provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,SUM(observation_count) AS n,MAX(coverage_state <> 'complete') AS gap,MAX(aggregate_overflow) AS overflow FROM _usage_tokens GROUP BY category_path,repository_bucket,measurement_provenance ORDER BY category_path,repository_bucket,measurement_provenance" }).await?
         .into_iter().map(|row| {
             if row.get::<i64,_>("overflow") != 0 { return Err(UsageStoreError::AggregateOverflow); }
             let measured_tokens = row.try_get("measured").map_err(database_error)?;
@@ -114,7 +115,7 @@ async fn token_aggregates(connection: &mut SqliteConnection, source: ReportSourc
 async fn activity_aggregates(connection: &mut SqliteConnection, source: ReportSource) -> Result<Vec<TokenActivityAggregate>, UsageStoreError> {
     rows(connection, match source {
         ReportSource::CachedAll => "SELECT op.phase,op.activity,op.provenance,SUM(token.measured_tokens) AS measured,SUM(token.unknown_observations) AS unknowns,MAX(token.has_gap) AS gap,MAX(token.aggregate_overflow) AS overflow FROM _usage_report_activity_tokens AS token JOIN _usage_selected AS op ON op.id = token.operation_id GROUP BY op.phase,op.activity,op.provenance ORDER BY op.phase,op.activity,op.provenance",
-        ReportSource::Canonical => "SELECT phase,activity,provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,MAX(coverage_state <> 'complete') AS gap,0 AS overflow FROM _usage_tokens WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported' GROUP BY phase,activity,provenance ORDER BY phase,activity,provenance" }).await?
+        ReportSource::CachedScoped | ReportSource::Canonical => "SELECT phase,activity,provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,MAX(coverage_state <> 'complete') AS gap,MAX(aggregate_overflow) AS overflow FROM _usage_tokens WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported' GROUP BY phase,activity,provenance ORDER BY phase,activity,provenance" }).await?
         .into_iter().map(|row| {
             if row.get::<i64,_>("overflow") != 0 { return Err(UsageStoreError::AggregateOverflow); }
             let measured_tokens = row.try_get("measured").map_err(database_error)?;

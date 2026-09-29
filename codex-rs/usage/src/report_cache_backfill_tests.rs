@@ -12,9 +12,10 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     insert_thread(&store, "backfill").await;
     let op = operation(process, "backfill", OperationKind::ModelRequest);
     let request = record_request(&store, &op).await;
-    for _ in 0..2_050 {
-        store.record_token_observation(&token(request, RepositoryBucket::Unknown,
-            Some(1), CoverageState::Complete)).await.expect("history");
+    for minute in 0..2_050 {
+        let mut observation = token(request, RepositoryBucket::Unknown, Some(1), CoverageState::Complete);
+        observation.observed_at_ms = 1_100 + minute * 60_000;
+        store.record_token_observation(&observation).await.expect("history");
     }
     let expected = store.usage_summary(UsageSummaryScope::All).await.expect("warm");
     sqlx::query("DELETE FROM _usage_report_cache_meta").execute(&store.pool).await.expect("invalidate derived cache");
@@ -32,6 +33,17 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     assert_eq!(reopened.usage_summary(UsageSummaryScope::All).await.expect("rebuilt"), during);
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM token_observations")
         .fetch_one(&reopened.pool).await.expect("raw history"), 2_051);
+    let scoped = UsageSummaryQuery {
+        thread_id: Some(ThreadId::new("backfill").expect("thread")), repository_id: None,
+        account_profile_ref: None, time_range: Some(UtcTimeRange::new(3_600_123, 18_000_999).expect("range")),
+    };
+    let rolled = reopened.usage_summary_query(scoped.clone()).await.expect("inner hours and raw boundaries");
+    assert_eq!(rolled.tokens[0].measured_tokens, 240);
+    let compact_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _usage_report_token_hours")
+        .fetch_one(&reopened.pool).await.expect("hour rows");
+    assert!(compact_rows < 40);
+    sqlx::query("DELETE FROM _usage_report_cache_meta").execute(&reopened.pool).await.expect("canonical comparison");
+    assert_eq!(reopened.usage_summary_query(scoped).await.expect("raw window"), rolled);
     let another = UsageStore::open(temp.path()).await.expect("second opener");
     assert_eq!(another.usage_summary(UsageSummaryScope::All).await.expect("unchanged"), during);
 }
