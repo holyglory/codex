@@ -7,11 +7,16 @@ pub(crate) mod backfill;
 #[path = "report_token_hours.rs"]
 pub(crate) mod token_hours;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 3;
+#[path = "report_cost_projection.rs"]
+pub(crate) mod cost_projection;
+
+const REPORT_CACHE_SCHEMA_VERSION: i64 = 4;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 const RESET_CACHE_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_operation_insert;
+DROP TRIGGER IF EXISTS _usage_report_model_usage_insert;
+DROP TABLE IF EXISTS _usage_report_model_usage;
 DROP TRIGGER IF EXISTS _usage_report_token_hour_insert;
 DROP TABLE IF EXISTS _usage_report_token_hours;
 DROP TRIGGER IF EXISTS _usage_report_operation_terminal;
@@ -50,6 +55,8 @@ CREATE TABLE _usage_report_operations (
     activity_state TEXT NOT NULL,
     attribution_provenance TEXT NOT NULL
 ) STRICT;
+
+CREATE INDEX _usage_report_open_operations_idx ON _usage_report_operations(started_at_ms, operation_id) WHERE ended_at_ms IS NULL;
 
 CREATE TABLE _usage_report_token_aggregates (
     category_path TEXT NOT NULL,
@@ -217,12 +224,28 @@ BEGIN
 END;
 "#;
 
-pub(crate) async fn ensure(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub(crate) async fn ensure(pool: &SqlitePool, reader: &tokio::sync::Mutex<()>) -> Result<(), sqlx::Error> {
     if is_ready(pool).await? || !prepare(pool).await? {
         return Ok(());
     }
-    while !backfill::step(pool).await? {}
-    Ok(())
+    let mut delay_ms = 100;
+    loop {
+        let progress = {
+            let _reader = reader.lock().await;
+            backfill::step(pool).await?
+        };
+        match progress {
+            backfill::Progress::Ready => return Ok(()),
+            backfill::Progress::Advanced => {
+                delay_ms = 100;
+                tokio::task::yield_now().await;
+            }
+            backfill::Progress::ReaderBusy => {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms = (delay_ms * 2).min(5_000);
+            }
+        }
+    }
 }
 
 /// Prepare or resume our derived schema; a newer schema belongs to a newer
@@ -235,11 +258,16 @@ pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    is_ready_on(&mut connection).await
+}
+
+pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {
     let exists = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?)",
     )
     .bind(CACHE_META_TABLE)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     if exists == 0 {
         return Ok(false);
@@ -247,7 +275,7 @@ pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let state = sqlx::query_as::<_, (i64, i64)>(
         "SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?;
     Ok(state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)))
 }
@@ -282,8 +310,15 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
         .execute(&mut *connection)
         .await?;
     sqlx::raw_sql(token_hours::SCHEMA).execute(&mut *connection).await?;
+    sqlx::raw_sql(cost_projection::SCHEMA).execute(&mut *connection).await?;
     backfill::initialize(connection).await?;
     sqlx::query("INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)")
         .bind(REPORT_CACHE_SCHEMA_VERSION).execute(&mut *connection).await?;
-    Ok(true)
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM _usage_report_backfill WHERE cursor < high_water)")
+        .fetch_one(&mut *connection).await?;
+    if !pending {
+        sqlx::query("UPDATE _usage_report_cache_meta SET ready = 1 WHERE singleton = 1")
+            .execute(&mut *connection).await?;
+    }
+    Ok(pending)
 }

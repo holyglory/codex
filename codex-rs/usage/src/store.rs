@@ -87,6 +87,7 @@ impl UsageStoreError {
 }
 
 pub struct UsageStore {
+    pub(crate) report_refresh: std::sync::Arc<crate::report_refresh::ReportRefresh>,
     pub(crate) pool: SqlitePool,
     pub(crate) repository_key: RepositoryHmacKey,
 }
@@ -238,7 +239,7 @@ impl UsageStore {
             .execute(&pool)
             .await
             .map_err(UsageStoreError::Database)?;
-        let _ = crate::report_cache::ensure(&pool).await;
+        let refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [
@@ -267,7 +268,10 @@ impl UsageStore {
             }
         };
         verify_sqlite_files(&database_path)?;
+        let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path).map_err(UsageStoreError::Filesystem)?;
+        if refresh_pending { report_refresh.kick(pool.clone()); }
         Ok(Self {
+            report_refresh,
             pool,
             repository_key,
         })
@@ -522,6 +526,7 @@ impl UsageStore {
     }
 
     pub async fn close(&self) {
+        self.report_refresh.cancel();
         self.pool.close().await;
     }
 

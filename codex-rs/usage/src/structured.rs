@@ -20,6 +20,7 @@ pub fn redacted_account_profile_label(account: &AccountProfileRef) -> String {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredUsageSummary {
+    pub cost: Option<crate::UsageApiEquivalentCost>,
     pub schema_version: u32,
     pub kind: &'static str,
     pub database_schema_version: u64,
@@ -41,6 +42,7 @@ pub struct StructuredUsageSummary {
 impl StructuredUsageSummary {
     pub fn new(summary: &UsageSummary, account: Option<String>) -> Self {
         Self {
+            cost: summary.cost.clone(),
             schema_version: USAGE_REPORT_SCHEMA_VERSION,
             kind: "usageSummary",
             database_schema_version: summary.database_schema_version,

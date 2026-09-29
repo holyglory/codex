@@ -1,3 +1,7 @@
+#[path = "local_usage_cost.rs"]
+mod cost;
+pub use cost::LocalUsageReportCost;
+
 use crate::JsonSchema;
 use crate::TS;
 use serde::Deserialize;
@@ -131,6 +135,7 @@ pub struct LocalUsageTokenCategory {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct LocalUsageReport {
+    pub cost: Option<LocalUsageReportCost>,
     pub schema_version: u32,
     pub kind: String,
     pub database_schema_version: u64,

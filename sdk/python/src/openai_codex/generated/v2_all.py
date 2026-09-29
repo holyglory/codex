@@ -2562,6 +2562,31 @@ class LocalUsageReportClassificationCount(BaseModel):
     provenance: str
 
 
+class LocalUsageReportCost(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    basis: str
+    cache_write_tokens: Annotated[int, Field(alias="cacheWriteTokens", ge=0)]
+    cache_write_usd_micros: Annotated[int | None, Field(alias="cacheWriteUsdMicros", ge=0)] = None
+    cached_input_tokens: Annotated[int, Field(alias="cachedInputTokens", ge=0)]
+    cached_input_usd_micros: Annotated[int | None, Field(alias="cachedInputUsdMicros", ge=0)] = None
+    currency: str
+    estimated_usd_micros: Annotated[int | None, Field(alias="estimatedUsdMicros", ge=0)] = None
+    input_tokens: Annotated[int, Field(alias="inputTokens", ge=0)]
+    input_usd_micros: Annotated[int | None, Field(alias="inputUsdMicros", ge=0)] = None
+    output_tokens: Annotated[int, Field(alias="outputTokens", ge=0)]
+    output_usd_micros: Annotated[int | None, Field(alias="outputUsdMicros", ge=0)] = None
+    priced_observations: Annotated[int, Field(alias="pricedObservations", ge=0)]
+    processing_tier: Annotated[str, Field(alias="processingTier")]
+    provider_total_tokens: Annotated[int, Field(alias="providerTotalTokens", ge=0)]
+    rate_card_refs: Annotated[list[str], Field(alias="rateCardRefs")]
+    reasoning_tokens: Annotated[int, Field(alias="reasoningTokens", ge=0)]
+    status: str
+    uncached_input_tokens: Annotated[int, Field(alias="uncachedInputTokens", ge=0)]
+    unknown_observations: Annotated[int, Field(alias="unknownObservations", ge=0)]
+
+
 class LocalUsageReportCounts(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11967,6 +11992,7 @@ class LocalUsageReport(BaseModel):
     )
     account: str | None = None
     classifications: list[LocalUsageReportClassificationCount]
+    cost: LocalUsageReportCost | None = None
     counts: LocalUsageReportCounts
     coverage: LocalUsageReportCoverage
     database_schema_version: Annotated[int, Field(alias="databaseSchemaVersion", ge=0)]
