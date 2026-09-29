@@ -1,7 +1,10 @@
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 1;
+#[path = "report_cache_backfill.rs"]
+pub(crate) mod backfill;
+
+const REPORT_CACHE_SCHEMA_VERSION: i64 = 2;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 const RESET_CACHE_SQL: &str = r#"
@@ -14,6 +17,7 @@ DROP TRIGGER IF EXISTS _usage_report_coverage_insert;
 DROP TRIGGER IF EXISTS _usage_report_span_insert;
 DROP TRIGGER IF EXISTS _usage_report_span_end;
 DROP TABLE IF EXISTS _usage_report_cache_meta;
+DROP TABLE IF EXISTS _usage_report_backfill;
 DROP TABLE IF EXISTS _usage_report_operations;
 DROP TABLE IF EXISTS _usage_report_token_aggregates;
 DROP TABLE IF EXISTS _usage_report_activity_tokens;
@@ -208,125 +212,21 @@ BEGIN
 END;
 "#;
 
-const BACKFILL_CACHE_SQL: &str = r#"
-INSERT INTO _usage_report_operations(
-    operation_id, operation_kind, agent_id, started_at_ms,
-    ended_at_ms, terminal_status, phase, activity,
-    activity_state, attribution_provenance
-)
-SELECT operation.id, operation.operation_kind, operation.agent_id,
-       operation.started_at_ms, terminal.occurred_at_ms, terminal.event_kind,
-       COALESCE(effective.phase, operation.phase),
-       COALESCE(effective.activity, operation.activity),
-       COALESCE(effective.activity_state, operation.activity_state),
-       COALESCE(effective.provenance, operation.attribution_provenance)
-FROM operations AS operation
-LEFT JOIN operation_events AS terminal
-  ON terminal.operation_id = operation.id AND terminal.terminal = 1
-LEFT JOIN effective_classification_events AS effective
-  ON effective.operation_id = operation.id;
-
-INSERT INTO _usage_report_token_aggregates(
-    category_path, repository_bucket, measurement_provenance,
-    measured_tokens, unknown_observations, observation_count,
-    has_gap, aggregate_overflow
-)
-SELECT token.category_path, token.repository_bucket,
-       token.measurement_provenance, COALESCE(token.token_count, 0),
-       token.token_count IS NULL, 1, token.coverage_state <> 'complete', 0
-FROM token_observations AS token
-WHERE token.category_path NOT GLOB 'attribution.items.*'
-ON CONFLICT(category_path, repository_bucket, measurement_provenance)
-DO UPDATE SET
-    measured_tokens = CASE
-        WHEN _usage_report_token_aggregates.aggregate_overflow = 1
-          OR _usage_report_token_aggregates.measured_tokens
-             > 9223372036854775807 - excluded.measured_tokens
-        THEN _usage_report_token_aggregates.measured_tokens
-        ELSE _usage_report_token_aggregates.measured_tokens + excluded.measured_tokens
-    END,
-    unknown_observations =
-        _usage_report_token_aggregates.unknown_observations
-        + excluded.unknown_observations,
-    observation_count =
-        _usage_report_token_aggregates.observation_count
-        + excluded.observation_count,
-    has_gap = MAX(_usage_report_token_aggregates.has_gap, excluded.has_gap),
-    aggregate_overflow =
-        _usage_report_token_aggregates.aggregate_overflow = 1
-        OR _usage_report_token_aggregates.measured_tokens
-           > 9223372036854775807 - excluded.measured_tokens;
-
-INSERT INTO _usage_report_activity_tokens(
-    operation_id, measured_tokens, unknown_observations,
-    has_gap, aggregate_overflow
-)
-SELECT COALESCE(request.operation_id, tool.operation_id),
-       COALESCE(token.token_count, 0), token.token_count IS NULL,
-       token.coverage_state <> 'complete', 0
-FROM token_observations AS token
-LEFT JOIN model_requests AS request ON request.id = token.model_request_id
-LEFT JOIN tool_invocations AS tool ON tool.id = token.tool_invocation_id
-WHERE token.category_path = 'total_tokens'
-  AND token.measurement_provenance = 'provider_reported'
-ON CONFLICT(operation_id) DO UPDATE SET
-    measured_tokens = CASE
-        WHEN _usage_report_activity_tokens.aggregate_overflow = 1
-          OR _usage_report_activity_tokens.measured_tokens
-             > 9223372036854775807 - excluded.measured_tokens
-        THEN _usage_report_activity_tokens.measured_tokens
-        ELSE _usage_report_activity_tokens.measured_tokens + excluded.measured_tokens
-    END,
-    unknown_observations =
-        _usage_report_activity_tokens.unknown_observations
-        + excluded.unknown_observations,
-    has_gap = MAX(_usage_report_activity_tokens.has_gap, excluded.has_gap),
-    aggregate_overflow =
-        _usage_report_activity_tokens.aggregate_overflow = 1
-        OR _usage_report_activity_tokens.measured_tokens
-           > 9223372036854775807 - excluded.measured_tokens;
-
-INSERT INTO _usage_report_token_coverage(coverage_state, observation_count)
-SELECT coverage_state, COUNT(*)
-FROM token_observations
-WHERE category_path NOT GLOB 'attribution.items.*'
-GROUP BY coverage_state;
-
-INSERT INTO _usage_report_coverage(coverage_state, observation_count)
-SELECT coverage_state, COUNT(*) FROM coverage_events GROUP BY coverage_state;
-
-INSERT INTO _usage_report_spans(
-    span_id, operation_id, activity_state, started_at_ms, ended_at_ms
-)
-SELECT span.id, span.operation_id, span.activity_state, span.started_at_ms,
-       ended.occurred_at_ms
-FROM activity_spans AS span
-LEFT JOIN activity_span_events AS ended
-  ON ended.activity_span_id = span.id AND ended.event_kind = 'ended';
-
-INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready)
-VALUES (1, 1, 1);
-"#;
-
 pub(crate) async fn ensure(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    if is_ready(pool).await? {
+    if is_ready(pool).await? || !prepare(pool).await? {
         return Ok(());
     }
-    let mut connection = pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
-        .await?;
-    let result = rebuild_if_needed(&mut connection).await;
-    match result {
-        Ok(()) => {
-            sqlx::query("COMMIT").execute(&mut *connection).await?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        }
-    }
+    while !backfill::step(pool).await? {}
+    Ok(())
+}
+
+/// Prepare or resume our derived schema; a newer schema belongs to a newer
+/// reader and must never be reset by an older binary.
+pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let build = rebuild_if_needed(&mut tx).await?;
+    tx.commit().await?;
+    Ok(build)
 }
 
 pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
@@ -347,7 +247,7 @@ pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     Ok(state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)))
 }
 
-async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {
     let exists = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?)",
     )
@@ -361,10 +261,13 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<(), sqlx
         .fetch_optional(&mut *connection)
         .await?;
         if state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)) {
-            return Ok(());
+            return Ok(false);
+        }
+        if state == Some((REPORT_CACHE_SCHEMA_VERSION, 0)) {
+            return Ok(true);
         }
         if state.is_some_and(|(schema_version, _)| schema_version > REPORT_CACHE_SCHEMA_VERSION) {
-            return Ok(());
+            return Ok(false);
         }
     }
     sqlx::raw_sql(RESET_CACHE_SQL)
@@ -373,8 +276,8 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<(), sqlx
     sqlx::raw_sql(CREATE_CACHE_SQL)
         .execute(&mut *connection)
         .await?;
-    sqlx::raw_sql(BACKFILL_CACHE_SQL)
-        .execute(&mut *connection)
-        .await?;
-    Ok(())
+    backfill::initialize(connection).await?;
+    sqlx::query("INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)")
+        .bind(REPORT_CACHE_SCHEMA_VERSION).execute(&mut *connection).await?;
+    Ok(true)
 }
