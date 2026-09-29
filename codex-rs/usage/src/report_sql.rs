@@ -53,15 +53,27 @@ impl UsageStore {
             ReportSource::CachedScoped | ReportSource::Canonical => "SELECT coverage_state AS state, SUM(observation_count) AS n FROM _usage_tokens GROUP BY coverage_state ORDER BY coverage_state",
         }).await?;
         let token_observation_counts = counts(token_counts)?;
-        let event_rows = sqlx::query(r#"
+        let event_rows = if source == ReportSource::CachedAll {
+            rows(&mut tx, "SELECT coverage_state AS state, observation_count AS n FROM _usage_report_coverage ORDER BY coverage_state").await?
+        } else { sqlx::query(r#"
             SELECT coverage_state AS state, COUNT(*) AS n FROM coverage_events
             WHERE (operation_id IN (SELECT id FROM _usage_selected) OR (?1 AND operation_id IS NULL))
               AND (?2 IS NULL OR occurred_at_ms >= ?2) AND (?3 IS NULL OR occurred_at_ms < ?3)
             GROUP BY coverage_state ORDER BY coverage_state
         "#).bind(include_global).bind(query.time_range.map(|r|r.start_ms())).bind(query.time_range.map(|r|r.end_ms()))
-            .fetch_all(&mut *tx).await.map_err(database_error)?;
+            .fetch_all(&mut *tx).await.map_err(database_error)? };
         let event_counts = counts(event_rows)?;
-        let unresolved: bool = sqlx::query_scalar(r#"
+        let unresolved: bool = if source != ReportSource::Canonical && query.time_range.is_none() {
+            sqlx::query_scalar(r#"
+                SELECT EXISTS(SELECT 1 FROM _usage_report_latest_coverage AS coverage
+                    JOIN _usage_selected AS selected ON selected.id = coverage.operation_id
+                    WHERE coverage.coverage_state <> 'complete' AND NOT (
+                        coverage.scope_kind IN ('model_attempt','tool_attempt') AND coverage.coverage_state IN ('capture_started','partial')
+                        AND coverage.reason_code IS NULL AND selected.terminal_status IS NOT NULL
+                        AND (coverage.scope_kind = 'tool_attempt' OR EXISTS(SELECT 1 FROM _usage_report_provider_complete AS provider WHERE provider.operation_id = coverage.operation_id))
+                    )) OR (? AND EXISTS(SELECT 1 FROM _usage_report_global_gap WHERE has_gap = 1))
+            "#).bind(include_global).fetch_one(&mut *tx).await.map_err(database_error)?
+        } else { sqlx::query_scalar(r#"
             SELECT EXISTS(SELECT 1 FROM coverage_events AS coverage
             WHERE (operation_id IN (SELECT id FROM _usage_selected) OR (?1 AND operation_id IS NULL))
               AND coverage_state <> 'complete'
@@ -81,7 +93,7 @@ impl UsageStore {
                   AND (?3 IS NULL OR later.occurred_at_ms < ?3)
               ))
         "#).bind(include_global).bind(query.time_range.map(|r|r.start_ms())).bind(query.time_range.map(|r|r.end_ms()))
-            .fetch_one(&mut *tx).await.map_err(database_error)?;
+            .fetch_one(&mut *tx).await.map_err(database_error)? };
         let row = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(operation_kind = 'model_request'),0) AS models, COALESCE(SUM(terminal_status IS NULL),0) AS unfinished FROM _usage_selected")
             .fetch_one(&mut *tx).await.map_err(database_error)?;
         let operation_count = count(row.get("n"))?;
@@ -121,7 +133,7 @@ async fn token_aggregates(connection: &mut SqliteConnection, source: ReportSourc
 
 async fn activity_aggregates(connection: &mut SqliteConnection, source: ReportSource) -> Result<Vec<TokenActivityAggregate>, UsageStoreError> {
     rows(connection, match source {
-        ReportSource::CachedAll => "SELECT op.phase,op.activity,op.provenance,SUM(token.measured_tokens) AS measured,SUM(token.unknown_observations) AS unknowns,MAX(token.has_gap) AS gap,MAX(token.aggregate_overflow) AS overflow FROM _usage_report_activity_tokens AS token JOIN _usage_selected AS op ON op.id = token.operation_id GROUP BY op.phase,op.activity,op.provenance ORDER BY op.phase,op.activity,op.provenance",
+        ReportSource::CachedAll => "SELECT phase,activity,provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,MAX(coverage_state <> 'complete') AS gap,MAX(aggregate_overflow) AS overflow FROM _usage_report_dimension_tokens WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported' GROUP BY phase,activity,provenance ORDER BY phase,activity,provenance",
         ReportSource::CachedScoped | ReportSource::Canonical => "SELECT phase,activity,provenance,SUM(measured_tokens) AS measured,SUM(unknown_observations) AS unknowns,MAX(coverage_state <> 'complete') AS gap,MAX(aggregate_overflow) AS overflow FROM _usage_tokens WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported' GROUP BY phase,activity,provenance ORDER BY phase,activity,provenance" }).await?
         .into_iter().map(|row| {
             if row.get::<i64,_>("overflow") != 0 { return Err(UsageStoreError::AggregateOverflow); }

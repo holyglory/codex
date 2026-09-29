@@ -1,3 +1,7 @@
+#[cfg(target_os = "linux")]
+#[path = "report_scale_tests.rs"]
+mod scale_tests;
+
 #[path = "report_cost_tests.rs"]
 mod cost_tests;
 

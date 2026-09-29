@@ -60,6 +60,13 @@ pub(super) async fn select(
     sql.build().execute(&mut *connection).await?;
     sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected(id)")
         .execute(&mut *connection).await?;
+    if cache == super::ReportSource::CachedScoped && query.time_range.is_none() && family.is_none() && query.account_profile_ref.is_none() {
+        if let Some(thread) = &query.thread_id {
+            sqlx::query("CREATE TEMP TABLE _usage_tokens AS SELECT category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state,SUM(measured_tokens) AS measured_tokens,SUM(unknown_observations) AS unknown_observations,SUM(observation_count) AS observation_count,MAX(aggregate_overflow) AS aggregate_overflow FROM _usage_report_dimension_tokens WHERE thread_id = ? GROUP BY category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state")
+                .bind(thread.as_str()).execute(&mut *connection).await?;
+            return Ok(());
+        }
+    }
     let mut tokens = QueryBuilder::<Sqlite>::new("CREATE TEMP TABLE _usage_tokens AS WITH owned(operation_id, category_path, repository_bucket, measurement_provenance, coverage_state, measured_tokens, unknown_observations, observation_count, aggregate_overflow) AS (");
     if cache == super::ReportSource::CachedScoped {
         tokens.push("SELECT hours.operation_id, hours.category_path, hours.repository_bucket, hours.measurement_provenance, hours.coverage_state, hours.measured_tokens, hours.unknown_observations, hours.observation_count, hours.aggregate_overflow FROM _usage_report_token_hours AS hours JOIN _usage_selected AS selected ON selected.id = hours.operation_id WHERE 1 = 1");

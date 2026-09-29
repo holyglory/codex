@@ -55,7 +55,38 @@ COALESCE(SUM(total_tokens),0) AS total_tokens,
 COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens,
  COALESCE(SUM(CASE WHEN input_tokens >= cached_input_tokens AND input_tokens - cached_input_tokens >= cache_write_tokens THEN input_tokens - cached_input_tokens - cache_write_tokens END),0) AS uncached_input_tokens
 FROM classified GROUP BY model, provider_kind, long_context, complete
-ORDER BY model, provider_kind, long_context, complete LIMIT 16385
+"#;
+
+const TOOLS: &str = r#"
+UNION ALL SELECT '', 'unpriced_tool', 0, 0, COUNT(*),
+COALESCE(SUM(input_tokens),0),
+COALESCE(SUM(cached_input_tokens),0),
+COALESCE(SUM(cache_write_tokens),0),
+COALESCE(SUM(output_tokens),0),
+COALESCE(SUM(total_tokens),0),
+COALESCE(SUM(reasoning_tokens),0),
+COALESCE(SUM(CASE WHEN input_tokens >= cached_input_tokens AND input_tokens - cached_input_tokens >= cache_write_tokens THEN input_tokens - cached_input_tokens - cache_write_tokens END),0)
+FROM (SELECT tool.id, token.source_event_id, token.repository_bucket,
+MAX(CASE WHEN token.category_path = 'input_tokens' THEN token.token_count END) AS input_tokens,
+MAX(CASE WHEN token.category_path = 'input_tokens_details.cached_tokens' THEN token.token_count END) AS cached_input_tokens,
+MAX(CASE WHEN token.category_path = 'input_tokens_details.cache_write_tokens' THEN token.token_count END) AS cache_write_tokens,
+MAX(CASE WHEN token.category_path = 'output_tokens' THEN token.token_count END) AS output_tokens,
+MAX(CASE WHEN token.category_path = 'total_tokens' THEN token.token_count END) AS total_tokens,
+MAX(CASE WHEN token.category_path = 'output_tokens_details.reasoning_tokens' THEN token.token_count END) AS reasoning_tokens
+FROM _usage_selected AS selected JOIN tool_invocations AS tool ON tool.operation_id = selected.id
+JOIN token_observations AS token ON token.tool_invocation_id = tool.id
+WHERE token.category_path NOT GLOB 'attribution.items.*'
+AND (?1 IS NULL OR token.observed_at_ms >= ?1) AND (?2 IS NULL OR token.observed_at_ms < ?2)
+AND NOT EXISTS (SELECT 1 FROM "#;
+
+const COVERED: &str = r#" AS parent_receipt JOIN model_requests AS parent ON parent.id = parent_receipt.model_request_id
+JOIN _usage_selected AS parent_selected ON parent_selected.id = parent.operation_id
+WHERE parent.id = tool.covering_model_request_id AND parent_receipt.source_event_id = token.source_event_id
+AND parent_receipt.repository_bucket = token.repository_bucket AND token.measurement_provenance = 'provider_reported'
+AND parent_receipt.total_tokens = (SELECT total.token_count FROM token_observations AS total
+    WHERE total.tool_invocation_id = tool.id AND total.source_event_id = token.source_event_id
+    AND total.category_path = 'total_tokens' AND total.measurement_provenance = 'provider_reported')
+AND (?1 IS NULL OR parent_receipt.total_tokens_at_ms >= ?1) AND (?2 IS NULL OR parent_receipt.total_tokens_at_ms < ?2))
 "#;
 
 pub(super) async fn cost(connection: &mut SqliteConnection, query: &UsageSummaryQuery, family: Option<&HashSet<String>>, source: super::ReportSource) -> Result<UsageApiEquivalentCost, UsageStoreError> {
@@ -92,7 +123,12 @@ pub(super) async fn cost(connection: &mut SqliteConnection, query: &UsageSummary
         sql.push("(receipt.reasoning_tokens_at_ms >= ?1 AND receipt.reasoning_tokens_at_ms < ?2)");
         sql.push(")");
     }
-    sql.push(GROUP);
+    sql.push(GROUP).push(TOOLS).push(table).push(COVERED);
+    if let Some(family) = family {
+        sql.push(" AND token.repository_bucket IN (SELECT value FROM json_each(")
+            .push_bind(Json(family.iter().collect::<Vec<_>>())).push("))");
+    }
+    sql.push(" GROUP BY tool.id, token.source_event_id, token.repository_bucket) ORDER BY model, provider_kind, long_context, complete LIMIT 16385");
     let rows = sql.build().fetch_all(connection).await.map_err(super::database_error)?;
     if rows.len() > super::MAX_GROUPS { return Err(UsageStoreError::ReportTooLarge); }
     crate::report_cost::aggregate(rows)

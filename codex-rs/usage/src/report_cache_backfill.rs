@@ -148,9 +148,9 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
         return Ok(Progress::ReaderBusy);
     }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let ready: i64 = sqlx::query_scalar("SELECT ready FROM _usage_report_cache_meta WHERE singleton = 1")
+    let (version, ready): (i64, i64) = sqlx::query_as("SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1")
         .fetch_one(&mut *tx).await?;
-    if ready == 1 {
+    if version != super::REPORT_CACHE_SCHEMA_VERSION || ready == 1 {
         return Ok(Progress::Ready);
     }
     let pending: Option<(String, i64, i64)> = sqlx::query_as("SELECT source, cursor, high_water FROM _usage_report_backfill WHERE cursor < high_water ORDER BY source LIMIT 1")
@@ -163,8 +163,8 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
     };
     let (source, statements): (&'static str, &[&'static str]) = match source.as_str() {
         "operations" => ("operations", &[OPERATIONS]),
-        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL, super::cost_projection::BACKFILL]),
-        "coverage_events" => ("coverage_events", &[COVERAGE]),
+        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL, super::cost_projection::BACKFILL, super::dimensions::OWNERS, super::dimensions::BACKFILL, super::coverage::PROVIDER]),
+        "coverage_events" => ("coverage_events", &[COVERAGE, super::coverage::COVERAGE, super::coverage::GLOBAL]),
         "activity_spans" => ("activity_spans", &[SPANS]),
         _ => return Err(sqlx::Error::Protocol("unknown usage backfill source".into())),
     };

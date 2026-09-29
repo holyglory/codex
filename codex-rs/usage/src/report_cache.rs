@@ -10,11 +10,27 @@ pub(crate) mod token_hours;
 #[path = "report_cost_projection.rs"]
 pub(crate) mod cost_projection;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 4;
+#[path = "report_dimensions.rs"]
+pub(crate) mod dimensions;
+
+#[path = "report_coverage_cache.rs"]
+pub(crate) mod coverage;
+
+const REPORT_CACHE_SCHEMA_VERSION: i64 = 6;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 const RESET_CACHE_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_operation_insert;
+DROP TRIGGER IF EXISTS _usage_report_latest_coverage_insert;
+DROP TRIGGER IF EXISTS _usage_report_global_gap_insert;
+DROP TRIGGER IF EXISTS _usage_report_provider_complete_insert;
+DROP TABLE IF EXISTS _usage_report_latest_coverage;
+DROP TABLE IF EXISTS _usage_report_global_gap;
+DROP TABLE IF EXISTS _usage_report_provider_complete;
+DROP TRIGGER IF EXISTS _usage_report_dimension_token_insert;
+DROP TRIGGER IF EXISTS _usage_report_dimension_classification;
+DROP TABLE IF EXISTS _usage_report_dimension_tokens;
+DROP TABLE IF EXISTS _usage_report_owner_dimensions;
 DROP TRIGGER IF EXISTS _usage_report_model_usage_insert;
 DROP TABLE IF EXISTS _usage_report_model_usage;
 DROP TRIGGER IF EXISTS _usage_report_token_hour_insert;
@@ -311,6 +327,8 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
         .await?;
     sqlx::raw_sql(token_hours::SCHEMA).execute(&mut *connection).await?;
     sqlx::raw_sql(cost_projection::SCHEMA).execute(&mut *connection).await?;
+    sqlx::raw_sql(dimensions::SCHEMA).execute(&mut *connection).await?;
+    sqlx::raw_sql(coverage::SCHEMA).execute(&mut *connection).await?;
     backfill::initialize(connection).await?;
     sqlx::query("INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)")
         .bind(REPORT_CACHE_SCHEMA_VERSION).execute(&mut *connection).await?;
