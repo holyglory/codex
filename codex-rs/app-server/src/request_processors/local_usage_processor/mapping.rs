@@ -103,6 +103,7 @@ pub(super) fn summary(
 
 pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUsageReport {
     let StructuredUsageSummary {
+        cost,
         schema_version,
         kind,
         database_schema_version,
@@ -121,6 +122,27 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
         formulas,
     } = StructuredUsageSummary::new(summary, account);
     LocalUsageReport {
+        cost: cost.map(|cost| protocol::LocalUsageReportCost {
+            basis: cost.basis.to_string(),
+            currency: cost.currency.to_string(),
+            status: cost.status.to_string(),
+            processing_tier: cost.processing_tier.to_string(),
+            estimated_usd_micros: cost.estimated_usd_micros,
+            input_usd_micros: cost.input_usd_micros,
+            cached_input_usd_micros: cost.cached_input_usd_micros,
+            cache_write_usd_micros: cost.cache_write_usd_micros,
+            output_usd_micros: cost.output_usd_micros,
+            input_tokens: cost.input_tokens,
+            uncached_input_tokens: cost.uncached_input_tokens,
+            cached_input_tokens: cost.cached_input_tokens,
+            cache_write_tokens: cost.cache_write_tokens,
+            output_tokens: cost.output_tokens,
+            reasoning_tokens: cost.reasoning_tokens,
+            provider_total_tokens: cost.provider_total_tokens,
+            priced_observations: cost.priced_observations,
+            unknown_observations: cost.unknown_observations,
+            rate_card_refs: cost.rate_card_refs,
+        }),
         schema_version,
         kind: kind.to_string(),
         database_schema_version,

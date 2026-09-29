@@ -61,6 +61,7 @@ pub(super) fn local_report(coverage: protocol::LocalUsageCoverage) -> protocol::
         unknown_intervals: 0,
     };
     protocol::LocalUsageReport {
+        cost: None,
         schema_version: 1,
         kind: "usageSummary".to_string(),
         database_schema_version: 3,

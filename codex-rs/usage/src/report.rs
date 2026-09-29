@@ -60,6 +60,7 @@ pub struct ClassificationCount {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageSummary {
+    pub cost: Option<crate::UsageApiEquivalentCost>,
     pub database_schema_version: u64,
     pub taxonomy_version: i64,
     pub scope: UsageSummaryScope,

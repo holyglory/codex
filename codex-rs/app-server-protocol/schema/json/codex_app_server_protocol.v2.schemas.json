@@ -11019,6 +11019,16 @@
           },
           "type": "array"
         },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageReportCost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "counts": {
           "$ref": "#/definitions/LocalUsageReportCounts"
         },
@@ -11157,6 +11167,131 @@
         "count",
         "phase",
         "provenance"
+      ],
+      "type": "object"
+    },
+    "LocalUsageReportCost": {
+      "description": "A versioned standard API-equivalent estimate, not an invoice or subscription charge. Missing observations and unpriced models remain explicit in status and counts.",
+      "properties": {
+        "basis": {
+          "type": "string"
+        },
+        "cacheWriteTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "cacheWriteUsdMicros": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cachedInputTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "cachedInputUsdMicros": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": "string"
+        },
+        "estimatedUsdMicros": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inputUsdMicros": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "outputUsdMicros": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pricedObservations": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "processingTier": {
+          "type": "string"
+        },
+        "providerTotalTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rateCardRefs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasoningTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "uncachedInputTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "unknownObservations": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "basis",
+        "cacheWriteTokens",
+        "cachedInputTokens",
+        "currency",
+        "inputTokens",
+        "outputTokens",
+        "pricedObservations",
+        "processingTier",
+        "providerTotalTokens",
+        "rateCardRefs",
+        "reasoningTokens",
+        "status",
+        "uncachedInputTokens",
+        "unknownObservations"
       ],
       "type": "object"
     },

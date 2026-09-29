@@ -4,6 +4,9 @@ use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
 const PAGE_ROWS: i64 = 1_024;
+const MAX_PENDING_WAL_PAGES: i64 = 8_192;
+
+pub(crate) enum Progress { Ready, Advanced, ReaderBusy }
 const SOURCES: [&str; 4] = ["operations", "token_observations", "coverage_events", "activity_spans"];
 
 const OPERATIONS: &str = r#"
@@ -137,12 +140,18 @@ pub(super) async fn initialize(connection: &mut SqliteConnection) -> Result<(), 
 
 /// Commits at most one page. Transaction drop rolls back both the page and its
 /// cursor on cancellation, so another opener can resume without double counting.
-pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
+    let (_, written, checkpointed): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)").fetch_one(pool).await?;
+    if written.saturating_sub(checkpointed) > MAX_PENDING_WAL_PAGES {
+        // An external reader pins old pages. Pause derived writes rather than
+        // growing its WAL indefinitely; canonical capture remains independent.
+        return Ok(Progress::ReaderBusy);
+    }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let ready: i64 = sqlx::query_scalar("SELECT ready FROM _usage_report_cache_meta WHERE singleton = 1")
         .fetch_one(&mut *tx).await?;
     if ready == 1 {
-        return Ok(true);
+        return Ok(Progress::Ready);
     }
     let pending: Option<(String, i64, i64)> = sqlx::query_as("SELECT source, cursor, high_water FROM _usage_report_backfill WHERE cursor < high_water ORDER BY source LIMIT 1")
         .fetch_optional(&mut *tx).await?;
@@ -150,11 +159,11 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         sqlx::query("UPDATE _usage_report_cache_meta SET ready = 1 WHERE singleton = 1")
             .execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(true);
+        return Ok(Progress::Ready);
     };
     let (source, statements): (&'static str, &[&'static str]) = match source.as_str() {
         "operations" => ("operations", &[OPERATIONS]),
-        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL]),
+        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL, super::cost_projection::BACKFILL]),
         "coverage_events" => ("coverage_events", &[COVERAGE]),
         "activity_spans" => ("activity_spans", &[SPANS]),
         _ => return Err(sqlx::Error::Protocol("unknown usage backfill source".into())),
@@ -173,5 +182,5 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     // This never waits for readers or truncates their snapshots. Short write
     // transactions let SQLite's normal WAL checkpoints make progress.
     sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(pool).await?;
-    Ok(false)
+    Ok(Progress::Advanced)
 }

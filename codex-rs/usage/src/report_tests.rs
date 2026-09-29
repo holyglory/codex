@@ -1,3 +1,6 @@
+#[path = "report_cost_tests.rs"]
+mod cost_tests;
+
 #[path = "report_cache_backfill_tests.rs"]
 mod backfill_tests;
 
@@ -469,8 +472,10 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
             .expect("canonical all summary"),
         all
     );
+    store.report_refresh.cancel();
     sqlx::raw_sql(
         r#"
+        DELETE FROM _usage_report_cache_meta;
         DELETE FROM _usage_report_token_aggregates;
         DELETE FROM _usage_report_activity_tokens;
         DELETE FROM _usage_report_token_coverage;

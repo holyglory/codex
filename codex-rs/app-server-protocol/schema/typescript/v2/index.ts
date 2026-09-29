@@ -273,6 +273,7 @@ export type { LocalUsageProvenance } from "./LocalUsageProvenance";
 export type { LocalUsageReport } from "./LocalUsageReport";
 export type { LocalUsageReportActivityTokenAggregate } from "./LocalUsageReportActivityTokenAggregate";
 export type { LocalUsageReportClassificationCount } from "./LocalUsageReportClassificationCount";
+export type { LocalUsageReportCost } from "./LocalUsageReportCost";
 export type { LocalUsageReportCounts } from "./LocalUsageReportCounts";
 export type { LocalUsageReportCoverage } from "./LocalUsageReportCoverage";
 export type { LocalUsageReportCoverageCount } from "./LocalUsageReportCoverageCount";

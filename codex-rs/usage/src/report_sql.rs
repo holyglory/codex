@@ -6,6 +6,8 @@ use sqlx::{Row, SqliteConnection};
 mod selection;
 #[path = "report_sql_time.rs"]
 mod time;
+#[path = "report_cost_query.rs"]
+mod cost;
 
 const MAX_GROUPS: usize = 16_384;
 
@@ -28,9 +30,7 @@ impl UsageStore {
             (None, None) => UsageSummaryScope::All,
         };
         let include_global = matches!(scope, UsageSummaryScope::All) && query.account_profile_ref.is_none() && family.is_none();
-        let source = if crate::report_cache::is_ready(&self.pool).await.unwrap_or(false) {
-            if include_global && query.time_range.is_none() { ReportSource::CachedAll } else { ReportSource::CachedScoped }
-        } else { ReportSource::Canonical };
+        let _reader = self.report_refresh.reader.lock().await;
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
         // Five store connections at 8 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
@@ -39,6 +39,12 @@ impl UsageStore {
             .execute(&mut *connection).await.map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
+        let source = if crate::report_cache::is_ready_on(&mut tx).await.unwrap_or(false) {
+            if include_global && query.time_range.is_none() { ReportSource::CachedAll } else { ReportSource::CachedScoped }
+        } else {
+            self.report_refresh.kick(self.pool.clone());
+            ReportSource::Canonical
+        };
         selection::select(&mut tx, &query, family.as_ref(), source).await.map_err(database_error)?;
         let tokens = token_aggregates(&mut tx, source).await?;
         let provider_tokens_by_activity = activity_aggregates(&mut tx, source).await?;
@@ -83,6 +89,7 @@ impl UsageStore {
         let unfinished_operations = count(row.get("unfinished"))?;
         let classifications = rows(&mut tx, "SELECT phase, activity, provenance, COUNT(*) AS n FROM _usage_selected GROUP BY phase, activity, provenance ORDER BY phase, activity, provenance").await?
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
+        let cost = Some(cost::cost(&mut tx, &query, family.as_ref(), source).await?);
         let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
         let has_evidence = !tokens.is_empty() || !event_counts.is_empty();
         let has_gaps = !has_evidence || tokens.iter().any(|t|t.exact_tokens.is_none()) || unfinished_operations > 0 || unresolved || token_observation_counts.iter().any(|c|c.state != "complete");
@@ -90,7 +97,7 @@ impl UsageStore {
         let database_schema_version = count(sqlx::query_scalar("SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations").fetch_one(&mut *tx).await.map_err(database_error)?)?;
         tx.commit().await.map_err(database_error)?;
         sqlx::query("PRAGMA temp_store = FILE").execute(&mut *connection).await.map_err(database_error)?;
-        Ok(UsageSummary {database_schema_version,taxonomy_version:TAXONOMY_VERSION,scope,time_range:query.time_range,
+        Ok(UsageSummary {cost,database_schema_version,taxonomy_version:TAXONOMY_VERSION,scope,time_range:query.time_range,
             coverage:CoverageSummary {overall_state,event_counts,token_observation_counts,has_gaps,unfinished_operations},
             tokens,provider_tokens_by_activity,timing,
             repository_participation:ParticipationCounts {operation_count,tool_count:tools.count,additive:false,label:"repository participation counts are non-additive; token buckets are additive"},

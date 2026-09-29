@@ -14,6 +14,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v5", "v7"] }
 
 [dev-dependencies]
