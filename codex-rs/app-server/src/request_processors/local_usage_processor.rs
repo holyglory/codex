@@ -685,6 +685,7 @@ fn resource_not_found() -> JSONRPCErrorError {
 
 fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
     match error {
+        UsageStoreError::ReportTooLarge => invalid_params("local usage summary exceeds its memory bound; narrow the scope or time range"),
         UsageStoreError::InvalidReviewCursor => invalid_params("invalid or expired usage cursor"),
         UsageStoreError::RepositoryMergeCycle => {
             invalid_params("repository merge would create a cycle")
@@ -709,7 +710,7 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
         | UsageStoreError::TokenCountOutOfRange
         | UsageStoreError::DatabaseValueOutOfRange
         | UsageStoreError::AggregateOverflow
-        | UsageStoreError::TaskTreeTooLarge | UsageStoreError::ReportTooLarge => {
+        | UsageStoreError::TaskTreeTooLarge => {
             internal_error("local usage request could not be completed")
         }
     }

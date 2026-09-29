@@ -25,9 +25,6 @@ impl UtcTimeRange {
         self.end_ms
     }
 
-    pub(crate) fn contains(self, timestamp_ms: i64) -> bool {
-        timestamp_ms >= self.start_ms && timestamp_ms < self.end_ms
-    }
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
