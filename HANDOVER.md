@@ -108,8 +108,9 @@ part of this baseline.
   native release targets on standard public runners, archives symbols, creates
   gzip and zstd canonical CLI and app-server packages, writes checksums and
   provenance attestations, and verifies seven npm tarballs.
-- `downstream-upstream-watch.yml` reports a newer stable release and performs an
-  ephemeral `upstream/main` rebase/compile canary without moving a branch.
+- Stable upstream updates are initiated manually from an explicitly approved
+  annotated `rust-vX.Y.Z` tag; no scheduled upstream watcher changes branches
+  or opens update issues.
 - `downstream-npm-publish.yml` is separate from candidate construction. Its
   staging job defaults off and requires an annotated matching tag, the exact
   successful candidate run, OIDC, and approval through the protected `npm`

@@ -22,9 +22,9 @@ is the reproducible source boundary; upstream source wins during conflict
 resolution, and downstream behavior is reapplied through current extension
 points.
 
-`upstream/main` and prerelease tags are canaries only. The scheduled downstream
-watcher may report a newer stable tag and may perform an ephemeral rebase and
-compile probe, but it never moves `main` or `upstream-sync`.
+`upstream/main` and prerelease tags are not product baselines. Stable updates
+are initiated manually from an explicitly approved annotated stable tag and
+never move `main` or `upstream-sync` before the release gates pass.
 
 ## Stable update procedure
 

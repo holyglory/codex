@@ -28,8 +28,9 @@ The maintained fork is publicly distributed from `holyglory/codex` as
 `@holyglory/codex`, with platform-complete staged releases, human 2FA approval,
 and GitHub Actions OIDC instead of a persistent npm write token
 (DEC-CODEX-016). The downstream product lives on one curated `main` patch
-stack; `upstream/main` and prerelease tags are compatibility canaries only
-(DEC-CODEX-017).
+stack. Stable updates are initiated manually from explicitly approved
+annotated release tags; moving upstream branches and prerelease tags are not
+product baselines (DEC-CODEX-017).
 
 ### DEC-CODEX-001
 
@@ -223,8 +224,9 @@ stack; `upstream/main` and prerelease tags are compatibility canaries only
 
 - **Decision:** Rebase the maintained product branch onto the newest explicitly
   approved stable `rust-vX.Y.Z` release and carry downstream behavior as a
-  small, ordered patch stack. Upstream prereleases and `upstream/main` are
-  compatibility probes only and never move the product baseline automatically.
+  small, ordered patch stack. Stable updates are initiated manually from the
+  approved annotated release tag; upstream prereleases and `upstream/main` do
+  not move the product baseline.
 - **Why:** A stable tag provides reproducible source and version identity while
   the curated stack keeps multi-account, private usage, rollout recovery, and
   distribution changes reviewable across future updates. Tracking a moving
