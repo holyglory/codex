@@ -49,9 +49,9 @@ managed ChatGPT profiles, rejects conflicting external authentication, probes
 capacity within bounds, applies descending priority, and fails over only where
 the current turn remains safe. Usage capture remains private and content-free.
 
-The scheduled watcher may report a newer stable tag and may rebase the patch
-stack ephemerally onto `upstream/main` as a compatibility canary. Neither result
-may move `main`, change `upstream-sync`, tag a release, or publish a package.
+Stable updates are initiated manually from an explicitly approved annotated
+release tag. Upstream prereleases and `upstream/main` do not move `main`, change
+`upstream-sync`, tag a release, or publish a package.
 
 ## Acceptance boundary
 
