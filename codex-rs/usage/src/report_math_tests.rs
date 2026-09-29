@@ -1,4 +1,6 @@
 use super::*;
+use crate::UsageStore;
+use crate::UsageSummaryScope;
 use crate::ActivitySpanEventKind;
 use crate::ActivitySpanId;
 use crate::NewActivitySpan;

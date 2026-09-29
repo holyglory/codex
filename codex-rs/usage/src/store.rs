@@ -68,6 +68,8 @@ pub enum UsageStoreError {
     AggregateOverflow,
     #[error("usage task tree exceeds the supported query bound")]
     TaskTreeTooLarge,
+    #[error("usage summary exceeds its memory bound; narrow the scope or time range")]
+    ReportTooLarge,
     #[error("outcome cursor expired or does not match this report; start a new first page")]
     InvalidReviewCursor,
 }

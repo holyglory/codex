@@ -18,6 +18,7 @@ mod recovery;
 mod report;
 mod report_cache;
 mod report_math;
+mod report_sql;
 mod repository;
 mod store;
 mod structured;
