@@ -154,7 +154,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     };
     let (source, statements): (&'static str, &[&'static str]) = match source.as_str() {
         "operations" => ("operations", &[OPERATIONS]),
-        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2]),
+        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL]),
         "coverage_events" => ("coverage_events", &[COVERAGE]),
         "activity_spans" => ("activity_spans", &[SPANS]),
         _ => return Err(sqlx::Error::Protocol("unknown usage backfill source".into())),

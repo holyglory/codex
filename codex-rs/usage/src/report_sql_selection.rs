@@ -60,32 +60,47 @@ pub(super) async fn select(
     sql.build().execute(&mut *connection).await?;
     sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected(id)")
         .execute(&mut *connection).await?;
-    let mut tokens = QueryBuilder::<Sqlite>::new(r#"
-        CREATE TEMP TABLE _usage_tokens AS
-        WITH owned AS (
-            SELECT token.category_path, token.repository_bucket, token.measurement_provenance,
-                   token.token_count, token.coverage_state, token.observed_at_ms, request.operation_id
-            FROM _usage_selected AS selected
-            JOIN model_requests AS request ON request.operation_id = selected.id
-            JOIN token_observations AS token ON token.model_request_id = request.id
-            UNION ALL
-            SELECT token.category_path, token.repository_bucket, token.measurement_provenance,
-                   token.token_count, token.coverage_state, token.observed_at_ms, tool.operation_id
-            FROM _usage_selected AS selected
-            JOIN tool_invocations AS tool ON tool.operation_id = selected.id
-            JOIN token_observations AS token ON token.tool_invocation_id = tool.id
-        )
-        SELECT token.category_path, token.repository_bucket, token.measurement_provenance,
-               selected.phase, selected.activity, selected.provenance, token.coverage_state,
-               COALESCE(SUM(token.token_count), 0) AS measured_tokens,
-               SUM(token.token_count IS NULL) AS unknown_observations, COUNT(*) AS observation_count
-        FROM owned AS token JOIN _usage_selected AS selected ON selected.id = token.operation_id
-        WHERE token.category_path NOT GLOB 'attribution.items.*'
-    "#);
-    if let Some(range) = query.time_range {
-        tokens.push(" AND token.observed_at_ms >= ").push_bind(range.start_ms());
-        tokens.push(" AND token.observed_at_ms < ").push_bind(range.end_ms());
+    let mut tokens = QueryBuilder::<Sqlite>::new("CREATE TEMP TABLE _usage_tokens AS WITH owned(operation_id, category_path, repository_bucket, measurement_provenance, coverage_state, measured_tokens, unknown_observations, observation_count, aggregate_overflow) AS (");
+    if cache == super::ReportSource::CachedScoped {
+        tokens.push("SELECT hours.operation_id, hours.category_path, hours.repository_bucket, hours.measurement_provenance, hours.coverage_state, hours.measured_tokens, hours.unknown_observations, hours.observation_count, hours.aggregate_overflow FROM _usage_report_token_hours AS hours JOIN _usage_selected AS selected ON selected.id = hours.operation_id WHERE 1 = 1");
+        if let Some(range) = query.time_range {
+            tokens.push(" AND hours.hour_index > ").push_bind(range.start_ms().div_euclid(3_600_000));
+            tokens.push(" AND hours.hour_index < ").push_bind(range.end_ms().div_euclid(3_600_000));
+        }
+        if query.time_range.is_some() { tokens.push(" UNION ALL "); }
     }
+    if cache == super::ReportSource::Canonical || query.time_range.is_some() {
+        tokens.push(r#"
+            SELECT token.operation_id, token.category_path, token.repository_bucket, token.measurement_provenance,
+                   token.coverage_state, COALESCE(token.token_count, 0), token.token_count IS NULL, 1, 0
+            FROM (
+                SELECT token.*, request.operation_id FROM _usage_selected AS selected
+                JOIN model_requests AS request ON request.operation_id = selected.id
+                JOIN token_observations AS token ON token.model_request_id = request.id
+                UNION ALL
+                SELECT token.*, tool.operation_id FROM _usage_selected AS selected
+                JOIN tool_invocations AS tool ON tool.operation_id = selected.id
+                JOIN token_observations AS token ON token.tool_invocation_id = tool.id
+            ) AS token WHERE token.category_path NOT GLOB 'attribution.items.*'
+        "#);
+        if let Some(range) = query.time_range {
+            tokens.push(" AND token.observed_at_ms >= ").push_bind(range.start_ms());
+            tokens.push(" AND token.observed_at_ms < ").push_bind(range.end_ms());
+            if cache == super::ReportSource::CachedScoped {
+                tokens.push(" AND (token.observed_at_ms / 3600000 - (token.observed_at_ms % 3600000 < 0) = ")
+                    .push_bind(range.start_ms().div_euclid(3_600_000))
+                    .push(" OR token.observed_at_ms / 3600000 - (token.observed_at_ms % 3600000 < 0) = ")
+                    .push_bind(range.end_ms().div_euclid(3_600_000)).push(")");
+            }
+        }
+    }
+    tokens.push(r#"
+        ) SELECT token.category_path, token.repository_bucket, token.measurement_provenance,
+                 selected.phase, selected.activity, selected.provenance, token.coverage_state,
+                 SUM(token.measured_tokens) AS measured_tokens, SUM(token.unknown_observations) AS unknown_observations,
+                 SUM(token.observation_count) AS observation_count, MAX(token.aggregate_overflow) AS aggregate_overflow
+          FROM owned AS token JOIN _usage_selected AS selected ON selected.id = token.operation_id WHERE 1 = 1
+    "#);
     if let Some(family) = family {
         tokens.push(" AND token.repository_bucket IN (SELECT value FROM json_each(")
             .push_bind(Json(family.iter().collect::<Vec<_>>())).push("))");

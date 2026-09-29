@@ -4,11 +4,16 @@ use sqlx::SqlitePool;
 #[path = "report_cache_backfill.rs"]
 pub(crate) mod backfill;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 2;
+#[path = "report_token_hours.rs"]
+pub(crate) mod token_hours;
+
+const REPORT_CACHE_SCHEMA_VERSION: i64 = 3;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 const RESET_CACHE_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_operation_insert;
+DROP TRIGGER IF EXISTS _usage_report_token_hour_insert;
+DROP TABLE IF EXISTS _usage_report_token_hours;
 DROP TRIGGER IF EXISTS _usage_report_operation_terminal;
 DROP TRIGGER IF EXISTS _usage_report_classification;
 DROP TRIGGER IF EXISTS _usage_report_token;
@@ -276,6 +281,7 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
     sqlx::raw_sql(CREATE_CACHE_SQL)
         .execute(&mut *connection)
         .await?;
+    sqlx::raw_sql(token_hours::SCHEMA).execute(&mut *connection).await?;
     backfill::initialize(connection).await?;
     sqlx::query("INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)")
         .bind(REPORT_CACHE_SCHEMA_VERSION).execute(&mut *connection).await?;
