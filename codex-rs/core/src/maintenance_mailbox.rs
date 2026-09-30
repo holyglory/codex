@@ -34,7 +34,7 @@ impl crate::CodexThread {
         self.restore_maintenance_mailbox(mail).await
     }
 
-    async fn maintenance_mailbox_path(&self) -> std::path::PathBuf {
+    async fn maintenance_mailbox_path(&self) -> codex_utils_absolute_path::AbsolutePathBuf {
         self.session
             .get_config()
             .await

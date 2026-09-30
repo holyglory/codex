@@ -1843,6 +1843,19 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::TurnInterrupt { params, .. } => {
+                if self
+                    .turn_admission
+                    .resumptions
+                    .cancel(&params.thread_id, &params.turn_id)
+                    .await
+                    .map_err(|error| {
+                        internal_error(format!("failed to preserve Stop during recovery: {error}"))
+                    })?
+                {
+                    return Ok(Some(
+                        codex_app_server_protocol::TurnInterruptResponse {}.into(),
+                    ));
+                }
                 self.turn_processor
                     .turn_interrupt(&request_id, params)
                     .await

@@ -9,7 +9,7 @@ use codex_core::path_utils::write_atomically;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RecoverySnapshot {
     #[serde(skip)]
     pub loaded: BTreeSet<String>,

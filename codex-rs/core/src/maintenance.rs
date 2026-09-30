@@ -213,12 +213,18 @@ impl crate::CodexThread {
         turn_id: String,
         options: crate::TurnStartOptions,
         context: crate::MaintenanceTurnContext,
+        cancelled: &CancellationToken,
     ) -> codex_protocol::error::Result<crate::TurnInputSubmission> {
-        self.session
-            .services
-            .agent_control
-            .ensure_execution_capacity_for_turn_start(self)
-            .await?;
+        tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => return Ok(crate::TurnInputSubmission::NotSubmitted { reason: crate::NotSubmittedReason::Superseded }),
+            result = self.session.services.agent_control.ensure_execution_capacity_for_turn_start(self) => result?,
+        }
+        if cancelled.is_cancelled() {
+            return Ok(crate::TurnInputSubmission::NotSubmitted {
+                reason: crate::NotSubmittedReason::Superseded,
+            });
+        }
         self.thread_extension_data().insert(
             crate::session::maintenance_recovery::PendingMaintenanceContext(std::sync::Mutex::new(
                 Some((turn_id.clone(), context)),
@@ -267,5 +273,25 @@ impl crate::CodexThread {
             )
             .is_none()
             || !self.session.async_hook_results.is_empty()
+    }
+}
+
+impl crate::CodexThread {
+    pub async fn record_maintenance_stop(&self, turn_id: String) -> std::io::Result<()> {
+        self.session
+            .send_event_raw(codex_protocol::protocol::Event {
+                id: turn_id.clone(),
+                msg: codex_protocol::protocol::EventMsg::TurnAborted(
+                    codex_protocol::protocol::TurnAbortedEvent {
+                        turn_id: Some(turn_id),
+                        reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
+                    },
+                ),
+            })
+            .await;
+        self.flush_rollout().await
     }
 }

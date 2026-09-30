@@ -206,25 +206,45 @@ impl ThreadRequestProcessor {
     pub(crate) async fn resume_maintenance_turns(
         &self,
         turns: Vec<(String, InterruptedTurn, codex_core::MaintenanceTurnContext)>,
+        resumptions: &crate::maintenance_resumption::MaintenanceResumption,
     ) -> Result<(), &'static str> {
         let mut prepared = Vec::new();
         for (id, saved, context) in turns {
             if let Some(continuation) = self.prepare_daemon_continuation(&id, saved).await? {
-                prepared.push((continuation, context));
+                prepared.push((id, continuation, context));
+            } else if let Some(pending) = resumptions.get(&id) {
+                *pending.pending.lock().await =
+                    crate::maintenance_resumption::ResumeState::Finished;
             }
         }
-        for (continuation, context) in prepared {
+        for (id, continuation, context) in prepared {
+            use crate::maintenance_resumption::ResumeState;
+            let pending = resumptions.get(&id).ok_or("missingPendingTurn")?;
+            let mut dispatch = pending.pending.lock().await;
+            if pending.cancelled.is_cancelled() {
+                continuation
+                    .thread
+                    .record_maintenance_stop(continuation.turn_id)
+                    .await
+                    .map_err(|_| "stopPersistenceFailed")?;
+                *dispatch = ResumeState::Cancelled;
+                continue;
+            }
+            let resumed_turn_id = continuation.turn_id.clone();
             match continuation
                 .thread
                 .resume_maintenance_checkpoint(
                     continuation.turn_id,
                     context.options.clone(),
                     context,
+                    &pending.cancelled,
                 )
                 .await
                 .map_err(|_| "continuationFailed")?
             {
-                codex_core::TurnInputSubmission::Started { .. } => {}
+                codex_core::TurnInputSubmission::Started { .. } => {
+                    *dispatch = ResumeState::Started;
+                }
                 codex_core::TurnInputSubmission::NotSubmitted {
                     reason:
                         codex_core::NotSubmittedReason::NotIdle
@@ -234,6 +254,20 @@ impl ThreadRequestProcessor {
                 | codex_core::TurnInputSubmission::Steered { .. } => {
                     return Err("continuationNotStarted");
                 }
+            }
+            if pending.cancelled.is_cancelled() && continuation.thread.maintenance_is_idle().await {
+                continuation
+                    .thread
+                    .record_maintenance_stop(resumed_turn_id)
+                    .await
+                    .map_err(|_| "stopPersistenceFailed")?;
+            }
+            if *dispatch != ResumeState::Started {
+                *dispatch = if pending.cancelled.is_cancelled() {
+                    ResumeState::Cancelled
+                } else {
+                    ResumeState::Finished
+                };
             }
         }
         self.resume_idle_maintenance_work().await;

@@ -1712,39 +1712,119 @@ async fn windows_sandbox_config_refresh_uses_connected_server() -> Result<()> {
 
 #[tokio::test]
 async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Result<()> {
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
-    app.pending_startup_thread_start = true;
-    app.app_server_target = AppServerTarget::Remote {
-        endpoint: crate::RemoteAppServerEndpoint::WebSocket {
-            websocket_url: "ws://127.0.0.1:1".into(),
-            auth_token: None,
-        },
-    };
-    app.chat_widget
-        .restore_user_message_to_composer("preserve my request".into());
-    let mut server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    app.handle_startup_thread_started(
-        &mut server,
-        Err(codex_app_server_client::TypedRequestError::Server {
-            method: "thread/start".into(),
-            source: codex_app_server_protocol::JSONRPCErrorError {
-                code: -32600,
-                message: "Server is preparing an upgrade".into(),
-                data: Some(serde_json::json!({"reason":"serverSwitching"})),
-            },
+    use crate::app::reconnect::ReconnectPresentation;
+    use crate::app::reconnect::reconnect;
+    for lose_retry_response in [false, true] {
+        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+        app.pending_startup_thread_start = true;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
+        app.app_server_target = AppServerTarget::Remote {
+            endpoint: endpoint.clone(),
+        };
+        app.chat_widget
+            .restore_user_message_to_composer("preserve my request".into());
+        let id = ThreadId::new();
+        let cwd = app.config.cwd.clone();
+        let thread = serde_json::json!({"id":id, "sessionId":id, "preview":"", "ephemeral":false,
+            "modelProvider":"test-provider", "createdAt":1,"updatedAt":2,"status":{"type":"idle"},
+            "cwd":cwd,"cliVersion":"0.0.0","source":"cli","turns":[]});
+        let server = tokio::spawn(async move {
+            let mut methods = Vec::new();
+            for attempt in 0..3 {
+                let (stream, _) = listener.accept().await?;
+                methods.extend(super::disconnect::serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
+                    "thread/start" if attempt < 2 => Some(serde_json::json!({"error":{"code":-32600,"message":"Server is preparing an upgrade","data":{"reason":"serverSwitching"}}})),
+                    "thread/start" if lose_retry_response => None,
+                    "thread/start" => Some(serde_json::json!({"result":{"thread":thread,"model":"gpt-test","modelProvider":"test-provider","cwd":cwd,
+                        "approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"reasoningEffort":null}})),
+                    "thread/read" => Some(serde_json::json!({"result":{"thread":thread}})),
+                    "thread/list" | "thread/loaded/list" => Some(serde_json::json!({"result":{"data":[],"nextCursor":null}})),
+                    "thread/goal/get" => Some(serde_json::json!({"result":{"goal":null}})),
+                    "turn/start" => {
+                        assert_eq!(request.params.as_ref().unwrap()["input"][0]["text"], "preserve my request");
+                        Some(serde_json::json!({"result":{"turn":{"id":"accepted","items":[],"status":"inProgress"}}}))
+                    }
+                    method => panic!("unexpected maintenance reconnect request: {method}"),
+                })).await?);
+            }
+            Ok::<_, color_eyre::Report>(methods)
+        });
+        let mut session = AppServerSession::new(
+            crate::connect_remote_app_server(endpoint).await?,
+            ThreadParamsMode::Remote,
+        );
+        let result = crate::app_server_session::start_thread_with_request_handle(
+            session.request_handle(),
+            &app.local_settings,
+            app.config.clone(),
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+            session.thread_tool_transport(),
+        )
+        .await;
+        app.handle_startup_thread_started(&mut session, result)
+            .await?;
+        assert!(app.reconnect.offline);
+        assert!(app.reconnect.presentation == ReconnectPresentation::RejectedFreshStart);
+        insta::allow_duplicates! {
+            insta::assert_snapshot!("maintenance_rejected_start", render_bottom_popup(&app.chat_widget, /*width*/ 80));
         }
-        .into()),
-    )
-    .await?;
-    assert!(app.reconnect.offline);
-    assert!(
-        app.reconnect.presentation
-            == super::super::reconnect::ReconnectPresentation::RejectedFreshStart
-    );
-    insta::assert_snapshot!(
-        "maintenance_rejected_start",
-        render_bottom_popup(&app.chat_widget, /*width*/ 80)
-    );
+        let connected = reconnect(
+            app.app_server_target.clone(),
+            app.config.clone(),
+            app.local_settings.clone(),
+            /*thread_id*/ None,
+            /*remote_cwd*/ None,
+            session.thread_tool_transport(),
+            ReconnectPresentation::RejectedFreshStart,
+        )
+        .await;
+        if lose_retry_response {
+            assert!(
+                connected.is_err(),
+                "a lost create response must not be replayed"
+            );
+            assert_eq!(
+                app.chat_widget.composer_text_with_pending(),
+                "preserve my request"
+            );
+        } else {
+            let mut tui = crate::tui::test_support::make_test_tui()?;
+            app.finish_reconnect(&mut tui, &mut session, &mut events, connected?, "2.0.0")
+                .await?;
+            assert!(!app.reconnect.offline);
+            assert_eq!(app.primary_thread_id, Some(id));
+            assert_eq!(
+                app.chat_widget.composer_text_with_pending(),
+                "preserve my request"
+            );
+            app.handle_tui_event(
+                &mut tui,
+                &mut session,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            )
+            .await?;
+            while let Ok(event) = events.try_recv() {
+                app.handle_event(&mut tui, &mut session, event).await?;
+            }
+        }
+        session.shutdown().await?;
+        let methods = server.await??;
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "thread/start")
+                .count(),
+            3
+        );
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "turn/start")
+                .count(),
+            usize::from(!lose_retry_response)
+        );
+    }
     Ok(())
 }

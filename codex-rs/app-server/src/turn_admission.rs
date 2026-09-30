@@ -20,6 +20,7 @@ struct AdmissionState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TurnAdmission {
+    pub(crate) resumptions: crate::maintenance_resumption::MaintenanceResumption,
     state: Arc<Mutex<AdmissionState>>,
     active_tx: watch::Sender<usize>,
     maintenance_tx: watch::Sender<bool>,
@@ -28,6 +29,7 @@ pub(crate) struct TurnAdmission {
 impl Default for TurnAdmission {
     fn default() -> Self {
         Self {
+            resumptions: Default::default(),
             state: Arc::new(Mutex::new(AdmissionState::default())),
             active_tx: watch::channel(0).0,
             maintenance_tx: watch::channel(false).0,

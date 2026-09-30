@@ -121,6 +121,7 @@ mod fuzzy_file_search;
 mod gateway_oauth_notifications;
 mod image_url;
 pub mod in_process;
+mod maintenance_resumption;
 mod mcp_refresh;
 mod message_processor;
 mod model_catalog;

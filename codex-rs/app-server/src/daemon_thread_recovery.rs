@@ -50,6 +50,11 @@ pub(crate) async fn start_recovery(
     .await
     .map_err(io::Error::other)??;
     if candidates.maintenance.is_some() {
+        processor
+            .turn_admission
+            .resumptions
+            .initialize(path, candidates.clone())
+            .await;
         let admission = processor
             .turn_admission
             .begin_maintenance()
@@ -62,6 +67,7 @@ pub(crate) async fn start_recovery(
                     // Only the detached owner may acknowledge this generation after
                     // real fresh-session verification. A crash before that point must
                     // leave the checkpoint available to the previous release.
+                    processor.turn_admission.resumptions.finish();
                     processor.turn_admission.restoration_finished();
                 }
                 Err(reason) => {

@@ -20,7 +20,7 @@ impl MessageProcessor {
             .await?;
         drop(admission);
         self.thread_processor
-            .resume_maintenance_turns(continuations)
+            .resume_maintenance_turns(continuations, &self.turn_admission.resumptions)
             .await
     }
 
