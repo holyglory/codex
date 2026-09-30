@@ -211,6 +211,9 @@ impl AccountProfileRequestProcessor {
             if let Some(alias) = &alias {
                 account.alias = alias.clone();
             }
+            if let Some(enabled) = params.credit_usage_enabled {
+                account.credit_usage_enabled = enabled;
+            }
             if let Some(priority) = params.priority {
                 account.priority = priority;
             }
@@ -555,6 +558,7 @@ fn api_profile(
         enabled: account.enabled,
         authenticated: is_authenticated(config, account)?,
         priority: account.priority,
+        credit_usage_enabled: account.credit_usage_enabled,
         created_at: account.created_at.timestamp(),
         last_used_at: account.last_used_at.map(|time| time.timestamp()),
         note: account.note.clone(),

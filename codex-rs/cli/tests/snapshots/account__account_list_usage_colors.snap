@@ -2,14 +2,14 @@
 source: cli/tests/account.rs
 expression: normalized
 ---
-ESC[36;1mALIASESC[0m     ESC[36;1mPRIORITYESC[0m  ESC[36;1mBANKED RESETSESC[0m  ESC[36;1mLIMITSESC[0m  ESC[36;1mRESET INESC[0m
- omega    0         none           ESC[31m100%ESC[0m    ESC[33m[reset countdown]ESC[0m
-ESC[32;1m*alphaESC[0m    1         none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
- gamma    2         none           ESC[32m0%ESC[0m      ESC[31m[reset countdown]ESC[0m
- delta    2         none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
- epsilon  2         none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
- theta    2         ESC[32;1m2 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
- iota     2         ESC[32;1m1 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
- beta     2         ESC[32;1m1 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
- zeta     2         none           ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
- eta      2         none           ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
+ESC[36;1mALIASESC[0m     ESC[36;1mPRIORITYESC[0m  ESC[36;1mCREDITSESC[0m  ESC[36;1mCREDIT USEESC[0m  ESC[36;1mBANKED RESETSESC[0m  ESC[36;1mLIMITSESC[0m  ESC[36;1mRESET INESC[0m
+ omega    0         unknown  disabled    none           ESC[31m100%ESC[0m    ESC[33m[reset countdown]ESC[0m
+ESC[32;1m*alphaESC[0m    1         unknown  disabled    none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
+ gamma    2         unknown  disabled    none           ESC[32m0%ESC[0m      ESC[31m[reset countdown]ESC[0m
+ delta    2         unknown  disabled    none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
+ epsilon  2         unknown  disabled    none           ESC[33m50%ESC[0m     ESC[33m[reset countdown]ESC[0m
+ theta    2         unknown  disabled    ESC[32;1m2 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
+ iota     2         unknown  disabled    ESC[32;1m1 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
+ beta     2         unknown  disabled    ESC[32;1m1 (3d 2h)ESC[0m      ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
+ zeta     2         unknown  disabled    none           ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m
+ eta      2         unknown  disabled    none           ESC[31m100%ESC[0m    ESC[32m[reset countdown]ESC[0m

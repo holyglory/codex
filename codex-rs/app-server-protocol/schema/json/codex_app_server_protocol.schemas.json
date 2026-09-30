@@ -4340,6 +4340,11 @@
         "supportsAutoSelection": {
           "type": "boolean"
         },
+        "supportsCreditUsage": {
+          "default": false,
+          "description": "Whether profile updates accept the per-account automatic credit permission.",
+          "type": "boolean"
+        },
         "supportsManagedLogin": {
           "type": "boolean"
         },
@@ -6985,6 +6990,11 @@
           "createdAt": {
             "format": "int64",
             "type": "integer"
+          },
+          "creditUsageEnabled": {
+            "default": false,
+            "description": "Permission for automatic credit fallback; manual sessions and pins are unaffected.",
+            "type": "boolean"
           },
           "email": {
             "type": [

@@ -112,6 +112,18 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
             "auto",
             json!({"action":"set_auto_selection","mode":mode,"expected_generation":generation + 4}),
         ),
+        (
+            "credits-on",
+            json!({"action":"set_credit_usage","account":"primary","mode":"enabled","expected_generation":generation + 5}),
+        ),
+        (
+            "credits-stale",
+            json!({"action":"set_credit_usage","account":"primary","mode":"disabled","expected_generation":generation + 5}),
+        ),
+        (
+            "credits-off",
+            json!({"action":"set_credit_usage","account":"primary","mode":"disabled","expected_generation":generation + 6}),
+        ),
     ];
     let mut events = actions
         .iter()
@@ -131,7 +143,7 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
     let mocked = responses::mount_sse_sequence(&server, events).await;
     test.submit_turn_with_permission_profile("Rename my default profile, disable and re-enable it, select it and toggle automatic selection", PermissionProfile::read_only()).await?;
     let requests = mocked.requests();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 10);
     let renamed = tool_output(&requests[2], "rename");
     let disabled = tool_output(&requests[3], "disable");
     let enabled = tool_output(&requests[4], "enable");
@@ -142,6 +154,18 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
         json!({"alias":"primary","routed":"primary","disabledDefault":"beta","enabledDefault":"beta","defaultChanged":true,"automatic":!initial.auto_selection_enabled})
     );
     assert_eq!(enabled["account"]["isCurrentTurn"], true);
+    let credits_on = tool_output(&requests[7], "credits-on");
+    let credits_off = tool_output(&requests[9], "credits-off");
+    assert_eq!(
+        requests[8]
+            .function_call_output_text("credits-stale")
+            .unwrap(),
+        codex_login::AccountManagementError::GenerationConflict.to_string()
+    );
+    assert_eq!(credits_on["account"]["creditUsageEnabled"], true);
+    assert_eq!(credits_off["account"]["creditUsageEnabled"], false);
+    assert_eq!(credits_on["account"]["isCurrentTurn"], true);
+    assert_eq!(credits_off["routedAccount"], "primary");
     let final_state = codex_login::read_managed_accounts(&test.config.auth_config())?;
     assert_eq!(
         final_state
@@ -157,7 +181,7 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
             .unwrap()
             .account_id
     );
-    assert_eq!(final_state.generation, generation + 5);
+    assert_eq!(final_state.generation, generation + 7);
     let output = serde_json::to_string(&(renamed, disabled, enabled, selected, automatic))?;
     assert!(!output.contains(credential));
     assert!(!output.contains("email"));

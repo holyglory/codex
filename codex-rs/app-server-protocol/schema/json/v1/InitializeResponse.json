@@ -44,6 +44,11 @@
         "supportsAutoSelection": {
           "type": "boolean"
         },
+        "supportsCreditUsage": {
+          "default": false,
+          "description": "Whether profile updates accept the per-account automatic credit permission.",
+          "type": "boolean"
+        },
         "supportsManagedLogin": {
           "type": "boolean"
         },

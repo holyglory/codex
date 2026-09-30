@@ -52,7 +52,7 @@ pub(crate) struct AccountCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum AccountAction {
-    /// List account profiles with service limits and reset times.
+    /// List account profiles with service limits, remaining credits and reset times.
     List,
     /// Show the current default account profile.
     Current,
@@ -152,7 +152,7 @@ struct RenameArgs {
     clap::ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["priority", "note", "clear_note"])
+        .args(["priority", "credit_usage", "note", "clear_note"])
 ))]
 struct EditArgs {
     #[arg(value_name = "ACCOUNT")]
@@ -160,6 +160,10 @@ struct EditArgs {
 
     #[arg(long, value_name = "N")]
     priority: Option<u32>,
+
+    /// Permit automatic credit fallback after included usage at this priority is exhausted.
+    #[arg(long, value_enum)]
+    credit_usage: Option<CreditUsageMode>,
 
     #[arg(long, value_name = "TEXT", conflicts_with = "clear_note")]
     note: Option<String>,
@@ -170,6 +174,12 @@ struct EditArgs {
     /// Require this registry generation instead of retrying a concurrent update.
     #[arg(long, value_name = "GENERATION")]
     expected_generation: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CreditUsageMode {
+    Enabled,
+    Disabled,
 }
 
 #[derive(Debug, Args)]
@@ -444,16 +454,28 @@ fn edit(
         let id = resolve_account(registry, &args.account)?.id.clone();
         let mut planned = registry.clone();
         let account = account_mut(&mut planned, &id)?;
-        let before = (account.priority, account.note.clone());
+        let before = (
+            account.priority,
+            account.note.clone(),
+            account.credit_usage_enabled,
+        );
         if let Some(priority) = args.priority {
             account.priority = priority;
+        }
+        if let Some(mode) = args.credit_usage {
+            account.credit_usage_enabled = matches!(mode, CreditUsageMode::Enabled);
         }
         if let Some(note) = &args.note {
             account.note = Some(note.clone());
         } else if args.clear_note {
             account.note = None;
         }
-        let changed = before != (account.priority, account.note.clone());
+        let changed = before
+            != (
+                account.priority,
+                account.note.clone(),
+                account.credit_usage_enabled,
+            );
         Ok((planned, changed, id))
     })?;
     view::mutation(config, &registry, &id, "edit", changed, json)

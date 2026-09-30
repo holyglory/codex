@@ -4,8 +4,8 @@ use codex_account_registry::AccountMetadata;
 use codex_account_registry::AccountRegistry;
 
 use super::AccountLimitCache;
+use super::AutomaticCapacity;
 use super::DEFAULT_LIMIT_ID;
-use super::Eligibility;
 use super::SelectionRequest;
 use super::supports_automatic_selection;
 
@@ -17,22 +17,41 @@ pub(super) fn select_by_priority<'a>(
     request: &SelectionRequest<'_>,
 ) -> Option<&'a AccountMetadata> {
     let limit_id = request.relevant_limit_id.unwrap_or(DEFAULT_LIMIT_ID);
-    let mut current = None;
-    let (selected, reset) = registry
+    let candidates = registry
         .accounts
         .iter()
         .filter(|account| {
             account.enabled
                 && request.authenticated_accounts.contains(&account.id)
                 && supports_automatic_selection(account.auth_mode)
-                && cache.eligibility(
-                    &account.id,
+        })
+        .map(|account| {
+            (
+                account,
+                cache.automatic_capacity(
+                    account,
                     request.relevant_limit_id,
                     request.now,
                     request.max_limit_age_seconds,
-                ) == Eligibility::Eligible
+                ),
+            )
         })
-        .map(|account| {
+        .collect::<Vec<_>>();
+    let mut current = None;
+    let (selected, selected_included, reset) = candidates
+        .iter()
+        .filter(|(account, capacity)| match capacity {
+            AutomaticCapacity::Included => true,
+            AutomaticCapacity::Credits => !candidates.iter().any(|(peer, capacity)| {
+                peer.priority == account.priority
+                    && matches!(capacity, AutomaticCapacity::Unknown(_))
+            }),
+            AutomaticCapacity::Reached(_) | AutomaticCapacity::Unknown(_) => false,
+        })
+        .map(|(account, capacity)| {
+            let account = *account;
+            let included = *capacity == AutomaticCapacity::Included;
+
             let reset = cache
                 .entries
                 .get(&account.id)
@@ -69,20 +88,22 @@ pub(super) fn select_by_priority<'a>(
                         .min()
                 });
             if request.current_account_id == Some(&account.id) {
-                current = Some((account, reset));
+                current = Some((account, included, reset));
             }
-            (account, reset)
+            (account, included, reset)
         })
-        .max_by_key(|(account, reset)| {
+        .max_by_key(|(account, included, reset)| {
             (
                 account.priority,
+                *included,
                 *reset,
                 request.current_account_id == Some(&account.id),
                 Reverse(&account.id),
             )
         })?;
-    if let Some((current, Some(current_reset))) = current
+    if let Some((current, current_included, Some(current_reset))) = current
         && current.priority == selected.priority
+        && current_included == selected_included
         && let Some(reset) = reset
         && reset.saturating_sub(current_reset) < MIN_RESET_ADVANTAGE_SECONDS
     {

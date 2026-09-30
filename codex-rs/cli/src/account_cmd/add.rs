@@ -231,6 +231,7 @@ fn verified_pending_account(
         plan_type: identity.plan_type,
         enabled: true,
         priority: DEFAULT_ACCOUNT_PRIORITY,
+        credit_usage_enabled: false,
         created_at: pending.started_at(),
         last_used_at: None,
         note: None,

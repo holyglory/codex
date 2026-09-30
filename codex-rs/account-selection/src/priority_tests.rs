@@ -188,3 +188,174 @@ fn later_resets_do_not_override_priority_eligibility_or_pins() {
         );
     }
 }
+
+#[test]
+fn credit_fallback_returns_to_included_usage_and_never_overrides_service_denials() {
+    let mut credit = account("credit", /*priority*/ 2000);
+    credit.credit_usage_enabled = true;
+    let peer = account("peer", /*priority*/ 2000);
+    let lower = account("lower", /*priority*/ 1000);
+    let mut registry = AccountRegistry::default();
+    registry.auto_selection.enabled = true;
+    registry.accounts = vec![credit.clone(), peer.clone(), lower.clone()];
+    let authenticated = registry
+        .accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<HashSet<_>>();
+    let mut cache = AccountLimitCache::default();
+    let mut credit_limits = snapshot("codex", /*used_percent*/ 100.0);
+    credit_limits.credits = Some(CreditsSnapshot {
+        has_credits: true,
+        unlimited: false,
+        balance: Some("9.99".to_string()),
+    });
+    cache
+        .update(
+            credit.id.clone(),
+            /*observed_at*/ 1000,
+            vec![credit_limits.clone()],
+        )
+        .unwrap();
+    cache
+        .update(
+            lower.id.clone(),
+            /*observed_at*/ 1000,
+            vec![snapshot("codex", /*used_percent*/ 1.0)],
+        )
+        .unwrap();
+    // Unknown peers must not authorize spending, even with a fresh credit balance.
+    assert_eq!(
+        select_account(
+            &registry,
+            &cache,
+            request(Some(&credit.id), None, &authenticated)
+        )
+        .unwrap()
+        .account_id,
+        lower.id
+    );
+    for (observed, used, expected) in [(1001, 100.0, &credit.id), (1002, 10.0, &peer.id)] {
+        cache
+            .update(peer.id.clone(), observed, vec![snapshot("codex", used)])
+            .unwrap();
+        assert_eq!(
+            select_account(
+                &registry,
+                &cache,
+                request(Some(&credit.id), None, &authenticated)
+            )
+            .unwrap()
+            .account_id,
+            *expected
+        );
+    }
+    cache
+        .update(
+            peer.id,
+            /*observed_at*/ 1003,
+            vec![snapshot("codex", /*used_percent*/ 100.0)],
+        )
+        .unwrap();
+    for reached in [
+        RateLimitReachedType::RateLimitReached,
+        RateLimitReachedType::WorkspaceOwnerCreditsDepleted,
+        RateLimitReachedType::WorkspaceMemberCreditsDepleted,
+        RateLimitReachedType::WorkspaceOwnerUsageLimitReached,
+        RateLimitReachedType::WorkspaceMemberUsageLimitReached,
+    ] {
+        let mut denied = credit_limits.clone();
+        denied.rate_limit_reached_type = Some(reached);
+        cache.remove(&credit.id);
+        cache
+            .update(credit.id.clone(), /*observed_at*/ 1000, vec![denied])
+            .unwrap();
+        assert_eq!(
+            select_account(
+                &registry,
+                &cache,
+                request(Some(&credit.id), None, &authenticated)
+            )
+            .unwrap()
+            .account_id,
+            lower.id
+        );
+    }
+    credit_limits.individual_limit = Some(SpendControlLimitSnapshot {
+        limit: "10".to_string(),
+        used: "10".to_string(),
+        remaining_percent: 0,
+        resets_at: 2000,
+    });
+    cache.remove(&credit.id);
+    cache
+        .update(
+            credit.id.clone(),
+            /*observed_at*/ 1000,
+            vec![credit_limits],
+        )
+        .unwrap();
+    assert_eq!(
+        select_account(
+            &registry,
+            &cache,
+            request(Some(&credit.id), None, &authenticated)
+        )
+        .unwrap()
+        .account_id,
+        lower.id
+    );
+}
+
+#[test]
+fn automatic_credit_capacity_requires_fresh_permission_and_available_credits() {
+    let mut profile = account("credits", /*priority*/ 1000);
+    for (enabled, has_credits, unlimited, observed_at, expected) in [
+        (
+            false,
+            true,
+            false,
+            1000,
+            AutomaticCapacity::Reached(ReachedReason::RateLimit),
+        ),
+        (true, true, false, 1000, AutomaticCapacity::Credits),
+        (true, false, true, 1000, AutomaticCapacity::Credits),
+        (
+            true,
+            false,
+            false,
+            1000,
+            AutomaticCapacity::Reached(ReachedReason::RateLimit),
+        ),
+        (
+            true,
+            true,
+            false,
+            700,
+            AutomaticCapacity::Unknown(UnknownReason::Stale),
+        ),
+    ] {
+        profile.credit_usage_enabled = enabled;
+        let mut limits = snapshot("codex", /*used_percent*/ 10.0);
+        limits.secondary = Some(RateLimitWindow {
+            used_percent: 100.0,
+            window_minutes: Some(10080),
+            resets_at: Some(2000),
+        });
+        limits.credits = Some(CreditsSnapshot {
+            has_credits,
+            unlimited,
+            balance: None,
+        });
+        let mut cache = AccountLimitCache::default();
+        cache
+            .update(profile.id.clone(), observed_at, vec![limits])
+            .unwrap();
+        assert_eq!(
+            cache.automatic_capacity(
+                &profile, None, /*now*/ 1100, /*max_age_seconds*/ 300
+            ),
+            expected
+        );
+    }
+}

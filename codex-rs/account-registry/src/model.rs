@@ -214,6 +214,9 @@ pub struct AccountMetadata {
     pub plan_type: Option<PlanType>,
     pub enabled: bool,
     pub priority: u32,
+    /// Permit automatic selection to spend credits after this priority's included usage.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub credit_usage_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
@@ -231,6 +234,7 @@ impl AccountMetadata {
             plan_type: None,
             enabled: true,
             priority: DEFAULT_ACCOUNT_PRIORITY,
+            credit_usage_enabled: false,
             created_at,
             last_used_at: None,
             note: None,

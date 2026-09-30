@@ -17,6 +17,9 @@ pub struct MultiAccountCapability {
     pub version: u32,
     pub supports_managed_login: bool,
     pub supports_auto_selection: bool,
+    /// Whether profile updates accept the per-account automatic credit permission.
+    #[serde(default)]
+    pub supports_credit_usage: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -33,6 +36,9 @@ pub struct AccountProfile {
     /// Credential values are never returned.
     pub authenticated: bool,
     pub priority: u32,
+    /// Permission for automatic credit fallback; manual sessions and pins are unaffected.
+    #[serde(default)]
+    pub credit_usage_enabled: bool,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     pub note: Option<String>,
@@ -120,6 +126,8 @@ pub struct AccountProfileUpdateParams {
     pub enabled: Option<bool>,
     #[ts(optional = nullable)]
     pub priority: Option<u32>,
+    #[ts(optional = nullable)]
+    pub credit_usage_enabled: Option<bool>,
     #[ts(optional = nullable)]
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

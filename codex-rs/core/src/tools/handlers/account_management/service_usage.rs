@@ -37,6 +37,7 @@ pub(super) struct ServiceUsageOutput {
     pub(super) next_reset_at_utc: Option<String>,
     pub(super) next_reset_scope: Option<&'static str>,
     pub(super) buckets: Vec<ServiceUsageBucket>,
+    pub(super) credits: Option<codex_protocol::protocol::CreditsSnapshot>,
 }
 
 #[derive(Clone, Serialize)]
@@ -121,6 +122,18 @@ async fn refresh_service_usage(
         let _ = router.record_rate_limits(account_id, observed_at, snapshots.clone());
     }
     ServiceUsageOutput {
+        credits: snapshots
+            .iter()
+            .find(|snapshot| snapshot.limit_id.as_deref() == Some("codex"))
+            .and_then(|snapshot| snapshot.credits.clone())
+            .map(|mut credits| {
+                credits.balance = credits.balance.filter(|value| {
+                    !value.trim().is_empty()
+                        && value.len() <= 128
+                        && !value.chars().any(char::is_control)
+                });
+                credits
+            }),
         state: "observed",
         reason: None,
         observed_at: Some(observed_at),
@@ -195,6 +208,7 @@ fn invalid_window(window: &RateLimitWindow) -> bool {
 
 fn unavailable_usage(reason: &'static str) -> ServiceUsageOutput {
     ServiceUsageOutput {
+        credits: None,
         state: "unavailable",
         reason: Some(reason),
         observed_at: None,
@@ -220,6 +234,11 @@ fn reached_type_label(reached_type: RateLimitReachedType) -> &'static str {
 #[cfg(test)]
 pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
     ServiceUsageOutput {
+        credits: Some(codex_protocol::protocol::CreditsSnapshot {
+            has_credits: true,
+            unlimited: true,
+            balance: Some("9".repeat(128)),
+        }),
         state: "observed",
         reason: None,
         observed_at: Some(i64::MAX),
