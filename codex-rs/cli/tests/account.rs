@@ -147,6 +147,8 @@ fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, S
         "ALIAS",
         "PRIORITY",
         "NOTE",
+        "CREDITS",
+        "CREDIT USE",
         "BANKED RESETS",
         "LIMITS",
         "RESET IN",
@@ -259,7 +261,7 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
             .collect::<Vec<_>>(),
         ["1", "4294967295"]
     );
-    assert!(rows.iter().all(|row| row.len() == 5
+    assert!(rows.iter().all(|row| row.len() == 7
         && row["BANKED RESETS"] == "unknown"
         && row["LIMITS"] == "unknown (unsupportedAuthentication)"
         && row["RESET IN"] == "unknown"));
@@ -1439,3 +1441,6 @@ fn open_shared_lock(path: &Path) -> Result<File> {
 
 #[path = "account/reset_tests.rs"]
 mod reset_tests;
+
+#[path = "account/credits_tests.rs"]
+mod credits;

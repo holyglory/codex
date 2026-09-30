@@ -34,6 +34,7 @@ fn account(id: AccountId, alias: &str, priority: u32) -> AccountMetadata {
         plan_type: None,
         enabled: true,
         priority,
+        credit_usage_enabled: false,
         created_at: timestamp(),
         last_used_at: None,
         note: None,
@@ -702,5 +703,28 @@ fn migration_journal_deserialization_rejects_version_and_timestamp_corruption() 
             .expect_err("reversed timestamps should fail")
             .to_string()
             .contains("precedes its start time")
+    );
+}
+
+#[test]
+fn credit_permission_survives_storage_and_old_registries_default_off() {
+    let home = tempdir().expect("home");
+    let store = RegistryStore::new(home.path());
+    let mut registry = registry_with(account(id(/*value*/ 1), "credits", /*priority*/ 1000));
+    let old = serde_json::to_value(&registry).expect("serialize default");
+    assert!(old["accounts"][0].get("creditUsageEnabled").is_none());
+    assert_eq!(
+        serde_json::from_value::<AccountRegistry>(old).expect("old registry"),
+        registry
+    );
+    registry.accounts[0].credit_usage_enabled = true;
+    store.create(&registry).expect("persist permission");
+    assert_eq!(
+        RegistryStore::new(home.path()).read().expect("reopen"),
+        registry
+    );
+    assert_eq!(
+        serde_json::to_value(&registry).unwrap()["accounts"][0]["creditUsageEnabled"],
+        true
     );
 }

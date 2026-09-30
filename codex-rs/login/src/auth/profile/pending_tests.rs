@@ -32,6 +32,7 @@ fn committed_account(
         plan_type: identity.plan_type,
         enabled: true,
         priority: 0,
+        credit_usage_enabled: false,
         created_at: pending.started_at(),
         last_used_at: None,
         note: None,

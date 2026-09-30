@@ -2754,7 +2754,12 @@ its cursor preserves that order. Higher priority numbers are drained first by au
 while smaller numbers are preserved until later. `accountProfile` records include only a boolean
 `authenticated` credential-presence indicator, never credential values. New profiles start at
 priority `1000`, and enhanced clients can change a profile priority through
-`accountProfile/update`. `accountAutoSelection/read` and `accountAutoSelection/write` report
+`accountProfile/update`. Servers advertising `multiAccount.supportsCreditUsage`
+accept optional `creditUsageEnabled` on profile updates and return the saved
+permission in profile responses. Omission or null leaves it unchanged; it defaults
+off. It permits automatic credit fallback after same-priority included allowance
+is exhausted, before lower priorities, without changing manual sessions or pins.
+`accountAutoSelection/read` and `accountAutoSelection/write` report
 `priorityOrder: "higherFirst"` so clients do not have to infer the numeric direction.
 
 The customized server implements the `localUsage*` family against the private

@@ -13,7 +13,7 @@ pub(super) fn account_management_spec() -> ToolSpec {
                     json!("list"),
                     json!("set_priority"),
                     json!("set_all_priorities"),
-                    json!("rename"), json!("enable"), json!("disable"), json!("set_default"), json!("set_auto_selection"),
+                    json!("rename"), json!("enable"), json!("disable"), json!("set_default"), json!("set_auto_selection"), json!("set_credit_usage"),
                 ],
                 Some("Inspect accounts and limits, or manage existing profile metadata and routing.".to_string()),
             ),
@@ -34,14 +34,14 @@ pub(super) fn account_management_spec() -> ToolSpec {
         (
             "expected_generation".to_string(),
             JsonSchema::integer(Some(
-                "Registry generation from list; required for rename, enable, disable, set_default and set_auto_selection.".to_string(),
+                "Registry generation from list; required for rename, enable, disable, set_default, set_auto_selection and set_credit_usage.".to_string(),
             )),
         ),
         (
             "new_alias".to_string(), JsonSchema::string(Some("New profile alias for rename.".to_string())),
         ),
         (
-            "mode".to_string(), JsonSchema::string_enum(vec![json!("enabled"), json!("disabled")], Some("Automatic-selection state for set_auto_selection.".to_string())),
+            "mode".to_string(), JsonSchema::string_enum(vec![json!("enabled"), json!("disabled")], Some("Permission state for set_auto_selection or per-account set_credit_usage.".to_string())),
         ),
         (
             "offset".to_string(),
@@ -63,7 +63,7 @@ pub(super) fn account_management_spec() -> ToolSpec {
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: "account_management".to_string(),
-        description: "Manage existing local account profiles and inspect current service limits. Use list before mutations and supply its expected_generation. Rename, enable/disable, choose the default profile, configure automatic selection, or change priorities. Changes preserve the current turn's credential lease and apply to subsequent routing. With refresh_service_usage, list returns live limit windows, Unix reset timestamps and the next main Codex reset in UTC with its window scope. Exhausted windows take priority over used or unused windows; auxiliary model quotas never determine that reset. Paginate to inspect every account. This tool never returns credentials, email, service/workspace identifiers or notes, and does not add profiles, perform login or remove profiles. Background account probes remain limited to managed ChatGPT profiles."
+        description: "Manage existing local account profiles and inspect current service limits. Use list before mutations and supply its expected_generation. Rename, enable/disable, choose the default profile, configure automatic selection, permit per-account credit fallback, or change priorities. Changes preserve the current turn's credential lease and apply to subsequent routing. With refresh_service_usage, list returns live limit windows, Unix reset timestamps and the next main Codex reset in UTC with its window scope. Exhausted windows take priority over used or unused windows; auxiliary model quotas never determine that reset. Paginate to inspect every account. This tool never returns credentials, email, service/workspace identifiers or notes, and does not add profiles, perform login or remove profiles. Background account probes remain limited to managed ChatGPT profiles."
             .to_string(),
         strict: false,
         defer_loading: None,

@@ -174,6 +174,27 @@ Confirmed resets and explicit no-op outcomes return zero. No credit, unsupported
 authentication, request failures and uncertain outcomes return nonzero. A refresh
 failure is reported separately and does not undo a confirmed reset.
 
+### Permit credit fallback per account
+
+`codex account list` shows remaining spendable credits and whether automatic credit
+use is enabled. Banked resets are separate and are never redeemed automatically.
+
+```sh
+codex account edit work --credit-usage enabled
+codex account edit work --credit-usage disabled
+```
+
+Credit use defaults to disabled. With automatic selection enabled, Codex first uses
+included allowance within the highest priority tier, then permitted credits in that
+tier, then lower priorities. Unknown peer allowance blocks that tier's credit
+fallback; a failed check is not proof of exhaustion. Available included allowance
+takes precedence again after a reset. Service spending restrictions still apply.
+
+This is a routing permission, not a backend spending cap: running turns keep their
+account lease, and explicit `--account` pins and manual mode are unchanged.
+Older binaries cannot read a registry while an enabled credit permission is saved;
+disable credit use with this version before returning to an older binary.
+
 ### Inspect and maintain accounts
 
 | Command                                         | Purpose                                                           |
@@ -193,9 +214,9 @@ These are independent examples: after renaming an account, use its new alias. Re
 
 Running Codex agents have the native `account_management` tool. It supports
 `list`, `set_priority`, `set_all_priorities`, `rename`, `enable`, `disable`,
-`set_default` and `set_auto_selection`. Read `list` first and supply its
+`set_default`, `set_auto_selection` and `set_credit_usage`. Read `list` first and supply its
 `generation` as `expected_generation` when changing profiles. Automatic selection
-uses `mode: "enabled"` or `mode: "disabled"`; rename uses `new_alias`.
+uses `mode: "enabled"` or `mode: "disabled"`; `set_credit_usage` uses the same modes plus an account reference. Rename uses `new_alias`.
 
 For live limits, call `list` with `refresh_service_usage: true` and follow
 `nextOffset` to inspect every account. Each `serviceUsage` includes service reset

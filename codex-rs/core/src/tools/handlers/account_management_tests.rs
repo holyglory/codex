@@ -22,6 +22,7 @@ fn account(alias: &str, priority: u32) -> ManagedAccountSummary {
         enabled: true,
         authenticated: true,
         priority,
+        credit_usage_enabled: false,
         is_default: alias == "alpha",
     }
 }
@@ -56,6 +57,7 @@ fn account_output_is_bounded_and_omits_internal_identity() {
                 "enabled": true,
                 "authenticated": true,
                 "priority": 1000,
+                "creditUsageEnabled": false,
                 "isDefault": true,
                 "isCurrentTurn": true
             }],

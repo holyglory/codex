@@ -2,6 +2,6 @@
 source: cli/tests/account.rs
 expression: human
 ---
-ALIAS                     PRIORITY    BANKED RESETS  LIMITS                               RESET IN
-*alpha                    1           unknown        unknown (unsupportedAuthentication)  unknown
- axel-marchenko-tt-eu-pp  4294967295  unknown        unknown (unsupportedAuthentication)  unknown
+ALIAS                     PRIORITY    CREDITS  CREDIT USE  BANKED RESETS  LIMITS                               RESET IN
+*alpha                    1           unknown  disabled    unknown        unknown (unsupportedAuthentication)  unknown
+ axel-marchenko-tt-eu-pp  4294967295  unknown  disabled    unknown        unknown (unsupportedAuthentication)  unknown
