@@ -17,12 +17,9 @@ pub(crate) async fn snapshot(
         .name("daemon-snapshot".into())
         .spawn(move || {
             let result = daemon_recovery::write_snapshot(&path, &saved);
-            if result.is_err()
-                && let Err(err) = std::fs::remove_file(&path)
-                && err.kind() != io::ErrorKind::NotFound
-            {
-                tracing::warn!("failed to clear stale daemon recovery file: {err}");
-            }
+            // Atomic replacement preserves an earlier authoritative generation
+            // when a rewrite fails. In particular, failed Stop persistence must
+            // not erase recovery ownership for unrelated paused turns.
             let _ = result_tx.send(result);
         })?;
     result_rx.await.map_err(io::Error::other)?

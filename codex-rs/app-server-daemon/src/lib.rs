@@ -439,6 +439,7 @@ impl Daemon {
                 self.wait_until_ready().await?,
             )
         };
+        handover::recovery::finish_orphaned(&managed).await?;
         if backend.is_some()
             && let Err(err) = managed.ensure_managed_updater(&settings).await
         {

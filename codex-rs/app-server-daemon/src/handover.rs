@@ -126,6 +126,7 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
         );
         return Ok(record);
     }
+    recovery::finish_orphaned(daemon).await?;
     let MaintenanceResponse::Status {
         executable: previous,
         accepting: true,

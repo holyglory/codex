@@ -36,3 +36,42 @@ pub(super) fn acknowledge(daemon: &Daemon, record: &HandoverStatus) -> Result<()
     std::fs::remove_file(path)?;
     Ok(())
 }
+
+/// Reconcile an orphan before a new request can overwrite its owner record.
+/// The caller holds the ordinary daemon lifecycle lock throughout verification.
+pub(crate) async fn finish_orphaned(daemon: &Daemon) -> Result<()> {
+    let snapshot =
+        codex_app_server_transport::daemon_recovery::read_snapshot(&daemon.recovery_file()?)?;
+    let Some(checkpoint) = snapshot.maintenance else {
+        return Ok(());
+    };
+    let mut record = read(daemon)?;
+    ensure!(
+        checkpoint.operation_id == record.operation_id,
+        "checkpoint has no matching lifecycle owner"
+    );
+    let MaintenanceResponse::Status { executable, .. } = status_at(&daemon.socket_path).await?
+    else {
+        anyhow::bail!("cannot inspect recovered server");
+    };
+    let serving = executable_identity(&executable).await?;
+    let target = executable_identity(&record.target).await.ok();
+    let previous = executable_identity(&record.previous).await?;
+    ensure!(
+        target.as_ref() == Some(&serving) || serving == previous,
+        "unexpected release owns the recovery endpoint"
+    );
+    ensure!(
+        compatibility(&executable).await? == record.compatibility,
+        "recovered release no longer matches the checkpoint"
+    );
+    wait_ready(daemon, &executable).await?;
+    acknowledge(daemon, &record)?;
+    record.phase = if target.as_ref() == Some(&serving) {
+        HandoverPhase::Succeeded
+    } else {
+        HandoverPhase::RolledBack
+    };
+    record.reason = Some("Verified recovery after the activation owner exited".into());
+    save(daemon, &record)
+}

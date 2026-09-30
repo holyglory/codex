@@ -135,6 +135,20 @@ impl TurnAdmission {
 
     // Admit and close take the same short lock. The permit keeps shutdown from
     // finishing while an earlier request is still preparing or submitting work.
+    pub(crate) fn admit_interrupt(&self) -> Result<TurnPermit, JSONRPCErrorError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.restoring {
+            state.active += 1;
+            self.active_tx.send_replace(state.active);
+            return Ok(TurnPermit(self.clone()));
+        }
+        drop(state);
+        self.admit()
+    }
+
     pub(crate) fn admit(&self) -> Result<TurnPermit, JSONRPCErrorError> {
         let restoring = self
             .state

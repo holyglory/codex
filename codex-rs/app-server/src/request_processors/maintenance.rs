@@ -47,6 +47,10 @@ impl ThreadRequestProcessor {
                     .get_thread(id)
                     .await
                     .map_err(|_| "threadChanged")?;
+                thread
+                    .maintenance_barrier()
+                    .await
+                    .map_err(|_| "threadUnavailable")?;
                 let config = thread.config_snapshot().await;
                 if config.ephemeral {
                     if thread.maintenance_has_background_work().await {
@@ -120,6 +124,7 @@ impl ThreadRequestProcessor {
         let mut parents = BTreeMap::new();
         let mut mailboxes = BTreeMap::new();
         let mut turn_contexts = BTreeMap::new();
+        let mut stopped = BTreeMap::new();
         for (id, (thread, pause)) in &paused.threads {
             let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
             let current = self
@@ -141,6 +146,9 @@ impl ThreadRequestProcessor {
                 return Err("nonpersistentWork");
             }
             let interrupted = thread.interrupted_turn().await;
+            if let Some(stopped_turn) = thread.maintenance_stopped_turn().await {
+                stopped.insert(id.clone(), stopped_turn);
+            }
             if !thread.maintenance_is_idle().await
                 && (pause.status() != MaintenancePauseStatus::Paused || interrupted.is_none())
             {
@@ -199,6 +207,7 @@ impl ThreadRequestProcessor {
             parents,
             mailboxes,
             turn_contexts,
+            stopped,
         });
         Ok(saved)
     }
@@ -343,6 +352,16 @@ impl ThreadRequestProcessor {
                 .restore_maintenance_mailbox(mail)
                 .await
                 .map_err(|_| "mailboxRestoreFailed")?;
+        }
+        for (id, turn_id) in maintenance.stopped {
+            let id = ThreadId::from_string(&id).map_err(|_| "invalidStoppedThread")?;
+            self.thread_manager
+                .get_thread(id)
+                .await
+                .map_err(|_| "stoppedThreadUnavailable")?
+                .record_maintenance_stop(turn_id)
+                .await
+                .map_err(|_| "stopPersistenceFailed")?;
         }
         // The caller reopens admission only after the complete graph is restored.
         Ok(restore_order

@@ -116,7 +116,10 @@ impl crate::CodexThread {
                 std::fs::create_dir_all(parent)?;
             }
             crate::path_utils::write_atomically(&durable, &saved)?;
-            std::fs::File::open(&durable)?.sync_all()?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&durable)?
+                .sync_all()?;
             #[cfg(unix)]
             if let Some(parent) = durable.parent() {
                 std::fs::File::open(parent)?.sync_all()?;

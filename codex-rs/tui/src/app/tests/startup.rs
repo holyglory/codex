@@ -1745,6 +1745,7 @@ async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Res
                     "thread/read" => Some(serde_json::json!({"result":{"thread":thread}})),
                     "thread/list" | "thread/loaded/list" => Some(serde_json::json!({"result":{"data":[],"nextCursor":null}})),
                     "thread/goal/get" => Some(serde_json::json!({"result":{"goal":null}})),
+                    "skills/list" => Some(serde_json::json!({"result":{"data":[]}})),
                     "turn/start" => {
                         assert_eq!(request.params.as_ref().unwrap()["input"][0]["text"], "preserve my request");
                         Some(serde_json::json!({"result":{"turn":{"id":"accepted","items":[],"status":"inProgress"}}}))

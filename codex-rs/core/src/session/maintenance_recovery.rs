@@ -1,6 +1,5 @@
 //! Restores the active turn's choices without changing the thread's future defaults.
 use super::session::Session;
-use super::step_settings::StepSettingsUpdate;
 use super::turn_context::TurnContext;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -29,6 +28,13 @@ pub(crate) struct PendingMaintenanceContext(
 );
 
 impl crate::CodexThread {
+    pub async fn maintenance_stopped_turn(&self) -> Option<String> {
+        if !self.session.is_interrupted() {
+            return None;
+        }
+        self.session.state.lock().await.last_started_turn_id.clone()
+    }
+
     pub async fn maintenance_turn_context(&self) -> Option<MaintenanceTurnContext> {
         let active = self.session.active_turn.lock().await;
         let task = active.as_ref()?.task.as_ref()?;
@@ -85,25 +91,33 @@ impl Session {
         let Some(saved) = saved else {
             return Ok(());
         };
-        let update = StepSettingsUpdate {
-            collaboration_mode: Some(saved.collaboration_mode),
-            reasoning_summary: saved.summary,
-            service_tier: Some(saved.service_tier),
-            personality: saved.personality,
-            approval_policy: Some(saved.approval_policy),
-            approvals_reviewer: Some(saved.approvals_reviewer),
-            ..Default::default()
-        };
-        let environments = self.services.turn_environments.selections();
-        let mut settings = self
-            .prepare_step_settings_activation(
-                turn,
-                &turn.next_step_settings.load(),
-                &update,
-                &environments,
-            )
+        let current = turn.next_step_settings.load_full();
+        let mut selected = current.selected().clone();
+        selected.collaboration_mode = saved.collaboration_mode;
+        selected.reasoning_summary = saved.summary;
+        selected.service_tier = saved.service_tier;
+        selected.personality = saved.personality;
+        selected
+            .approval_policy
+            .set(saved.approval_policy)
+            .map_err(|error| codex_protocol::error::CodexErr::InvalidRequest(error.to_string()))?;
+        selected.approvals_reviewer = saved.approvals_reviewer;
+        let overrides = self
+            .state
+            .lock()
             .await
-            .map_err(codex_protocol::error::CodexErr::InvalidRequest)?;
+            .session_configuration
+            .model_info_overrides
+            .clone();
+        let model_info = selected
+            .resolve_model_info(self.services.models_manager.as_ref(), &overrides)
+            .await;
+        let mut settings = super::step_settings::ResolvedStepSettings::new(
+            Arc::new(selected),
+            Arc::new(model_info),
+            self.features.enabled(codex_features::Feature::FastMode),
+        );
+        let environments = self.services.turn_environments.selections();
         let state = self.state.lock().await;
         self.validate_active_step_settings(
             turn,

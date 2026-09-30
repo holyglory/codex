@@ -28,6 +28,8 @@ pub struct MaintenanceSnapshot {
     #[serde(default)]
     pub mailboxes: BTreeMap<String, Vec<codex_core::MaintenanceMail>>,
     pub turn_contexts: BTreeMap<String, codex_core::MaintenanceTurnContext>,
+    #[serde(default)]
+    pub stopped: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -83,6 +85,10 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
             || snapshot.interrupted.keys().any(|id| !loaded.contains(id))
             || maintenance.mailboxes.keys().any(|id| !loaded.contains(id))
             || maintenance
+                .stopped
+                .keys()
+                .any(|id| !loaded.contains(id) || snapshot.interrupted.contains_key(id))
+            || maintenance
                 .turn_contexts
                 .keys()
                 .cloned()
@@ -136,7 +142,10 @@ pub fn write_snapshot(path: &Path, snapshot: &RecoverySnapshot) -> io::Result<()
         &serde_json::to_string(&saved).map_err(io::Error::other)?,
     )?;
     if snapshot.maintenance.is_some() {
-        std::fs::File::open(path)?.sync_all()?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .sync_all()?;
         #[cfg(unix)]
         if let Some(parent) = path.parent() {
             std::fs::File::open(parent)?.sync_all()?;

@@ -599,6 +599,9 @@ pub enum Op {
         reply: oneshot::Sender<bool>,
     },
 
+    /// Acknowledge all previously accepted session operations before sealing maintenance.
+    MaintenanceBarrier { reply: oneshot::Sender<()> },
+
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,

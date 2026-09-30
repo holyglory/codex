@@ -1138,6 +1138,9 @@ impl MessageProcessor {
         );
 
         let (turn_admission, recheck_turn_admission) = match &codex_request {
+            ClientRequest::TurnInterrupt { .. } => {
+                (Some(self.turn_admission.admit_interrupt()?), false)
+            }
             ClientRequest::ThreadStart { .. }
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }

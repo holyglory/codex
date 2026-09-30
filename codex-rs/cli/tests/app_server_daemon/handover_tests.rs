@@ -221,6 +221,12 @@ exec {executable} "$@"
         "committed checkpoint must survive the owner"
     );
     daemon.lifecycle("start")?;
+    assert!(
+        !snapshot.exists(),
+        "fresh-session-verified recovery must retire the old generation"
+    );
+    let recovered: Value = serde_json::from_slice(&std::fs::read(state.join("handover.json"))?)?;
+    assert_eq!(recovered["phase"], "rolledBack");
     let mut proxy = DaemonProxy::connect(&daemon)?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

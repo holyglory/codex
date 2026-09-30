@@ -159,6 +159,17 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     use codex_app_server_transport::maintenance::MaintenanceResponse;
     use core_test_support::responses;
     let home = TempDir::new()?;
+    let hook_entered = home.path().join("resume-hook-entered");
+    let release_hook = home.path().join("release-resume-hook");
+    if scenario == AgentTreeScenario::StopDuringRestore {
+        let command = format!(
+            "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done",
+            hook_entered.display(),
+            release_hook.display()
+        );
+        std::fs::write(home.path().join("hooks.json"), json!({"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":command}]}]}}).to_string())?;
+    }
+
     let (release_a, gate_a) = oneshot::channel();
     let (release_b, gate_b) = oneshot::channel();
     let (release_c, gate_c) = oneshot::channel();
@@ -178,7 +189,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     let (namespace, spawn_args) = if legacy_child {
         (
             "multi_agent_v1",
-            json!({"message":"Do the child work","model":"gpt-5.1-codex","reasoning_effort":"low","fork_context":false}),
+            json!({"message":"Do the child work","model":"gpt-6-luna","reasoning_effort":"low","fork_context":false}),
         )
     } else {
         (
@@ -212,6 +223,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         "sandbox_mode = \"read-only\"",
         "sandbox_mode = \"danger-full-access\"",
     );
+    config = config.replace("model = \"mock-model\"", "model = \"gpt-6-sol\"");
     config.push_str("\n[features]\nhooks = true\nstep_model_switching = true\nmulti_agent = true\ncode_mode = false\ncode_mode_only = false\n[features.multi_agent_v2]\nenabled = true\n");
     if legacy_child {
         config = config.replace(
@@ -230,7 +242,10 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         },
     )
     .await?;
-    let parent = start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    if scenario == AgentTreeScenario::StopDuringRestore {
+        super::background_tests::trust_fixture_hooks(&mut client, home.path()).await?;
+    }
+    let parent = start_thread(&mut client, /*id*/ 2, json!({"cwd":home.path()})).await?;
     start_turn(&mut client, /*id*/ 3, &parent.thread.id).await?;
     wait_for_requests(&mock, /*count*/ 3).await?;
     let stream = UnixStream::connect(&socket_path).await?;
@@ -267,7 +282,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         .context("parent turn")?
         .to_string();
     request(&mut client, /*id*/ 32, "turn/steer", json!({"threadId":parent.thread.id,"expectedTurnId":parent_turn,"input":[{"type":"text","text":"preserved steering during preparation"}]})).await?;
-    let settings = request(&mut client, /*id*/ 33, "turn/settings/update", json!({"threadId":parent.thread.id,"turnId":parent_turn,"model":"gpt-5.2","effort":"high","summary":"detailed"})).await?;
+    let settings = request(&mut client, /*id*/ 33, "turn/settings/update", json!({"threadId":parent.thread.id,"turnId":parent_turn,"model":"gpt-6-astra","effort":"high","summary":"detailed"})).await?;
     assert_eq!(settings["status"], "applied");
     assert_eq!(mock.requests().await.len(), 3);
     if scenario == AgentTreeScenario::OwnerDisconnect {
@@ -351,7 +366,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             .collaboration_mode
             .settings
             .model,
-        "gpt-5.2"
+        "gpt-6-astra"
     );
     if !stop_child && !legacy_child {
         assert_eq!(
@@ -371,16 +386,6 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             .count(),
         1
     );
-    let hook_entered = home.path().join("resume-hook-entered");
-    let release_hook = home.path().join("release-resume-hook");
-    if scenario == AgentTreeScenario::StopDuringRestore {
-        let command = format!(
-            "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done",
-            hook_entered.display(),
-            release_hook.display()
-        );
-        std::fs::write(home.path().join("hooks.json"), json!({"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":command}]}]}}).to_string())?;
-    }
     let mut successor = spawn_server(home.path(), &socket_path)?;
     if scenario == AgentTreeScenario::StopDuringRestore {
         let mut client = connect_default_daemon_client(&socket_path).await?;
@@ -390,6 +395,25 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             }
         })
         .await?;
+        use std::os::unix::fs::PermissionsExt;
+        let checkpoint_path = daemon_recovery_file_path(home.path());
+        let checkpoint_directory = checkpoint_path.parent().context("checkpoint parent")?;
+        let original_permissions = std::fs::metadata(checkpoint_directory)?.permissions();
+        let before_stop = std::fs::read(&checkpoint_path)?;
+        std::fs::set_permissions(checkpoint_directory, std::fs::Permissions::from_mode(0o555))?;
+        let rejected = request(
+            &mut client,
+            /*id*/ 40,
+            "turn/interrupt",
+            json!({"threadId":parent.thread.id,"turnId":parent_turn}),
+        )
+        .await;
+        std::fs::set_permissions(checkpoint_directory, original_permissions)?;
+        assert!(
+            rejected.is_err(),
+            "Stop must not claim persistence when its write fails"
+        );
+        assert_eq!(std::fs::read(&checkpoint_path)?, before_stop);
         request(
             &mut client,
             /*id*/ 41,
@@ -451,7 +475,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         if id == &child_id {
             assert_eq!(read["thread"]["parentThreadId"], parent.thread.id);
             if legacy_child {
-                assert_eq!(read["thread"]["model"], "gpt-5.1-codex");
+                assert_eq!(read["thread"]["model"], "gpt-6-luna");
                 assert_eq!(read["thread"]["reasoningEffort"], "low");
             }
         }
@@ -498,7 +522,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
                 .any(|item| item["call_id"] == "spawn-worker")
         })
         .context("parent continuation")?;
-    assert_eq!(parent_request["model"], "gpt-5.2");
+    assert_eq!(parent_request["model"], "gpt-6-astra");
     assert_eq!(parent_request["reasoning"]["effort"], "high");
     assert!(
         parent_request

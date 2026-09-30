@@ -82,6 +82,9 @@ impl MaintenanceResumption {
         snapshot.interrupted.remove(thread_id);
         if let Some(maintenance) = snapshot.maintenance.as_mut() {
             maintenance.turn_contexts.remove(thread_id);
+            maintenance
+                .stopped
+                .insert(thread_id.to_string(), entry.turn_id.clone());
         }
         crate::daemon_thread_recovery::snapshot(path.clone(), snapshot.clone()).await?;
         // The restored runtime will emit its ordinary aborted-turn event. The
