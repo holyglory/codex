@@ -50,7 +50,11 @@ impl Drop for MaintenanceAdmission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.maintenance = false;
-        state.sealed = false;
+        // A committed generation stays sealed until process exit. A failed
+        // preparation releases the seal and all ordinary admission immediately.
+        if !state.closed {
+            state.sealed = false;
+        }
         self.0.maintenance_tx.send_replace(false);
     }
 }
@@ -140,7 +144,9 @@ impl TurnAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.restoring {
+        // Ordinary graceful shutdown must continue accepting Stop. Only the
+        // final maintenance seal protects an immutable checkpoint from edits.
+        if !state.sealed || state.restoring {
             state.active += 1;
             self.active_tx.send_replace(state.active);
             return Ok(TurnPermit(self.clone()));
