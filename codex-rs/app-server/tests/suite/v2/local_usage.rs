@@ -146,6 +146,16 @@ async fn populated_summary_and_drilldowns_preserve_coverage() -> Result<()> {
     assert_eq!(summary.aggregate.model_requests, 1);
     assert_eq!(summary.aggregate.tool_calls, 2);
     assert_report_matches_structured(&summary.report, expected_all);
+    let mut legacy_wire = serde_json::to_value(&summary.report)?;
+    legacy_wire
+        .as_object_mut()
+        .expect("report object")
+        .remove("cost");
+    let mut legacy_report: LocalUsageReport = serde_json::from_value(legacy_wire)?;
+    assert_eq!(legacy_report.cost, None);
+    legacy_report.cost = summary.report.cost.clone();
+    assert_eq!(legacy_report, summary.report);
+
     assert!(
         summary
             .report

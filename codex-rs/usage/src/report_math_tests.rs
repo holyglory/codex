@@ -3,6 +3,8 @@ use crate::ActivitySpanEventKind;
 use crate::ActivitySpanId;
 use crate::NewActivitySpan;
 use crate::NewActivitySpanEvent;
+use crate::UsageStore;
+use crate::UsageSummaryScope;
 use crate::facts::*;
 use crate::types::*;
 use pretty_assertions::assert_eq;

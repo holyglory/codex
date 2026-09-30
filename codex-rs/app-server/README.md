@@ -2778,6 +2778,27 @@ markers remain in event counts but do not by themselves make current coverage in
 Explicit missing or uncertain facts remain visible. Cached input and reasoning output are
 subsets of provider totals; concurrent agent time and elapsed wall time must not be added.
 
+`report.cost` is an optional standard API-equivalent estimate in USD, not a bill or a
+subscription-credit calculation. Older servers may omit it. `status` is `complete`,
+`partial`, or `unavailable`; an unavailable estimate has null monetary fields. Component
+counts retain measured evidence, and `unknownObservations` identifies unpriced or incomplete
+receipts. Input, cached-input, cache-write, and output costs are expressed in integer USD
+micros and add to `estimatedUsdMicros`. Cached reads and writes replace ordinary input
+pricing; reasoning remains a subset of output. Rates are selected per provider receipt,
+including its short/long-context boundary, and `rateCardRefs` identify the dated standard
+rate snapshot. Unknown models and unpriced tool receipts stay explicit; a proven covered
+receipt is not priced twice. Current rates cover the GPT-6 and GPT-5.6 model names recorded
+in the source rate card. Regional surcharges, other service tiers, and subscription billing
+are not inferred from token counts.
+
+Summary reads use one SQLite snapshot and bounded result groups. Canonical raw facts remain
+append-only; private derived projections refresh in restartable pages while capture continues.
+A missing or rebuilding cache falls back to bounded raw-history aggregation. Time windows
+remain half-open, and partial boundary hours use raw observations. Queries exceeding the
+bounded summary result size return an error so the caller can narrow the scope or range;
+existing detail pagination and opaque cursors are unchanged. `generatedAt` remains the
+response observation time rather than a historical cache timestamp.
+
 List methods use opaque keyset
 cursors, accept limits from 1 through 100, and tool/activity/event lists accept an inclusive
 `fromAt` and exclusive `toAt` in Unix seconds. Repository aliases, repository merges, and
