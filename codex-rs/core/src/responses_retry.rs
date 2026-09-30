@@ -1,6 +1,7 @@
 //! Shared retry and transport fallback decisions for Responses requests.
 
 use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::client::ModelClientSession;
 use crate::session::session::Session;
@@ -80,6 +81,7 @@ pub(crate) async fn handle_response_stream_error(
         None if is_server_overloaded => Duration::ZERO,
         None => return Err(err),
     };
+    let retry_after = err.retry_after();
 
     if turn_context
         .config
@@ -174,9 +176,7 @@ pub(crate) async fn handle_response_stream_error(
         .thread_extension_data
         .insert(ExhaustedResponseRetry {
             turn_id: turn_context.sub_id.clone(),
-            retry_at: err
-                .server_retry_delay()
-                .and_then(|delay| tokio::time::Instant::now().checked_add(delay)),
+            retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
 }

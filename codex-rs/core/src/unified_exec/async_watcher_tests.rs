@@ -9,6 +9,7 @@ use super::utf8_boundary;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::NoopSpawnLifecycle;
 use crate::unified_exec::process::OutputBuffers;
 use crate::unified_exec::process::UnifiedExecProcess;
@@ -235,22 +236,26 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
 }
 
 #[tokio::test]
-// Intentionally stall only the presentation consumer while the producer runs.
-#[allow(clippy::await_holding_invalid_type)]
+// Leave output deltas unread while the process continues producing output.
 async fn streaming_output_preserves_summary_when_delta_consumer_lags() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
         stdout_tx,
         exit_tx,
-        transcript,
         rx_event,
+        context,
         ..
     } = streaming_output_harness().await?;
+    let transcript = process.transcript();
+    start_streaming_output(&process, &context);
     stdout_tx.send(b"HEAD\n".to_vec())?;
-    rx_event.recv().await?;
-    // Hold the presentation consumer behind the producer without delaying the
-    // process output reader. The bounded delta channel must not own history.
-    let transcript_guard = transcript.lock().await;
+    let first_event = rx_event.recv().await?;
+    assert!(matches!(
+        first_event.msg,
+        EventMsg::ExecCommandOutputDelta(_)
+    ));
+    // The presentation consumer stops reading here. The bounded delta stream
+    // must not own the retained completion history.
     let mut expected: HeadTailBuffer = HeadTailBuffer::default();
     expected.push_chunk(b"HEAD\n");
     let handles = process.output_handles();
@@ -267,10 +272,13 @@ async fn streaming_output_preserves_summary_when_delta_consumer_lags() -> anyhow
         stdout_tx.send(chunk)?;
         output_ready.await;
     }
-    drop(transcript_guard);
+    let output_drained = process.output_drained_notify();
+    let drained = output_drained.notified();
+    tokio::pin!(drained);
+    drained.as_mut().enable();
     drop(stdout_tx);
     exit_tx.send(0).expect("send exit");
-    process.output_drained_notify().notified().await;
+    drained.await;
     let actual = transcript.lock().await;
     assert_eq!(
         (actual.total_bytes(), actual.omitted_bytes()),

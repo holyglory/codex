@@ -257,6 +257,8 @@ pub(crate) mod helpers;
 #[path = "tests/history_projection.rs"]
 mod history_projection;
 mod history_replay;
+#[path = "tests/home_cleanup_tests.rs"]
+mod home_cleanup_tests;
 #[path = "tests/local_usage_advanced.rs"]
 mod local_usage_advanced;
 #[path = "tests/luna_reserve_usage_tests.rs"]

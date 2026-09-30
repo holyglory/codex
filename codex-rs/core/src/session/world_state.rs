@@ -33,7 +33,11 @@ use codex_prompts::render_model_instructions;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolName;
+
+const MAX_ENVIRONMENT_SUBAGENTS: usize = 8;
+const MAX_ENVIRONMENT_SUBAGENT_BYTES: usize = 1_024;
 
 impl Session {
     #[tracing::instrument(name = "world_state.build", level = "info", skip_all)]

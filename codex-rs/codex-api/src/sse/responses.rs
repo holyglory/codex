@@ -4,6 +4,7 @@ use crate::common::ResponseStream;
 use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
+use crate::error::parse_flex_unavailable;
 use crate::provider_usage::ProviderResponseStatus;
 use crate::provider_usage::ProviderSourceEventKey;
 use crate::provider_usage::ProviderUsage;
@@ -448,69 +449,16 @@ pub fn process_responses_event(
             }
         }
         "response.failed" => {
-            if let Some(resp_val) = event.response {
-                let mut response_error = ApiError::Stream("response.failed event received".into());
-                if let Some(error) = resp_val.get("error")
-                    && let Ok(error) = serde_json::from_value::<Error>(error.clone())
-                {
-                    tracing::warn!(target: "codex.network_diagnostics", event = "provider_stream_error",
-                        error_code = error.code.as_deref().and_then(crate::diagnostics::error_code),
-                        response_id = resp_val.get("id").and_then(serde_json::Value::as_str),
-                    );
-                    if is_context_window_error(&error) {
-                        response_error = ApiError::ContextWindowExceeded;
-                    } else if is_quota_exceeded_error(&error) {
-                        response_error = ApiError::QuotaExceeded;
-                    } else if is_usage_not_included(&error) {
-                        response_error = ApiError::UsageNotIncluded;
-                    } else if is_cyber_policy_error(&error) {
-                        let message = cyber_policy_message(error.message);
-                        response_error = ApiError::CyberPolicy { message };
-                    } else if error.code.as_deref() == Some("bio_policy") {
-                        let message = error
-                            .message
-                            .filter(|message| !message.trim().is_empty())
-                            .unwrap_or_else(|| {
-                                "This content was flagged for possible biological risk.".to_string()
-                            });
-                        response_error = ApiError::BioPolicy { message };
-                    } else if error.code.as_deref() == Some("misalignment_policy_violation") {
-                        let message = error
-                            .message
-                            .filter(|message| !message.trim().is_empty())
-                            .unwrap_or_else(|| {
-                                "This request was blocked due to a misalignment policy violation."
-                                    .to_string()
-                            });
-                        response_error = ApiError::MisalignmentPolicyViolation {
-                            message,
-                            misalignment: error.misalignment.and_then(|details| {
-                                serde_json::from_value::<MisalignmentErrorDetails>(details).ok()
-                            }),
-                        };
-                    } else if error.code.as_deref() == Some("invalid_prompt") {
-                        let message = error
-                            .message
-                            .unwrap_or_else(|| "Invalid request.".to_string());
-                        response_error = ApiError::InvalidPrompt { message };
-                    } else if is_server_overloaded_error(&error) {
-                        response_error = ApiError::ServerOverloaded;
-                    } else {
-                        let delay = try_parse_retry_after(&error);
-                        let message = error.message.unwrap_or_default();
-                        response_error = match error.code.as_deref() {
-                            Some("rate_limit_exceeded" | "slow_down") => {
-                                ApiError::RateLimitExceeded { message, delay }
-                            }
-                            _ => ApiError::Retryable { message, delay },
-                        };
-                    }
-                }
-                return Err(ResponsesEventError::Api(response_error));
+            if let Some(response) = event.response.as_ref()
+                && let Some(error) = response.get("error")
+            {
+                tracing::warn!(target: "codex.network_diagnostics", event = "provider_stream_error",
+                    error_code = error.get("code").and_then(serde_json::Value::as_str).and_then(crate::diagnostics::error_code),
+                    response_id = response.get("id").and_then(serde_json::Value::as_str),
+                );
             }
-
-            return Err(ResponsesEventError::Api(ApiError::Stream(
-                "response.failed event received".into(),
+            return Err(ResponsesEventError::Api(parse_failed_response(
+                event.response,
             )));
         }
         "response.completed" | "response.incomplete" => {
@@ -630,6 +578,7 @@ async fn process_sse_with_treatment(
     request_id: Option<String>,
 ) {
     let mut stream = stream.eventsource();
+    let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
 
     loop {
@@ -662,12 +611,13 @@ async fn process_sse_with_treatment(
                 return;
             }
             Ok(None) => {
-                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "closed_before_completion");
-                let _ = tx_event
-                    .send(Err(ApiError::Stream(
-                        "stream closed before response.completed".into(),
-                    )))
-                    .await;
+                if response_error.is_none() {
+                    tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "closed_before_completion");
+                }
+                let error = response_error.unwrap_or(ApiError::Stream(
+                    "stream closed before response.completed".into(),
+                ));
+                let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Err(_) => {
@@ -756,89 +706,15 @@ async fn process_sse_with_treatment(
             }
             Ok(None) => {}
             Err(error) => {
-                let _ = tx_event.send(Err(error.into_api_error())).await;
-                return;
+                let error = error.into_api_error();
+                if matches!(error, ApiError::FlexUnavailable) {
+                    let _ = tx_event.send(Err(error)).await;
+                    return;
+                }
+                response_error = Some(error);
             }
         };
     }
-}
-
-fn try_parse_retry_after(err: &Error) -> Option<Duration> {
-    if !matches!(
-        err.code.as_deref(),
-        Some("rate_limit_exceeded" | "slow_down")
-    ) {
-        return None;
-    }
-
-    let re = rate_limit_regex();
-    if let Some(message) = &err.message
-        && let Some(captures) = re.captures(message)
-    {
-        let seconds = captures.get(1);
-        let unit = captures.get(2);
-
-        if let (Some(value), Some(unit)) = (seconds, unit) {
-            let value = value.as_str().parse::<f64>().ok()?;
-            let unit = unit.as_str().to_ascii_lowercase();
-
-            if unit == "s" || unit.starts_with("second") {
-                return Some(Duration::from_secs_f64(value));
-            } else if unit == "ms" {
-                return Some(Duration::from_millis(value as u64));
-            }
-        }
-    }
-    None
-}
-
-fn is_context_window_error(error: &Error) -> bool {
-    error.code.as_deref() == Some("context_length_exceeded")
-}
-
-fn is_quota_exceeded_error(error: &Error) -> bool {
-    matches!(
-        error.code.as_deref(),
-        Some(
-            "insufficient_quota"
-                | "credit_balance_exhausted"
-                | "organization_spend_limit_exceeded"
-                | "project_spend_limit_exceeded"
-        )
-    )
-}
-
-fn is_usage_not_included(error: &Error) -> bool {
-    error.code.as_deref() == Some("usage_not_included")
-}
-
-fn is_cyber_policy_error(error: &Error) -> bool {
-    error.code.as_deref() == Some("cyber_policy")
-}
-
-fn is_server_overloaded_error(error: &Error) -> bool {
-    matches!(
-        error.code.as_deref(),
-        Some("server_is_overloaded" | "slow_down")
-    )
-}
-
-fn cyber_policy_fallback_message() -> String {
-    "This request has been flagged for possible cybersecurity risk.".to_string()
-}
-
-fn cyber_policy_message(message: Option<String>) -> String {
-    message
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or_else(cyber_policy_fallback_message)
-}
-
-fn rate_limit_regex() -> &'static regex_lite::Regex {
-    static RE: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
-    #[expect(clippy::unwrap_used)]
-    RE.get_or_init(|| {
-        regex_lite::Regex::new(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)").unwrap()
-    })
 }
 
 #[cfg(test)]
@@ -1237,7 +1113,7 @@ mod tests {
             let events = collect_events(&[sse.as_bytes()]).await;
             match (code, events.as_slice()) {
                 (
-                    "rate_limit_exceeded",
+                    "rate_limit_exceeded" | "slow_down",
                     [
                         Err(ApiError::RateLimitExceeded {
                             message: actual,
@@ -1256,7 +1132,6 @@ mod tests {
                 ) => {
                     assert_eq!((actual.as_str(), *retry_after), (message, None));
                 }
-                ("slow_down", [Err(ApiError::ServerOverloaded)]) => {}
                 _ => panic!("unexpected events for {code}: {events:?}"),
             }
         }

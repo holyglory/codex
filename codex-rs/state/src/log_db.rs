@@ -177,10 +177,18 @@ impl LogDbLayer {
     ) -> Self {
         let config = config.normalized();
         let (sender, receiver) = mpsc::channel(config.queue_capacity);
+        let has_write_failure = Arc::new(AtomicBool::new(false));
+        let failure_reporter = Arc::new(RwLock::new(failure_reporter));
         let network = Some(crate::network_diagnostics::NetworkSink::start(
             state_db.sqlite().clone(),
         ));
-        tokio::spawn(run_inserter(state_db, receiver, config));
+        tokio::spawn(run_inserter(
+            state_db,
+            receiver,
+            config,
+            failure_reporter.clone(),
+            has_write_failure.clone(),
+        ));
         Self {
             sender,
             has_write_failure,

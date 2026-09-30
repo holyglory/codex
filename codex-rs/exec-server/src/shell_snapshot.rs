@@ -287,7 +287,7 @@ impl ShellSnapshotCache {
             ShellType::PowerShell | ShellType::Cmd => unreachable!(),
         };
         let restored_command = format!(
-            "{startup}if ! eval \"unset {state_variables}\n{state_expansion}\" >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
+            "{startup}if ! {restore} >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
             params.argv[2]
         );
         prepared.command.truncate(shell_start + 1);

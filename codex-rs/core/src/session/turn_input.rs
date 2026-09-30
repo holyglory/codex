@@ -332,6 +332,7 @@ async fn start_or_steer(
             /*expected_turn_id*/ None,
             settings.required_active_final_output_json_schema(),
             responsesapi_client_metadata.clone(),
+            origin,
             incoming_root_turn_id,
         )
         .await
@@ -428,6 +429,7 @@ async fn start_if_idle(
         responsesapi_client_metadata,
         ..
     } = request;
+    let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
     let can_start_root_turn = start.parent_turn_id.is_none() && start.root_turn_id.is_none();
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         return Ok(TurnInputSubmission::NotSubmitted {
@@ -597,6 +599,7 @@ async fn steer(
             Some(expected_turn_id.as_str()),
             settings.required_active_final_output_json_schema(),
             responsesapi_client_metadata,
+            origin,
             incoming_root_turn_id,
         )
         .await
@@ -688,6 +691,7 @@ impl Session {
         expected_turn_id: Option<&str>,
         required_final_output_json_schema: Option<&Value>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
+        origin: UserInputOrigin,
         incoming_root_turn_id: Option<Option<String>>,
     ) -> Result<String, NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;

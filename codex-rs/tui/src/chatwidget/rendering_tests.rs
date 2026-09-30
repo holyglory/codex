@@ -401,6 +401,7 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
     );
 
     let cwd = widget.config.cwd.as_path().display().to_string();
+    let normalized_cwd = format!("{:<width$}", "/tmp/project", width = cwd.len());
 
     insta::assert_snapshot!(header.replace(&cwd, &normalized_cwd), @"
     ╭───────────────────────────────────────╮

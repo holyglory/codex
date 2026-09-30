@@ -774,8 +774,8 @@ impl RealtimeConversationManager {
             (task, None)
         };
 
-        let mut guard = self.state.lock().await;
-        *guard = Some(ConversationState {
+        let mut state = self.state.lock().await;
+        state.conversation = Some(ConversationState {
             _account_lease: account_lease,
             audio_tx,
             text_tx,
@@ -892,6 +892,7 @@ impl RealtimeConversationManager {
             .state
             .lock()
             .await
+            .conversation
             .as_ref()
             .map(|state| state.handoff.clone());
         let Some(handoff) = handoff.filter(|handoff| {

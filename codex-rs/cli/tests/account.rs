@@ -298,7 +298,7 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
                 rows: 24,
                 cols: 240,
             },
-            &[],
+            codex_utils_pty::ChildFds::Inherited(&[]),
         )
         .await?;
         let session = spawned.session;
@@ -476,7 +476,7 @@ async fn account_list_colors_usage_and_prioritizes_banked_resets() -> Result<()>
             rows: 24,
             cols: 240,
         },
-        &[],
+        codex_utils_pty::ChildFds::Inherited(&[]),
     )
     .await?;
     let session = spawned.session;

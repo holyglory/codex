@@ -7,7 +7,6 @@ use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
 use codex_api::ImageQuality;
 use codex_api::ImageResponse;
-use codex_api::ImageUrl;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::LOCAL_FS;
 use codex_extension_api::ExtensionTurnItem;
@@ -519,16 +518,14 @@ async fn request_for_call_args(
 fn recent_images(
     history: &[ResponseItem],
     count: usize,
-) -> Result<Vec<ImageUrl>, FunctionCallError> {
+) -> Result<Vec<ImageReference>, FunctionCallError> {
     let mut images = Vec::with_capacity(count);
     'history: for item in history.iter().rev() {
         let mut image_references = Vec::new();
         match item {
             ResponseItem::Message { content, .. } => {
-                image_urls.extend(content.iter().rev().filter_map(|item| match item {
-                    ContentItem::InputImage { image, .. } => {
-                        Some(inline_image_url(image).map(str::to_owned))
-                    }
+                image_references.extend(content.iter().rev().filter_map(|item| match item {
+                    ContentItem::InputImage { image, .. } => Some(image.clone()),
                     ContentItem::InputText { .. }
                     | ContentItem::InputAudio { .. }
                     | ContentItem::OutputText { .. } => None,
@@ -536,12 +533,12 @@ fn recent_images(
             }
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {
-                image_urls.extend(
-                    output_images(output).map(|image| inline_image_url(image).map(str::to_owned)),
-                );
+                image_references.extend(output_images(output).cloned());
             }
             ResponseItem::ImageGenerationCall { result, .. } if !result.is_empty() => {
-                image_urls.push(Some(format!("data:image/png;base64,{result}")));
+                image_references.push(ImageReference::Inline {
+                    image_url: format!("data:image/png;base64,{result}"),
+                });
             }
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Reasoning { .. }
@@ -559,8 +556,8 @@ fn recent_images(
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => {}
         }
-        for image_url in image_urls {
-            images.push(image_url.map(|image_url| ImageUrl { image_url }));
+        for image in image_references {
+            images.push(image);
             if images.len() == count {
                 break 'history;
             }
@@ -572,18 +569,8 @@ fn recent_images(
             images.len()
         )));
     }
-    let mut inline_images = Vec::with_capacity(count);
-    for image in images {
-        let Some(image) = image else {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "requested the last {count} conversation images, but that window includes a \
-                 file-backed image that cannot be used for editing"
-            )));
-        };
-        inline_images.push(image);
-    }
-    inline_images.reverse();
-    Ok(inline_images)
+    images.reverse();
+    Ok(images)
 }
 
 /// Extracts image references from a tool output in newest-first order.
@@ -599,14 +586,6 @@ fn output_images(output: &FunctionCallOutputPayload) -> impl Iterator<Item = &Im
             | FunctionCallOutputContentItem::InputAudio { .. }
             | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
         })
-}
-
-fn inline_image_url(image: &ImageReference) -> Option<&str> {
-    match image {
-        ImageReference::Inline { image_url } => Some(image_url),
-        // TODO(kc) Image generation and the Images API only accept inline image URLs.
-        ImageReference::File { .. } => None,
-    }
 }
 
 async fn image_url(

@@ -185,10 +185,9 @@ impl Session {
             local_process_cwd,
         )
         .with_selected_environments(
-            environment_selections.into(),
+            environments.all_selections().into(),
             environments.ready_environment_handles(),
-        );
-        (mcp_config, runtime_context)
+        )
     }
 
     pub(crate) async fn runtime_mcp_servers(
@@ -897,13 +896,16 @@ async fn review_guardian_mcp_elicitation(
 
     // The invocation identifies the tool event, but a nested elicitation can
     // review a different action and connector than the enclosing JavaScript.
-    let originating_call_id = if is_node_repl_backed_server(&request.server_name)
-        && let Some(call_id) = request
-            .elicitation
-            .meta()
-            .and_then(|meta| meta.get("callId"))
-            .and_then(Value::as_str)
-        && let Some((Some(invocation), _)) =
+    let call_id = request
+        .elicitation
+        .meta()
+        .and_then(|meta| match request.server_name.as_str() {
+            CODEX_APPS_MCP_SERVER_NAME => meta.get(MCP_TOOL_CODEX_APPS_META_KEY)?.get("call_id"),
+            _ => meta.get("callId"),
+        })
+        .and_then(Value::as_str);
+    let (originating_call_id, guardian_scope) = if let Some(call_id) = call_id
+        && let Some((Some(invocation), metadata)) =
             session.mcp_tool_approval_metadata(&request.server_name, call_id)
         && invocation.server == request.server_name
         && is_node_repl_backed_connector(&invocation.server, metadata.connector_id.as_deref())

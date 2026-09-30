@@ -15,6 +15,7 @@ use codex_code_mode::StartedCell;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 pub(super) fn wait_timer_armed_provider(
     host_program: PathBuf,
@@ -69,12 +70,17 @@ impl CodeModeSession for WaitTimerArmedSession {
         &'a self,
         request: ExecuteRequest,
         delegate: Arc<dyn CodeModeSessionDelegate>,
+        preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, StartedCell> {
-        self.inner.execute(request, delegate)
+        self.inner.execute(request, delegate, preempt)
     }
 
-    fn wait<'a>(&'a self, request: WaitRequest) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        let mut wait = self.inner.wait(request);
+    fn wait<'a>(
+        &'a self,
+        request: WaitRequest,
+        preempt: Option<CancellationToken>,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let mut wait = self.inner.wait(request, preempt);
         let timer_armed = Arc::clone(&self.timer_armed);
         Box::pin(async move {
             std::future::poll_fn(move |context| {

@@ -16,6 +16,7 @@ mod apps;
 mod client;
 mod client_common;
 mod model_context_estimate;
+mod model_request;
 mod realtime_context;
 mod realtime_conversation;
 mod realtime_history;

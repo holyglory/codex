@@ -111,6 +111,7 @@ fn staging_rejection_fallback_preserves_auth_and_capacity_errors() {
                 url: None,
                 headers: None,
                 body: None,
+                retry_after: None,
             }))
         })
         .collect();

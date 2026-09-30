@@ -381,6 +381,7 @@ impl TestAuth {
 }
 
 pub struct TestCodexBuilder {
+    thread_manager_configurer: Option<Box<dyn FnOnce(ThreadManager) -> ThreadManager + Send>>,
     config_mutators: Vec<Box<ConfigMutator>>,
     auth: TestAuth,
     analytics_events_client: Option<AnalyticsEventsClient>,
@@ -405,6 +406,14 @@ pub struct TestCodexBuilder {
 impl TestCodexBuilder {
     pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
         self.thread_store = Some(thread_store);
+        self
+    }
+
+    pub fn with_thread_manager(
+        mut self,
+        configure: impl FnOnce(ThreadManager) -> ThreadManager + Send + 'static,
+    ) -> Self {
+        self.thread_manager_configurer = Some(Box::new(configure));
         self
     }
 
@@ -828,6 +837,10 @@ impl TestCodexBuilder {
                 /*attestation_provider*/ None,
                 /*external_time_provider*/ self.external_time_provider.clone(),
             );
+            let thread_manager = match self.thread_manager_configurer.take() {
+                Some(configure) => configure(thread_manager),
+                None => thread_manager,
+            };
             if let Some(provider) = self.code_mode_session_provider.take() {
                 thread_manager.with_code_mode_session_provider(provider)
             } else if config.features.enabled(Feature::CodeModeHost)
@@ -867,7 +880,7 @@ impl TestCodexBuilder {
             }
             (Some(path), None) => {
                 let auth_manager = self.auth.manager_for_home(config.codex_home.as_path());
-                Box::pin(thread_manager.resume_thread_from_rollout(
+                Box::pin(thread_manager.resume_legacy_thread_from_rollout(
                     config.clone(),
                     path,
                     auth_manager,
@@ -1501,7 +1514,7 @@ pub fn test_codex() -> TestCodexBuilder {
         external_time_provider: None,
         code_mode_host_program: None,
         code_mode_session_provider: None,
-        history_mode: None,
+        history_mode: Some(ThreadHistoryMode::Legacy),
         models_manager: None,
         thread_store: None,
         image_store: codex_core::passthrough_image_store(),

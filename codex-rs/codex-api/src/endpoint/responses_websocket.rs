@@ -682,30 +682,7 @@ fn map_wrapped_websocket_error_event(
     }))
 }
 
-fn json_headers_to_http_headers(headers: &JsonMap<String, Value>) -> HeaderMap {
-    let mut mapped = HeaderMap::new();
-    for (name, value) in headers {
-        let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
-            continue;
-        };
-        let Some(header_value) = json_header_value(value) else {
-            continue;
-        };
-        mapped.insert(header_name, header_value);
-    }
-    mapped
-}
-
-fn json_header_value(value: &Value) -> Option<HeaderValue> {
-    let value = match value {
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Bool(value) => value.to_string(),
-        _ => return None,
-    };
-    HeaderValue::from_str(&value).ok()
-}
-
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(name = "responses_websocket.response_stream", skip_all,
     fields(thread_id = timing_log_context.thread_id.as_deref(),
         turn_id = timing_log_context.turn_id.as_deref(),
@@ -723,7 +700,6 @@ async fn run_websocket_response_stream(
     let mut last_server_model: Option<String> = None;
     let request_started = Instant::now();
     let mut last_event = "none".to_string();
-    let mut response_id = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
     send_websocket_request(
         ws_stream,
@@ -1071,6 +1047,7 @@ mod tests {
     async fn collect_ws_events(events: Vec<Value>) -> Vec<Result<ResponseEvent, ApiError>> {
         let mut stream = fake_ws_stream(events);
         let (tx, mut rx) = mpsc::channel(16);
+        let (_interrupt_tx, interrupt_rx) = oneshot::channel();
         let result = run_websocket_response_stream(
             &mut stream,
             tx,
@@ -1079,6 +1056,7 @@ mod tests {
             /*telemetry*/ None,
             /*turn_state*/ None,
             &timing_log_context(),
+            interrupt_rx,
         )
         .await;
         let mut events = Vec::new();

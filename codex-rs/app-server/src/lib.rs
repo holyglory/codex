@@ -42,7 +42,6 @@ use crate::transport::RemoteControlStartConfig;
 use crate::transport::TransportEvent;
 use crate::transport::acquire_app_server_startup_lock;
 use crate::transport::app_server_startup_lock_path;
-use crate::transport::auth::policy_from_settings;
 use crate::transport::route_outgoing_envelope;
 use crate::transport::start_control_socket_acceptor;
 use crate::transport::start_remote_control;
@@ -1374,7 +1373,7 @@ pub async fn run_main_with_transport_options(
 fn validate_event_subscription_transport_auth(
     event_subscriptions_enabled: bool,
     transport: &AppServerTransport,
-    auth: &AppServerWebsocketAuthSettings,
+    auth: &WebsocketAuthSettings,
 ) -> IoResult<()> {
     if event_subscriptions_enabled
         && matches!(transport, AppServerTransport::WebSocket { .. })
@@ -1565,21 +1564,21 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 #[cfg(test)]
 mod tests {
     use super::AppServerTransport;
-    use super::AppServerWebsocketAuthSettings;
     use super::LogFormat;
     use super::ShutdownAction;
     use super::ShutdownSignal;
     use super::ShutdownState;
+    use super::WebsocketAuthSettings;
     #[cfg(debug_assertions)]
     use super::loader_overrides_with_test_user_config_file;
     use super::turn_admission::TurnAdmission;
     use super::validate_event_subscription_transport_auth;
-    use crate::transport::auth::AppServerWebsocketAuthConfig;
-    use crate::transport::auth::AppServerWebsocketCapabilityTokenSource;
     #[cfg(debug_assertions)]
     use codex_config::LoaderOverrides;
     #[cfg(debug_assertions)]
     use codex_utils_absolute_path::AbsolutePathBuf;
+    use codex_websocket_auth::WebsocketAuthConfig;
+    use codex_websocket_auth::WebsocketCapabilityTokenSource;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -1641,13 +1640,13 @@ mod tests {
             validate_event_subscription_transport_auth(
                 /*event_subscriptions_enabled*/ true,
                 &websocket,
-                &AppServerWebsocketAuthSettings::default(),
+                &WebsocketAuthSettings::default(),
             )
             .is_err()
         );
-        let authenticated = AppServerWebsocketAuthSettings {
-            config: Some(AppServerWebsocketAuthConfig::CapabilityToken {
-                source: AppServerWebsocketCapabilityTokenSource::TokenSha256 {
+        let authenticated = WebsocketAuthSettings {
+            config: Some(WebsocketAuthConfig::CapabilityToken {
+                source: WebsocketCapabilityTokenSource::TokenSha256 {
                     token_sha256: [7; 32],
                 },
             }),
@@ -1664,7 +1663,7 @@ mod tests {
             validate_event_subscription_transport_auth(
                 /*event_subscriptions_enabled*/ true,
                 &AppServerTransport::Stdio,
-                &AppServerWebsocketAuthSettings::default(),
+                &WebsocketAuthSettings::default(),
             )
             .is_ok()
         );

@@ -1,5 +1,7 @@
 use super::residency::is_v2_resident_session_source;
 use super::spawn_guard::PendingSpawn;
+use super::spawn_telemetry::SpawnMeasurements;
+use super::spawn_telemetry::record_spawn_success;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::role::apply_role_to_config;
@@ -31,6 +33,8 @@ use codex_thread_store::PersistContext;
 use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
 use futures::stream;
+use std::time::Duration;
+use std::time::Instant;
 
 const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 
@@ -629,6 +633,7 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+        let spawn_started_at = Instant::now();
         if options.reserved_thread_id.is_some()
             && (options.fork_mode.is_some() || session_source.is_none())
         {
@@ -818,6 +823,7 @@ impl LocalAgentControl {
                 )
                 .await;
         }));
+        let durability_wait_started_at = Instant::now();
         if options.fork_mode.is_some() {
             tokio::join!(
                 new_thread
@@ -829,6 +835,7 @@ impl LocalAgentControl {
         } else {
             pending_spawn.wait_for_edge().await;
         }
+        let durability_wait = durability_wait_started_at.elapsed();
 
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
@@ -854,6 +861,7 @@ impl LocalAgentControl {
                 .await?;
             }
         }
+        let input_admission = input_admission_started_at.elapsed();
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
@@ -884,6 +892,24 @@ impl LocalAgentControl {
             status: self.get_status(new_thread.thread_id).await,
         };
         let config = new_thread.thread.config_snapshot().await;
+        let session_telemetry = new_thread
+            .thread
+            .session_telemetry()
+            .with_product_sku(product_sku.as_deref());
+        record_spawn_success(
+            &session_telemetry,
+            options.fork_mode.as_ref(),
+            multi_agent_version,
+            SpawnMeasurements {
+                history_mode: config.history_mode,
+                residency_reservation,
+                fork_context,
+                child_create,
+                durability_wait,
+                input_admission,
+                total: spawn_started_at.elapsed(),
+            },
+        );
         Ok((agent, config))
     }
 

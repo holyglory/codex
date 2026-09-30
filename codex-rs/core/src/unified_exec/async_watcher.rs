@@ -56,7 +56,6 @@ struct Buffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES> {
 /// Spawn a background task that emits ExecCommandOutputDelta events on UTF‑8 boundaries.
 pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &UnifiedExecContext) {
     let mut receiver = process.output_receiver();
-    let producer_transcript = process.transcript();
     let output_drained = process.output_drained_notify();
     let exit_token = process.cancellation_token();
     let OutputHandles {
@@ -148,10 +147,8 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
             }
         }
 
-        // Delta delivery is best effort; the producer's bounded capture is the
-        // authoritative final transcript, including bytes skipped by broadcast.
-        let final_transcript = producer_transcript.lock().await.clone();
-        *output.transcript.lock().await = final_transcript;
+        // The producer already records every chunk in the shared output buffer;
+        // this watcher only flushes best-effort deltas before signaling completion.
         output.finish().await;
         output_drained.notify_one();
     });

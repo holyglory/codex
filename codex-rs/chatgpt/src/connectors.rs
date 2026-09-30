@@ -26,6 +26,7 @@ pub use codex_core::connectors::list_cached_accessible_connectors_from_mcp_tools
 pub use codex_core::connectors::list_cached_accessible_connectors_from_mcp_tools_with_auth;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::default_client::create_client_with_chatgpt_cookies;
 use codex_plugin::AppConnectorId;
 use serde::Deserialize;
 use serde::Serialize;
@@ -140,18 +141,24 @@ pub async fn list_all_connectors_with_options_and_auth(
         "ChatGPT connectors require Codex backend auth"
     );
     let cache_context = connector_directory_cache_context(config, auth);
+    // Reuse one client for all pages under the policy paired with this auth snapshot.
+    let client = create_client_with_chatgpt_cookies(&config.http_client_factory());
     let connectors = codex_connectors::list_all_connectors_with_options(
         cache_context,
         auth.is_workspace_account(),
         force_refetch,
-        |path| async move {
-            chatgpt_get_request_with_timeout_and_auth::<DirectoryListResponse>(
-                config,
-                auth,
-                path,
-                Some(DIRECTORY_CONNECTORS_TIMEOUT),
-            )
-            .await
+        |path| {
+            let client = client.clone();
+            async move {
+                chatgpt_get_request_with_timeout_and_auth::<DirectoryListResponse>(
+                    config,
+                    auth,
+                    path,
+                    Some(DIRECTORY_CONNECTORS_TIMEOUT),
+                    client,
+                )
+                .await
+            }
         },
     )
     .await?;

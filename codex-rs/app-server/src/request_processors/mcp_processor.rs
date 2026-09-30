@@ -1,6 +1,5 @@
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
-use codex_core::McpManager;
 use codex_login::SharedProfileAuthRouter;
 use codex_mcp::McpServerSource;
 use codex_mcp::ReadResourceRequestParams;
@@ -295,42 +294,11 @@ impl McpRequestProcessor {
             Some(thread_id) => Some(self.load_thread(thread_id).await?.1),
             None => None,
         };
-        let mcp_manager = self.thread_manager.mcp_manager();
-        let environment_manager = self.thread_manager.environment_manager();
-        let auth_lease = self
-            .profile_auth_router
-            .lease_for_operation()
-            .await
-            .map_err(super::account_profile_processor::router_error)?;
-        let auth = auth_lease.auth_manager().auth().await;
-
+        let processor = self.clone();
         tokio::spawn(async move {
-            let _auth_lease = auth_lease;
-            let (mcp_config, runtime_context) = match thread.as_ref() {
-                Some(thread) => {
-                    thread
-                        .runtime_mcp_config_and_context_for_operation(&config, &_auth_lease)
-                        .await
-                }
-                None => {
-                    let mcp_config = mcp_manager
-                        .runtime_config_with_auth(&config, auth.as_ref())
-                        .await;
-                    let runtime_context =
-                        McpRuntimeContext::new(environment_manager, config.cwd.to_path_buf());
-                    (mcp_config, runtime_context)
-                }
-            };
-            let result = Self::list_mcp_server_status_response(
-                request.request_id.to_string(),
-                params,
-                mcp_config,
-                auth,
-                runtime_context,
-                mcp_manager,
-                thread,
-            )
-            .await;
+            let result = processor
+                .list_mcp_server_status_response(params, thread)
+                .await;
             outgoing.send_result(request, result).await;
         });
         Ok(())
@@ -341,6 +309,12 @@ impl McpRequestProcessor {
         params: ListMcpServerStatusParams,
         thread: Option<Arc<codex_core::CodexThread>>,
     ) -> Result<ListMcpServerStatusResponse, JSONRPCErrorError> {
+        let auth_lease = self
+            .profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let auth = auth_lease.auth_manager().auth().await;
         let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
             McpServerStatusDetail::Full => McpSnapshotDetail::Full,
             McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
@@ -370,11 +344,16 @@ impl McpRequestProcessor {
                 None => self.load_latest_config(/*fallback_cwd*/ None).await?,
             };
             let mcp_manager = self.thread_manager.mcp_manager();
-            let auth = self.auth_manager.auth().await;
             let (mcp_config, runtime_context) = match thread.as_ref() {
-                Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
+                Some(thread) => {
+                    thread
+                        .runtime_mcp_config_and_context_for_operation(&config, &auth_lease)
+                        .await
+                }
                 None => (
-                    mcp_manager.runtime_config(&config).await,
+                    mcp_manager
+                        .runtime_config_with_auth(&config, auth.as_ref())
+                        .await,
                     McpRuntimeContext::new(
                         self.thread_manager.environment_manager(),
                         config.cwd.to_path_buf(),

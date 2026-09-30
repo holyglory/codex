@@ -4,7 +4,6 @@ use clap::Parser;
 use codex_app_server::AppServerCodeModeHostArgs;
 use codex_app_server::AppServerRuntimeOptions;
 use codex_app_server::AppServerTransport;
-use codex_app_server::AppServerWebsocketAuthArgs;
 #[cfg(debug_assertions)]
 use codex_app_server::PluginStartupTasks;
 use codex_app_server::run_main_with_transport_options;

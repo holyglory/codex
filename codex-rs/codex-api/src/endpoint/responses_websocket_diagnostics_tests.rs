@@ -32,6 +32,7 @@ async fn close_diagnostics_preserve_code_and_redact_reason() -> anyhow::Result<(
         warmup: false,
         connection_reused: false,
     };
+    let (_interrupt_tx, interrupt_rx) = oneshot::channel();
     let Err(error) = run_websocket_response_stream(
         &mut stream,
         events,
@@ -40,6 +41,7 @@ async fn close_diagnostics_preserve_code_and_redact_reason() -> anyhow::Result<(
         /*telemetry*/ None,
         /*turn_state*/ None,
         &context,
+        interrupt_rx,
     )
     .await
     else {

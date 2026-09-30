@@ -784,7 +784,8 @@ fn fork_thread_accepts_legacy_usize_snapshot_argument() {
         config: Config,
         path: std::path::PathBuf,
     ) {
-        let _future = manager.fork_thread(usize::MAX, crate::StartThreadOptions::new(config), path);
+        let _future =
+            manager.fork_legacy_thread(usize::MAX, crate::StartThreadOptions::new(config), path);
     }
 
     let _: fn(&ThreadManager, Config, std::path::PathBuf) = assert_legacy_snapshot_callsite;
@@ -1403,10 +1404,11 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         .session
         .services
         .agent_control
-        .record_rollout_budget_usage(&TokenUsage {
+        .record_usage(TokenUsage {
             output_tokens: 25,
             ..Default::default()
         })
+        .await
         .expect("record reviewer usage");
     let reminder = parent
         .thread
@@ -1414,6 +1416,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         .services
         .agent_control
         .pending_budget_reminder(parent.thread_id, "window")
+        .await
         .expect("parent budget reminder");
     assert_eq!(reminder.remaining_tokens, 75);
     assert_eq!(reviewer_config.parent_thread_id, Some(parent.thread_id));
@@ -1508,7 +1511,10 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
             internal_parent: Some(InternalSessionParent {
                 thread_id: parent.thread_id,
                 auth_manager: Arc::clone(&parent.thread.session.services.auth_manager),
-                agent_control: parent.thread.session.services.agent_control.clone(),
+                agent_control: AgentControlInit::Provided {
+                    control: Arc::clone(&parent.thread.session.services.agent_control),
+                    runtime: parent.thread.session.services.local_agent_runtime.clone(),
+                },
                 originator: reviewer_config.originator.clone(),
                 inherited_instructions: None,
             }),
@@ -1623,21 +1629,18 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 server.environment_id = source_environment_id.clone();
                 server.enabled = false;
                 let plugin_id = selected_root.id;
-                vec![
-                    codex_extension_api::McpServerContribution::SelectedPluginPackage {
-                        selected_root_id: plugin_id.clone(),
-                        plugin_id: plugin_id.clone(),
-                        plugin_display_name: plugin_id.clone(),
-                        connector_ids: vec![],
-                    },
-                    codex_extension_api::McpServerContribution::SelectedPlugin {
-                        name: plugin_id.clone(),
-                        plugin_display_name: plugin_id.clone(),
-                        plugin_id,
-                        selection_order: 0,
-                        config: Box::new(server),
-                    },
-                ]
+                vec![codex_extension_api::SelectedPlugin {
+                    selected_root_id: plugin_id.clone(),
+                    plugin_id: plugin_id.clone(),
+                    mcp: Box::pin(async move {
+                        codex_extension_api::SelectedPluginContribution {
+                            plugin_display_name: plugin_id.clone(),
+                            source_environment_id,
+                            connector_ids: Vec::new(),
+                            servers: vec![(plugin_id, server)],
+                        }
+                    }),
+                }]
             })
         }
     }
@@ -1808,7 +1811,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             .mcp_server_catalog
             .server(name)
             .expect("selected plugin server should be registered");
-        let plugin_id = format!("plugin-{name}");
+        let plugin_id = name.to_string();
         let mut expected = codex_mcp::ResolvedMcpCatalog::builder();
         expected.register(codex_mcp::McpServerRegistration::from_selected_plugin(
             name.to_string(),

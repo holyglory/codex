@@ -584,6 +584,8 @@ pub(crate) async fn run_turn(
                 client_session = model_client_session_for_turn(&sess, &next_turn_context);
                 step_context = Arc::new(StepContext {
                     turn: Arc::clone(&next_turn_context),
+                    preempt: step_context.preempt.clone(),
+                    realtime: step_context.realtime.clone(),
                     settings: Arc::clone(&step_context.settings),
                     token_budget: step_context.token_budget.clone(),
                     session_telemetry: step_context.session_telemetry.clone(),
@@ -1432,17 +1434,15 @@ async fn maybe_run_previous_model_inline_compact(
         turn_context.model_info().comp_hash.as_deref(),
     );
     let previous_model = previous_turn_settings.model;
-    if crate::guardian::is_basic_session_source(&turn_context.session_source)
-        && !should_compact_for_comp_hash_change
-        && previous_model == turn_context.model_info().slug
-    {
+    if !should_compact_for_comp_hash_change && previous_model == turn_context.model_info().slug {
         return Ok(());
     }
-    let previous_model_turn_context = Arc::new(
-        turn_context
-            .with_model(previous_model.clone(), &sess.services.models_manager)
-            .await,
-    );
+    let mut previous_model_turn_context = turn_context
+        .with_model(previous_model.clone(), &sess.services.models_manager)
+        .await;
+    // Compaction uses the prior turn's model and its corresponding access program.
+    previous_model_turn_context.cyber_access_program = previous_turn_settings.cyber_access_program;
+    let previous_model_turn_context = Arc::new(previous_model_turn_context);
 
     if should_compact_for_comp_hash_change {
         let step_context = sess
@@ -1714,7 +1714,7 @@ async fn run_sampling_request(
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-        let prompt = build_prompt(
+        let mut prompt = build_prompt(
             prompt_input,
             step_context.as_ref(),
             base_instructions.clone(),
@@ -1723,13 +1723,13 @@ async fn run_sampling_request(
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
             .await;
         if crate::guardian::is_basic_session_source(&turn_context.session_source) {
-            crate::guardian::check_guardian_prompt_budget(
+            crate::guardian::prepare_guardian_prompt(
                 &sess,
-                &prompt,
-                &turn_context.config,
-                &step_context.settings.model_info,
+                &mut prompt,
+                step_context.as_ref(),
                 &responses_metadata,
             )
+            .await
             .map_err(|error| {
                 SamplingRequestFailure::new(error, SamplingResponseProgress::NotStarted)
             })?;
@@ -1798,18 +1798,39 @@ async fn run_sampling_request(
             &turn_context,
             ResponsesStreamRequest::Sampling,
         )
+        .or_cancel(&preempt)
         .or_cancel(&cancellation_token)
-        .await
-        .map_err(|_| SamplingRequestFailure::new(CodexErr::TurnAborted, response_progress))?;
+        .await;
+        if cancellation_token.is_cancelled() {
+            return Err(SamplingRequestFailure::new(
+                CodexErr::TurnAborted,
+                response_progress,
+            ));
+        }
+        if preempt.is_cancelled() {
+            return Ok((
+                SamplingRequestResult {
+                    needs_follow_up: true,
+                    last_agent_message: None,
+                },
+                std::mem::take(original_input),
+            ));
+        }
         match retry_result {
-            Ok(()) => turn_context.turn_timing_state.record_sampling_retry(),
-            Err(error) => {
+            Ok(Ok(Ok(()))) => turn_context.turn_timing_state.record_sampling_retry(),
+            Ok(Ok(Err(error))) => {
                 if terminal_capacity_after_output {
                     turn_context
                         .extension_data
                         .insert(TurnErrorAfterResponseStarted);
                 }
                 return Err(SamplingRequestFailure::new(error, response_progress));
+            }
+            Ok(Err(_)) | Err(_) => {
+                return Err(SamplingRequestFailure::new(
+                    CodexErr::TurnAborted,
+                    response_progress,
+                ));
             }
         }
     }
@@ -2696,6 +2717,7 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
+    let mut preempt = step_context.preempt.clone().unwrap_or_default();
     let stream = client_session
         .stream_with_usage_chain(
             prompt,

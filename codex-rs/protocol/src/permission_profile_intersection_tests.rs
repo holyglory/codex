@@ -142,6 +142,10 @@ fn effective_workspace_intersection_preserves_network_metadata_and_temp() {
         }),
         [Read, Write]
     );
+    assert_eq!(
+        policy.resolve_access(&PathUri::from_abs_path(&scratch_root), &context),
+        Write
+    );
     assert_eq!(result.network_sandbox_policy(), Restricted);
     assert!(policy.entries.contains(&special(Tmpdir, Write)));
     for name in [".git", ".agents", ".codex", ".aws"] {

@@ -1505,6 +1505,7 @@ impl ChatWidget {
             history_cell::SessionHeaderHistoryCell::new(
                 DEFAULT_MODEL_DISPLAY_NAME.to_string(),
                 /*reasoning_effort*/ None,
+                /*show_fast_status*/ false,
                 config.cwd.to_path_buf(),
                 CODEX_CLI_VERSION,
             )

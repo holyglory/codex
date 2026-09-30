@@ -668,7 +668,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
 
     let state_db = codex_core::init_state_db(&config).await;
-    let log_db = state_db.clone().map(codex_state::log_db::start);
+    let feedback = CodexFeedback::new();
+    let log_db = state_db.clone().map(|state_db| {
+        codex_state::log_db::start(state_db, std::sync::Arc::new(feedback.clone()))
+    });
     let log_db_layer = log_db
         .clone()
         .map(|layer| layer.with_filter(codex_state::log_db::default_filter()));
@@ -724,7 +727,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         strict_config,
         cloud_config_bundle: run_cloud_config_bundle,
         embedded_network_policy,
-        feedback: CodexFeedback::new(),
+        feedback,
         log_db: log_db.clone(),
         state_db: state_db.clone(),
         environment_manager: std::sync::Arc::new(environment_manager),

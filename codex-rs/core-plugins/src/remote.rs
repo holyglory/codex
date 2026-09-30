@@ -14,6 +14,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginDisabledReason;
+use codex_app_server_protocol::PluginExtensions;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginInstallPolicySource;
 use codex_app_server_protocol::PluginInterface;
@@ -38,6 +39,7 @@ use http::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use serde_with::serde_as;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -237,6 +239,7 @@ pub struct RemoteMarketplaceFetchOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteInstalledPlugin {
+    pub extensions: Option<PluginExtensions>,
     pub marketplace_name: String,
     pub id: String,
     pub version: Option<String>,
@@ -257,6 +260,7 @@ pub struct RemoteInstalledPlugin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemotePluginSummary {
+    pub extensions: Option<PluginExtensions>,
     pub id: String,
     pub remote_plugin_id: String,
     pub version: Option<String>,
@@ -761,10 +765,15 @@ struct RemotePluginDirectorySharePrincipal {
     name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 struct RemotePluginInstalledItem {
     #[serde(flatten)]
     plugin: RemotePluginDirectoryItem,
+    // Unsupported optional declarations must not invalidate the installed inventory.
+    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
+    #[serde(default)]
+    extensions: Option<PluginExtensions>,
     #[serde(default)]
     installed_at: Option<DateTime<Utc>>,
     enabled: bool,
@@ -791,7 +800,7 @@ struct RecommendedPluginItem {
     display_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 struct RemotePluginInstalledResponse {
     plugins: Vec<RemotePluginInstalledItem>,
     pagination: RemotePluginPagination,
@@ -1312,6 +1321,7 @@ pub fn group_remote_installed_plugins_by_marketplaces(
             continue;
         };
         let plugin_summary = RemotePluginSummary {
+            extensions: plugin.extensions.clone(),
             id: plugin_id.as_key(),
             remote_plugin_id: plugin.id.clone(),
             version: plugin.version.clone(),
@@ -1811,6 +1821,7 @@ fn build_remote_plugin_summary(
             ))
         })?;
     Ok(RemotePluginSummary {
+        extensions: installed_plugin.and_then(|plugin| plugin.extensions.clone()),
         id: plugin_id.as_key(),
         remote_plugin_id: plugin.id.clone(),
         version: plugin.release.version.clone(),
@@ -1909,6 +1920,7 @@ fn remote_installed_plugin_to_cache_entry(
     // not projected into skills/list yet; local skills.config remains the
     // supported source for skill enablement.
     Ok(RemoteInstalledPlugin {
+        extensions: installed_plugin.extensions.clone(),
         marketplace_name,
         id: plugin.id.clone(),
         version: plugin.release.version.clone(),

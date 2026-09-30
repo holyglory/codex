@@ -1,6 +1,7 @@
 use pretty_assertions::assert_eq;
 
-use super::executable_identity_from_bytes;
+use super::ExecutableIdentity;
+use super::executable_identity;
 use super::managed_codex_bin;
 use super::managed_codex_file_name;
 use super::parse_codex_version;
@@ -25,7 +26,10 @@ fn resolves_managed_install_as_package_layout_changes() -> std::io::Result<()> {
     let flat = current.join(managed_codex_file_name());
     let packaged = current.join("bin").join(managed_codex_file_name());
 
-    assert_eq!(managed_codex_bin(codex_home.path()), flat);
+    assert_eq!(
+        &managed_codex_bin(codex_home.path()),
+        if cfg!(windows) { &packaged } else { &flat }
+    );
     std::fs::create_dir_all(current.join("bin"))?;
     std::fs::write(&packaged, b"packaged executable fixture")?;
     assert_eq!(managed_codex_bin(codex_home.path()), packaged);

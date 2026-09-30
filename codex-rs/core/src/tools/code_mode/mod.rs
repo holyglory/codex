@@ -140,11 +140,15 @@ impl CodeModeService {
         request
             .yield_time_ms
             .get_or_insert(self.default_exec_yield_time_ms);
+        let preempt = step_context.preempt.clone();
         let delegate = Arc::new(CodeModeCellDelegate {
             broker: Arc::clone(&self.dispatch_broker),
             step_context,
         });
-        self.session().await?.execute(request, delegate).await
+        self.session()
+            .await?
+            .execute(request, delegate, preempt)
+            .await
     }
 
     pub(crate) async fn wait(
@@ -280,9 +284,13 @@ async fn handle_runtime_response(
         let RuntimeResponse::Yielded { cell_id, .. } = &response else {
             break;
         };
-        response = match exec.session.services.code_mode_service.wait(codex_code_mode::WaitRequest {
-            cell_id: cell_id.clone(), yield_time_ms: DEFAULT_WAIT_YIELD_TIME_MS,
-        }).await? {
+        response = match exec.session.services.code_mode_service.wait(
+            codex_code_mode::WaitRequest {
+                cell_id: cell_id.clone(),
+                yield_time_ms: DEFAULT_WAIT_YIELD_TIME_MS,
+            },
+            /*preempt*/ None,
+        ).await? {
             codex_code_mode::WaitOutcome::LiveCell(response) => response,
             codex_code_mode::WaitOutcome::MissingCell(_) => return Err("the code cell for this event wait is no longer available; inspect the persisted wait before retrying".into()),
         };

@@ -211,6 +211,7 @@ impl SessionStartupPrewarmHandle {
 impl Session {
     pub(crate) async fn schedule_startup_prewarm(self: &Arc<Self>, input: PrewarmInput) {
         let websocket_connect_timeout = self.provider().await.websocket_connect_timeout();
+        let startup_environments = self.services.turn_environments.snapshot().await;
         let mut state = self.state.lock().await;
         if state.shutting_down {
             return;
@@ -258,15 +259,14 @@ impl Session {
 
         let session_telemetry = self.services.session_telemetry.clone();
         let started_at = Instant::now();
-        // Freeze startup metadata before the spawned prewarm can race a first-turn settings update.
-        let startup_configuration = self.default_turn_configuration().await;
-        let startup_environments = self.services.turn_environments.snapshot().await;
+        // Capture settings under the publication guard; awaiting this session's lock here would deadlock.
+        let startup_configuration = state.session_configuration.clone();
         let startup_prewarm_session = Arc::clone(self);
         let startup_prewarm = tokio::spawn(
             async move {
                 let result = schedule_startup_prewarm_inner(
                     startup_prewarm_session,
-                    base_instructions,
+                    input,
                     startup_configuration,
                     startup_environments,
                 )
@@ -316,32 +316,11 @@ impl Session {
 
 async fn schedule_startup_prewarm_inner(
     session: Arc<Session>,
-    base_instructions: String,
+    input: PrewarmInput,
     startup_configuration: SessionConfiguration,
     startup_environments: TurnEnvironmentSnapshot,
 ) -> CodexResult<ModelClientSession> {
     let prewarm_started_at = Instant::now();
-    let mut client_session = session.services.model_client.new_session();
-    let websocket_ready = client_session.is_websocket_prewarmed().await;
-    // Count the decision before preparation can fail; fresh clients also need prewarm.
-    session.services.session_telemetry.counter(
-        "codex.startup_prewarm.websocket_check",
-        /*inc*/ 1,
-        &[
-            (
-                "outcome",
-                if websocket_ready {
-                    "ready"
-                } else {
-                    "needs_prewarm"
-                },
-            ),
-            ("input", input.as_str()),
-        ],
-    );
-    if websocket_ready {
-        return Ok(client_session);
-    }
     let base_instructions = session.get_prompt_base_instructions().await.text;
     let startup_turn_context = session
         .new_startup_prewarm_turn_from_configuration(
@@ -360,6 +339,39 @@ async fn schedule_startup_prewarm_inner(
         prewarm_started_at.elapsed(),
         /*status*/ None,
     );
+    let mut model_client = match &startup_turn_context.auth_manager {
+        Some(auth_manager) => session
+            .services
+            .model_client
+            .for_auth_manager(Arc::clone(auth_manager)),
+        None => session.services.model_client.clone(),
+    };
+    if let Some(lease) = &startup_turn_context.account_lease
+        && let Ok(account_profile_ref) =
+            codex_usage::AccountProfileRef::new(lease.account_id().as_str())
+    {
+        model_client = model_client.with_account_profile_ref(account_profile_ref);
+    }
+    let mut client_session = model_client.new_session();
+    let websocket_ready = client_session.is_websocket_prewarmed().await;
+    session.services.session_telemetry.counter(
+        "codex.startup_prewarm.websocket_check",
+        /*inc*/ 1,
+        &[
+            (
+                "outcome",
+                if websocket_ready {
+                    "ready"
+                } else {
+                    "needs_prewarm"
+                },
+            ),
+            ("input", input.as_str()),
+        ],
+    );
+    if websocket_ready {
+        return Ok(client_session);
+    }
     let startup_cancellation_token = CancellationToken::new();
     let preconnect_model_info = Arc::clone(startup_turn_context.model_info());
     // Spawned subagents inherit the root's selection, with the same feature and model filtering
@@ -451,20 +463,7 @@ async fn schedule_startup_prewarm_inner(
     let responses_metadata = session
         .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Prewarm)
         .await;
-    let mut model_client = match &startup_turn_context.auth_manager {
-        Some(auth_manager) => session
-            .services
-            .model_client
-            .for_auth_manager(Arc::clone(auth_manager)),
-        None => session.services.model_client.clone(),
-    };
-    if let Some(lease) = &startup_turn_context.account_lease
-        && let Ok(account_profile_ref) =
-            codex_usage::AccountProfileRef::new(lease.account_id().as_str())
-    {
-        model_client = model_client.with_account_profile_ref(account_profile_ref);
-    }
-    let mut client_session = model_client.new_session();
+
     let websocket_warmup_started_at = Instant::now();
     // Prewarm establishes the request baseline before the first turn can change effort.
     client_session

@@ -317,50 +317,27 @@ impl McpManager {
                         }
                         overlays.push(OrderedMcpOverlay::Set(Box::new(registration)));
                     }
-                    McpServerContribution::SelectedPlugin { ref plugin_id, .. }
-                        if disabled_plugin_ids.contains(plugin_id) => {}
-                    McpServerContribution::SelectedPlugin {
-                        name,
-                        plugin_id,
-                        plugin_display_name,
-                        selection_order,
-                        config,
-                    } => selected_plugin_registrations.push(
-                        McpServerRegistration::from_selected_plugin(
-                            name,
-                            McpPluginAttribution::new(plugin_id, plugin_display_name),
-                            selection_order,
-                            *config,
-                        ),
-                    ),
-                    McpServerContribution::SelectedPluginPackage {
-                        selected_root_id, ..
-                    } if !config.features.enabled(Feature::Plugins) => {
-                        disabled_plugin_roots.push(selected_root_id);
-                    }
-                    McpServerContribution::SelectedPluginPackage {
-                        selected_root_id,
+                    McpServerContribution::HostedPluginConnectors {
                         plugin_id,
                         plugin_display_name,
                         connector_ids,
                     } => {
-                        if disabled_plugin_ids.contains(&plugin_id) {
-                            disabled_plugin_roots.push(selected_root_id);
-                        } else {
-                            selected_plugin_available = true;
-                            selected_plugins.push(SelectedPluginIdentity {
-                                selected_root_id,
-                                plugin_id: plugin_id.clone(),
-                            });
-                        }
-                        if !connector_ids.is_empty() {
-                            selected_plugin_connector_sources.push(
-                                PluginConnectorSource::from_connector_ids(
-                                    plugin_id,
-                                    plugin_display_name,
-                                    connector_ids.into_iter().map(AppConnectorId),
-                                ),
-                            );
+                        if config.features.enabled(Feature::Plugins) {
+                            if !disabled_plugin_ids.contains(&plugin_id) {
+                                selected_plugins.push(SelectedPluginIdentity {
+                                    selected_root_id: None,
+                                    plugin_id: plugin_id.clone(),
+                                });
+                            }
+                            if !connector_ids.is_empty() {
+                                selected_plugin_connector_sources.push(
+                                    PluginConnectorSource::from_connector_ids(
+                                        plugin_id,
+                                        plugin_display_name,
+                                        connector_ids.into_iter().map(AppConnectorId),
+                                    ),
+                                );
+                            }
                         }
                     }
                     McpServerContribution::Remove { name } => {

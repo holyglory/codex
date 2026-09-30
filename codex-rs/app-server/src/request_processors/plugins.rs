@@ -190,6 +190,7 @@ fn convert_configured_marketplace_plugin_to_plugin_summary(
 ) -> PluginSummary {
     let share_context = share_context_for_source(&plugin.source, shared_plugin_ids_by_local_path);
     PluginSummary {
+        extensions: None,
         id: plugin.id,
         remote_plugin_id: None,
         version: None,
@@ -1080,7 +1081,12 @@ impl PluginRequestProcessor {
         });
 
         let mut config = self.load_latest_config(config_cwd).await?;
-        let auth = match self.auth_manager.auth_with_http_client_factory().await {
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
             Some((auth, factory)) => {
                 config.application_network_policy = factory.network_policy().clone();
                 Some(auth)
@@ -1088,8 +1094,6 @@ impl PluginRequestProcessor {
             None => None,
         };
         let plugins_input = config.plugins_config_input();
-        let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
 
         let plugin = match read_source {
             Ok(marketplace_path) => {
@@ -1183,6 +1187,7 @@ impl PluginRequestProcessor {
                     marketplace_name: outcome.marketplace_name,
                     marketplace_path: outcome.marketplace_path,
                     summary: PluginSummary {
+                        extensions: None,
                         id: outcome.plugin.id,
                         remote_plugin_id: None,
                         version: None,
@@ -1550,9 +1555,19 @@ impl PluginRequestProcessor {
             }
         };
         let config_cwd = marketplace_path.as_path().parent().map(Path::to_path_buf);
-        let config = self.load_latest_config(config_cwd.clone()).await?;
+        let mut config = self.load_latest_config(config_cwd.clone()).await?;
         let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
 
         let plugins_manager = self.thread_manager.plugins_manager();
         let marketplace_display = marketplace_path.display().to_string();
@@ -1635,9 +1650,19 @@ impl PluginRequestProcessor {
         remote_plugin_id: String,
         install_attempt_id: Option<String>,
     ) -> Result<PluginInstallResponse, JSONRPCErrorError> {
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let mut config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
         let plugins_manager = self.thread_manager.plugins_manager();
         let installation = plugins_manager
             .install_remote_plugin_with_auth_lease(
@@ -2246,6 +2271,7 @@ fn remote_marketplace_to_info(marketplace: RemoteMarketplace) -> PluginMarketpla
 
 fn remote_plugin_summary_to_info(summary: RemoteCatalogPluginSummary) -> PluginSummary {
     PluginSummary {
+        extensions: summary.extensions,
         id: summary.id,
         remote_plugin_id: Some(summary.remote_plugin_id),
         version: summary.version,

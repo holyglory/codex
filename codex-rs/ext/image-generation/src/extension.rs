@@ -123,6 +123,7 @@ impl ImageGenerationExtension {
         vec![Arc::new(ImageGenerationTool::new(
             CodexImagesBackend::new(
                 create_model_provider(config.provider.clone(), Some(auth_manager)),
+                config.http_client_factory.clone(),
                 thread_store
                     .get::<ThreadOriginator>()
                     .map(|originator| originator.0.clone()),

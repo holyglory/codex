@@ -987,7 +987,7 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
         MediaHistorySource::Live => Arc::clone(&test.codex),
         MediaHistorySource::Resume => {
             test.thread_manager
-                .resume_thread_from_rollout(
+                .resume_legacy_thread_from_rollout(
                     test.config.clone(),
                     rollout_path,
                     test.thread_manager.auth_manager(),
@@ -999,7 +999,7 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
         }
         MediaHistorySource::Fork => {
             test.thread_manager
-                .fork_thread(
+                .fork_legacy_thread(
                     ForkSnapshot::Interrupted,
                     codex_core::StartThreadOptions::new(test.config.clone()),
                     rollout_path,

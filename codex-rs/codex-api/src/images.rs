@@ -1,4 +1,5 @@
 use crate::provider_usage::ProviderUsage;
+use codex_protocol::models::ImageReference;
 use serde::Deserialize;
 use serde::Serialize;
 

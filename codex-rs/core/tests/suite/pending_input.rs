@@ -12,6 +12,9 @@ use codex_core::config::CurrentTimeReminderConfig;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
 use codex_features::Feature;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
+use codex_history::RetainedContextEntry;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -23,6 +26,7 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
@@ -924,8 +928,18 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
     server.shutdown().await;
 }
 
+#[derive(Clone, Copy)]
+enum CommentaryFollowUp {
+    QueuedMail,
+    UserSteer,
+}
+
+#[test_case(CommentaryFollowUp::QueuedMail; "queued child mail")]
+#[test_case(CommentaryFollowUp::UserSteer; "steered user reply")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_item() {
+async fn pending_input_triggers_follow_up_after_commentary_message_item(
+    follow_up: CommentaryFollowUp,
+) {
     let (gate_message_done_tx, gate_message_done_rx) = oneshot::channel();
 
     let first_chunks = vec![
@@ -960,8 +974,21 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
 
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
-
-    let codex = build_codex(&server).await;
+    let test = test_codex()
+        .with_config(move |config| {
+            config.update_plan_enabled = true;
+            if matches!(follow_up, CommentaryFollowUp::UserSteer) {
+                config
+                    .features
+                    .enable(Feature::GuardianThreadContext)
+                    .expect("enable retained Guardian context");
+            }
+        })
+        .with_model("gpt-5.4")
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session");
+    let codex = Arc::clone(&test.codex);
 
     submit_user_input(&codex, "first prompt").await;
 
@@ -974,16 +1001,145 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
     })
     .await;
 
-    submit_queue_only_agent_mail(&codex, "queued child update").await;
+    match follow_up {
+        CommentaryFollowUp::QueuedMail => {
+            submit_queue_only_agent_mail(&codex, "queued child update").await;
+        }
+        CommentaryFollowUp::UserSteer => {
+            // Acceptance precedes the gated response.output_item.done event.
+            steer_user_input(&codex, "second prompt").await;
+        }
+    }
 
     let _ = gate_message_done_tx.send(());
-
     wait_for_agent_message(&codex, "first answer").await;
-
     wait_for_turn_complete(&codex).await;
 
     let requests = server.requests().await;
-    assert_two_responses_input_snapshot("pending_input_queued_mail_after_commentary", &requests);
+    match follow_up {
+        CommentaryFollowUp::QueuedMail => {
+            assert_two_responses_input_snapshot(
+                "pending_input_queued_mail_after_commentary",
+                &requests,
+            );
+        }
+        CommentaryFollowUp::UserSteer => {
+            assert_eq!(requests.len(), 2);
+            let follow_up: Value = from_slice(&requests[1]).expect("parse follow-up request");
+            assert!(
+                message_input_texts(&follow_up, "user")
+                    .iter()
+                    .any(|text| text == "second prompt")
+            );
+
+            codex
+                .flush_rollout()
+                .await
+                .expect("persist accepted input and response");
+            let history = codex
+                .load_history(/*include_archived*/ false)
+                .await
+                .expect("load persisted history");
+            let recorded_order = |role: &str, text: &str| {
+                history.items.iter().find_map(|item| {
+                    let RolloutItem::ResponseItem(envelope) = item else {
+                        return None;
+                    };
+                    let ResponseItem::Message {
+                        role: message_role,
+                        content,
+                        ..
+                    } = &envelope.item
+                    else {
+                        return None;
+                    };
+                    (message_role == role
+                        && content.iter().any(|part| {
+                            matches!(
+                                part,
+                                ContentItem::InputText { text: value }
+                                    | ContentItem::OutputText { text: value }
+                                    if value == text
+                            )
+                        }))
+                    .then(|| envelope.metadata.as_ref()?.user_input_order)
+                    .flatten()
+                })
+            };
+            let assistant_order = recorded_order("assistant", "first answer")
+                .expect("persisted streamed assistant order");
+            let steer_order =
+                recorded_order("user", "second prompt").expect("persisted accepted steer order");
+            assert!(
+                assistant_order < steer_order,
+                "the streamed assistant began before the user steer was accepted"
+            );
+
+            let expected_exchange = vec![
+                ("assistant", "first answer".to_string()),
+                ("user", "second prompt".to_string()),
+            ];
+            let exchange = |context: &codex_history::RetainedContext| {
+                context
+                    .ordered_entries()
+                    .filter_map(|(_, entry)| match entry {
+                        RetainedContextEntry::AssistantMessage(message)
+                            if message.text == "first answer" =>
+                        {
+                            Some(("assistant", message.text.clone()))
+                        }
+                        RetainedContextEntry::UserMessage(message)
+                            if message.text == "second prompt" =>
+                        {
+                            Some(("user", message.text.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let live = codex.conversation_history_snapshot().await;
+            assert_eq!(
+                exchange(live.retained_context().expect("live retained context")),
+                expected_exchange
+            );
+
+            let thread_id = test.session_configured.thread_id;
+            codex
+                .shutdown_and_wait()
+                .await
+                .expect("stop original thread");
+            test.thread_manager.remove_thread(&thread_id).await;
+            let resumed = test
+                .thread_manager
+                .resume_thread_with_history(
+                    test.config.clone(),
+                    InitialHistory::Resumed(ResumedHistory {
+                        conversation_id: thread_id,
+                        history: Arc::new(history.items.clone()),
+                        rollout_path: None,
+                    }),
+                    test.thread_manager.auth_manager(),
+                    /*parent_trace*/ None,
+                    ClientMcpExtensions::default(),
+                )
+                .await
+                .expect("resume persisted thread")
+                .thread;
+            let resumed_history = resumed.conversation_history_snapshot().await;
+            assert_eq!(
+                exchange(
+                    resumed_history
+                        .retained_context()
+                        .expect("resumed retained context")
+                ),
+                expected_exchange
+            );
+            resumed
+                .shutdown_and_wait()
+                .await
+                .expect("stop resumed thread");
+        }
+    }
 
     server.shutdown().await;
 }

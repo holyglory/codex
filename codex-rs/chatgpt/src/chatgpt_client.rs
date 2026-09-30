@@ -63,13 +63,19 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
     path: String,
     timeout: Option<Duration>,
 ) -> anyhow::Result<T> {
+    // Bind before loading credentials: the temporary auth manager does not own account changes.
+    let policy = config
+        .application_network_policy
+        .clone()
+        .for_current_account();
+    let client = chatgpt_client(config.http_client_factory().with_network_policy(policy));
     let auth_manager =
         AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
     let auth = auth_manager
         .auth()
         .await
         .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
-    chatgpt_get_request_with_timeout_and_auth(config, &auth, path, timeout).await
+    chatgpt_get_request_with_timeout_and_auth(config, &auth, path, timeout, client).await
 }
 
 /// Makes a GET request with an already-captured auth identity.
@@ -81,6 +87,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout_and_auth<T: DeserializeOwne
     auth: &CodexAuth,
     path: String,
     timeout: Option<Duration>,
+    client: HttpClient,
 ) -> anyhow::Result<T> {
     let chatgpt_base_url = &config.chatgpt_base_url;
     anyhow::ensure!(

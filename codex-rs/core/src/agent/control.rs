@@ -15,6 +15,7 @@ use crate::context::SubagentNotification;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_subagent_context_line;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
@@ -60,7 +61,9 @@ use std::sync::Weak;
 use tracing::warn;
 use uuid::Uuid;
 
+pub(crate) use self::runtime::AgentControlInit;
 pub(crate) use self::runtime::LocalAgentRuntime;
+pub(crate) use self::watch::StatusSubscription;
 
 mod api;
 mod budget;
@@ -73,10 +76,12 @@ mod legacy;
 mod residency;
 mod resume;
 mod runtime;
+mod runtime_context;
 mod sender_context;
 mod service_tier;
 mod spawn;
 mod spawn_guard;
+mod spawn_telemetry;
 mod target;
 mod user_authorization;
 mod watch;
@@ -396,7 +401,7 @@ impl LocalAgentControl {
         agent_id: ThreadId,
     ) -> CodexResult<Vec<ThreadId>> {
         let mut thread_ids = vec![agent_id];
-        thread_ids.extend(self.live_thread_spawn_descendants(agent_id).await?);
+        thread_ids.extend(self.runtime.live_thread_spawn_descendants(agent_id).await?);
         Ok(thread_ids)
     }
 

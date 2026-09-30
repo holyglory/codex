@@ -9,14 +9,14 @@ pub(super) async fn test_config() -> (tempfile::TempDir, Config) {
     let codex_home = tempfile::Builder::new()
         .prefix("chatwidget-tests-")
         .tempdir()
-        .expect("tempdir")
-        .keep();
+        .expect("tempdir");
     let mut config = ConfigBuilder::default()
-        .codex_home(codex_home.clone())
+        .codex_home(codex_home.path().to_path_buf())
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .build()
         .await
         .expect("config");
+    // Keep generic UI snapshots stable when the bundled catalog default changes.
     config.model = Some("gpt-5.6-sol".to_string());
     config.codex_home = codex_home.path().abs();
     config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
@@ -1459,6 +1459,7 @@ pub(super) fn plugins_test_summary(
     install_policy: PluginInstallPolicy,
 ) -> PluginSummary {
     PluginSummary {
+        extensions: None,
         id: id.to_string(),
         remote_plugin_id: None,
         version: None,
@@ -1495,6 +1496,7 @@ pub(super) fn plugins_test_remote_summary(
     installed: bool,
 ) -> PluginSummary {
     PluginSummary {
+        extensions: None,
         id: remote_plugin_id.to_string(),
         remote_plugin_id: Some(remote_plugin_id.to_string()),
         version: None,

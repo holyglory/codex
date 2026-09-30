@@ -35,6 +35,8 @@ mod external_writer_fork_tests;
 mod fork_workspace_roots_tests;
 #[path = "tests/fresh_sparkle_tests.rs"]
 mod fresh_sparkle_tests;
+#[path = "tests/home_cleanup_tests.rs"]
+mod home_cleanup_tests;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
 #[path = "tests/local_command_scroll_tests.rs"]
@@ -5925,7 +5927,9 @@ async fn ctrl_l_clears_owned_history_and_preserves_the_draft() -> Result<()> {
             .is::<history_cell::SessionHeaderHistoryCell>()
     );
     let header = lines_to_single_string(&app.transcript_cells[0].display_lines(/*width*/ 80));
-    assert!(header.contains("gpt-test"));
+    assert!(header.contains("OpenAI Codex"));
+    let raw_header = lines_to_single_string(&app.transcript_cells[0].raw_lines());
+    assert!(raw_header.contains("gpt-test"));
     assert!(!header.contains("old transcript row"));
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
@@ -5973,7 +5977,8 @@ async fn clear_ui_header_shows_fast_status_for_fast_capable_models() {
 }
 
 async fn make_test_app() -> Box<App> {
-    let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+    let (mut chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+    let test_codex_home = chat_widget.test_codex_home.take();
     let config = chat_widget.config_ref().clone();
     let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
     let model = get_model_offline_for_tests(config.model.as_deref());
@@ -5999,7 +6004,7 @@ async fn make_test_app() -> Box<App> {
         runtime_permission_profile_override: None,
         file_search,
         transcript_cells: Vec::new(),
-        composer_tips: super::composer_hints::ComposerTips::new(/*seed*/ 0),
+        turn_tips: Default::default(),
         native_history: Default::default(),
         transcript_view: Default::default(),
         last_rendered_history_tail: None,
@@ -6026,6 +6031,13 @@ async fn make_test_app() -> Box<App> {
         feedback_audience: FeedbackAudience::External,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
+        pending_right_click_paste: None,
+        right_click_paste_environment: super::right_click_paste::PasteEnvironment {
+            platform_default: true,
+            ssh: false,
+            wsl: false,
+            vscode: crate::tui::VscodeDetection::Other,
+        },
         reconnect: Default::default(),
         daemon_cli_executable: None,
         pending_update_action: None,
@@ -6070,6 +6082,7 @@ async fn make_test_app() -> Box<App> {
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
         recap: recap::RecapState::default(),
+        _test_codex_home: test_codex_home,
     })
 }
 
@@ -6106,7 +6119,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             runtime_permission_profile_override: None,
             file_search,
             transcript_cells: Vec::new(),
-            composer_tips: super::composer_hints::ComposerTips::new(/*seed*/ 0),
+            turn_tips: Default::default(),
             native_history: Default::default(),
             transcript_view: Default::default(),
             last_rendered_history_tail: None,
@@ -6133,6 +6146,13 @@ pub(super) async fn make_test_app_with_channels() -> (
             feedback_audience: FeedbackAudience::External,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             app_server_target: crate::AppServerTarget::Embedded,
+            pending_right_click_paste: None,
+            right_click_paste_environment: super::right_click_paste::PasteEnvironment {
+                platform_default: true,
+                ssh: false,
+                wsl: false,
+                vscode: crate::tui::VscodeDetection::Other,
+            },
             reconnect: Default::default(),
             daemon_cli_executable: None,
             pending_update_action: None,
@@ -6177,6 +6197,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
             recap: recap::RecapState::default(),
+            _test_codex_home: test_codex_home,
         }),
         rx,
         op_rx,
@@ -6508,8 +6529,8 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
         .iter()
         .map(|line| {
             let text = rendered_line_text(line);
-            if text.contains("│ directory: ") {
-                "│ directory: <thread cwd>                │".to_string()
+            if text.trim() == test_path_buf("/tmp/next").display().to_string() {
+                "     <thread cwd>".to_string()
             } else {
                 text
             }

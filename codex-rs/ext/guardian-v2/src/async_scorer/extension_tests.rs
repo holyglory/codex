@@ -443,6 +443,7 @@ struct TestRetainedHistory {
     retained: Vec<ResponseItem>,
     compaction_model_hash: Option<String>,
     retained_context: Option<codex_history::RetainedContext>,
+    review_context_revision: u64,
 }
 
 impl ConversationHistorySnapshot for TestRetainedHistory {
@@ -565,6 +566,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
     ] {
         fixture.registry.tool_lifecycle_contributors()[0]
             .on_tool_start(ToolStartInput {
+                permissions: Box::pin(async { panic!("unexpected permission resolution") }),
                 session_store: &fixture.session_store,
                 thread_store,
                 turn_store: &turn_store,
@@ -575,7 +577,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
                 tool_name: &tool_name,
                 mcp_tool: None,
                 payload: &payload,
-                conversation_history: Arc::new(TestConversationHistory(Vec::new())),
+                conversation_history: fixture.test.codex.conversation_history_snapshot().await,
                 source: ToolCallSource::Direct,
             })
             .await;
@@ -653,8 +655,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should track score progress per thread");
     // The seeded low score belongs to the model selected above.
-    let authorization =
-        super::super::authorization::ScoreAuthorization::current(&fixture.test.codex).await;
+    let authorization = ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await;
     seed_cached_score(&progress, thread_store, /*index*/ 1, authorization);
     let cached = progress.inspect(/*call_id*/ None);
     let turn_store = ExtensionData::new("turn-1");
@@ -1657,7 +1658,7 @@ max_recent_non_user_entries = 8
         &score_progress,
         thread_store,
         first_unscored,
-        ScoreAuthorization::current(&test.codex).await,
+        ScoreAuthorization::current(&test.codex, &Default::default()).await,
     );
     assert_eq!(
         cached_approval(
@@ -2383,7 +2384,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
     thread_store.insert(model_info);
     // A late prewarm preview must leave the active model's review requirements intact.
     let _ = codex_core::guardian_review::prepare_review_prewarm(&test.codex).await?;
-    let authorization = ScoreAuthorization::current(&test.codex).await;
+    let authorization = ScoreAuthorization::current(&test.codex, &Default::default()).await;
     let progress = thread_store
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should track score progress per thread");
@@ -2621,7 +2622,8 @@ async fn incompatible_compaction_blocks_cached_score_and_initial_cua_allowance()
         fixture.test.codex.guardian_authorization_version().await,
         authorization
     );
-    let score_authorization = ScoreAuthorization::current(&fixture.test.codex).await;
+    let score_authorization =
+        ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await;
     let progress = thread_store
         .get::<GuardianV2ScoreProgress>()
         .expect("score progress");
@@ -2631,7 +2633,7 @@ async fn incompatible_compaction_blocks_cached_score_and_initial_cua_allowance()
         /*index*/ 1,
         score_authorization,
     );
-    // No new sample runs: only the enabled path rejects cached and initial-call approvals.
+    // No new sample runs: the live checkpoint rejects cached and initial-call approvals.
     for (computer_use_only, prompt) in [
         (false, "review action"),
         (
@@ -3227,7 +3229,8 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
         retained,
         current: conversation_history,
         compaction_model_hash: parent_model.comp_hash.clone(),
-        retained_context: thread_context_enabled.then(codex_history::RetainedContext::default),
+        retained_context: parent_context_for_review.then(codex_history::RetainedContext::default),
+        review_context_revision,
     };
     thread_store.insert(parent_model);
 
@@ -3325,7 +3328,7 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
             conversation_history: Arc::new(TestRetainedHistory {
                 current: TestConversationHistory(vec![latest_compaction, oversized_compaction]),
                 retained: Vec::new(),
-                retained_context: thread_context_enabled
+                retained_context: parent_context_for_review
                     .then(codex_history::RetainedContext::default),
                 compaction_model_hash: thread_store
                     .get::<ModelInfo>()
@@ -3457,6 +3460,7 @@ async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()>
             },
         };
         progress.observe(&ToolStartInput {
+            permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &fixture.session_store,
             thread_store: store,
             turn_store: &fixture.session_store,
@@ -3499,14 +3503,14 @@ async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()>
         &progress,
         store,
         wrapper,
-        ScoreAuthorization::current(&fixture.test.codex).await,
+        ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await,
     );
     assert_eq!(approve("third").await, None);
     seed_cached_score(
         &progress,
         store,
         wrapper + 3,
-        ScoreAuthorization::current(&fixture.test.codex).await,
+        ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await,
     );
     let output = start("output-only", &origin, ToolCallSource::Direct);
     let other = ResponseItemId::from_server("other-wrapper".to_owned());
@@ -3521,7 +3525,7 @@ async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()>
         &progress,
         store,
         output,
-        ScoreAuthorization::current(&fixture.test.codex).await,
+        ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await,
     );
     assert_eq!(
         approve("other-second").await,
@@ -3620,6 +3624,7 @@ fn seed_cached_score(
 
 fn observe_unscored_call(progress: &GuardianV2ScoreProgress, store: &ExtensionData) -> usize {
     progress.observe(&ToolStartInput {
+        permissions: Box::pin(async { Some(Default::default()) }),
         session_store: store,
         thread_store: store,
         turn_store: store,
@@ -3644,7 +3649,7 @@ async fn cached_score_publication_rejects_delayed_results_without_changing_cover
     let fixture = GuardianFailureFixture::new().await?;
     let store = fixture.test.codex.thread_extension_data();
     let progress = store.get::<GuardianV2ScoreProgress>().unwrap();
-    let authorization = ScoreAuthorization::current(&fixture.test.codex).await;
+    let authorization = ScoreAuthorization::current(&fixture.test.codex, &Default::default()).await;
     seed_cached_score(&progress, store, /*index*/ 1, authorization.clone());
     let score = cached_score(store).unwrap();
     observe_unscored_call(&progress, store);
