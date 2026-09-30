@@ -133,8 +133,10 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
     else {
         anyhow::bail!("server is not accepting cooperative maintenance")
     };
-    ensure!(compatibility(&target).await? == compatibility(&previous).await?,
-        "selected package cannot perform a compatible cooperative handover");
+    ensure!(
+        compatibility(&target).await? == compatibility(&previous).await?,
+        "selected package cannot perform a compatible cooperative handover"
+    );
     let record = HandoverStatus {
         operation_id: format!(
             "handover-{}-{}",
@@ -155,13 +157,25 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
 pub async fn handover_status() -> Result<HandoverStatus> {
     let daemon = Daemon::from_environment()?;
     let mut record = read(&daemon)?;
-    if matches!(record.phase, HandoverPhase::Queued | HandoverPhase::Preparing | HandoverPhase::Committing | HandoverPhase::Starting) {
-        let worker = PidBackend::new_handover(record.target.clone(), daemon.pid_file.with_file_name("handover.pid"));
+    if matches!(
+        record.phase,
+        HandoverPhase::Queued
+            | HandoverPhase::Preparing
+            | HandoverPhase::Committing
+            | HandoverPhase::Starting
+    ) {
+        let worker = PidBackend::new_handover(
+            record.target.clone(),
+            daemon.pid_file.with_file_name("handover.pid"),
+        );
         if !worker.is_starting_or_running().await? {
             // The requester owns this lock until PID publication, so an in-flight
             // launch cannot be mistaken for an exited owner. This observation
             // does not rewrite the last durable phase or claim a successful update.
-            let lock = tokio::fs::OpenOptions::new().read(true).open(&daemon.operation_lock_file).await?;
+            let lock = tokio::fs::OpenOptions::new()
+                .read(true)
+                .open(&daemon.operation_lock_file)
+                .await?;
             if crate::try_lock_file(&lock)? {
                 record.phase = HandoverPhase::NeedsAttention;
                 record.reason = Some("activation owner exited before recording completion; daemon start preserves committed work".into());
@@ -375,10 +389,17 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while backend.is_starting_or_running().await? {
         if tokio::time::Instant::now() >= deadline {
-            let saved = codex_app_server_transport::daemon_recovery::read_snapshot(&daemon.recovery_file()?)?;
-            ensure!(saved.maintenance.as_ref().is_some_and(|checkpoint|
-                checkpoint.operation_id == record.operation_id && checkpoint.source_pid == pid),
-                "old server did not commit a checkpoint; no process was killed");
+            let saved = codex_app_server_transport::daemon_recovery::read_snapshot(
+                &daemon.recovery_file()?,
+            )?;
+            ensure!(
+                saved
+                    .maintenance
+                    .as_ref()
+                    .is_some_and(|checkpoint| checkpoint.operation_id == record.operation_id
+                        && checkpoint.source_pid == pid),
+                "old server did not commit a checkpoint; no process was killed"
+            );
             // Every participant is already parked and persisted. This bounds
             // server teardown without interrupting uncheckpointed agent work.
             backend.stop_with_grace(/*grace_seconds*/ 0).await?;

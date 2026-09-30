@@ -62,7 +62,10 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
         },
     )
     .await?;
-    assert!(recovery_file.exists(), "invalid recovery evidence must be retained");
+    assert!(
+        recovery_file.exists(),
+        "invalid recovery evidence must be retained"
+    );
     let thread = start_thread(
         &mut client,
         /*id*/ 2,

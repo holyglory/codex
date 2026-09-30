@@ -15,7 +15,6 @@ pub(crate) fn discard_pending(daemon: &Daemon) -> Result<()> {
     }
 }
 
-
 /// A fresh start after owner failure must retain a committed cooperative handoff.
 /// Explicit stop/restart still use discard_pending to preserve their intent.
 pub(crate) fn prepare_fresh_start(daemon: &Daemon) -> Result<()> {

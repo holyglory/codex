@@ -305,7 +305,8 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
 #[cfg(unix)]
 #[tokio::test]
 async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> Result<()> {
-    use codex_app_server_transport::maintenance::{MaintenanceCommand, MaintenanceResponse};
+    use codex_app_server_transport::maintenance::MaintenanceCommand;
+    use codex_app_server_transport::maintenance::MaintenanceResponse;
     let home = TempDir::new()?;
     let (mock, _) = start_streaming_sse_server(vec![]).await;
     create_config_toml(home.path(), mock.uri(), "never")?;
@@ -317,29 +318,68 @@ async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> R
     assert!(!rollout.exists());
     let compressed = rollout.with_extension("jsonl.zst");
     std::fs::create_dir_all(compressed.parent().context("rollout parent")?)?;
-    assert!(StdCommand::new("mkfifo").arg(&compressed).status()?.success());
+    assert!(
+        StdCommand::new("mkfifo")
+            .arg(&compressed)
+            .status()?
+            .success()
+    );
     let stream = UnixStream::connect(&socket_path).await?;
     let (mut control, _) = client_async("ws://localhost/daemon/maintenance", stream).await?;
     let pid = server.id().context("pid")?;
-    control.send(Message::Text(serde_json::to_string(&MaintenanceCommand::Prepare { operation_id:"blocked-writer".into(), pid })?.into())).await?;
-    let frame = timeout(DEFAULT_READ_TIMEOUT, control.next()).await?.context("prepare reply")??;
-    let Message::Text(text) = frame else { anyhow::bail!("expected readiness") };
-    assert_eq!(serde_json::from_str::<MaintenanceResponse>(&text)?, MaintenanceResponse::Ready { operation_id:"blocked-writer".into(), pid });
-    control.send(Message::Text(serde_json::to_string(&MaintenanceCommand::Commit { operation_id:"blocked-writer".into(), pid })?.into())).await?;
+    control
+        .send(Message::Text(
+            serde_json::to_string(&MaintenanceCommand::Prepare {
+                operation_id: "blocked-writer".into(),
+                pid,
+            })?
+            .into(),
+        ))
+        .await?;
+    let frame = timeout(DEFAULT_READ_TIMEOUT, control.next())
+        .await?
+        .context("prepare reply")??;
+    let Message::Text(text) = frame else {
+        anyhow::bail!("expected readiness")
+    };
+    assert_eq!(
+        serde_json::from_str::<MaintenanceResponse>(&text)?,
+        MaintenanceResponse::Ready {
+            operation_id: "blocked-writer".into(),
+            pid
+        }
+    );
+    control
+        .send(Message::Text(
+            serde_json::to_string(&MaintenanceCommand::Commit {
+                operation_id: "blocked-writer".into(),
+                pid,
+            })?
+            .into(),
+        ))
+        .await?;
     let writer = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
-            if let Ok(writer) = tokio::net::unix::pipe::OpenOptions::new().open_sender(&compressed) { break writer; }
+            if let Ok(writer) = tokio::net::unix::pipe::OpenOptions::new().open_sender(&compressed)
+            {
+                break writer;
+            }
             sleep(Duration::from_millis(25)).await;
         }
-    }).await.context("checkpoint did not reach the real blocked writer")?;
+    })
+    .await
+    .context("checkpoint did not reach the real blocked writer")?;
     timeout(Duration::from_secs(30), async {
         loop {
             let state = maintenance_status(&socket_path).await?;
-            if state["preparing"] == false && state["accepting"] == true { break; }
+            if state["preparing"] == false && state["accepting"] == true {
+                break;
+            }
             sleep(Duration::from_millis(25)).await;
         }
         Ok::<(), anyhow::Error>(())
-    }).await??;
+    })
+    .await??;
     assert!(server.try_wait()?.is_none());
     start_thread(&mut client, /*id*/ 3, json!({})).await?;
     assert!(!daemon_recovery_file_path(home.path()).exists());

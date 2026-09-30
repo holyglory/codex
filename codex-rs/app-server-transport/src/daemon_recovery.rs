@@ -56,7 +56,9 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
     let mut maintenance_seen = false;
     loaded.retain(|entry| {
         if let Some(metadata) = entry.strip_prefix(MAINTENANCE_PREFIX) {
-            if maintenance_seen { invalid_maintenance = true; }
+            if maintenance_seen {
+                invalid_maintenance = true;
+            }
             maintenance_seen = true;
             match serde_json::from_str::<RecoverySnapshot>(metadata) {
                 Ok(saved) if saved.maintenance.is_some() => snapshot = saved,
@@ -74,13 +76,17 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
         }
     });
     if let Some(maintenance) = &snapshot.maintenance {
-        invalid_maintenance |= maintenance.operation_id.is_empty() || maintenance.source_pid == 0
+        invalid_maintenance |= maintenance.operation_id.is_empty()
+            || maintenance.source_pid == 0
             || maintenance.parents.keys().cloned().collect::<BTreeSet<_>>() != loaded
             || snapshot.interrupted.keys().any(|id| !loaded.contains(id))
             || maintenance.mailboxes.keys().any(|id| !loaded.contains(id));
     }
     if invalid_maintenance {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid maintenance checkpoint"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid maintenance checkpoint",
+        ));
     }
     snapshot.interrupted.retain(|id, _| loaded.contains(id));
     snapshot.loaded = loaded;
@@ -104,7 +110,11 @@ pub fn write_candidates(path: &Path, candidates: &BTreeSet<String>) -> io::Resul
 pub fn write_snapshot(path: &Path, snapshot: &RecoverySnapshot) -> io::Result<()> {
     let mut saved = snapshot.loaded.clone();
     if !snapshot.interrupted.is_empty() || snapshot.maintenance.is_some() {
-        let prefix = if snapshot.maintenance.is_some() { MAINTENANCE_PREFIX } else { INTERRUPTION_PREFIX };
+        let prefix = if snapshot.maintenance.is_some() {
+            MAINTENANCE_PREFIX
+        } else {
+            INTERRUPTION_PREFIX
+        };
         saved.insert(format!(
             "{prefix}{}",
             serde_json::to_string(snapshot).map_err(io::Error::other)?

@@ -71,8 +71,10 @@ impl ThreadRequestProcessor {
                 }
                 // An in-flight tool may finish normally before the next receipt.
                 // Detached work is only a blocker once the turn is idle or parked.
-                if (thread.maintenance_is_idle().await || pause.status() == MaintenancePauseStatus::Paused)
-                    && thread.maintenance_has_background_work().await {
+                if (thread.maintenance_is_idle().await
+                    || pause.status() == MaintenancePauseStatus::Paused)
+                    && thread.maintenance_has_background_work().await
+                {
                     return Err("backgroundWork");
                 }
                 ready &= !thread.maintenance_has_pending_input().await;
