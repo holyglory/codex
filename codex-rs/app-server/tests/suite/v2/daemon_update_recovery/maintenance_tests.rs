@@ -310,8 +310,12 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     if scenario == AgentTreeScenario::OwnerDisconnect {
         control.close(None).await?;
     }
-    release_a.send(()).unwrap();
-    release_b.send(()).unwrap();
+    release_a
+        .send(())
+        .expect("held response still has its receiver");
+    release_b
+        .send(())
+        .expect("held response still has its receiver");
     if scenario == AgentTreeScenario::OwnerDisconnect {
         wait_for_requests(&mock, /*count*/ 5).await?;
         let status = maintenance_status(&socket_path).await?;
@@ -320,8 +324,12 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         start_thread(&mut client, /*id*/ 40, json!({})).await?;
         assert!(server.try_wait()?.is_none());
         assert!(!daemon_recovery_file_path(home.path()).exists());
-        release_c.send(()).unwrap();
-        release_d.send(()).unwrap();
+        release_c
+            .send(())
+            .expect("held response still has its receiver");
+        release_d
+            .send(())
+            .expect("held response still has its receiver");
         request_shutdown(&server, &socket_path).await?;
         wait_success(&mut server).await?;
         return Ok(());
@@ -520,7 +528,9 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         successor = spawn_server(home.path(), &socket_path)?;
         client = connect_default_daemon_client(&socket_path).await?;
         wait_for_requests(&mock, /*count*/ 4).await?;
-        release_c.send(()).unwrap();
+        release_c
+            .send(())
+            .expect("held response still has its receiver");
         timeout(DEFAULT_READ_TIMEOUT, async {
             loop {
                 let read = request(
@@ -599,7 +609,12 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             output.contains("checkpoint-result") && output.contains("Process exited with code 0"),
             "{output}"
         );
-        restored_calls.insert(outputs[0]["call_id"].as_str().unwrap().to_string());
+        restored_calls.insert(
+            outputs[0]["call_id"]
+                .as_str()
+                .expect("tool output call identity")
+                .to_string(),
+        );
     }
     if stop_child {
         assert_eq!(restored_calls.len(), 1);
@@ -611,11 +626,14 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     }
     let parent_request = requests[3..]
         .iter()
-        .map(|body| serde_json::from_slice::<serde_json::Value>(body).unwrap())
+        .map(|body| {
+            serde_json::from_slice::<serde_json::Value>(body)
+                .expect("captured response request JSON")
+        })
         .find(|body| {
             body["input"]
                 .as_array()
-                .unwrap()
+                .expect("captured response input array")
                 .iter()
                 .any(|item| item["call_id"] == "spawn-worker")
         })
@@ -638,7 +656,9 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     } else {
         (release_d, release_c)
     };
-    release_parent.send(()).unwrap();
+    release_parent
+        .send(())
+        .expect("held response still has its receiver");
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let read = request(
@@ -670,7 +690,9 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         .await?;
         assert_eq!(child["thread"]["turns"][0]["status"], "interrupted");
     } else {
-        release_child.send(()).unwrap();
+        release_child
+            .send(())
+            .expect("held response still has its receiver");
     }
     let mut observed_effects: Vec<_> = std::fs::read_to_string(&effects)?
         .lines()

@@ -1135,7 +1135,7 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
                 let path = test.codex.rollout_path().expect("persistent thread");
                 if tokio::fs::read_to_string(path)
                     .await
-                    .unwrap()
+                    .expect("paused input must remain readable")
                     .contains("queued during maintenance")
                 {
                     break;
