@@ -95,3 +95,99 @@ esac
     assert_eq!(daemon.lifecycle("version")?["status"], "running");
     Ok(())
 }
+
+struct DaemonProxy {
+    child: Child,
+    output: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl DaemonProxy {
+    fn connect(daemon: &TestDaemon) -> Result<Self> {
+        use std::io::Write;
+        let socket = codex_app_server_transport::app_server_control_socket_path(daemon.home.path())?;
+        let mut child = daemon.command().args(["app-server", "proxy", "--sock"])
+            .arg(socket.as_path()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+        let output = std::io::BufReader::new(child.stdout.take().context("proxy output")?);
+        let mut proxy = Self { child, output };
+        proxy.request("initialize", serde_json::json!({"clientInfo":{"name":"handover-test","version":"1"}}))?;
+        writeln!(proxy.child.stdin.as_mut().context("proxy input")?, "{}", serde_json::json!({"method":"initialized"}))?;
+        Ok(proxy)
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        use std::io::{BufRead, Write};
+        let input = self.child.stdin.as_mut().context("proxy input")?;
+        writeln!(input, "{}", serde_json::json!({"id":2,"method":method,"params":params}))?;
+        input.flush()?;
+        loop {
+            let mut line = String::new();
+            ensure!(self.output.read_line(&mut line)? > 0, "proxy closed before its response");
+            let row: Value = serde_json::from_str(&line)?;
+            if row["id"] == 2 && row.get("method").is_none() {
+                ensure!(row.get("error").is_none(), "request rejected: {row}");
+                return Ok(row["result"].clone());
+            }
+        }
+    }
+}
+
+impl Drop for DaemonProxy {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn cooperative_handover_fresh_start_recovers_after_owner_exit() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let daemon = TestDaemon::new()?;
+    let state = daemon.home.path().join("app-server-daemon");
+    std::fs::write(state.join("settings.json"), br#"{"updater":{"autoUpdateEnabled":false}}"#)?;
+    daemon.lifecycle("start")?;
+    let mut proxy = DaemonProxy::connect(&daemon)?;
+    let created = proxy.request("thread/start", serde_json::json!({}))?;
+    let thread_id = created["thread"]["id"].as_str().context("created thread")?.to_string();
+    let standalone = daemon.home.path().join("packages/standalone");
+    let candidate = standalone.join("releases/owner-exit/bin/codex");
+    std::fs::create_dir_all(candidate.parent().context("candidate parent")?)?;
+    let executable = format!("'{}'", daemon.codex.display().to_string().replace('\'', "'\\''"));
+    let script = format!(r#"#!/bin/sh
+if [ "$1 $2" = "app-server --listen" ] && [ ! -f "$CODEX_HOME/candidate-entered" ]; then
+  echo $$ > "$CODEX_HOME/candidate-entered"
+  while [ ! -f "$CODEX_HOME/release-candidate" ]; do sleep 0.05; done
+fi
+exec {executable} "$@"
+"#);
+    std::fs::write(&candidate, script)?;
+    std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755))?;
+    let selected = standalone.join("selected-next");
+    std::os::unix::fs::symlink("releases/owner-exit", &selected)?;
+    std::fs::rename(selected, standalone.join("current"))?;
+    daemon.lifecycle("handover")?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let candidate_pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(daemon.home.path().join("candidate-entered")) {
+            break pid.trim().parse::<u32>()?;
+        }
+        ensure!(Instant::now() < deadline, "candidate was not launched");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let owner = daemon.pid("handover.pid")?;
+    signal(owner, libc::SIGKILL)?;
+    wait_for_exit(owner)?;
+    signal(candidate_pid, libc::SIGTERM)?;
+    wait_for_exit(candidate_pid)?;
+    let snapshot = codex_app_server_transport::daemon_recovery_file_path(daemon.home.path());
+    assert!(snapshot.exists(), "committed checkpoint must survive the owner");
+    daemon.lifecycle("start")?;
+    let mut proxy = DaemonProxy::connect(&daemon)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let loaded = proxy.request("thread/loaded/list", serde_json::json!({}))?;
+        if loaded["data"].as_array().context("loaded threads")?.iter().any(|id| id == &thread_id) { break; }
+        ensure!(Instant::now() < deadline, "fresh start lost the committed thread");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}

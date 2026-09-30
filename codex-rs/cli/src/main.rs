@@ -2900,6 +2900,9 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
             AppServerDaemonSubcommand::Bootstrap(_) => "app-server daemon bootstrap",
             AppServerDaemonSubcommand::Start => "app-server daemon start",
             AppServerDaemonSubcommand::Restart => "app-server daemon restart",
+            AppServerDaemonSubcommand::Handover { .. } => "app-server daemon handover",
+            AppServerDaemonSubcommand::HandoverWorker => "app-server daemon handover-worker",
+            AppServerDaemonSubcommand::HandoverCompatibility => "app-server daemon handover-compatibility",
             AppServerDaemonSubcommand::Update { .. } => "app-server daemon update",
             AppServerDaemonSubcommand::EnableRemoteControl => {
                 "app-server daemon enable-remote-control"

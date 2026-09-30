@@ -154,7 +154,12 @@ impl PauseRequest {
         }
         // This call is made only between complete sampling/tool steps. A failed
         // flush is reported to the maintenance owner, never made a fatal turn error.
-        if session.flush_rollout().await.is_err() {
+        let flushed = tokio::select! {
+            result = session.flush_rollout() => result,
+            _ = self.released.cancelled() => return CheckpointWake::Released,
+            _ = cancellation.cancelled() => return CheckpointWake::Released,
+        };
+        if flushed.is_err() {
             self.status
                 .send_replace(MaintenancePauseStatus::PersistenceFailed);
             return CheckpointWake::Released;

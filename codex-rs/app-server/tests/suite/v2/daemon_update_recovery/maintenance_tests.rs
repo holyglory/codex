@@ -301,3 +301,73 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
     assert_eq!(mock.requests().await.len(), 5);
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> Result<()> {
+    use codex_app_server_transport::maintenance::{MaintenanceCommand, MaintenanceResponse};
+    let home = TempDir::new()?;
+    let (mock, _) = start_streaming_sse_server(vec![]).await;
+    create_config_toml(home.path(), mock.uri(), "never")?;
+    let socket_path = home.path().join("control/server.sock");
+    let mut server = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    let thread = start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    let rollout = thread.thread.path.context("deferred rollout")?;
+    assert!(!rollout.exists());
+    let compressed = rollout.with_extension("jsonl.zst");
+    std::fs::create_dir_all(compressed.parent().context("rollout parent")?)?;
+    assert!(StdCommand::new("mkfifo").arg(&compressed).status()?.success());
+    let stream = UnixStream::connect(&socket_path).await?;
+    let (mut control, _) = client_async("ws://localhost/daemon/maintenance", stream).await?;
+    let pid = server.id().context("pid")?;
+    control.send(Message::Text(serde_json::to_string(&MaintenanceCommand::Prepare { operation_id:"blocked-writer".into(), pid })?.into())).await?;
+    let frame = timeout(DEFAULT_READ_TIMEOUT, control.next()).await?.context("prepare reply")??;
+    let Message::Text(text) = frame else { anyhow::bail!("expected readiness") };
+    assert_eq!(serde_json::from_str::<MaintenanceResponse>(&text)?, MaintenanceResponse::Ready { operation_id:"blocked-writer".into(), pid });
+    control.send(Message::Text(serde_json::to_string(&MaintenanceCommand::Commit { operation_id:"blocked-writer".into(), pid })?.into())).await?;
+    let writer = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            if let Ok(writer) = tokio::net::unix::pipe::OpenOptions::new().open_sender(&compressed) { break writer; }
+            sleep(Duration::from_millis(25)).await;
+        }
+    }).await.context("checkpoint did not reach the real blocked writer")?;
+    timeout(Duration::from_secs(30), async {
+        loop {
+            let state = maintenance_status(&socket_path).await?;
+            if state["preparing"] == false && state["accepting"] == true { break; }
+            sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    }).await??;
+    assert!(server.try_wait()?.is_none());
+    start_thread(&mut client, /*id*/ 3, json!({})).await?;
+    assert!(!daemon_recovery_file_path(home.path()).exists());
+    drop(writer);
+    std::fs::remove_file(compressed)?;
+    request_shutdown(&server, &socket_path).await?;
+    wait_success(&mut server).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn maintenance_corrupt_checkpoint_is_retained_without_claiming_restoration() -> Result<()> {
+    let home = TempDir::new()?;
+    let (mock, _) = start_streaming_sse_server(vec![]).await;
+    create_config_toml(home.path(), mock.uri(), "never")?;
+    let path = daemon_recovery_file_path(home.path());
+    std::fs::create_dir_all(path.parent().context("checkpoint parent")?)?;
+    let corrupted = serde_json::to_vec(&vec!["codex-maintenance-v1:{broken"])?;
+    std::fs::write(&path, &corrupted)?;
+    let socket_path = home.path().join("control/server.sock");
+    let mut server = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    let state = maintenance_status(&socket_path).await?;
+    assert_eq!(state["accepting"], true);
+    assert_eq!(state["restored"], false);
+    assert_eq!(std::fs::read(&path)?, corrupted);
+    start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    request_shutdown(&server, &socket_path).await?;
+    wait_success(&mut server).await?;
+    Ok(())
+}
