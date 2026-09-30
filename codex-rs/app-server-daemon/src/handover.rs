@@ -46,7 +46,7 @@ pub struct HandoverStatus {
     pub target: PathBuf,
     pub previous: PathBuf,
     pub reason: Option<String>,
-    pub compatibility: Vec<u8>,
+    pub compatibility: String,
 }
 
 fn record_path(daemon: &Daemon) -> PathBuf {
@@ -233,7 +233,7 @@ pub async fn cancel_handover() -> Result<HandoverStatus> {
     }
 }
 
-async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
+async fn compatibility(binary: &Path) -> Result<String> {
     let isolated = tempfile::tempdir()?;
     let output = tokio::time::timeout(
         Duration::from_secs(10),
@@ -251,7 +251,7 @@ async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
         output.status.success() && output.stdout.len() < 65536,
         "package does not support verified cooperative handover"
     );
-    Ok(output.stdout)
+    Ok(blake3::hash(&output.stdout).to_hex().to_string())
 }
 
 async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
