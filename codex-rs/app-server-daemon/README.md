@@ -62,16 +62,43 @@ not affect an explicit `codex update` command or `daemon update`.
 disabled. It also returns pinned or local managed packages to production update
 eligibility, preserving the automatic-update preference. Legacy installations
 migrate to the dedicated root once the published installer and release support
-migration. JSON reports `updated`, `noUpdate`, or `unsupported`, with installed
-and running versions. A running daemon restarts, so active or queued work may be
-interrupted; a stopped daemon stays stopped. Installer errors return nonzero.
-The updater uses saved network settings; CLI `-c` overrides do not reach it.
+migration. JSON reports `pending` when a compatible running server has been
+scheduled for cooperative activation; installed and serving versions remain
+separate. A stopped daemon stays stopped. Installer or compatibility errors
+return nonzero. The updater uses saved network settings; CLI `-c` overrides do
+not reach it.
 
-For all managed app-server shutdowns, including explicit stop and restart and
-updater-triggered restarts, `shutdownGraceSeconds` defaults to 60 and accepts
-an integer from 0 through 300. Zero forces shutdown immediately after requesting
-a graceful exit; the five-minute maximum bounds the wait even if a turn is still
-running.
+`codex app-server daemon handover` activates the already-selected package and
+returns an operation ID before asking agents to pause. The detached owner
+waits for persisted model/tool boundaries across roots and children. New turns
+can record input during preparation; the final commit briefly seals admission.
+Use `handover --status` for the result and `handover --cancel` before commit.
+A queued response is not a completed upgrade.
+
+Preparation has a 60-second deadline. An unfinished background terminal,
+code-mode cell, unsupported execution identity, or checkpoint failure leaves
+the original server and work available. Losing the owner's connection before
+commit releases the pauses. After commit, only the verified checkpoint permits
+bounded server teardown; uncheckpointed work is never force-stopped by this path.
+The replacement restores ownership and queued mail before continuing saved
+turns. User interruption still wins over resumption. Readiness includes a fresh
+ephemeral session through the shared endpoint.
+
+The two packages must support the maintenance protocol and have identical
+embedded database migrations. A schema-changing upgrade needs a separately
+verified migration and rollback plan. A failed candidate start restores the
+previous compatible executable when no replacement is running. An alive but
+unready replacement is retained for diagnosis rather than launching a second
+writer. If the activation owner exits after commit, `daemon start` preserves
+the committed recovery file; status reports that the original owner did not
+record completion. Unreadable recovery evidence is retained and cannot count
+as successful restoration.
+
+Explicit `daemon stop`, `daemon restart`, and confirmed package replacement
+retain their interrupting semantics. For those operations,
+`shutdownGraceSeconds` defaults to 60 and accepts an integer from 0 through
+300. Zero forces shutdown immediately after requesting a graceful exit. A bare
+SIGHUP no longer starts an unowned drain on a managed server; use `handover`.
 
 ## Bootstrap flow
 

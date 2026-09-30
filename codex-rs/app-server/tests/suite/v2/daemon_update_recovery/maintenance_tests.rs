@@ -266,3 +266,25 @@ async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> R
     wait_success(&mut server).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn maintenance_corrupt_checkpoint_is_retained_without_claiming_restoration() -> Result<()> {
+    let home = TempDir::new()?;
+    let (mock, _) = start_streaming_sse_server(vec![]).await;
+    create_config_toml(home.path(), mock.uri(), "never")?;
+    let path = daemon_recovery_file_path(home.path());
+    std::fs::create_dir_all(path.parent().context("checkpoint parent")?)?;
+    let corrupted = serde_json::to_vec(&vec!["codex-maintenance-v1:{broken"])?;
+    std::fs::write(&path, &corrupted)?;
+    let socket_path = home.path().join("control/server.sock");
+    let mut server = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    let state = maintenance_status(&socket_path).await?;
+    assert_eq!(state["accepting"], true);
+    assert_eq!(state["restored"], false);
+    assert_eq!(std::fs::read(&path)?, corrupted);
+    start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    request_shutdown(&server, &socket_path).await?;
+    wait_success(&mut server).await?;
+    Ok(())
+}

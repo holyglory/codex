@@ -43,6 +43,7 @@ pub struct InterruptedTurn {
 // Old servers accept the array and skip this non-thread entry during best-effort
 // restoration. Keeping metadata in the same atomic file avoids stale sidecars.
 const INTERRUPTION_PREFIX: &str = "codex-interrupted-v1:";
+const MAINTENANCE_PREFIX: &str = "codex-maintenance-v1:";
 
 pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
     let mut loaded: BTreeSet<String> = match std::fs::read(path) {
@@ -51,7 +52,18 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
         Err(err) => return Err(err),
     };
     let mut snapshot = RecoverySnapshot::default();
+    let mut invalid_maintenance = false;
+    let mut maintenance_seen = false;
     loaded.retain(|entry| {
+        if let Some(metadata) = entry.strip_prefix(MAINTENANCE_PREFIX) {
+            if maintenance_seen { invalid_maintenance = true; }
+            maintenance_seen = true;
+            match serde_json::from_str::<RecoverySnapshot>(metadata) {
+                Ok(saved) if saved.maintenance.is_some() => snapshot = saved,
+                _ => invalid_maintenance = true,
+            }
+            return false;
+        }
         if let Some(metadata) = entry.strip_prefix(INTERRUPTION_PREFIX) {
             if let Ok(saved) = serde_json::from_str::<RecoverySnapshot>(metadata) {
                 snapshot = saved;
@@ -61,6 +73,15 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
             true
         }
     });
+    if let Some(maintenance) = &snapshot.maintenance {
+        invalid_maintenance |= maintenance.operation_id.is_empty() || maintenance.source_pid == 0
+            || maintenance.parents.keys().cloned().collect::<BTreeSet<_>>() != loaded
+            || snapshot.interrupted.keys().any(|id| !loaded.contains(id))
+            || maintenance.mailboxes.keys().any(|id| !loaded.contains(id));
+    }
+    if invalid_maintenance {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid maintenance checkpoint"));
+    }
     snapshot.interrupted.retain(|id, _| loaded.contains(id));
     snapshot.loaded = loaded;
     Ok(snapshot)
@@ -83,8 +104,9 @@ pub fn write_candidates(path: &Path, candidates: &BTreeSet<String>) -> io::Resul
 pub fn write_snapshot(path: &Path, snapshot: &RecoverySnapshot) -> io::Result<()> {
     let mut saved = snapshot.loaded.clone();
     if !snapshot.interrupted.is_empty() || snapshot.maintenance.is_some() {
+        let prefix = if snapshot.maintenance.is_some() { MAINTENANCE_PREFIX } else { INTERRUPTION_PREFIX };
         saved.insert(format!(
-            "{INTERRUPTION_PREFIX}{}",
+            "{prefix}{}",
             serde_json::to_string(snapshot).map_err(io::Error::other)?
         ));
     }
