@@ -289,37 +289,14 @@ impl crate::CodexThread {
 
 impl crate::CodexThread {
     pub async fn record_maintenance_stop(&self, turn_id: String) -> std::io::Result<()> {
-        self.session.stop_subscription_work().await;
-        if self.session.state_db().is_some()
-            && self
-                .thread_extension_data()
-                .get::<codex_event_subscriptions::SubscriptionRunState>()
-                .is_some_and(|run| run.stop_pending.load(std::sync::atomic::Ordering::Acquire))
-        {
-            return Err(std::io::Error::other(
-                "failed to persist suspended wake permissions",
-            ));
-        }
-        self.session
-            .emit_turn_abort_lifecycle(
-                codex_protocol::protocol::TurnAbortReason::Interrupted,
-                &codex_extension_api::ExtensionData::new(turn_id.clone()),
-            )
-            .await;
-        self.session
-            .send_event_raw(codex_protocol::protocol::Event {
-                id: turn_id.clone(),
-                msg: codex_protocol::protocol::EventMsg::TurnAborted(
-                    codex_protocol::protocol::TurnAbortedEvent {
-                        turn_id: Some(turn_id),
-                        reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-                        started_at: None,
-                        completed_at: None,
-                        duration_ms: None,
-                    },
-                ),
-            })
-            .await;
-        self.flush_rollout().await
+        let (reply, completed) = tokio::sync::oneshot::channel();
+        self.io
+            .submit(codex_protocol::protocol::Op::MaintenanceStop { turn_id, reply })
+            .await
+            .map_err(std::io::Error::other)?;
+        completed
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)
     }
 }

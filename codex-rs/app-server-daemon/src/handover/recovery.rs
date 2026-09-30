@@ -75,3 +75,54 @@ pub(crate) async fn finish_orphaned(daemon: &Daemon) -> Result<()> {
     record.reason = Some("Verified recovery after the activation owner exited".into());
     save(daemon, &record)
 }
+
+pub(super) enum CommitAcknowledgement {
+    Received,
+    Missing,
+}
+
+/// A lost response can follow a successful commit. Reconcile process exit and
+/// durable ownership, but never force an unacknowledged live process to stop.
+pub(super) async fn wait_for_old_exit(
+    daemon: &Daemon,
+    record: &HandoverStatus,
+    backend: &PidBackend,
+    pid: u32,
+    acknowledgement: CommitAcknowledgement,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 30);
+    while backend.is_starting_or_running().await? {
+        if tokio::time::Instant::now() >= deadline {
+            ensure!(
+                matches!(acknowledgement, CommitAcknowledgement::Received),
+                "commit was not acknowledged and the old process remains alive; no process was killed"
+            );
+            let saved = codex_app_server_transport::daemon_recovery::read_snapshot(
+                &daemon.recovery_file()?,
+            )?;
+            ensure!(
+                saved
+                    .maintenance
+                    .as_ref()
+                    .is_some_and(|saved| saved.operation_id == record.operation_id
+                        && saved.source_pid == pid),
+                "old server did not commit the matching checkpoint; no process was killed"
+            );
+            backend.stop_with_grace(/*grace_seconds*/ 0).await?;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
+    }
+    let checkpoint =
+        codex_app_server_transport::daemon_recovery::read_snapshot(&daemon.recovery_file()?)?;
+    ensure!(
+        checkpoint
+            .maintenance
+            .as_ref()
+            .is_some_and(
+                |saved| saved.operation_id == record.operation_id && saved.source_pid == pid
+            ),
+        "old server exited without its committed checkpoint; activation is incomplete"
+    );
+    Ok(())
+}

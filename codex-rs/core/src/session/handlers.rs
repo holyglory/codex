@@ -497,6 +497,11 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
+                Op::MaintenanceStop { turn_id, reply } => {
+                    let result = sess.apply_maintenance_stop(turn_id).await;
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::MaintenanceBarrier { reply } => {
                     let _ = reply.send(());
                     false

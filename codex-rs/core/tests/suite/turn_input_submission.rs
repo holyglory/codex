@@ -1159,15 +1159,40 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
     }
     drop(pause);
     if stop {
-        test.codex
+        let new_pause = test
+            .codex
+            .request_maintenance_pause()
+            .expect("new turn checkpoint");
+        let newer = test
+            .codex
             .start_or_steer_turn(user_message_request("new work after Stop"))
             .await?;
+        let TurnInputSubmission::Started { turn_id: newer_id } = newer else {
+            panic!("new user work must start");
+        };
+        test.codex.record_maintenance_stop(turn_id.clone()).await?;
+        assert_eq!(
+            test.codex.agent_status().await,
+            codex_protocol::protocol::AgentStatus::Running
+        );
+        drop(new_pause);
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
         .await;
         let request = response.single_request();
         assert!(request.body_contains_text("new work after Stop"));
+        let path = test.codex.rollout_path().expect("persistent history");
+        let history = tokio::fs::read_to_string(path).await?;
+        assert!(history.contains(&newer_id));
+        let mut resumed_builder = test_codex();
+        let resumed = resumed_builder.restart(&server, &test).await?;
+        let before = resumed.codex.agent_status().await;
+        resumed
+            .codex
+            .record_maintenance_stop(turn_id.clone())
+            .await?;
+        assert_eq!(resumed.codex.agent_status().await, before);
     } else {
         let event = wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))

@@ -414,63 +414,41 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
     }
     record.phase = HandoverPhase::Committing;
     save(daemon, record)?;
-    socket
-        .send(Message::Text(
-            serde_json::to_string(&MaintenanceCommand::Commit {
-                operation_id: record.operation_id.clone(),
-                pid,
-            })?
-            .into(),
-        ))
-        .await?;
-    let receipt = tokio::time::timeout(Duration::from_secs(/*secs*/ 40), socket.next())
-        .await?
-        .context("server closed without acknowledging its commit")??;
-    let Message::Text(receipt) = receipt else {
-        anyhow::bail!("invalid commit receipt");
+    let acknowledgement = async {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&MaintenanceCommand::Commit {
+                    operation_id: record.operation_id.clone(),
+                    pid,
+                })?
+                .into(),
+            ))
+            .await?;
+        let receipt = socket
+            .next()
+            .await
+            .context("server closed without acknowledging its commit")??;
+        let Message::Text(receipt) = receipt else {
+            anyhow::bail!("invalid commit receipt");
+        };
+        ensure!(receipt.len() <= 1024, "invalid commit receipt size");
+        ensure!(
+            serde_json::from_str::<MaintenanceResponse>(&receipt)?
+                == MaintenanceResponse::Committed {
+                    operation_id: record.operation_id.clone(),
+                    pid
+                },
+            "server did not confirm its sealed checkpoint"
+        );
+        Ok::<(), anyhow::Error>(())
     };
-    ensure!(receipt.len() <= 1024, "invalid commit receipt size");
-    ensure!(
-        serde_json::from_str::<MaintenanceResponse>(&receipt)?
-            == MaintenanceResponse::Committed {
-                operation_id: record.operation_id.clone(),
-                pid
-            },
-        "server did not confirm its sealed checkpoint; no process was killed"
-    );
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while backend.is_starting_or_running().await? {
-        if tokio::time::Instant::now() >= deadline {
-            let saved = codex_app_server_transport::daemon_recovery::read_snapshot(
-                &daemon.recovery_file()?,
-            )?;
-            ensure!(
-                saved
-                    .maintenance
-                    .as_ref()
-                    .is_some_and(|checkpoint| checkpoint.operation_id == record.operation_id
-                        && checkpoint.source_pid == pid),
-                "old server did not commit a checkpoint; no process was killed"
-            );
-            // Every participant is already parked and persisted. This bounds
-            // server teardown without interrupting uncheckpointed agent work.
-            backend.stop_with_grace(/*grace_seconds*/ 0).await?;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let acknowledgement =
+        match tokio::time::timeout(Duration::from_secs(/*secs*/ 40), acknowledgement).await {
+            Ok(Ok(())) => recovery::CommitAcknowledgement::Received,
+            Ok(Err(_)) | Err(_) => recovery::CommitAcknowledgement::Missing,
+        };
+    recovery::wait_for_old_exit(daemon, record, &backend, pid, acknowledgement).await?;
     drop(socket);
-    let checkpoint =
-        codex_app_server_transport::daemon_recovery::read_snapshot(&daemon.recovery_file()?)?;
-    ensure!(
-        checkpoint
-            .maintenance
-            .as_ref()
-            .is_some_and(
-                |saved| saved.operation_id == record.operation_id && saved.source_pid == pid
-            ),
-        "old server exited without its committed checkpoint; activation is incomplete"
-    );
     record.phase = HandoverPhase::Starting;
     save(daemon, record)?;
     let started = daemon

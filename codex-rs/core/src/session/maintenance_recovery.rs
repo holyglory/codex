@@ -134,3 +134,89 @@ impl Session {
         Ok(())
     }
 }
+
+impl Session {
+    /// Runs through the ordered submission loop, so a newer user start wins over
+    /// a delayed Stop belonging to the previous server generation.
+    pub(super) async fn apply_maintenance_stop(
+        self: &Arc<Self>,
+        turn_id: String,
+    ) -> codex_protocol::error::Result<()> {
+        use codex_protocol::protocol::Event;
+        use codex_protocol::protocol::EventMsg;
+        use codex_protocol::protocol::TurnAbortReason;
+        use codex_protocol::protocol::TurnAbortedEvent;
+        use codex_rollout::RolloutItem;
+        if self
+            .state
+            .lock()
+            .await
+            .last_started_turn_id
+            .as_ref()
+            .is_some_and(|id| id != &turn_id)
+        {
+            return Ok(());
+        }
+        if let Some(path) = self
+            .current_rollout_path()
+            .await
+            .map_err(|error| codex_protocol::error::CodexErr::Fatal(error.to_string()))?
+        {
+            let (history, _, _) = codex_rollout::RolloutRecorder::load_rollout_items(&path)
+                .await
+                .map_err(|error| codex_protocol::error::CodexErr::Fatal(error.to_string()))?;
+            if history
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event)) => Some(&event.turn_id),
+                    _ => None,
+                })
+                .is_some_and(|latest| latest != &turn_id)
+            {
+                return Ok(());
+            }
+        }
+        let active = self.active_turn.lock().await;
+        if let Some(task) = active.as_ref().and_then(|active| active.task.as_ref()) {
+            let same = task.turn_context.sub_id == turn_id;
+            drop(active);
+            if same {
+                self.interrupt_task().await;
+            }
+            return Ok(());
+        }
+        drop(active);
+        self.stop_subscription_work().await;
+        if self.state_db().is_some()
+            && self
+                .services
+                .thread_extension_data
+                .get::<codex_event_subscriptions::SubscriptionRunState>()
+                .is_some_and(|run| run.stop_pending.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(codex_protocol::error::CodexErr::Fatal(
+                "failed to persist suspended wake permissions".into(),
+            ));
+        }
+        self.emit_turn_abort_lifecycle(
+            TurnAbortReason::Interrupted,
+            &codex_extension_api::ExtensionData::new(turn_id.clone()),
+        )
+        .await;
+        self.send_event_raw(Event {
+            id: turn_id.clone(),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some(turn_id),
+                reason: TurnAbortReason::Interrupted,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        })
+        .await;
+        self.flush_rollout()
+            .await
+            .map_err(|error| codex_protocol::error::CodexErr::Fatal(error.to_string()))
+    }
+}

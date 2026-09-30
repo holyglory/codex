@@ -684,3 +684,5 @@ fn packaged_daemon_explicit_replacement_migrates_running_legacy() -> Result<()> 
 
 #[path = "app_server_daemon/handover_tests.rs"]
 mod handover_tests;
+#[path = "app_server_daemon/lost_commit_proxy.rs"]
+mod lost_commit_proxy;
