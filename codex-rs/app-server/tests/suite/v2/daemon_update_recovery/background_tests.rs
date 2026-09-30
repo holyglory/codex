@@ -211,9 +211,9 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
                 item["call_id"] == "background" && item["type"] == "custom_tool_call_output"
             })
             .context("yielded cell output")?;
-        let text = output["output"][0]["text"]
-            .as_str()
-            .context("cell output text")?;
+        let body: codex_protocol::models::FunctionCallOutputBody =
+            serde_json::from_value(output["output"].clone())?;
+        let text = body.to_text().context("cell output text")?;
         let cell_id = text
             .split_once("Script running with cell ID ")
             .and_then(|(_, tail)| tail.split_whitespace().next())
