@@ -51,3 +51,63 @@ never move `main` or `upstream-sync` before the release gates pass.
 No update procedure creates a release, stages npm packages, publishes npm
 packages, installs binaries, or deploys a running service unless those actions
 are approved separately.
+
+## Rebase lessons learned
+
+Keep this section current when a stable update exposes a repeatable failure
+mode. These are engineering notes for the next rebase; the Coordinator remains
+the authority for release outcomes and verification receipts.
+
+- **Start with a patch inventory and range-diff.** Rebase the ordered fork stack
+  in an isolated worktree, then compare each replayed commit with its original
+  using `git range-diff`. A downstream commit may have a new hash while still
+  being the same patch. In particular, verify known commits such as `d6e5e7687f`
+  by patch identity before applying them again.
+- **Review the resolved code before testing.** Check account routing, auth
+  ownership, API error mapping, generated protocol exports, test fixtures, and
+  package version metadata before spending time on the full suite. Resolve
+  upstream interface changes at the current extension point instead of keeping
+  an old compatibility shim.
+- **Account routing must be resolved before auth is paired.** When a request can
+  select a profile or workspace, clone the current request config, apply the
+  current-account routing policy, and only then construct connector auth. Pairing
+  auth with the pre-routing config silently loses account policy on connector
+  requests.
+- **Capacity error mapping is deliberately narrow.** Only HTTP 503 bodies with
+  `server_is_overloaded` or `slow_down` are capacity overloads. Keep the unknown
+  503 case covered separately so a generic service-unavailable response does not
+  accidentally acquire capacity semantics during conflict resolution.
+- **Refresh generated protocol output immediately.** After resolving an
+  app-server or protocol conflict, regenerate stable and experimental schemas,
+  TypeScript exports, and any combined schema fixtures before running broad
+  tests. Schema drift otherwise obscures the actual source conflict.
+- **Treat stale fixtures as a distinct repair class.** Rebase changes can alter
+  instruction text, tool hashes, provider metadata, shell argument ordering,
+  and UI snapshots without changing the intended behavior. Inspect each diff;
+  update only fixtures whose expected output follows from the resolved source.
+  Do not accept all snapshots blindly.
+- **Guardian WebSocket fixtures must model the pool.** Test prewarm uses
+  `INITIAL_WEBSOCKET_CONNECTIONS = 2`, and the helper server handles one socket
+  at a time. Use separate scripted servers behind the existing proxy helper,
+  keep every returned server alive until the test no longer needs it, and wait
+  for the disposable warm socket to close before leasing the classifier socket.
+  A single server with two scripted connections can leave the test waiting on a
+  socket that was never accepted.
+- **Retain asynchronous test evidence.** When a focused test times out, first
+  distinguish startup/catalog, handshake/prewarm, request delivery, and score
+  publication. Add bounded diagnostics, reproduce the exact await point, then
+  remove diagnostics before committing the fixture repair.
+- **Keep environment failures separate from source regressions.** The full
+  suite may require the managed GStreamer plugin path and the repository's
+  native test environment. `just fmt` can also fail when `uv` cannot write its
+  global cache; run the Rust formatter directly to verify Rust changes and
+  report the Python cache failure instead of changing project code.
+- **Validate in increasing scope.** Run the rebase code review first, then
+  focused governed checks for each conflict repair, then one frozen complete
+  Rust/Bazel candidate validation. Do not use a full-suite failure caused by
+  stale snapshots, missing native plugins, or saturated Code Mode fixtures as
+  evidence of a production regression without reproducing the affected path.
+- **Package and publish only from the tested commit.** Confirm the release
+  version in Cargo and npm metadata, stage all seven platform tarballs from the
+  candidate artifact, verify checksums and smoke tests with a temporary
+  `CODEX_HOME`, and check npm authentication before attempting publication.
