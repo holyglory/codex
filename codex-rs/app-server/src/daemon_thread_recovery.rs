@@ -28,7 +28,7 @@ pub(crate) async fn snapshot(
     result_rx.await.map_err(io::Error::other)?
 }
 
-/// Consume the handoff before serving requests, then restore runtimes in the background.
+/// Restore runtimes while preserving committed maintenance until its owner verifies readiness.
 pub(crate) async fn start_recovery(
     path: PathBuf,
     processor: std::sync::Arc<crate::message_processor::MessageProcessor>,
@@ -59,7 +59,9 @@ pub(crate) async fn start_recovery(
         return Ok(tokio::spawn(async move {
             match processor.restore_maintenance(candidates, admission).await {
                 Ok(()) => {
-                    let _ = tokio::fs::remove_file(path).await;
+                    // Only the detached owner may acknowledge this generation after
+                    // real fresh-session verification. A crash before that point must
+                    // leave the checkpoint available to the previous release.
                     processor.turn_admission.restoration_finished();
                 }
                 Err(reason) => {

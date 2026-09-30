@@ -27,6 +27,7 @@ pub struct MaintenanceSnapshot {
     pub parents: BTreeMap<String, Option<String>>,
     #[serde(default)]
     pub mailboxes: BTreeMap<String, Vec<codex_core::MaintenanceMail>>,
+    pub turn_contexts: BTreeMap<String, codex_core::MaintenanceTurnContext>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -80,7 +81,17 @@ pub fn read_snapshot(path: &Path) -> io::Result<RecoverySnapshot> {
             || maintenance.source_pid == 0
             || maintenance.parents.keys().cloned().collect::<BTreeSet<_>>() != loaded
             || snapshot.interrupted.keys().any(|id| !loaded.contains(id))
-            || maintenance.mailboxes.keys().any(|id| !loaded.contains(id));
+            || maintenance.mailboxes.keys().any(|id| !loaded.contains(id))
+            || maintenance
+                .turn_contexts
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                != snapshot
+                    .interrupted
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
     }
     if invalid_maintenance {
         return Err(io::Error::new(
@@ -123,5 +134,13 @@ pub fn write_snapshot(path: &Path, snapshot: &RecoverySnapshot) -> io::Result<()
     write_atomically(
         path,
         &serde_json::to_string(&saved).map_err(io::Error::other)?,
-    )
+    )?;
+    if snapshot.maintenance.is_some() {
+        std::fs::File::open(path)?.sync_all()?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+    }
+    Ok(())
 }

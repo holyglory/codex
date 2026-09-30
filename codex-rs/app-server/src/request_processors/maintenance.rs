@@ -49,6 +49,9 @@ impl ThreadRequestProcessor {
                     .map_err(|_| "threadChanged")?;
                 let config = thread.config_snapshot().await;
                 if config.ephemeral {
+                    if thread.maintenance_has_background_work().await {
+                        return Err("backgroundWork");
+                    }
                     if !thread.maintenance_is_idle().await {
                         return Err("nonpersistentWork");
                     }
@@ -116,6 +119,7 @@ impl ThreadRequestProcessor {
         let mut saved = RecoverySnapshot::default();
         let mut parents = BTreeMap::new();
         let mut mailboxes = BTreeMap::new();
+        let mut turn_contexts = BTreeMap::new();
         for (id, (thread, pause)) in &paused.threads {
             let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
             let current = self
@@ -163,6 +167,13 @@ impl ThreadRequestProcessor {
             saved.loaded.insert(id.clone());
             parents.insert(id.clone(), config.parent_thread_id.map(|id| id.to_string()));
             if let Some((turn_id, options, environment)) = interrupted {
+                turn_contexts.insert(
+                    id.clone(),
+                    thread
+                        .maintenance_turn_context()
+                        .await
+                        .ok_or("turnChanged")?,
+                );
                 saved.interrupted.insert(
                     id.clone(),
                     InterruptedTurn {
@@ -187,24 +198,29 @@ impl ThreadRequestProcessor {
             source_pid: std::process::id(),
             parents,
             mailboxes,
+            turn_contexts,
         });
         Ok(saved)
     }
 
     pub(crate) async fn resume_maintenance_turns(
         &self,
-        turns: Vec<(String, InterruptedTurn)>,
+        turns: Vec<(String, InterruptedTurn, codex_core::MaintenanceTurnContext)>,
     ) -> Result<(), &'static str> {
         let mut prepared = Vec::new();
-        for (id, saved) in turns {
+        for (id, saved, context) in turns {
             if let Some(continuation) = self.prepare_daemon_continuation(&id, saved).await? {
-                prepared.push(continuation);
+                prepared.push((continuation, context));
             }
         }
-        for continuation in prepared {
+        for (continuation, context) in prepared {
             match continuation
                 .thread
-                .resume_maintenance_checkpoint(continuation.turn_id, continuation.options)
+                .resume_maintenance_checkpoint(
+                    continuation.turn_id,
+                    context.options.clone(),
+                    context,
+                )
                 .await
                 .map_err(|_| "continuationFailed")?
             {
@@ -239,8 +255,9 @@ impl ThreadRequestProcessor {
     pub(crate) async fn restore_maintenance_threads(
         &self,
         mut saved: RecoverySnapshot,
-    ) -> Result<Vec<(String, InterruptedTurn)>, &'static str> {
-        let maintenance = saved.maintenance.take().ok_or("missingMaintenance")?;
+    ) -> Result<Vec<(String, InterruptedTurn, codex_core::MaintenanceTurnContext)>, &'static str>
+    {
+        let mut maintenance = saved.maintenance.take().ok_or("missingMaintenance")?;
         let mut pending = maintenance.parents;
         let mut loaded = std::collections::BTreeSet::new();
         let mut restore_order = Vec::new();
@@ -297,7 +314,15 @@ impl ThreadRequestProcessor {
         Ok(restore_order
             .into_iter()
             .rev()
-            .filter_map(|id| saved.interrupted.remove(&id).map(|turn| (id, turn)))
+            .filter_map(|id| {
+                saved.interrupted.remove(&id).map(|turn| {
+                    let context = maintenance
+                        .turn_contexts
+                        .remove(&id)
+                        .expect("validated maintenance context");
+                    (id, turn, context)
+                })
+            })
             .collect())
     }
 }

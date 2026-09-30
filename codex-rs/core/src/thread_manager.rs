@@ -2408,6 +2408,12 @@ impl ThreadManagerState {
                     session_configured.rollout_path.clone(),
                     session_source,
                 ));
+                if let Err(error) = thread.restore_saved_maintenance_mailbox().await {
+                    let _ = thread.io.shutdown_and_wait().await;
+                    return Err(CodexErr::Fatal(format!(
+                        "failed to restore durable agent mail: {error}"
+                    )));
+                }
                 e.insert(thread.clone());
                 return Ok(NewThread {
                     thread_id,

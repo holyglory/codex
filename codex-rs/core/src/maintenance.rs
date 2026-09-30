@@ -212,118 +212,60 @@ impl crate::CodexThread {
         &self,
         turn_id: String,
         options: crate::TurnStartOptions,
+        context: crate::MaintenanceTurnContext,
     ) -> codex_protocol::error::Result<crate::TurnInputSubmission> {
         self.session
             .services
             .agent_control
             .ensure_execution_capacity_for_turn_start(self)
             .await?;
+        self.thread_extension_data().insert(
+            crate::session::maintenance_recovery::PendingMaintenanceContext(std::sync::Mutex::new(
+                Some((turn_id.clone(), context)),
+            )),
+        );
         self.io
             .submit_recover_turn(Default::default(), options, None, turn_id)
             .await
     }
 }
 
-/// Pending agent mail belongs to its conversation, never the usage/event log.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct MaintenanceMail {
-    pub communication: codex_protocol::protocol::InterAgentCommunication,
-    pub options: crate::TurnStartOptions,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(tag = "type", content = "payload")]
-enum HistoryIdentity {
-    #[serde(rename = "response_item")]
-    ResponseItem(HistoryPayloadIdentity),
-    #[serde(rename = "inter_agent_communication")]
-    AgentMail(HistoryPayloadIdentity),
-    #[serde(other)]
-    Other,
-}
-
-#[derive(serde::Deserialize)]
-struct HistoryPayloadIdentity {
-    #[serde(default)]
-    id: Option<codex_protocol::ResponseItemId>,
-}
-
 impl crate::CodexThread {
-    pub async fn maintenance_mailbox(&self) -> Vec<MaintenanceMail> {
-        self.session.input_queue.maintenance_mailbox().await
+    /// Requests a reversible maintenance pause after the current model/tool step.
+    /// The caller must separately account for background processes and queued input.
+    pub fn request_maintenance_pause(&self) -> Option<crate::MaintenancePause> {
+        self.thread_extension_data()
+            .get::<crate::maintenance::MaintenanceGate>()?
+            .request(self.io.agent_status.clone())
     }
 
-    /// Restore only mail not already recorded before a prior recovery attempt.
-    /// The streaming decoder ignores payload content, including compacted history.
-    pub async fn restore_maintenance_mailbox(
-        &self,
-        mail: Vec<MaintenanceMail>,
-    ) -> std::io::Result<()> {
-        if mail.is_empty() {
-            return Ok(());
-        }
-        let path = self
-            .rollout_path()
-            .ok_or_else(|| std::io::Error::other("missing mailbox history"))?;
-        let path = path.clone();
-        let wanted: std::collections::BTreeSet<_> =
-            mail.iter()
-                .map(|entry| {
-                    entry.communication.id.clone().ok_or_else(|| {
-                        std::io::Error::other("mailbox entry lacks its stable identity")
-                    })
-                })
-                .collect::<std::io::Result<_>>()?;
-        let mut seen = tokio::task::spawn_blocking(
-            move || -> std::io::Result<std::collections::BTreeSet<_>> {
-                let input = std::io::BufReader::new(std::fs::File::open(path)?);
-                let mut seen = std::collections::BTreeSet::new();
-                for row in
-                    serde_json::Deserializer::from_reader(input).into_iter::<HistoryIdentity>()
-                {
-                    let row = row.map_err(std::io::Error::other)?;
-                    let payload = match row {
-                        HistoryIdentity::ResponseItem(payload)
-                        | HistoryIdentity::AgentMail(payload) => Some(payload),
-                        HistoryIdentity::Other => None,
-                    };
-                    if let Some(id) = payload.and_then(|payload| payload.id)
-                        && wanted.contains(&id)
-                    {
-                        seen.insert(id);
-                    }
-                    if seen.len() == wanted.len() {
-                        break;
-                    }
-                }
-                Ok(seen)
-            },
-        )
-        .await
-        .map_err(std::io::Error::other)??;
-        seen.extend(
-            self.maintenance_mailbox()
-                .await
-                .into_iter()
-                .filter_map(|entry| entry.communication.id),
-        );
-        for entry in mail {
-            if entry
-                .communication
-                .id
-                .as_ref()
-                .is_some_and(|id| seen.contains(id))
-            {
-                continue;
-            }
-            if let Some(id) = entry.communication.id.clone() {
-                seen.insert(id);
-            }
-            self.session
+    /// Reports whether this runtime currently owns any executing turn task.
+    pub async fn maintenance_is_idle(&self) -> bool {
+        self.session.active_turn.lock().await.is_none()
+    }
+
+    /// Pending turn input must reach its persisted checkpoint before commit.
+    pub async fn maintenance_has_pending_input(&self) -> bool {
+        !self.maintenance_is_idle().await
+            && self
+                .session
                 .input_queue
-                .enqueue_mailbox_communication(entry.communication, entry.options)
-                .await;
-        }
-        Ok(())
+                .has_pending_input(&self.session.active_turn)
+                .await
+    }
+
+    /// Checks process-local work that cannot be transferred in a maintenance checkpoint.
+    pub async fn maintenance_has_background_work(&self) -> bool {
+        self.session.services.code_mode_service.has_active_cells()
+            || !self.list_background_terminals().await.is_empty()
+            || futures::FutureExt::now_or_never(
+                self.session
+                    .services
+                    .hooks
+                    .load_full()
+                    .wait_for_async_hooks(),
+            )
+            .is_none()
+            || !self.session.async_hook_results.is_empty()
     }
 }

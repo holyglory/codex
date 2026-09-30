@@ -108,6 +108,12 @@ impl MessageProcessor {
         };
         if !saved || cancelled.is_cancelled() { return; }
         if std::fs::rename(&staged, &recovery_path).is_err() { return; }
+        #[cfg(unix)]
+        if recovery_path.parent().is_none_or(|parent| std::fs::File::open(parent).and_then(|directory| directory.sync_all()).is_err()) {
+            // A published but unconfirmed snapshot must not authorize shutdown.
+            let _ = std::fs::remove_file(&recovery_path);
+            return;
+        }
         self.turn_admission.begin_drain();
         paused.commit();
         drop(admission);

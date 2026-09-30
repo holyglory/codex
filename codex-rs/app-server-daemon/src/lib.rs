@@ -208,7 +208,6 @@ pub(crate) enum RestartIfRunningOutcome {
     NotReady,
     AlreadyCurrent,
     Scheduled,
-    Restarted,
 }
 
 #[cfg(any(unix, windows))]
@@ -419,8 +418,12 @@ impl Daemon {
             if let Err(err) = thread_recovery::prepare_fresh_start(self) {
                 eprintln!("warning: failed to clear stale daemon recovery before start: {err}");
             }
-            prepare_install::prepare(self, &settings).await?;
-            managed.managed_codex_bin = self.current_managed_codex_bin()?;
+            if let Some(recovery_binary) = handover::recovery::recovery_binary(self).await? {
+                managed.managed_codex_bin = recovery_binary;
+            } else {
+                prepare_install::prepare(self, &settings).await?;
+                managed.managed_codex_bin = self.current_managed_codex_bin()?;
+            }
             managed.ensure_managed_codex_bin()?;
             // Only a fresh launch may replace these settings. Keep them for restarts
             // and updates, without changing the user's config or a running daemon.

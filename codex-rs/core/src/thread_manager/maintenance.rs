@@ -34,7 +34,22 @@ impl ThreadManager {
         if self.get_thread(child).await.is_ok() {
             return Ok(());
         }
-        let config = parent.session.get_config().await.as_ref().clone();
+        let mut config = parent.session.get_config().await.as_ref().clone();
+        config.model = stored.model.clone();
+        config.model_reasoning_effort = stored.reasoning_effort.clone();
+        if config.model_provider_id != stored.model_provider {
+            config.model_provider = config
+                .model_providers
+                .get(&stored.model_provider)
+                .cloned()
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest(format!(
+                        "Model provider `{}` not found",
+                        stored.model_provider
+                    ))
+                })?;
+            config.model_provider_id = stored.model_provider.clone();
+        }
         let control = parent
             .session
             .services

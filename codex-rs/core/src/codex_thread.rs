@@ -246,36 +246,6 @@ impl CodexThread {
         self.session.services.analytics_events_client.is_enabled()
     }
 
-    /// Requests a reversible maintenance pause after the current model/tool step.
-    /// The caller must separately account for background processes and queued input.
-    pub fn request_maintenance_pause(&self) -> Option<crate::MaintenancePause> {
-        self.thread_extension_data()
-            .get::<crate::maintenance::MaintenanceGate>()?
-            .request(self.io.agent_status.clone())
-    }
-
-    /// Reports whether this runtime currently owns any executing turn task.
-    pub async fn maintenance_is_idle(&self) -> bool {
-        self.session.active_turn.lock().await.is_none()
-    }
-
-    /// Pending turn input must reach its persisted checkpoint before commit.
-    pub async fn maintenance_has_pending_input(&self) -> bool {
-        !self.maintenance_is_idle().await
-            && self
-                .session
-                .input_queue
-                .has_pending_input(&self.session.active_turn)
-                .await
-    }
-
-    /// Checks process-local work that cannot be transferred in a maintenance checkpoint.
-    pub async fn maintenance_has_background_work(&self) -> bool {
-        self.session.services.code_mode_service.has_active_cells()
-            || !self.list_background_terminals().await.is_empty()
-            || !self.session.async_hook_results.is_empty()
-    }
-
     /// Returns extension-owned data attached to this thread runtime.
     pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
         &self.session.services.thread_extension_data

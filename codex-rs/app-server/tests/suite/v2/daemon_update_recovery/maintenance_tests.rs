@@ -12,6 +12,7 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
     let mut server = spawn_server(home.path(), &socket_path)?;
     let mut client = connect_default_daemon_client(&socket_path).await?;
     let thread = start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    let mut expected = std::collections::BTreeSet::from([thread.thread.id.clone()]);
     for (operation_id, commit) in [("cancelled", false), ("committed", true)] {
         let pid = server.id().context("server pid")?;
         let stream = UnixStream::connect(&socket_path).await?;
@@ -42,7 +43,7 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
         // Preparation keeps fresh sessions available; commit must also capture
         // runtimes created after the initial readiness receipt.
         let added = start_thread(&mut client, /*id*/ 20, json!({})).await?;
-        assert!(!added.thread.id.is_empty());
+        expected.insert(added.thread.id);
         let command = if commit {
             MaintenanceCommand::Commit {
                 operation_id: operation_id.into(),
@@ -60,7 +61,8 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
             maintenance.close(None).await?;
             timeout(DEFAULT_READ_TIMEOUT, async {
                 loop {
-                    if start_thread(&mut client, /*id*/ 3, json!({})).await.is_ok() {
+                    if let Ok(added) = start_thread(&mut client, /*id*/ 3, json!({})).await {
+                        expected.insert(added.thread.id);
                         break;
                     }
                     sleep(Duration::from_millis(25)).await;
@@ -72,7 +74,7 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
         }
     }
     let saved = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
-    assert!(saved.loaded.contains(&thread.thread.id));
+    assert_eq!(saved.loaded, expected);
     assert_eq!(
         saved
             .maintenance
@@ -82,23 +84,32 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
     );
     let mut successor = spawn_server(home.path(), &socket_path)?;
     let mut client = connect_default_daemon_client(&socket_path).await?;
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            if request(
-                &mut client,
-                /*id*/ 4,
-                "thread/resume",
-                json!({"threadId":thread.thread.id}),
-            )
-            .await
-            .is_ok()
-            {
-                break;
+    for replacement in 0..2 {
+        timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                let loaded =
+                    request(&mut client, /*id*/ 4, "thread/loaded/list", json!({})).await?;
+                let ids: std::collections::BTreeSet<String> =
+                    serde_json::from_value(loaded["data"].clone())?;
+                if ids == expected && maintenance_status(&socket_path).await?["restored"] == true {
+                    break;
+                }
+                sleep(Duration::from_millis(/*millis*/ 25)).await;
             }
-            sleep(Duration::from_millis(25)).await;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        assert!(
+            daemon_recovery_file_path(home.path()).exists(),
+            "owner has not verified this generation yet"
+        );
+        if replacement == 0 {
+            successor.kill().await?;
+            successor.wait().await?;
+            successor = spawn_server(home.path(), &socket_path)?;
+            client = connect_default_daemon_client(&socket_path).await?;
         }
-    })
-    .await?;
+    }
     start_thread(&mut client, /*id*/ 5, json!({})).await?;
     request_shutdown(&successor, &socket_path).await?;
     wait_success(&mut successor).await?;

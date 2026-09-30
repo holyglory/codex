@@ -1,4 +1,5 @@
 //! Cooperative upgrades owned by the existing detached daemon lifecycle.
+pub(crate) mod recovery;
 use crate::Daemon;
 use crate::backend::PidBackend;
 use crate::client;
@@ -45,6 +46,7 @@ pub struct HandoverStatus {
     pub target: PathBuf,
     pub previous: PathBuf,
     pub reason: Option<String>,
+    pub compatibility: Vec<u8>,
 }
 
 fn record_path(daemon: &Daemon) -> PathBuf {
@@ -133,8 +135,9 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
     else {
         anyhow::bail!("server is not accepting cooperative maintenance")
     };
+    let compatibility = compatibility(&target).await?;
     ensure!(
-        compatibility(&target).await? == compatibility(&previous).await?,
+        compatibility == self::compatibility(&previous).await?,
         "selected package cannot perform a compatible cooperative handover"
     );
     let record = HandoverStatus {
@@ -147,6 +150,7 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
         target,
         previous,
         reason: None,
+        compatibility,
     };
     save(&daemon, &record)?;
     let _ = std::fs::remove_file(daemon.pid_file.with_file_name("handover.cancel"));
@@ -199,7 +203,33 @@ pub async fn cancel_handover() -> Result<HandoverStatus> {
         daemon.pid_file.with_file_name("handover.cancel"),
         &record.operation_id,
     )?;
-    Ok(record)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
+    loop {
+        let current = read(&daemon)?;
+        ensure!(
+            current.operation_id == record.operation_id,
+            "handover operation changed while cancelling"
+        );
+        match current.phase {
+            HandoverPhase::Cancelled => return Ok(current),
+            HandoverPhase::Queued | HandoverPhase::Preparing => {}
+            HandoverPhase::Committing
+            | HandoverPhase::Starting
+            | HandoverPhase::Succeeded
+            | HandoverPhase::Failed
+            | HandoverPhase::RolledBack
+            | HandoverPhase::NeedsAttention => {
+                anyhow::bail!(
+                    "cancellation was not accepted before the commit boundary; inspect handover status"
+                )
+            }
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "cancellation has not been acknowledged; inspect handover status"
+        );
+        tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
+    }
 }
 
 async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
@@ -279,7 +309,8 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
     // Equality of embedded migrations is intentionally conservative. Schema
     // changes require an explicit migration/recovery plan, not binary rollback.
     ensure!(
-        compatibility(&record.target).await? == compatibility(&record.previous).await?,
+        compatibility(&record.target).await? == record.compatibility
+            && compatibility(&record.previous).await? == record.compatibility,
         "package schemas differ; cooperative rollback has not been established"
     );
     let settings = daemon.load_settings().await?;
@@ -408,12 +439,24 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     drop(socket);
+    let checkpoint =
+        codex_app_server_transport::daemon_recovery::read_snapshot(&daemon.recovery_file()?)?;
+    ensure!(
+        checkpoint
+            .maintenance
+            .as_ref()
+            .is_some_and(
+                |saved| saved.operation_id == record.operation_id && saved.source_pid == pid
+            ),
+        "old server exited without its committed checkpoint; activation is incomplete"
+    );
     record.phase = HandoverPhase::Starting;
     save(daemon, record)?;
     let started = daemon
         .start_managed_backend_with_bin(&settings, &record.target)
         .await;
     if started.is_ok() && wait_ready(daemon, &record.target).await.is_ok() {
+        recovery::acknowledge(daemon, record)?;
         record.phase = HandoverPhase::Succeeded;
         return Ok(());
     }
@@ -426,6 +469,7 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
         .start_managed_backend_with_bin(&settings, &record.previous)
         .await?;
     wait_ready(daemon, &record.previous).await?;
+    recovery::acknowledge(daemon, record)?;
     record.phase = HandoverPhase::RolledBack;
     anyhow::bail!("replacement failed; previous compatible release restored")
 }

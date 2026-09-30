@@ -255,6 +255,23 @@ async fn delete_thread_after_reference_check(
                 message: format!("failed to stop thread writer before deletion: {err}"),
             })?;
     }
+    match tokio::fs::remove_file(
+        store
+            .config
+            .codex_home
+            .join("maintenance-inbox")
+            .join(format!("{thread_id}.json")),
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(ThreadStoreError::Internal {
+                message: format!("failed to delete pending agent mail for {thread_id}: {error}"),
+            });
+        }
+    }
     let found_rollout_path = !thread_rollouts.paths.is_empty();
     for rollout_path in thread_rollouts.paths {
         delete_rollout_file(store, rollout_path.as_path())?;

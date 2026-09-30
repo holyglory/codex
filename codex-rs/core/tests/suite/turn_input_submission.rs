@@ -1159,7 +1159,15 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
     }
     drop(pause);
     if stop {
-        assert!(response.requests().is_empty());
+        test.codex
+            .start_or_steer_turn(user_message_request("new work after Stop"))
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let request = response.single_request();
+        assert!(request.body_contains_text("new work after Stop"));
     } else {
         let event = wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
