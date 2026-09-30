@@ -312,13 +312,16 @@ fn cooperative_handover_live_unready_candidate_keeps_checkpoint_and_single_write
     wait_for_exit(original_pid)?;
     let checkpoint_path = state.join("loaded-threads.json");
     let checkpoint_bytes = std::fs::read(&checkpoint_path)?;
-    let snapshot = codex_app_server_transport::daemon_recovery::read_snapshot(&checkpoint_path)?;
-    assert!(snapshot.loaded.contains(thread_id));
-    let retained = snapshot.maintenance.context("maintenance receipt")?;
-    assert_eq!(
-        (retained.operation_id.as_str(), retained.source_pid),
-        (operation, original_pid)
-    );
+    let saved: Vec<String> = serde_json::from_slice(&checkpoint_bytes)?;
+    assert!(saved.iter().any(|id| id == thread_id));
+    let snapshot: Value = serde_json::from_str(
+        saved
+            .iter()
+            .find_map(|entry| entry.strip_prefix("codex-maintenance-v1:"))
+            .context("maintenance receipt")?,
+    )?;
+    assert_eq!(snapshot["maintenance"]["operation_id"], operation);
+    assert_eq!(snapshot["maintenance"]["source_pid"], original_pid);
 
     // A successful initialize is insufficient: graph restoration must also succeed.
     let status = daemon.lifecycle("version")?;
