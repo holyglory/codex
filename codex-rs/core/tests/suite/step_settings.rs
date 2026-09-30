@@ -1976,6 +1976,25 @@ async fn sparse_updates_preserve_divergent_active_and_future_models() -> Result<
     assert_eq!(second_request.turn_id, request.turn_id);
     assert_eq!(second_request.call_id, "pause-second-step");
 
+    let execution_model = test
+        .codex
+        .thread_extension_data()
+        .get::<ModelInfo>()
+        .expect("active model metadata");
+    test.codex
+        .record_user_goal_update(codex_core::context::UserGoalUpdate::Set {
+            objective: Some("Keep the active model while recording this goal".to_string()),
+            status: None,
+        })
+        .await?;
+    assert_eq!(
+        test.codex
+            .thread_extension_data()
+            .get::<ModelInfo>()
+            .as_deref(),
+        Some(execution_model.as_ref()),
+    );
+
     test.codex
         .submit(Op::ThreadSettings {
             thread_settings: ThreadSettingsOverrides {

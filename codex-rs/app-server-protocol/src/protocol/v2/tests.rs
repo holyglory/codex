@@ -4539,6 +4539,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     "availability": "AVAILABLE",
                     "disabledReason": null,
                     "eligiblePlanTypes": null,
+                    "extensions": null,
                     "interface": null,
                     "keywords": [],
                 },
@@ -4591,6 +4592,7 @@ fn plugin_summary_round_trips_plan_eligibility_metadata() {
         "availability": "DISABLED_BY_ADMIN",
         "disabledReason": "plan_not_eligible",
         "eligiblePlanTypes": ["plus", "pro", "enterprise_cbp_automation"],
+        "extensions": null,
         "interface": null,
         "keywords": [],
     });

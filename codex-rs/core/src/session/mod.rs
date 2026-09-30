@@ -736,16 +736,6 @@ impl Session {
                 &model_info,
             )?;
             token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
-            if config
-                .token_budget
-                .as_ref()
-                .is_some_and(|token_budget| token_budget.use_history_notes_extension)
-                && !model_info.supports_experimental_context
-            {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "features.token_budget.use_history_notes_extension is not supported by model `{model}`; disable it or select a model that supports experimental context"
-                )));
-            }
         }
         let configured_config = Arc::clone(&config);
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
@@ -3953,98 +3943,123 @@ impl Session {
         );
         let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         let environments = environments.or_cancel(cancellation_token).await?;
-        let (loaded_agents_md, warnings) = self
-            .services
-            .agents_md_manager
-            .refresh(&turn_context.config, &environments)
-            .or_cancel(cancellation_token)
-            .await?;
-        self.emit_instruction_warnings(warnings).await;
-        let loaded_agents_md = loaded_agents_md?;
-        let selected_capability_roots = self
-            .resolve_selected_capability_roots_for_step(&environments)
-            .await;
-        let ready_selected_capability_roots =
-            Self::ready_selected_capability_roots(&selected_capability_roots);
-        let executor_capability_discovery = self
-            .executor_capability_discovery_for_step(
-                &turn_context.config,
-                &ready_selected_capability_roots,
-                &environments,
-            )
-            .or_cancel(cancellation_token)
-            .await?;
-        let extension_data = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
-        extension_data.insert(selected_capability_roots.clone());
-        if let Some(auth_lease) = turn_context
-            .extension_data
-            .get::<codex_login::AuthManagerLease>()
-        {
-            extension_data.insert(auth_lease.as_ref().clone());
-        }
-        if let Some(discovery) = &executor_capability_discovery {
-            extension_data.insert(discovery.as_ref().clone());
-            if !discovery.sandbox_contexts().is_empty() {
-                extension_data.insert(discovery.sandbox_contexts().clone());
-            }
-        } else if !turn_context
-            .permission_profile_for_environments(&environments)
-            .file_system_sandbox_policy()
-            .has_full_disk_read_access()
-        {
-            let sandbox_contexts = environments
-                .turn_environments()
-                .map(|environment| {
-                    (
-                        environment.selection.environment_id.clone(),
-                        environment.sandbox_context(/*additional_permissions*/ None),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-            extension_data.insert(sandbox_contexts);
-        }
-        if let Some(messages) = settings
-            .model_info
-            .model_messages
-            .as_ref()
-            .and_then(|messages| messages.tools.as_ref())
-            .and_then(|tools| tools.multi_agent.as_ref())
-        {
-            extension_data.insert(messages.clone());
-        }
-        let (mcp, prepared_recommendations) = tokio::join!(
-            // MCP refresh can be large; keep it off the sampling request's stack.
-            Box::pin(self.mcp_runtime_for_step(
-                turn_context.as_ref(),
-                &selected_capability_roots,
-                required_servers,
-                required_plugins,
-            )),
-            turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
-        );
-        let mut selected_plugins = self
-            .services
-            .thread_extension_data
-            .get::<codex_extension_api::SelectedPluginSnapshot>()
-            .map(|snapshot| snapshot.as_ref().clone())
-            .unwrap_or_default();
-        selected_plugins.plugins.retain(|plugin| {
-            ready_selected_capability_roots
-                .iter()
-                .any(|root| plugin.selected_root_id.as_ref() == Some(&root.id))
+        // Keep both preparation futures off caller stacks while they are live together.
+        let load_agents_md = Box::pin(async {
+            let (loaded_agents_md, warnings) = self
+                .services
+                .agents_md_manager
+                .refresh(&turn_context.config, &environments)
+                .or_cancel(cancellation_token)
+                .await?;
+            self.emit_instruction_warnings(warnings).await;
+            loaded_agents_md
         });
-        extension_data.insert(selected_plugins.clone());
-        let tool_router = turn::built_tools(
-            self.as_ref(),
-            turn_context.as_ref(),
-            &settings.model_info,
-            &environments,
-            &mcp,
-            &extension_data,
-            prepared_recommendations,
-        )
-        .or_cancel(cancellation_token)
-        .await??;
+        let prepare_tools = Box::pin(async {
+            let selected_capability_roots = self
+                .resolve_selected_capability_roots_for_step(&environments)
+                .await;
+            let ready_selected_capability_roots =
+                Self::ready_selected_capability_roots(&selected_capability_roots);
+            let executor_capability_discovery = self
+                .executor_capability_discovery_for_step(
+                    &turn_context.config,
+                    &ready_selected_capability_roots,
+                    &environments,
+                )
+                .await;
+            let extension_data =
+                codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+            if let Some(messages) = settings
+                .model_info
+                .model_messages
+                .as_ref()
+                .and_then(|messages| messages.tools.as_ref())
+                .and_then(|tools| tools.multi_agent.as_ref())
+            {
+                extension_data.insert(messages.clone());
+            }
+            extension_data.insert(selected_capability_roots.clone());
+            if let Some(auth_lease) = turn_context
+                .extension_data
+                .get::<codex_login::AuthManagerLease>()
+            {
+                extension_data.insert(auth_lease.as_ref().clone());
+            }
+            if let Some(discovery) = &executor_capability_discovery {
+                extension_data.insert(discovery.as_ref().clone());
+                if !discovery.sandbox_contexts().is_empty() {
+                    extension_data.insert(discovery.sandbox_contexts().clone());
+                }
+            } else if !turn_context
+                .permission_profile_for_environments(&environments)
+                .file_system_sandbox_policy()
+                .has_full_disk_read_access()
+            {
+                let sandbox_contexts = environments
+                    .turn_environments()
+                    .map(|environment| {
+                        (
+                            environment.selection.environment_id.clone(),
+                            environment.sandbox_context(/*additional_permissions*/ None),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+                extension_data.insert(sandbox_contexts);
+            }
+            let (mcp, prepared_recommendations) = tokio::join!(
+                // MCP refresh can be large; keep it off the sampling request's stack.
+                Box::pin(self.mcp_runtime_for_step(
+                    turn_context.as_ref(),
+                    &selected_capability_roots,
+                    required_servers,
+                    required_plugins,
+                )),
+                turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
+            );
+            let mut selected_plugins = self
+                .services
+                .thread_extension_data
+                .get::<codex_extension_api::SelectedPluginSnapshot>()
+                .map(|snapshot| snapshot.as_ref().clone())
+                .unwrap_or_default();
+            selected_plugins.plugins.retain(|plugin| {
+                ready_selected_capability_roots
+                    .iter()
+                    .any(|root| plugin.selected_root_id.as_ref() == Some(&root.id))
+            });
+            extension_data.insert(selected_plugins.clone());
+            let tool_router = turn::built_tools(
+                self.as_ref(),
+                turn_context.as_ref(),
+                &settings.model_info,
+                &environments,
+                &mcp,
+                &extension_data,
+                prepared_recommendations,
+            )
+            .await?;
+            Ok::<_, CodexErr>((
+                selected_capability_roots,
+                executor_capability_discovery,
+                mcp,
+                tool_router,
+                selected_plugins,
+            ))
+        });
+        // Returned warnings must finish delivery even if tools fail or preparation is cancelled.
+        let (loaded_agents_md, prepared_tools) =
+            tokio::join!(load_agents_md, prepare_tools.or_cancel(cancellation_token));
+        let loaded_agents_md = loaded_agents_md?;
+        if cancellation_token.is_cancelled() {
+            return Err(CodexErr::TurnAborted);
+        }
+        let (
+            selected_capability_roots,
+            executor_capability_discovery,
+            mcp,
+            tool_router,
+            selected_plugins,
+        ) = prepared_tools??;
         turn_context.extension_data.insert(selected_plugins);
         Ok(Arc::new(StepContext {
             preempt: turn_context
@@ -5088,10 +5103,22 @@ impl Session {
         // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
         // those spans, and `record_response_item_and_emit_turn_item` would drop them.
         let mut user_image_content_indices = HashMap::new();
-        let response_item = self.response_item_from_user_input_with_image_positions(
+        let mut response_item = self.response_item_from_user_input_with_image_positions(
             input.to_vec(),
             &mut user_image_content_indices,
         );
+        if metadata.origin == codex_history::UserInputOrigin::Heartbeat
+            && let ResponseItem::Message {
+                content,
+                internal_chat_message_metadata_passthrough: Some(metadata),
+                ..
+            } = &mut response_item
+            && matches!(content.as_slice(), [ContentItem::InputText { .. }])
+        {
+            metadata.content_item_kinds = Some(vec![ContentItemKind(
+                codex_history::HEARTBEAT_CONTENT_KIND.to_owned(),
+            )]);
+        }
         let (prepared_items, image_preparations) = self
             .prepare_annotated_conversation_items_for_history(
                 turn_context,

@@ -536,11 +536,14 @@ fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseIte
     output
 }
 
-#[test]
-fn responses_request_limits_internal_metadata_to_resolved_first_party_https_endpoint()
--> anyhow::Result<()> {
-    let provider =
+#[test_case::test_case(false; "ungranted_provider")]
+#[test_case::test_case(true; "granted_provider")]
+fn responses_request_respects_provider_metadata_grant_and_resolved_endpoint(
+    granted: bool,
+) -> anyhow::Result<()> {
+    let mut provider =
         ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
+    provider.include_internal_metadata = granted;
     let mut api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
     let mut client = test_model_client(SessionSource::Cli);
     Arc::get_mut(&mut client.state)
@@ -585,7 +588,11 @@ fn responses_request_limits_internal_metadata_to_resolved_first_party_https_endp
         ("not a URL", false),
     ] {
         api_provider.base_url = base_url.to_string();
-        let include_internal = super::is_internal_metadata_destination(&api_provider);
+        let allowed = granted || allowed;
+        let include_internal = client
+            .state
+            .provider
+            .include_internal_metadata(&api_provider);
         for responses_lite in [false, true] {
             let mut model = test_model_info();
             model.use_responses_lite = responses_lite;
@@ -694,8 +701,9 @@ fn responses_request_limits_internal_metadata_to_resolved_first_party_https_endp
 
 #[test]
 fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()> {
-    let provider =
+    let mut provider =
         ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
+    provider.include_internal_metadata = false;
     let mut api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
     let mut client = test_model_client(SessionSource::Cli);
     Arc::get_mut(&mut client.state)
@@ -766,7 +774,10 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
         previous_output.set_turn_id_if_missing("previous-turn");
         current_output.set_turn_id_if_missing("current-turn");
         api_provider.base_url = base_url.to_string();
-        let include_internal = super::is_internal_metadata_destination(&api_provider);
+        let include_internal = client
+            .state
+            .provider
+            .include_internal_metadata(&api_provider);
         let previous = client.build_responses_request(
             &Prompt {
                 input: vec![previous_output],

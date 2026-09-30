@@ -402,6 +402,7 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
     let mut provider =
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone();
     provider.name = "Test Responses".to_string();
+    provider.include_internal_metadata = false;
     provider.base_url = Some(format!("{}/v1", server.uri()));
     provider.supports_websockets = false;
     let codex = test_codex()

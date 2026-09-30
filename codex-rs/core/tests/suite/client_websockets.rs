@@ -958,11 +958,18 @@ async fn responses_websocket_request_prewarm_traces_logical_request() {
     assert_eq!(follow_up["input"], serde_json::json!([]));
 
     let rollout = replay_bundle(trace_dir.path()).expect("replay trace");
+    assert_eq!(rollout.inference_calls.len(), 1);
     let inference = rollout
         .inference_calls
         .values()
         .next()
         .expect("inference should be present");
+    assert_eq!(inference.response_id.as_deref(), Some("resp-1"));
+    assert!(inference.raw_response_payload_id.is_some());
+    assert_eq!(
+        inference.execution.status,
+        codex_rollout_trace::ExecutionStatus::Completed,
+    );
     assert_eq!(inference.request_item_ids.len(), 1);
     assert_eq!(
         rollout.conversation_items[&inference.request_item_ids[0]]

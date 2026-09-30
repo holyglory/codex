@@ -7,11 +7,13 @@ use pretty_assertions::assert_eq;
 enum BackgroundKind {
     EphemeralTerminal,
     StopHook,
+    CodeModeCell,
 }
 
 #[cfg(unix)]
 #[test_case::test_case(BackgroundKind::EphemeralTerminal; "idle_ephemeral_terminal")]
 #[test_case::test_case(BackgroundKind::StopHook; "idle_async_stop_hook")]
+#[test_case::test_case(BackgroundKind::CodeModeCell; "idle_code_mode_cell")]
 #[tokio::test]
 async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Result<()> {
     use codex_app_server_transport::maintenance::MaintenanceCommand;
@@ -27,6 +29,8 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
         effect.display()
     );
     let terminal = matches!(kind, BackgroundKind::EphemeralTerminal);
+    let code_cell = matches!(kind, BackgroundKind::CodeModeCell);
+    let (release_cell, cell_gate) = oneshot::channel();
     let mut chunks = Vec::new();
     if terminal {
         chunks.push(vec![StreamingSseChunk {
@@ -37,6 +41,19 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
                     "background",
                     "exec_command",
                     &json!({"cmd":command,"yield_time_ms":1,"max_output_tokens":200}).to_string(),
+                ),
+                responses::ev_completed("background"),
+            ]),
+        }]);
+    } else if code_cell {
+        chunks.push(vec![StreamingSseChunk {
+            gate: Some(cell_gate),
+            body: responses::sse(vec![
+                responses::ev_response_created("background"),
+                responses::ev_custom_tool_call(
+                    "background",
+                    "exec",
+                    "// @exec: {\"yield_time_ms\": 1}\nconst value = await tools.cell_probe({phase: 'hold'}); await tools.cell_probe({phase: 'done', value}); text(value);",
                 ),
                 responses::ev_completed("background"),
             ]),
@@ -55,7 +72,9 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
         "sandbox_mode = \"read-only\"",
         "sandbox_mode = \"danger-full-access\"",
     );
-    config.push_str("\n[features]\nhooks = true\ncode_mode = false\ncode_mode_only = false\n");
+    config.push_str(&format!(
+        "\n[features]\nhooks = true\ncode_mode = {code_cell}\ncode_mode_only = {code_cell}\n"
+    ));
     std::fs::write(config_path, config)?;
     let socket_path = home.path().join("control/server.sock");
     let mut server = spawn_server(home.path(), &socket_path)?;
@@ -67,16 +86,32 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
         },
     )
     .await?;
-    if !terminal {
+    if matches!(kind, BackgroundKind::StopHook) {
         trust_fixture_hooks(&mut client, home.path()).await?;
     }
-    let thread = start_thread(
-        &mut client,
-        /*id*/ 2,
-        json!({"ephemeral":terminal,"cwd":home.path()}),
-    )
-    .await?;
+    let mut params = json!({"ephemeral":terminal,"cwd":home.path()});
+    if code_cell {
+        params["dynamicTools"] = json!([{
+            "type": "function",
+            "name": "cell_probe",
+            "description": "Hold a background cell and report its result",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"phase": {"type": "string"}, "value": {}},
+                "required": ["phase"]
+            }
+        }]);
+    }
+    let thread = start_thread(&mut client, /*id*/ 2, params).await?;
     start_turn(&mut client, /*id*/ 3, &thread.thread.id).await?;
+    let pending_cell = if code_cell {
+        release_cell.send(()).expect("cell request gate");
+        let (id, arguments) = read_cell_probe(&mut client).await?;
+        assert_eq!(arguments, json!({"phase": "hold"}));
+        Some(id)
+    } else {
+        None
+    };
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let read = request(
@@ -86,7 +121,8 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
                 json!({"threadId":thread.thread.id,"includeTurns":false}),
             )
             .await;
-            if entered.exists() && read.is_ok_and(|read| read["thread"]["status"]["type"] == "idle")
+            if (pending_cell.is_some() || entered.exists())
+                && read.is_ok_and(|read| read["thread"]["status"]["type"] == "idle")
             {
                 break;
             }
@@ -123,17 +159,56 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
     );
     assert!(server.try_wait()?.is_none());
     start_thread(&mut client, /*id*/ 5, json!({})).await?;
-    std::fs::write(release, "continue")?;
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        while !effect.exists() {
-            sleep(Duration::from_millis(/*millis*/ 10)).await;
-        }
-    })
-    .await?;
-    assert_eq!(std::fs::read_to_string(effect)?.trim(), "survived");
+    if let Some(id) = pending_cell {
+        client.send(Message::Text(json!({
+            "id": id,
+            "result": {"contentItems": [{"type": "inputText", "text": "survived"}], "success": true}
+        }).to_string().into())).await?;
+        let (id, arguments) = read_cell_probe(&mut client).await?;
+        assert_eq!(arguments["phase"], "done");
+        assert!(arguments["value"].to_string().contains("survived"));
+        client
+            .send(Message::Text(
+                json!({
+                    "id": id,
+                    "result": {"contentItems": [], "success": true}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
+    } else {
+        std::fs::write(release, "continue")?;
+        timeout(DEFAULT_READ_TIMEOUT, async {
+            while !effect.exists() {
+                sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        })
+        .await?;
+        assert_eq!(std::fs::read_to_string(effect)?.trim(), "survived");
+    }
     request_shutdown(&server, &socket_path).await?;
     wait_success(&mut server).await?;
     Ok(())
+}
+
+async fn read_cell_probe(
+    client: &mut WebSocketStream<UnixStream>,
+) -> Result<(RequestId, serde_json::Value)> {
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let frame = client.next().await.context("cell connection closed")??;
+            let Message::Text(text) = frame else { continue };
+            if let JSONRPCMessage::Request(request) = serde_json::from_str(&text)?
+                && request.method == "item/tool/call"
+            {
+                let params = request.params.context("dynamic tool parameters")?;
+                assert_eq!(params["tool"], "cell_probe");
+                return Ok((request.id, params["arguments"].clone()));
+            }
+        }
+    })
+    .await?
 }
 
 pub(super) async fn trust_fixture_hooks(
