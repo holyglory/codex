@@ -20,7 +20,7 @@ pub enum MaintenanceResponse {
     Ready { operation_id: String, pid: u32 },
     Committed { operation_id: String, pid: u32 },
     Failed { reason: String },
-    Status { pid: u32, accepting: bool },
+    Status { pid: u32, accepting: bool, executable: std::path::PathBuf },
 }
 
 #[derive(Debug)]

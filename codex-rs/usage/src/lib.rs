@@ -179,3 +179,5 @@ pub use types::TransportKind;
 pub use types::TurnId;
 pub use types::UsageIdentifierError;
 pub use work_binding::NewWorkBinding;
+
+pub use store::maintenance_schema_signature;

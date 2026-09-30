@@ -29,7 +29,7 @@ impl MessageProcessor {
         let MaintenanceConnection { command, reply, mut commit, cancelled } = connection;
         let pid = std::process::id();
         if matches!(command, MaintenanceCommand::Status) {
-            let _ = reply.send(MaintenanceResponse::Status { pid, accepting: self.turn_admission.accepting() });
+            let _ = reply.send(MaintenanceResponse::Status { pid, accepting: self.turn_admission.accepting(), executable: std::env::current_exe().unwrap_or_default() });
             return;
         }
         let MaintenanceCommand::Prepare { operation_id, pid: expected_pid } = command else {

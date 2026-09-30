@@ -256,6 +256,9 @@ pub(super) async fn run(
         .ok()
         .map(|info| info.app_server_version);
     let message = match restart {
+        Some(RestartIfRunningOutcome::Scheduled) => {
+            "The package is installed; cooperative activation is pending. Use daemon handover --status to check its result."
+        }
         Some(RestartIfRunningOutcome::Restarted) => {
             "The managed installation is ready and the running daemon was restarted. Active or queued work may have been interrupted."
         }
@@ -268,7 +271,9 @@ pub(super) async fn run(
         _ => unreachable!("successful manual update has a restart outcome"),
     };
     Ok(UpdateOutput {
-        status: if updated {
+        status: if restart == Some(RestartIfRunningOutcome::Scheduled) {
+            UpdateStatus::Pending
+        } else if updated {
             UpdateStatus::Updated
         } else {
             UpdateStatus::NoUpdate

@@ -1,3 +1,5 @@
+mod handover;
+pub use handover::{request_handover, handover_status, cancel_handover, run_handover};
 //! Managed app-server lifecycle, serialized across CLI invocations and the updater.
 
 mod backend;
@@ -123,6 +125,7 @@ pub struct BootstrapOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateStatus {
+    Pending,
     Updated,
     NoUpdate,
     Unsupported,
@@ -200,6 +203,7 @@ pub(crate) enum RestartIfRunningOutcome {
     NotRunning,
     NotReady,
     AlreadyCurrent,
+    Scheduled,
     Restarted,
 }
 
@@ -533,21 +537,8 @@ impl Daemon {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
                 RestartDecision::Restart => {
-                    #[cfg(windows)]
-                    backend::windows::ensure_detached_launch(managed_codex_bin)?;
-                    if let Err(err) = thread_recovery::discard_pending(self) {
-                        eprintln!(
-                            "warning: failed to clear stale daemon recovery before update: {err}"
-                        );
-                    }
-                    backend
-                        .stop_with_grace(settings.shutdown_grace_seconds)
-                        .await?;
-                    let _ = self
-                        .start_managed_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
-                    self.wait_until_ready().await?;
-                    RestartIfRunningOutcome::Restarted
+                    let _ = handover::request_locked(self).await?;
+                    RestartIfRunningOutcome::Scheduled
                 }
             }
         } else if client::probe(&self.socket_path).await.is_ok() {
