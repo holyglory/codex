@@ -503,24 +503,31 @@ async fn test_control_server(
     tokio::spawn(async move {
         loop {
             let connection = listener.accept().await.expect("control connection");
-            let mut websocket = tokio_tungstenite::accept_async(connection)
-                .await
-                .expect("websocket handshake");
+            let Ok(mut websocket) = tokio_tungstenite::accept_hdr_async(
+                connection,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    if request.uri().path() == "/daemon/maintenance" {
+                        let mut rejection =
+                            tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
+                                Some("legacy fixture has no cooperative maintenance".into()),
+                            );
+                        *rejection.status_mut() =
+                            tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
+                        return Err(rejection);
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            else {
+                continue;
+            };
             websocket
                 .next()
                 .await
                 .expect("initialize request")
                 .expect("frame");
-            let version = if std::fs::read_to_string(
-                crate::managed_install::package_root(&codex_home).join("auto-update-version"),
-            )
-            .unwrap_or_default()
-            .starts_with("1.1.0")
-            {
-                "1.1.0"
-            } else {
-                "1.0.0"
-            };
+            let version = "1.0.0";
             websocket.send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::json!({"id": 1, "result": {
                     "userAgent": format!("codex_app_server_daemon/{version}"),
@@ -538,8 +545,8 @@ async fn test_control_server(
 
 #[cfg(unix)]
 #[tokio::test]
-async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("standalone").await;
+async fn manual_update_preserves_unsupported_managed_daemon() {
+    check_manual_update_preserves_unsupported_server("standalone").await;
 }
 
 #[cfg(unix)]
@@ -688,12 +695,12 @@ async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settin
 
 #[cfg(unix)]
 #[tokio::test]
-async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("app-server-daemon").await;
+async fn manual_update_preserves_unsupported_local_daemon() {
+    check_manual_update_preserves_unsupported_server("app-server-daemon").await;
 }
 
 #[cfg(unix)]
-async fn check_manual_update_restart(package_directory: &str) {
+async fn check_manual_update_preserves_unsupported_server(package_directory: &str) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
@@ -747,7 +754,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         "CODEX_INSTALL_IF_LATEST"
     };
     let install_binary = if local_package {
-        // Same binary and version, but a different package: it must still restart.
+        // Same binary and version, but a different package still requests activation.
         format!(
             "cp '{root}/releases/{release}/codex' '{root}/releases/{next}/bin/codex'",
             root = standalone.display()
@@ -803,19 +810,32 @@ async fn check_manual_update_restart(package_directory: &str) {
         .await
         .expect("send second update");
     std::fs::write(proceed, b"go").expect("release installer");
-    let output = request
+    let error = request
         .await
         .expect("first request task")
-        .expect("manual update");
-    assert_eq!(output.status, UpdateStatus::Updated);
-    assert_eq!(output.installed_version.as_deref(), Some(version));
-    assert_eq!(output.running_version.as_deref(), Some(version));
-    assert_eq!(
-        output.managed_codex_path,
-        standalone.join("current/bin/codex")
+        .expect_err("legacy server must refuse cooperative activation");
+    assert!(error.to_string().contains("failed to upgrade"), "{error:#}");
+    assert_eq!(current_pid(), before);
+    assert!(
+        backend
+            .is_starting_or_running()
+            .await
+            .expect("serving process")
     );
-    let restarted = current_pid();
-    assert_ne!(restarted, before);
+    assert_eq!(
+        std::fs::read_link(standalone.join("current")).expect("selected package"),
+        std::path::PathBuf::from(format!("releases/{next}"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(standalone.join("auto-update-version")).expect("selection marker"),
+        next
+    );
+    assert_eq!(
+        crate::managed_install::managed_codex_version(&standalone.join("current/bin/codex"))
+            .await
+            .expect("installed version"),
+        version
+    );
     let mut response = Vec::new();
     queued
         .read_to_end(&mut response)
@@ -823,11 +843,32 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("second response");
     let second: Result<crate::UpdateOutput, String> =
         serde_json::from_slice(&response).expect("valid second response");
-    assert_eq!(
-        second.expect("second update").status,
-        UpdateStatus::NoUpdate
+    if local_package {
+        // The first request restored the production selection using identical
+        // executable bytes. The queued request correctly needs no activation.
+        let second = second.expect("identical production binary is already serving");
+        assert_eq!(second.status, UpdateStatus::NoUpdate);
+        assert_eq!(
+            (
+                second.installed_version.as_deref(),
+                second.running_version.as_deref()
+            ),
+            (Some("1.0.0"), Some("1.0.0"))
+        );
+    } else {
+        assert!(
+            second
+                .expect_err("queued activation remains unsupported")
+                .contains("failed to upgrade")
+        );
+    }
+    assert_eq!(current_pid(), before);
+    assert!(
+        backend
+            .is_starting_or_running()
+            .await
+            .expect("serving process")
     );
-    assert_eq!(current_pid(), restarted);
     tokio::time::timeout(Duration::from_secs(5), worker)
         .await
         .expect("one-shot updater did not exit")
@@ -847,7 +888,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("managed executable")
         .write_all(b"\n# same-version replacement\n")
         .expect("replace binary bytes");
-    let output = manual_update_once(
+    let error = manual_update_once(
         &no_op,
         &daemon,
         &executable_identity_from_reader(&b"updater"[..]).expect("updater identity"),
@@ -855,9 +896,15 @@ async fn check_manual_update_restart(package_directory: &str) {
         super::UpdateTrigger::Manual,
     )
     .await
-    .expect("retry with stale running binary");
-    assert_eq!(output.status, UpdateStatus::NoUpdate);
-    assert_ne!(current_pid(), restarted);
+    .expect_err("stale serving binary still lacks maintenance");
+    assert!(error.to_string().contains("failed to upgrade"), "{error:#}");
+    assert_eq!(current_pid(), before);
+    assert!(
+        backend
+            .is_starting_or_running()
+            .await
+            .expect("serving process")
+    );
     backend.stop().await.expect("stop daemon");
     server.abort();
 }
@@ -1034,3 +1081,7 @@ printf '%s' '{release}' > '{marker}'
         );
     }
 }
+
+#[cfg(unix)]
+#[path = "update_loop_tests/maintenance_schedule.rs"]
+mod maintenance_schedule;

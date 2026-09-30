@@ -427,6 +427,7 @@ fn transport_event_name(event: &TransportEvent) -> &'static str {
         TransportEvent::ConnectionClosed { .. } => "connection_closed",
         TransportEvent::IncomingMessage { .. } => "incoming_message",
         TransportEvent::DaemonShutdown => "daemon_shutdown",
+        TransportEvent::DaemonMaintenance(_) => "daemon_maintenance",
     }
 }
 

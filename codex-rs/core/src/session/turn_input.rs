@@ -204,6 +204,9 @@ impl PreparedTurnInputSettings {
                 .turn_metadata_state
                 .set_root_turn_id(root_turn_id);
         }
+        if kind == TurnStartKind::Recovery {
+            session.restore_maintenance_context(&turn_context).await?;
+        }
         Ok(Some(turn_context))
     }
 
@@ -277,7 +280,10 @@ pub(super) async fn handle_recovery(
     let request = TurnInputRequest::user_input(Vec::new())
         .with_thread_settings(thread_settings)
         .on_start(TurnStartOptions {
-            turn_trigger: Some("retry".to_string()),
+            turn_trigger: start_options
+                .turn_trigger
+                .clone()
+                .or_else(|| Some("retry".to_string())),
             ..start_options
         });
     start_if_idle(

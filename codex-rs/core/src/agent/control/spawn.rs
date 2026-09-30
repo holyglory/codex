@@ -1324,7 +1324,7 @@ impl LocalAgentControl {
         Ok(resumed_thread_id)
     }
 
-    async fn resume_single_agent_from_rollout(
+    pub(crate) async fn resume_single_agent_from_rollout(
         &self,
         config: Config,
         thread_id: ThreadId,

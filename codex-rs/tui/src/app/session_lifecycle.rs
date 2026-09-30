@@ -849,6 +849,7 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
+                self.reconnect.startup_worktree = None;
                 self.chat_widget.mark_fresh_task_for_sparkle(&started);
                 let thread_id = started.session.thread_id;
                 if started.task_tools_available {
@@ -926,6 +927,20 @@ impl App {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
                 self.chat_widget.maybe_send_next_queued_input();
+            }
+            Err(err)
+                if err
+                    .downcast_ref::<codex_app_server_client::TypedRequestError>()
+                    .is_some_and(
+                        codex_app_server_client::TypedRequestError::is_server_switching,
+                    ) =>
+            {
+                if self.begin_reconnect() {
+                    self.reconnect.presentation =
+                        super::reconnect::ReconnectPresentation::RejectedFreshStart;
+                } else {
+                    return Err(err);
+                }
             }
             Err(err) if self.recover_transport_error(&err) => {}
             Err(err) => {

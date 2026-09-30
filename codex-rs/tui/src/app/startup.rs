@@ -796,6 +796,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_right_click_paste: None,
             right_click_paste_environment: super::right_click_paste::PasteEnvironment::detect(),
             reconnect: ReconnectState {
+                startup_worktree: managed_worktree.clone(),
                 seen_version_notice: initial_server_version_notice
                     .as_ref()
                     .map(|(_, key)| key.clone()),

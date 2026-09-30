@@ -1089,3 +1089,215 @@ async fn daemon_recovery_includes_local_environment_that_finished_starting() -> 
     .await;
     Ok(())
 }
+
+#[test_case(false; "release_resumes_same_turn")]
+#[test_case(true; "user_stop_wins")]
+#[tokio::test]
+async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyhow::Result<()> {
+    use codex_core::MaintenancePauseStatus;
+
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("resumed")).await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let mut pause = test
+        .codex
+        .request_maintenance_pause()
+        .expect("pause admitted");
+    assert!(test.codex.request_maintenance_pause().is_none());
+    let submitted = test
+        .codex
+        .start_or_steer_turn(user_message_request("preserve this input"))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submitted else {
+        panic!("expected a new turn");
+    };
+    timeout(Duration::from_secs(10), async {
+        while pause.status() == MaintenancePauseStatus::Requested {
+            pause.changed().await;
+        }
+    })
+    .await?;
+    assert_eq!(pause.status(), MaintenancePauseStatus::Paused);
+    assert!(response.requests().is_empty());
+    assert_eq!(
+        test.codex
+            .start_or_steer_turn(user_message_request("queued during maintenance"))
+            .await?,
+        TurnInputSubmission::Steered {
+            turn_id: turn_id.clone()
+        }
+    );
+    // Wait for the receipt to be refreshed after the new input reaches history.
+    timeout(Duration::from_secs(10), async {
+        loop {
+            pause.changed().await;
+            if pause.status() == MaintenancePauseStatus::Paused {
+                let path = test.codex.rollout_path().expect("persistent thread");
+                if tokio::fs::read_to_string(path)
+                    .await
+                    .expect("paused input must remain readable")
+                    .contains("queued during maintenance")
+                {
+                    break;
+                }
+            }
+        }
+    })
+    .await?;
+    let path = test.codex.rollout_path().expect("persistent thread");
+    assert!(
+        tokio::fs::read_to_string(path)
+            .await?
+            .contains("preserve this input")
+    );
+    if stop {
+        test.codex.submit(Op::Interrupt).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnAborted(_))
+        })
+        .await;
+    }
+    drop(pause);
+    if stop {
+        let new_pause = test
+            .codex
+            .request_maintenance_pause()
+            .expect("new turn checkpoint");
+        let newer = test
+            .codex
+            .start_or_steer_turn(user_message_request("new work after Stop"))
+            .await?;
+        let TurnInputSubmission::Started { turn_id: newer_id } = newer else {
+            panic!("new user work must start");
+        };
+        // Acceptance schedules the task before its asynchronous Running event.
+        // Observe the newer turn itself before testing the delayed old Stop.
+        wait_for_event(
+            &test.codex,
+            |event| matches!(event, EventMsg::TurnStarted(started) if started.turn_id == newer_id),
+        )
+        .await;
+        test.codex.record_maintenance_stop(turn_id.clone()).await?;
+        assert_eq!(
+            test.codex.agent_status().await,
+            codex_protocol::protocol::AgentStatus::Running
+        );
+        drop(new_pause);
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(completed) if completed.turn_id == newer_id)
+        })
+        .await;
+        let request = response.single_request();
+        assert!(request.body_contains_text("new work after Stop"));
+        let path = test.codex.rollout_path().expect("persistent history");
+        let history = tokio::fs::read_to_string(path).await?;
+        assert!(history.contains(&newer_id));
+        let mut resumed_builder = test_codex();
+        let resumed = resumed_builder.restart(&server, &test).await?;
+        let before = resumed.codex.agent_status().await;
+        resumed
+            .codex
+            .record_maintenance_stop(turn_id.clone())
+            .await?;
+        assert_eq!(resumed.codex.agent_status().await, before);
+    } else {
+        let event = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let EventMsg::TurnComplete(completed) = event else {
+            unreachable!()
+        };
+        assert_eq!(completed.turn_id, turn_id);
+        let request = response.single_request();
+        assert!(request.body_contains_text("preserve this input"));
+        assert!(request.body_contains_text("queued during maintenance"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids()
+-> anyhow::Result<()> {
+    use codex_core::MaintenanceMail;
+    use codex_protocol::ResponseItemId;
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build_with_auto_env(&server).await?;
+    test.codex.ensure_rollout_materialized().await;
+    test.codex.flush_rollout().await?;
+    let make_mail = |suffix: &str| {
+        let mut communication = InterAgentCommunication::new(
+            AgentPath::root().join("worker").unwrap(),
+            AgentPath::root(),
+            Vec::new(),
+            format!("result {suffix}"),
+            /*trigger_turn*/ false,
+        );
+        communication.id = Some(ResponseItemId::with_suffix("mail", suffix));
+        MaintenanceMail {
+            communication,
+            options: Default::default(),
+        }
+    };
+    let pending = make_mail("pending");
+    let quoted = make_mail("quoted");
+    let delivered = make_mail("delivered");
+    test.codex
+        .inject_response_items(vec![
+            responses::user_message_item("This quoted identifier is not delivery: mail_quoted"),
+            delivered.communication.to_model_input_item(),
+        ])
+        .await?;
+    test.codex.flush_rollout().await?;
+    let snapshot: Vec<MaintenanceMail> = serde_json::from_slice(&serde_json::to_vec(&vec![
+        pending.clone(),
+        quoted.clone(),
+        delivered,
+    ])?)?;
+    test.codex
+        .restore_maintenance_mailbox(snapshot.clone())
+        .await?;
+    test.codex.restore_maintenance_mailbox(snapshot).await?;
+    assert_eq!(
+        test.codex.maintenance_mailbox().await,
+        vec![pending.clone(), quoted.clone()]
+    );
+    let resumed = builder.restart(&server, &test).await?;
+    assert_eq!(
+        resumed.codex.maintenance_mailbox().await,
+        vec![pending, quoted]
+    );
+    let response = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("mail-boundary"),
+                responses::ev_function_call(
+                    "mail-boundary",
+                    "exec_command",
+                    &serde_json::json!({"cmd":"echo boundary","max_output_tokens":50}).to_string(),
+                ),
+                responses::ev_completed("mail-boundary"),
+            ]),
+            responses::sse_completed("delivered once"),
+        ],
+    )
+    .await;
+    resumed
+        .codex
+        .start_or_steer_turn(user_message_request("consume the restored mailbox"))
+        .await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
+    assert!(request.body_contains_text("result pending"));
+    assert!(request.body_contains_text("result quoted"));
+    let twice = builder.restart(&server, &resumed).await?;
+    assert!(twice.codex.maintenance_mailbox().await.is_empty());
+    Ok(())
+}

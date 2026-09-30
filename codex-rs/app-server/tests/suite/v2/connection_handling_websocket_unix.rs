@@ -285,7 +285,11 @@ async fn websocket_transport_allows_turn_interrupt_during_drain() -> Result<()> 
     assert_process_does_not_exit_within(&mut process, Duration::from_millis(300)).await?;
     send_turn_start_request(&mut ws, /*id*/ 5, &thread_id).await?;
     assert_eq!(
-        read_error_for_id(&mut ws, /*id*/ 5).await?.error.code,
+        read_error_for_id(&mut ws, /*id*/ 5)
+            .await
+            .context("drain must reject fresh turns")?
+            .error
+            .code,
         -32600
     );
     send_request(
@@ -295,7 +299,9 @@ async fn websocket_transport_allows_turn_interrupt_during_drain() -> Result<()> 
         Some(json!({"threadId": thread_id, "turnId": turn_id})),
     )
     .await?;
-    read_response_for_id(&mut ws, /*id*/ 4).await?;
+    read_response_for_id(&mut ws, /*id*/ 4)
+        .await
+        .context("Stop must be acknowledged during drain")?;
     release_guard.send(()).expect("guard response is waiting");
     let status = wait_for_process_exit_within(
         &mut process,

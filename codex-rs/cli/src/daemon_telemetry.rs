@@ -26,6 +26,7 @@ pub(crate) async fn record_command(
     use codex_app_server_daemon::UpdateStatus;
     let outcome = match result {
         Ok(Some(output)) => match output.status {
+            UpdateStatus::Pending => "pending",
             UpdateStatus::Updated => "updated",
             UpdateStatus::NoUpdate => "no_update",
             UpdateStatus::Unsupported => "unsupported",

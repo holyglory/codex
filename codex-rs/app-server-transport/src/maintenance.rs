@@ -1,0 +1,63 @@
+//! Versioned, bounded maintenance control over the existing private daemon socket.
+use serde::Deserialize;
+use serde::Serialize;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MaintenanceCommand {
+    Prepare { operation_id: String, pid: u32 },
+    Commit { operation_id: String, pid: u32 },
+    Cancel,
+    Status,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MaintenanceResponse {
+    Ready {
+        operation_id: String,
+        pid: u32,
+    },
+    Committed {
+        operation_id: String,
+        pid: u32,
+    },
+    Failed {
+        reason: String,
+    },
+    Status {
+        pid: u32,
+        accepting: bool,
+        preparing: bool,
+        restored: bool,
+        executable: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug)]
+pub struct MaintenanceConnection {
+    pub command: MaintenanceCommand,
+    pub reply: oneshot::Sender<MaintenanceResponse>,
+    pub commit: mpsc::Receiver<MaintenanceCommand>,
+    pub committed: oneshot::Sender<MaintenanceCommitReceipt>,
+    pub cancelled: CancellationToken,
+}
+
+/// Sent only after durable publication and irreversible parking of every participant.
+#[derive(Debug)]
+pub struct MaintenanceCommitReceipt {
+    pub operation_id: String,
+    pub pid: u32,
+    pub delivered: oneshot::Sender<()>,
+}

@@ -1290,6 +1290,15 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
+        // Maintenance re-enters the same unfinished turn. Retain its items and
+        // original start boundary when replaying legacy, non-paginated history.
+        if self.current_turn.as_ref().is_some_and(|turn| {
+            turn.opened_explicitly
+                && turn.id == payload.turn_id
+                && turn.status == TurnStatus::InProgress
+        }) {
+            return;
+        }
         self.finish_current_turn();
         let mut turn = self
             .new_turn(Some(payload.turn_id.clone()))
@@ -3074,6 +3083,9 @@ mod tests {
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
         let turns = build_turns_from_rollout_items(&items);
+        let mut resumed = items.clone();
+        resumed.insert(/*index*/ 2, items[0].clone());
+        assert_eq!(build_turns_from_rollout_items(&resumed), turns);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].id, "turn-a");
         assert_eq!(

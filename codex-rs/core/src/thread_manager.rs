@@ -1,3 +1,5 @@
+#[path = "thread_manager/maintenance.rs"]
+mod maintenance;
 mod managed;
 mod shared_instructions;
 
@@ -2467,23 +2469,30 @@ impl ThreadManagerState {
             }
         };
 
+        let thread = Arc::new(CodexThread::new(
+            session,
+            io,
+            ThreadStartupMetadata::from(&session_configured),
+            session_configured.rollout_path.clone(),
+            session_source,
+        ));
+        if let Err(error) = thread.restore_saved_maintenance_mailbox().await {
+            let _ = thread.io.shutdown_and_wait().await;
+            return Err(CodexErr::Fatal(format!(
+                "failed to restore durable agent mail: {error}"
+            )));
+        }
         {
             let mut threads = self.threads.write().await;
             if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
                 if let Some(update) = initial_host_config {
-                    session
+                    thread
+                        .session
                         .services
                         .agent_control
                         .propagate_config_update(update);
                 }
-                let thread = Arc::new(CodexThread::new(
-                    session,
-                    io,
-                    ThreadStartupMetadata::from(&session_configured),
-                    session_configured.rollout_path.clone(),
-                    session_source,
-                ));
-                e.insert(thread.clone());
+                e.insert(Arc::clone(&thread));
                 return Ok(NewThread {
                     thread_id,
                     thread,
@@ -2492,7 +2501,7 @@ impl ThreadManagerState {
             }
         }
 
-        if let Err(err) = io.shutdown_and_wait().await {
+        if let Err(err) = thread.io.shutdown_and_wait().await {
             warn!("failed to shut down duplicate thread {thread_id}: {err}");
         }
         Err(CodexErr::InvalidRequest(format!(

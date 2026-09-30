@@ -178,6 +178,7 @@ impl FromStr for AppServerTransport {
 pub enum TransportEvent {
     /// Accepted on the managed local control socket, outside JSON-RPC.
     DaemonShutdown,
+    DaemonMaintenance(crate::maintenance::MaintenanceConnection),
     ConnectionOpened {
         connection_id: ConnectionId,
         origin: ConnectionOrigin,

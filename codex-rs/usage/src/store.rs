@@ -679,3 +679,11 @@ fn verify_sqlite_files(database_path: &Path) -> Result<(), UsageStoreError> {
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+/// Embedded usage migration identities; no accounting database is opened.
+pub fn maintenance_schema_signature() -> Vec<(i64, Vec<u8>)> {
+    MIGRATOR
+        .iter()
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect()
+}

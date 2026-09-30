@@ -1007,6 +1007,7 @@ impl Session {
         // New threads use their own reviewer context; replay still reads the saved checkpoint.
         let guardian_context_mode = GuardianContextMode::ThreadOwned;
         thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
+        thread_extension_data.insert(crate::maintenance::MaintenanceGate::default());
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
