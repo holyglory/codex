@@ -46,6 +46,7 @@ async fn manual_update_schedules_cooperative_activation_without_claiming_serving
     std::fs::write(root.join("auto-update-version"), release)?;
     std::fs::create_dir_all(daemon.socket_path.parent().context("socket parent")?)?;
     let mut listener = codex_uds::UnixListener::bind(&daemon.socket_path).await?;
+    let codex_home = home.path().to_path_buf();
     let server = tokio::spawn(async move {
         loop {
             let connection = listener.accept().await?;
@@ -57,7 +58,7 @@ async fn manual_update_schedules_cooperative_activation_without_claiming_serving
             let response = if request["type"] == "status" {
                 serde_json::json!({"type":"status","pid":pid,"accepting":true,"preparing":false,"restored":true,"executable":old_binary})
             } else {
-                serde_json::json!({"id":request["id"],"result":{"userAgent":"codex_app_server_daemon/1.0.0"}})
+                serde_json::json!({"id":request["id"],"result":{"userAgent":"codex_app_server_daemon/1.0.0","codexHome":codex_home,"platformFamily":"unix","platformOs":std::env::consts::OS}})
             };
             socket
                 .send(Message::Text(response.to_string().into()))

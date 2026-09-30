@@ -1170,6 +1170,13 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
         let TurnInputSubmission::Started { turn_id: newer_id } = newer else {
             panic!("new user work must start");
         };
+        // Acceptance schedules the task before its asynchronous Running event.
+        // Observe the newer turn itself before testing the delayed old Stop.
+        wait_for_event(
+            &test.codex,
+            |event| matches!(event, EventMsg::TurnStarted(started) if started.turn_id == newer_id),
+        )
+        .await;
         test.codex.record_maintenance_stop(turn_id.clone()).await?;
         assert_eq!(
             test.codex.agent_status().await,
@@ -1177,7 +1184,7 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
         );
         drop(new_pause);
         wait_for_event(&test.codex, |event| {
-            matches!(event, EventMsg::TurnComplete(_))
+            matches!(event, EventMsg::TurnComplete(completed) if completed.turn_id == newer_id)
         })
         .await;
         let request = response.single_request();

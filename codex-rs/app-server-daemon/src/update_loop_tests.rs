@@ -842,11 +842,25 @@ async fn check_manual_update_preserves_unsupported_server(package_directory: &st
         .expect("second response");
     let second: Result<crate::UpdateOutput, String> =
         serde_json::from_slice(&response).expect("valid second response");
-    assert!(
-        second
-            .expect_err("queued activation remains unsupported")
-            .contains("failed to upgrade")
-    );
+    if local_package {
+        // The first request restored the production selection using identical
+        // executable bytes. The queued request correctly needs no activation.
+        let second = second.expect("identical production binary is already serving");
+        assert_eq!(second.status, UpdateStatus::NoUpdate);
+        assert_eq!(
+            (
+                second.installed_version.as_deref(),
+                second.running_version.as_deref()
+            ),
+            (Some("1.0.0"), Some("1.0.0"))
+        );
+    } else {
+        assert!(
+            second
+                .expect_err("queued activation remains unsupported")
+                .contains("failed to upgrade")
+        );
+    }
     assert_eq!(current_pid(), before);
     assert!(
         backend
