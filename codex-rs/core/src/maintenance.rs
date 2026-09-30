@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub enum MaintenancePauseStatus {
     Requested,
     Paused,
+    BackgroundWork,
     PersistenceFailed,
     Released,
 }
@@ -33,6 +34,7 @@ pub(crate) struct PauseRequest {
 pub struct MaintenancePause {
     request: Arc<PauseRequest>,
     status: watch::Receiver<MaintenancePauseStatus>,
+    resume_on_drop: bool,
 }
 
 impl MaintenanceGate {
@@ -56,6 +58,7 @@ impl MaintenanceGate {
         Some(MaintenancePause {
             request,
             status: receiver,
+            resume_on_drop: true,
         })
     }
 
@@ -78,6 +81,12 @@ impl MaintenancePause {
         self.status()
     }
 
+    /// Irreversibly keeps this runtime parked while its owning process exits.
+    /// Call only after its complete recovery state has been durably committed.
+    pub fn commit(mut self) {
+        self.resume_on_drop = false;
+    }
+
     pub fn release(&self) {
         self.request.released.cancel();
         self.request
@@ -88,7 +97,7 @@ impl MaintenancePause {
 
 impl Drop for MaintenancePause {
     fn drop(&mut self) {
-        self.release();
+        if self.resume_on_drop { self.release(); }
     }
 }
 
@@ -99,6 +108,24 @@ impl PauseRequest {
         cancellation: &CancellationToken,
     ) {
         if self.released.is_cancelled() || cancellation.is_cancelled() {
+            return;
+        }
+        if session.services.code_mode_service.has_active_cells()
+            || !session.services.unified_exec_manager.list_processes().await.is_empty()
+        {
+            self.status.send_replace(MaintenancePauseStatus::BackgroundWork);
+            return;
+        }
+        // Async hooks must publish their outputs before the checkpoint is sealed.
+        let hooks = session.services.hooks.load_full();
+        tokio::select! {
+            _ = hooks.wait_for_async_hooks() => {}
+            _ = self.released.cancelled() => return,
+            _ = cancellation.cancelled() => return,
+        }
+        // Unconsumed hook output is handled by the next normal step, not discarded.
+        if !session.async_hook_results.is_empty() {
+            self.status.send_replace(MaintenancePauseStatus::BackgroundWork);
             return;
         }
         // This call is made only between complete sampling/tool steps. A failed

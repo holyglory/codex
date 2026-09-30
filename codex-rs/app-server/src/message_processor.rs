@@ -1,3 +1,5 @@
+#[path = "maintenance_controller.rs"]
+mod maintenance;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;

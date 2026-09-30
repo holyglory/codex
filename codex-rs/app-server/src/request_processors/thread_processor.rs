@@ -1,3 +1,6 @@
+#[path = "maintenance.rs"]
+mod maintenance;
+
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 

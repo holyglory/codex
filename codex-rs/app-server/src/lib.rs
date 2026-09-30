@@ -1033,6 +1033,7 @@ pub async fn run_main_with_transport_options(
             });
             let mut snapshot_finished = !managed_daemon;
             let mut clients_disconnected = false;
+            let maintenance_committed = CancellationToken::new();
             let mut shutdown_state = ShutdownState::default();
             let mut shutdown_signal_future = Box::pin(shutdown_signal());
             let exit_reason = loop {
@@ -1067,6 +1068,12 @@ pub async fn run_main_with_transport_options(
                 }
 
                 tokio::select! {
+                    _ = maintenance_committed.cancelled(), if !shutdown_state.forced() => {
+                        // Checkpoints are sealed and transferable work is parked.
+                        shutdown_state.requested = true;
+                        shutdown_state.forced = true;
+                        snapshot_finished = true;
+                    }
                     _ = &mut snapshot, if shutdown_state.requested() && active_admissions == 0 && !snapshot_finished => {
                         snapshot_finished = true;
                     }
@@ -1079,6 +1086,10 @@ pub async fn run_main_with_transport_options(
                                 continue;
                             }
                         };
+                        if managed_daemon && matches!(signal, ShutdownSignal::GracefulOnly) {
+                            warn!("unowned graceful restart ignored; request a supervised daemon handover");
+                            continue;
+                        }
                         let running_turn_count = *running_turn_count_rx.borrow();
                         shutdown_state.on_signal(signal, connections.len(), running_turn_count, &processor.turn_admission);
                     }
@@ -1103,6 +1114,14 @@ pub async fn run_main_with_transport_options(
                             continue;
                         }
                         match event {
+                            TransportEvent::DaemonMaintenance(connection) => {
+                                let processor = Arc::clone(&processor);
+                                let recovery_path = recovery_file.clone();
+                                let committed = maintenance_committed.clone();
+                                tokio::spawn(async move {
+                                    processor.maintenance_connection(connection, recovery_path, committed).await;
+                                });
+                            }
                             TransportEvent::DaemonShutdown => {
                                 shutdown_state.on_signal(ShutdownSignal::Forceable, connections.len(), *running_turn_count_rx.borrow(), &processor.turn_admission);
                             }

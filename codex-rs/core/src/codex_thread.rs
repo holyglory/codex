@@ -254,6 +254,19 @@ impl CodexThread {
             .request()
     }
 
+    /// Reports whether this runtime currently owns any executing turn task.
+    pub async fn maintenance_is_idle(&self) -> bool {
+        self.session.active_turn.lock().await.is_none()
+    }
+
+    /// Checks process-local work that cannot be transferred in a maintenance checkpoint.
+    pub async fn maintenance_has_background_work(&self) -> bool {
+        self.session.services.code_mode_service.has_active_cells()
+            || !self.list_background_terminals().await.is_empty()
+            || self.session.input_queue.has_pending_input(&self.session.active_turn).await
+            || !self.session.async_hook_results.is_empty()
+    }
+
     /// Returns extension-owned data attached to this thread runtime.
     pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
         &self.session.services.thread_extension_data

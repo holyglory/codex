@@ -33,8 +33,13 @@ pub(crate) async fn start_recovery(
     path: PathBuf,
     processor: std::sync::Arc<crate::message_processor::MessageProcessor>,
 ) -> io::Result<tokio::task::JoinHandle<()>> {
+    let read_path = path.clone();
     let candidates = tokio::task::spawn_blocking(move || {
+        let path = read_path;
         let candidates = daemon_recovery::read_snapshot(&path);
+        if candidates.as_ref().is_ok_and(|saved| saved.maintenance.is_some()) {
+            return candidates;
+        }
         // Even malformed or temporarily unreadable snapshots belong to this generation only.
         match std::fs::remove_file(&path) {
             Ok(()) => candidates,
@@ -44,6 +49,21 @@ pub(crate) async fn start_recovery(
     })
     .await
     .map_err(io::Error::other)??;
+    if candidates.maintenance.is_some() {
+        let admission = processor.turn_admission.begin_maintenance()
+            .ok_or_else(|| io::Error::other("maintenance restoration is already active"))?;
+        return Ok(tokio::spawn(async move {
+            match processor.restore_maintenance(candidates, admission).await {
+                Ok(()) => { let _ = tokio::fs::remove_file(path).await; }
+                Err(reason) => {
+                    // A partial restore cannot advertise readiness or consume the
+                    // receipt needed for operator recovery.
+                    processor.turn_admission.begin_drain();
+                    tracing::error!(%reason, "maintenance restoration failed");
+                }
+            }
+        }));
+    }
     Ok(tokio::spawn(async move {
         processor.restore_daemon_threads(candidates).await;
     }))

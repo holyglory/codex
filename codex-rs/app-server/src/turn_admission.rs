@@ -11,6 +11,7 @@ use crate::error_code::server_draining_error;
 #[derive(Debug, Default)]
 struct AdmissionState {
     closed: bool,
+    maintenance: bool,
     active: usize,
 }
 
@@ -31,7 +32,32 @@ impl Default for TurnAdmission {
 
 pub(crate) struct TurnPermit(TurnAdmission);
 
+/// Reopening is automatic on failed preparation or owner disconnect.
+pub(crate) struct MaintenanceAdmission(TurnAdmission);
+
+impl Drop for MaintenanceAdmission {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).maintenance = false;
+    }
+}
+
 impl TurnAdmission {
+    pub(crate) fn begin_maintenance(&self) -> Option<MaintenanceAdmission> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed || state.maintenance { return None; }
+        state.maintenance = true;
+        Some(MaintenanceAdmission(self.clone()))
+    }
+
+    pub(crate) fn accepting(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        !state.closed && !state.maintenance
+    }
+
+    pub(crate) fn maintenance_requested(&self) -> bool {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).maintenance
+    }
+
     pub(crate) fn begin_drain(&self) {
         self.state
             .lock()
@@ -46,7 +72,15 @@ impl TurnAdmission {
     // Admit and close take the same short lock. The permit keeps shutdown from
     // finishing while an earlier request is still preparing or submitting work.
     pub(crate) fn admit(&self) -> Result<TurnPermit, JSONRPCErrorError> {
-        self.try_admit().ok_or_else(server_draining_error)
+        self.try_admit().ok_or_else(|| {
+            if self.maintenance_requested() {
+                codex_app_server_protocol::JSONRPCErrorError {
+                    code: -32600,
+                    message: "Server is preparing an upgrade; retry after reconnecting".to_string(),
+                    data: Some(serde_json::json!({"reason": "serverSwitching", "retryAfterMs": 250})),
+                }
+            } else { server_draining_error() }
+        })
     }
 
     fn try_admit(&self) -> Option<TurnPermit> {
@@ -54,7 +88,7 @@ impl TurnAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed {
+        if state.closed || state.maintenance {
             return None;
         }
         state.active += 1;

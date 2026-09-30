@@ -14,6 +14,16 @@ pub struct RecoverySnapshot {
     #[serde(skip)]
     pub loaded: BTreeSet<String>,
     pub interrupted: BTreeMap<String, InterruptedTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<MaintenanceSnapshot>,
+}
+
+/// A complete, generation-bound set of runtimes sealed before maintenance commit.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MaintenanceSnapshot {
+    pub operation_id: String,
+    /// Roots have no parent; children are loaded after their immediate owner.
+    pub parents: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -69,7 +79,7 @@ pub fn write_candidates(path: &Path, candidates: &BTreeSet<String>) -> io::Resul
 
 pub fn write_snapshot(path: &Path, snapshot: &RecoverySnapshot) -> io::Result<()> {
     let mut saved = snapshot.loaded.clone();
-    if !snapshot.interrupted.is_empty() {
+    if !snapshot.interrupted.is_empty() || snapshot.maintenance.is_some() {
         saved.insert(format!(
             "{INTERRUPTION_PREFIX}{}",
             serde_json::to_string(snapshot).map_err(io::Error::other)?

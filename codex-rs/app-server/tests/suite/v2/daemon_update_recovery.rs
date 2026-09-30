@@ -589,6 +589,7 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
         daemon_recovery::RecoverySnapshot {
             loaded: [id.clone()].into(),
             interrupted: expected,
+            maintenance: None,
         }
     );
     // Existing binaries can still read the candidate array and ignore the metadata entry.
@@ -918,4 +919,58 @@ async fn request(
     })
     .await
     .context("timed out waiting for app-server response")?
+}
+
+
+#[tokio::test]
+async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_threads() -> Result<()> {
+    use codex_app_server_transport::maintenance::{MaintenanceCommand, MaintenanceResponse};
+    let home = TempDir::new()?;
+    let (mock, _) = start_streaming_sse_server(vec![]).await;
+    create_config_toml(home.path(), mock.uri(), "never")?;
+    let socket_path = home.path().join("control/server.sock");
+    let mut server = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    let thread = start_thread(&mut client, /*id*/ 2, json!({})).await?;
+    for (operation_id, commit) in [("cancelled", false), ("committed", true)] {
+        let pid = server.id().context("server pid")?;
+        let stream = UnixStream::connect(&socket_path).await?;
+        let (mut maintenance, _) = client_async("ws://localhost/daemon/maintenance", stream).await?;
+        maintenance.send(Message::Text(serde_json::to_string(&MaintenanceCommand::Prepare {
+            operation_id: operation_id.into(), pid,
+        })?.into())).await?;
+        let frame = timeout(DEFAULT_READ_TIMEOUT, maintenance.next()).await?.context("maintenance reply")??;
+        let Message::Text(text) = frame else { anyhow::bail!("expected readiness receipt") };
+        assert_eq!(serde_json::from_str::<MaintenanceResponse>(&text)?, MaintenanceResponse::Ready { operation_id: operation_id.into(), pid });
+        let command = if commit { MaintenanceCommand::Commit { operation_id: operation_id.into(), pid } } else { MaintenanceCommand::Cancel };
+        maintenance.send(Message::Text(serde_json::to_string(&command)?.into())).await?;
+        if commit {
+            wait_success(&mut server).await?;
+        } else {
+            maintenance.close(None).await?;
+            timeout(DEFAULT_READ_TIMEOUT, async {
+                loop {
+                    if start_thread(&mut client, /*id*/ 3, json!({})).await.is_ok() { break; }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            }).await?;
+            assert!(server.try_wait()?.is_none());
+            assert!(!daemon_recovery_file_path(home.path()).exists());
+        }
+    }
+    let saved = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
+    assert!(saved.loaded.contains(&thread.thread.id));
+    assert_eq!(saved.maintenance.context("maintenance metadata")?.operation_id, "committed");
+    let mut successor = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            if request(&mut client, /*id*/ 4, "thread/resume", json!({"threadId":thread.thread.id})).await.is_ok() { break; }
+            sleep(Duration::from_millis(25)).await;
+        }
+    }).await?;
+    start_thread(&mut client, /*id*/ 5, json!({})).await?;
+    request_shutdown(&successor, &socket_path).await?;
+    wait_success(&mut successor).await?;
+    Ok(())
 }
