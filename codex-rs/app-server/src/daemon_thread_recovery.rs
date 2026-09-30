@@ -36,17 +36,14 @@ pub(crate) async fn start_recovery(
     let read_path = path.clone();
     let candidates = tokio::task::spawn_blocking(move || {
         let path = read_path;
-        let candidates = daemon_recovery::read_snapshot(&path);
-        if candidates
-            .as_ref()
-            .is_ok_and(|saved| saved.maintenance.is_some())
-        {
-            return candidates;
+        let candidates = daemon_recovery::read_snapshot(&path)?;
+        if candidates.maintenance.is_some() {
+            return Ok(candidates);
         }
-        // Even malformed or temporarily unreadable snapshots belong to this generation only.
+        // Valid legacy snapshots retain their established one-start lifetime.
         match std::fs::remove_file(&path) {
-            Ok(()) => candidates,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => candidates,
+            Ok(()) => Ok(candidates),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(candidates),
             Err(err) => Err(err),
         }
     })

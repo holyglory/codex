@@ -1011,6 +1011,7 @@ pub async fn run_main_with_transport_options(
                     Ok(task) => Some(task),
                     Err(err) => {
                         warn!("failed to consume daemon recovery snapshot: {err}");
+                        processor.turn_admission.restoration_failed();
                         None
                     }
                 }

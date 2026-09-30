@@ -179,6 +179,7 @@ impl ThreadRequestProcessor {
         }
         saved.maintenance = Some(MaintenanceSnapshot {
             operation_id,
+            source_pid: std::process::id(),
             parents,
             mailboxes,
         });

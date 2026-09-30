@@ -415,8 +415,8 @@ impl Daemon {
                 self.wait_until_ready().await?,
             )
         } else {
-            // A fresh start must ignore snapshots left by older stop clients.
-            if let Err(err) = thread_recovery::discard_pending(self) {
+            // Preserve a committed maintenance handoff after its owner exited.
+            if let Err(err) = thread_recovery::prepare_fresh_start(self) {
                 eprintln!("warning: failed to clear stale daemon recovery before start: {err}");
             }
             prepare_install::prepare(self, &settings).await?;

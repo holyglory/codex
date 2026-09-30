@@ -22,6 +22,7 @@ pub struct RecoverySnapshot {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MaintenanceSnapshot {
     pub operation_id: String,
+    pub source_pid: u32,
     /// Roots have no parent; children are loaded after their immediate owner.
     pub parents: BTreeMap<String, Option<String>>,
     #[serde(default)]
