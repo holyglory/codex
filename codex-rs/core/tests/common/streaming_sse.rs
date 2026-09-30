@@ -714,14 +714,14 @@ data: {"type":"response.completed","response":{"id":"resp-1"}}
         let (second_tx, second_rx) = oneshot::channel();
         let state = TokioMutex::new(StreamingSseState {
             responses: VecDeque::from(vec![
-                vec![StreamingSseChunk {
+                StreamingResponse::Ready(vec![StreamingSseChunk {
                     gate: None,
                     body: "first".to_string(),
-                }],
-                vec![StreamingSseChunk {
+                }]),
+                StreamingResponse::Ready(vec![StreamingSseChunk {
                     gate: None,
                     body: "second".to_string(),
-                }],
+                }]),
             ]),
             completions: VecDeque::from(vec![first_tx, second_tx]),
         });
