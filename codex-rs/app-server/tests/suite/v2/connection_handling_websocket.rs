@@ -830,10 +830,22 @@ pub(super) async fn read_response_for_id(
     let target_id = RequestId::Integer(id);
     loop {
         let message = read_jsonrpc_message(stream).await?;
-        if let JSONRPCMessage::Response(response) = message
-            && response.id == target_id
-        {
-            return Ok(response);
+        match message {
+            JSONRPCMessage::Response(response) => {
+                if response.id == target_id {
+                    return Ok(response);
+                }
+            }
+            JSONRPCMessage::Error(error) => {
+                if error.id == target_id {
+                    anyhow::bail!(
+                        "request {id} returned error {}: {}",
+                        error.error.code,
+                        error.error.message
+                    );
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_) => {}
         }
     }
 }
@@ -895,10 +907,20 @@ pub(super) async fn read_error_for_id(stream: &mut WsClient, id: i64) -> Result<
     let target_id = RequestId::Integer(id);
     loop {
         let message = read_jsonrpc_message(stream).await?;
-        if let JSONRPCMessage::Error(err) = message
-            && err.id == target_id
-        {
-            return Ok(err);
+        match message {
+            JSONRPCMessage::Error(error) => {
+                if error.id == target_id {
+                    return Ok(error);
+                }
+            }
+            JSONRPCMessage::Response(response) => {
+                if response.id == target_id {
+                    anyhow::bail!(
+                        "request {id} unexpectedly succeeded while an error was required"
+                    );
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_) => {}
         }
     }
 }
