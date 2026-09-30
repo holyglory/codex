@@ -64,7 +64,7 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
     }
     if !code_cell {
         chunks.push(vec![stream_chunk(
-            None,
+            /*gate*/ None,
             "Turn completed while work remains",
         )?]);
     }

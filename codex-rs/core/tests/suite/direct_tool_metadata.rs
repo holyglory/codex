@@ -105,7 +105,7 @@ async fn message_budget_sheds_inventory_without_changing_tool_results_or_history
     batch.push(ev_completed("resp-1"));
     let mut next_call = ev_function_call("plan-next", "update_plan", &next_arguments.to_string());
     next_call["item"]["id"] = json!("fc_plan_next");
-    let events = vec![
+    let events = [
         batch,
         vec![
             ev_response_created("resp-2"),
