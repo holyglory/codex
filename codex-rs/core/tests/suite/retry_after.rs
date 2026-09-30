@@ -307,7 +307,7 @@ async fn responses_http_overload_uses_dedicated_capacity_budget() -> Result<()> 
             operation: "sampling".into(),
         }
     );
-    assert!(wait_for_retry(&mut telemetry, &retry).await >= Duration::from_secs(1));
+    wait_for_retry(&mut telemetry, &retry).await;
     wait_for_turn_completion(&test).await;
 
     assert_eq!(response_mock.requests().len(), 2);

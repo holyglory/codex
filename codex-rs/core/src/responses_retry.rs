@@ -165,7 +165,11 @@ pub(crate) async fn handle_response_stream_error(
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
+        let retry_at = if is_server_overloaded {
+            now + delay
+        } else {
+            retry_after.map(RetryAfter::deadline).unwrap_or(now + delay)
+        };
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;
