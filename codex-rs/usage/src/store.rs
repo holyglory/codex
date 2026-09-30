@@ -240,6 +240,11 @@ impl UsageStore {
             .await
             .map_err(UsageStoreError::Database)?;
         let refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
+        if refresh_pending {
+            // Short-lived CLI readers must also advance durable backfill, even
+            // when their runtime exits before the shared worker gets scheduled.
+            let _ = crate::report_cache::backfill::step(&pool).await;
+        }
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [
@@ -268,8 +273,11 @@ impl UsageStore {
             }
         };
         verify_sqlite_files(&database_path)?;
-        let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path).map_err(UsageStoreError::Filesystem)?;
-        if refresh_pending { report_refresh.kick(pool.clone()); }
+        let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path)
+            .map_err(UsageStoreError::Filesystem)?;
+        if refresh_pending {
+            report_refresh.kick(pool.clone());
+        }
         Ok(Self {
             report_refresh,
             pool,

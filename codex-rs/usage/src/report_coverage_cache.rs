@@ -40,4 +40,3 @@ AND token.measurement_provenance = 'provider_reported' AND token.category_path N
 pub(super) const GLOBAL: &str = r#"
 UPDATE _usage_report_global_gap SET has_gap = MAX(has_gap, (SELECT COALESCE(MAX(coverage_state <> 'complete'),0) FROM coverage_events WHERE rowid > ?1 AND rowid <= ?2 AND operation_id IS NULL));
 "#;
-

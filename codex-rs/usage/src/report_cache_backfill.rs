@@ -6,8 +6,18 @@ use sqlx::SqlitePool;
 const PAGE_ROWS: i64 = 1_024;
 const MAX_PENDING_WAL_PAGES: i64 = 8_192;
 
-pub(crate) enum Progress { Ready, Advanced, ReaderBusy }
-const SOURCES: [&str; 4] = ["operations", "token_observations", "coverage_events", "activity_spans"];
+pub(crate) enum Progress {
+    Ready,
+    Advanced,
+    ReaderBusy,
+    Superseded,
+}
+const SOURCES: [&str; 4] = [
+    "operations",
+    "token_observations",
+    "coverage_events",
+    "activity_spans",
+];
 
 const OPERATIONS: &str = r#"
 INSERT INTO _usage_report_operations(
@@ -132,8 +142,12 @@ pub(super) async fn initialize(connection: &mut SqliteConnection) -> Result<(), 
     for source in SOURCES {
         // Source names are a closed internal list, never caller input.
         sqlx::QueryBuilder::<sqlx::Sqlite>::new("INSERT INTO _usage_report_backfill SELECT ")
-            .push_bind(source).push(", 0, COALESCE(MAX(rowid), 0) FROM ").push(source)
-            .build().execute(&mut *connection).await?;
+            .push_bind(source)
+            .push(", 0, COALESCE(MAX(rowid), 0) FROM ")
+            .push(source)
+            .build()
+            .execute(&mut *connection)
+            .await?;
     }
     Ok(())
 }
@@ -141,46 +155,93 @@ pub(super) async fn initialize(connection: &mut SqliteConnection) -> Result<(), 
 /// Commits at most one page. Transaction drop rolls back both the page and its
 /// cursor on cancellation, so another opener can resume without double counting.
 pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
-    let (_, written, checkpointed): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)").fetch_one(pool).await?;
+    let (_, written, checkpointed): (i64, i64, i64) =
+        sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)")
+            .fetch_one(pool)
+            .await?;
     if written.saturating_sub(checkpointed) > MAX_PENDING_WAL_PAGES {
         // An external reader pins old pages. Pause derived writes rather than
         // growing its WAL indefinitely; canonical capture remains independent.
         return Ok(Progress::ReaderBusy);
     }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let (version, ready): (i64, i64) = sqlx::query_as("SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1")
-        .fetch_one(&mut *tx).await?;
-    if version != super::REPORT_CACHE_SCHEMA_VERSION || ready == 1 {
+    let (version, ready): (i64, i64) = sqlx::query_as(
+        "SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if version != super::REPORT_CACHE_SCHEMA_VERSION {
+        return Ok(Progress::Superseded);
+    }
+    if ready == 1 {
         return Ok(Progress::Ready);
     }
     let pending: Option<(String, i64, i64)> = sqlx::query_as("SELECT source, cursor, high_water FROM _usage_report_backfill WHERE cursor < high_water ORDER BY source LIMIT 1")
         .fetch_optional(&mut *tx).await?;
     let Some((source, cursor, high_water)) = pending else {
         sqlx::query("UPDATE _usage_report_cache_meta SET ready = 1 WHERE singleton = 1")
-            .execute(&mut *tx).await?;
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         return Ok(Progress::Ready);
     };
     let (source, statements): (&'static str, &[&'static str]) = match source.as_str() {
         "operations" => ("operations", &[OPERATIONS]),
-        "token_observations" => ("token_observations", &[TOKENS_0, TOKENS_1, TOKENS_2, super::token_hours::BACKFILL, super::cost_projection::BACKFILL, super::dimensions::OWNERS, super::dimensions::BACKFILL, super::coverage::PROVIDER]),
-        "coverage_events" => ("coverage_events", &[COVERAGE, super::coverage::COVERAGE, super::coverage::GLOBAL]),
+        "token_observations" => (
+            "token_observations",
+            &[
+                TOKENS_0,
+                TOKENS_1,
+                TOKENS_2,
+                super::token_hours::BACKFILL,
+                super::cost_projection::BACKFILL,
+                super::dimensions::OWNERS,
+                super::dimensions::BACKFILL,
+                super::coverage::PROVIDER,
+            ],
+        ),
+        "coverage_events" => (
+            "coverage_events",
+            &[COVERAGE, super::coverage::COVERAGE, super::coverage::GLOBAL],
+        ),
         "activity_spans" => ("activity_spans", &[SPANS]),
-        _ => return Err(sqlx::Error::Protocol("unknown usage backfill source".into())),
+        _ => {
+            return Err(sqlx::Error::Protocol(
+                "unknown usage backfill source".into(),
+            ));
+        }
     };
     let end: i64 = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid), ")
-        .push_bind(high_water).push(") FROM (SELECT rowid FROM ").push(source)
-        .push(" WHERE rowid > ").push_bind(cursor).push(" AND rowid <= ").push_bind(high_water)
-        .push(" ORDER BY rowid LIMIT ").push_bind(PAGE_ROWS).push(")")
-        .build_query_scalar().fetch_one(&mut *tx).await?;
+        .push_bind(high_water)
+        .push(") FROM (SELECT rowid FROM ")
+        .push(source)
+        .push(" WHERE rowid > ")
+        .push_bind(cursor)
+        .push(" AND rowid <= ")
+        .push_bind(high_water)
+        .push(" ORDER BY rowid LIMIT ")
+        .push_bind(PAGE_ROWS)
+        .push(")")
+        .build_query_scalar()
+        .fetch_one(&mut *tx)
+        .await?;
     for statement in statements {
-        sqlx::query(*statement).bind(cursor).bind(end).execute(&mut *tx).await?;
+        sqlx::query(*statement)
+            .bind(cursor)
+            .bind(end)
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query("UPDATE _usage_report_backfill SET cursor = ? WHERE source = ?")
-        .bind(end).bind(source).execute(&mut *tx).await?;
+        .bind(end)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     // This never waits for readers or truncates their snapshots. Short write
     // transactions let SQLite's normal WAL checkpoints make progress.
-    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(pool).await?;
+    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+        .execute(pool)
+        .await?;
     Ok(Progress::Advanced)
 }
