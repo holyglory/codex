@@ -78,8 +78,9 @@ A queued response is not a completed upgrade.
 Preparation has a 60-second deadline. An unfinished background terminal,
 code-mode cell, unsupported execution identity, or checkpoint failure leaves
 the original server and work available. Losing the owner's connection before
-commit releases the pauses. After commit, only the verified checkpoint permits
-bounded server teardown; uncheckpointed work is never force-stopped by this path.
+commit releases the pauses. The old server acknowledges commit only after durable
+publication and parking every participant. That receipt and its matching checkpoint
+permit bounded server teardown; uncheckpointed work is never force-stopped by this path.
 The replacement restores ownership and queued mail before continuing saved
 turns. User interruption still wins over resumption. Readiness includes a fresh
 ephemeral session through the shared endpoint.
@@ -89,10 +90,11 @@ embedded database migrations. A schema-changing upgrade needs a separately
 verified migration and rollback plan. A failed candidate start restores the
 previous compatible executable when no replacement is running. An alive but
 unready replacement is retained for diagnosis rather than launching a second
-writer. If the activation owner exits after commit, `daemon start` preserves
-the committed recovery file; status reports that the original owner did not
-record completion. Unreadable recovery evidence is retained and cannot count
-as successful restoration.
+writer. If the activation owner exits after commit, `daemon start` uses the
+recorded compatible release when a new process is needed, verifies restoration
+and fresh-session admission, and acknowledges the recovered generation. The
+checkpoint remains available until verification succeeds. Unreadable recovery
+evidence is retained and cannot count as successful restoration.
 
 Explicit `daemon stop`, `daemon restart`, and confirmed package replacement
 retain their interrupting semantics. For those operations,

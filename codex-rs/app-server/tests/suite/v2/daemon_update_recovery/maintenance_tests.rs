@@ -56,9 +56,22 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
             .send(Message::Text(serde_json::to_string(&command)?.into()))
             .await?;
         if commit {
+            let receipt = timeout(DEFAULT_READ_TIMEOUT, maintenance.next())
+                .await?
+                .context("commit receipt")??;
+            let Message::Text(receipt) = receipt else {
+                anyhow::bail!("expected commit receipt");
+            };
+            assert_eq!(
+                serde_json::from_str::<MaintenanceResponse>(&receipt)?,
+                MaintenanceResponse::Committed {
+                    operation_id: operation_id.into(),
+                    pid
+                }
+            );
             wait_success(&mut server).await?;
         } else {
-            maintenance.close(None).await?;
+            let _ = maintenance.close(None).await;
             timeout(DEFAULT_READ_TIMEOUT, async {
                 loop {
                     if let Ok(added) = start_thread(&mut client, /*id*/ 3, json!({})).await {
@@ -245,7 +258,27 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     if scenario == AgentTreeScenario::StopDuringRestore {
         super::background_tests::trust_fixture_hooks(&mut client, home.path()).await?;
     }
-    let parent = start_thread(&mut client, /*id*/ 2, json!({"cwd":home.path()})).await?;
+    let parent = if legacy_child {
+        let id = app_test_support::create_fake_rollout(
+            home.path(),
+            "2025-01-05T12-00-00",
+            "2025-01-05T12:00:00Z",
+            "Saved legacy work",
+            Some("mock_provider"),
+            /*git_info*/ None,
+        )?;
+        serde_json::from_value::<ThreadStartResponse>(
+            request(
+                &mut client,
+                /*id*/ 2,
+                "thread/resume",
+                json!({"threadId":id,"cwd":home.path(),"model":"gpt-6-sol"}),
+            )
+            .await?,
+        )?
+    } else {
+        start_thread(&mut client, /*id*/ 2, json!({"cwd":home.path()})).await?
+    };
     start_turn(&mut client, /*id*/ 3, &parent.thread.id).await?;
     wait_for_requests(&mock, /*count*/ 3).await?;
     let stream = UnixStream::connect(&socket_path).await?;
@@ -277,7 +310,10 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         json!({"threadId":parent.thread.id,"includeTurns":true}),
     )
     .await?;
-    let parent_turn = read["thread"]["turns"][0]["id"]
+    let parent_turn = read["thread"]["turns"]
+        .as_array()
+        .and_then(|turns| turns.last())
+        .context("parent turn history")?["id"]
         .as_str()
         .context("parent turn")?
         .to_string();
@@ -356,6 +392,19 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             .into(),
         ))
         .await?;
+    let receipt = timeout(DEFAULT_READ_TIMEOUT, control.next())
+        .await?
+        .context("agent-tree commit receipt")??;
+    let Message::Text(receipt) = receipt else {
+        anyhow::bail!("expected commit receipt");
+    };
+    assert_eq!(
+        serde_json::from_str::<MaintenanceResponse>(&receipt)?,
+        MaintenanceResponse::Committed {
+            operation_id: "agent-tree".into(),
+            pid
+        }
+    );
     wait_success(&mut server).await?;
     let saved = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
     assert_eq!(saved.interrupted.len(), if stop_child { 1 } else { 2 });
@@ -395,25 +444,55 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             }
         })
         .await?;
-        use std::os::unix::fs::PermissionsExt;
-        let checkpoint_path = daemon_recovery_file_path(home.path());
-        let checkpoint_directory = checkpoint_path.parent().context("checkpoint parent")?;
-        let original_permissions = std::fs::metadata(checkpoint_directory)?.permissions();
-        let before_stop = std::fs::read(&checkpoint_path)?;
-        std::fs::set_permissions(checkpoint_directory, std::fs::Permissions::from_mode(0o555))?;
-        let rejected = request(
-            &mut client,
-            /*id*/ 40,
-            "turn/interrupt",
-            json!({"threadId":parent.thread.id,"turnId":parent_turn}),
-        )
-        .await;
-        std::fs::set_permissions(checkpoint_directory, original_permissions)?;
-        assert!(
-            rejected.is_err(),
-            "Stop must not claim persistence when its write fails"
-        );
-        assert_eq!(std::fs::read(&checkpoint_path)?, before_stop);
+        #[cfg(target_os = "linux")]
+        {
+            // A per-process descriptor limit produces a real pre-publication I/O
+            // failure even when the test namespace can bypass Unix mode bits.
+            let checkpoint_path = daemon_recovery_file_path(home.path());
+            let before_stop = std::fs::read(&checkpoint_path)?;
+            let pid = successor.id().context("replacement pid")?.to_string();
+            let limit = StdCommand::new("prlimit")
+                .args([
+                    "--pid",
+                    &pid,
+                    "--nofile",
+                    "--noheadings",
+                    "--output",
+                    "SOFT",
+                ])
+                .output()?;
+            anyhow::ensure!(
+                limit.status.success(),
+                "could not inspect owned test server limit"
+            );
+            let original = String::from_utf8(limit.stdout)?.trim().to_string();
+            anyhow::ensure!(
+                StdCommand::new("prlimit")
+                    .args(["--pid", &pid, "--nofile=0:"])
+                    .status()?
+                    .success(),
+                "could not inject checkpoint write failure"
+            );
+            let rejected = request(
+                &mut client,
+                /*id*/ 40,
+                "turn/interrupt",
+                json!({"threadId":parent.thread.id,"turnId":parent_turn}),
+            )
+            .await;
+            anyhow::ensure!(
+                StdCommand::new("prlimit")
+                    .args(["--pid", &pid, &format!("--nofile={original}:")])
+                    .status()?
+                    .success(),
+                "could not restore owned test server limit"
+            );
+            assert!(
+                rejected.is_err(),
+                "Stop must not claim persistence when its write fails"
+            );
+            assert_eq!(std::fs::read(&checkpoint_path)?, before_stop);
+        }
         request(
             &mut client,
             /*id*/ 41,
@@ -469,9 +548,12 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         let turns = read["thread"]["turns"]
             .as_array()
             .context("restored turns")?;
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0]["id"], interrupted.turn_id);
-        assert_eq!(turns[0]["status"], "inProgress");
+        let matching: Vec<_> = turns
+            .iter()
+            .filter(|turn| turn["id"] == interrupted.turn_id)
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["status"], "inProgress");
         if id == &child_id {
             assert_eq!(read["thread"]["parentThreadId"], parent.thread.id);
             if legacy_child {
@@ -550,7 +632,11 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
                 json!({"threadId":parent.thread.id,"includeTurns":true}),
             )
             .await?;
-            if read["thread"]["turns"][0]["status"] == "completed" {
+            if read["thread"]["turns"].as_array().is_some_and(|turns| {
+                turns
+                    .iter()
+                    .any(|turn| turn["id"] == parent_turn && turn["status"] == "completed")
+            }) {
                 break;
             }
             sleep(Duration::from_millis(10)).await;

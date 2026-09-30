@@ -423,6 +423,21 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
             .into(),
         ))
         .await?;
+    let receipt = tokio::time::timeout(Duration::from_secs(/*secs*/ 40), socket.next())
+        .await?
+        .context("server closed without acknowledging its commit")??;
+    let Message::Text(receipt) = receipt else {
+        anyhow::bail!("invalid commit receipt");
+    };
+    ensure!(receipt.len() <= 1024, "invalid commit receipt size");
+    ensure!(
+        serde_json::from_str::<MaintenanceResponse>(&receipt)?
+            == MaintenanceResponse::Committed {
+                operation_id: record.operation_id.clone(),
+                pid
+            },
+        "server did not confirm its sealed checkpoint; no process was killed"
+    );
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while backend.is_starting_or_running().await? {
         if tokio::time::Instant::now() >= deadline {

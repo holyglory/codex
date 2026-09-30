@@ -34,7 +34,7 @@ impl MessageProcessor {
     ) {
         let mut owned = false;
         async {
-        let MaintenanceConnection { command, reply, mut commit, cancelled } = connection;
+        let MaintenanceConnection { command, reply, mut commit, committed: receipt_sender, cancelled } = connection;
         let pid = std::process::id();
         if matches!(command, MaintenanceCommand::Status) {
             let _ = reply.send(MaintenanceResponse::Status { pid, accepting: self.turn_admission.accepting(), preparing: self.turn_admission.maintenance_requested(), restored: self.turn_admission.restoration_complete(), executable: std::env::current_exe().unwrap_or_default() });
@@ -119,6 +119,10 @@ impl MessageProcessor {
         self.turn_admission.begin_drain();
         paused.commit();
         drop(admission);
+        let (delivered, delivery) = tokio::sync::oneshot::channel();
+        if receipt_sender.send(codex_app_server_transport::maintenance::MaintenanceCommitReceipt { operation_id, pid, delivered }).is_ok() {
+            let _ = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), delivery).await;
+        }
         committed.cancel();
         }.await;
         if owned && !committed.is_cancelled() {

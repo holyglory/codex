@@ -50,5 +50,14 @@ pub struct MaintenanceConnection {
     pub command: MaintenanceCommand,
     pub reply: oneshot::Sender<MaintenanceResponse>,
     pub commit: mpsc::Receiver<MaintenanceCommand>,
+    pub committed: oneshot::Sender<MaintenanceCommitReceipt>,
     pub cancelled: CancellationToken,
+}
+
+/// Sent only after durable publication and irreversible parking of every participant.
+#[derive(Debug)]
+pub struct MaintenanceCommitReceipt {
+    pub operation_id: String,
+    pub pid: u32,
+    pub delivered: oneshot::Sender<()>,
 }

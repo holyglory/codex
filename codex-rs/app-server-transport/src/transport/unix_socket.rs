@@ -397,6 +397,7 @@ async fn run_daemon_maintenance(
     };
     let (reply, ready) = tokio::sync::oneshot::channel();
     let (commands, commit) = mpsc::channel(1);
+    let (committed, receipt) = tokio::sync::oneshot::channel();
     let cancelled = CancellationToken::new();
     let _release = cancelled.clone().drop_guard();
     if events
@@ -404,6 +405,7 @@ async fn run_daemon_maintenance(
             command,
             reply,
             commit,
+            committed,
             cancelled,
         }))
         .await
@@ -442,6 +444,25 @@ async fn run_daemon_maintenance(
     if commands.send(command).await.is_err() {
         return;
     }
+    let receipt = tokio::select! {
+        receipt = tokio::time::timeout(Duration::from_secs(/*secs*/ 35), receipt) => match receipt { Ok(Ok(receipt)) => receipt, _ => return },
+        _ = websocket.next() => return,
+    };
+    let response = crate::maintenance::MaintenanceResponse::Committed {
+        operation_id: receipt.operation_id,
+        pid: receipt.pid,
+    };
+    let Ok(response) = serde_json::to_string(&response) else {
+        return;
+    };
+    if websocket
+        .send(Message::Text(response.into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let _ = receipt.delivered.send(());
     // Keep the lease alive until the committed process closes the socket, or the
     // owner disconnects. No second command can accidentally force a shutdown.
     let _ = websocket.next().await;
