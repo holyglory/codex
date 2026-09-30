@@ -1092,6 +1092,12 @@ async fn sample_configured_conversation_history_with_delivery(
         ),
     )
     .await?;
+    assert!(
+        server
+            .wait_for_closed_connections(INITIAL_WEBSOCKET_CONNECTIONS, ASYNC_TEST_TIMEOUT)
+            .await,
+        "classifier websocket responses should be fully delivered before fixture teardown"
+    );
     Ok((request.body_json(), test, registry, thread_server))
 }
 

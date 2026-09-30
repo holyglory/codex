@@ -120,8 +120,17 @@ pub async fn list_all_connectors_with_options(
     if !apps_enabled(config).await? {
         return Ok(Vec::new());
     }
-    let auth = connector_auth(config).await?;
-    list_all_connectors_with_options_and_auth(config, &auth, force_refetch, plugin_apps).await
+    // Bind the policy to the current account before loading fresh credentials so
+    // this operation observes the new account's policy, while explicit-auth
+    // callers retain the policy they supplied.
+    let mut request_config = config.clone();
+    request_config.application_network_policy = request_config
+        .application_network_policy
+        .clone()
+        .for_current_account();
+    let auth = connector_auth(&request_config).await?;
+    list_all_connectors_with_options_and_auth(&request_config, &auth, force_refetch, plugin_apps)
+        .await
 }
 
 pub async fn list_all_connectors_with_options_and_auth(
