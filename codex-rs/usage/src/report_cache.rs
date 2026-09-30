@@ -16,11 +16,19 @@ pub(crate) mod dimensions;
 #[path = "report_coverage_cache.rs"]
 pub(crate) mod coverage;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 6;
+#[path = "report_cost_rollups.rs"]
+pub(crate) mod cost_rollups;
+
+const REPORT_CACHE_SCHEMA_VERSION: i64 = 7;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 const RESET_CACHE_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_operation_insert;
+DROP TRIGGER IF EXISTS _usage_report_cost_remove;
+DROP TRIGGER IF EXISTS _usage_report_cost_add_insert;
+DROP TRIGGER IF EXISTS _usage_report_cost_add_update;
+DROP VIEW IF EXISTS _usage_report_cost_contributions;
+DROP TABLE IF EXISTS _usage_report_cost_totals;
 DROP TRIGGER IF EXISTS _usage_report_latest_coverage_insert;
 DROP TRIGGER IF EXISTS _usage_report_global_gap_insert;
 DROP TRIGGER IF EXISTS _usage_report_provider_complete_insert;
@@ -240,18 +248,24 @@ BEGIN
 END;
 "#;
 
-pub(crate) async fn ensure(pool: &SqlitePool, reader: &tokio::sync::Mutex<()>) -> Result<(), sqlx::Error> {
+pub(crate) async fn ensure(
+    pool: &SqlitePool,
+    reader: &tokio::sync::Semaphore,
+) -> Result<(), sqlx::Error> {
     if is_ready(pool).await? || !prepare(pool).await? {
         return Ok(());
     }
     let mut delay_ms = 100;
     loop {
         let progress = {
-            let _reader = reader.lock().await;
+            let _reader = reader
+                .acquire()
+                .await
+                .map_err(|_| sqlx::Error::PoolClosed)?;
             backfill::step(pool).await?
         };
         match progress {
-            backfill::Progress::Ready => return Ok(()),
+            backfill::Progress::Ready | backfill::Progress::Superseded => return Ok(()),
             backfill::Progress::Advanced => {
                 delay_ms = 100;
                 tokio::task::yield_now().await;
@@ -325,18 +339,37 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
     sqlx::raw_sql(CREATE_CACHE_SQL)
         .execute(&mut *connection)
         .await?;
-    sqlx::raw_sql(token_hours::SCHEMA).execute(&mut *connection).await?;
-    sqlx::raw_sql(cost_projection::SCHEMA).execute(&mut *connection).await?;
-    sqlx::raw_sql(dimensions::SCHEMA).execute(&mut *connection).await?;
-    sqlx::raw_sql(coverage::SCHEMA).execute(&mut *connection).await?;
+    sqlx::raw_sql(token_hours::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(cost_projection::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(dimensions::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(coverage::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(cost_rollups::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
     backfill::initialize(connection).await?;
-    sqlx::query("INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)")
-        .bind(REPORT_CACHE_SCHEMA_VERSION).execute(&mut *connection).await?;
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM _usage_report_backfill WHERE cursor < high_water)")
-        .fetch_one(&mut *connection).await?;
+    sqlx::query(
+        "INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)",
+    )
+    .bind(REPORT_CACHE_SCHEMA_VERSION)
+    .execute(&mut *connection)
+    .await?;
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _usage_report_backfill WHERE cursor < high_water)",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
     if !pending {
         sqlx::query("UPDATE _usage_report_cache_meta SET ready = 1 WHERE singleton = 1")
-            .execute(&mut *connection).await?;
+            .execute(&mut *connection)
+            .await?;
     }
     Ok(pending)
 }

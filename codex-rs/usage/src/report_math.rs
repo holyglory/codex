@@ -3,7 +3,6 @@ use thiserror::Error;
 
 const NS_PER_MS: u64 = 1_000_000;
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UtcTimeRange {
     start_ms: i64,
@@ -24,7 +23,6 @@ impl UtcTimeRange {
     pub fn end_ms(self) -> i64 {
         self.end_ms
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
