@@ -11,6 +11,7 @@ pub(super) enum ReconnectPresentation {
     #[default]
     Conversation,
     Overview,
+    RejectedFreshStart,
 }
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ pub(super) struct ReconnectState {
     pub(super) failed: bool,
     pub(super) presentation: ReconnectPresentation,
     pub(super) seen_version_notice: Option<String>,
+    pub(super) startup_worktree: Option<crate::ManagedTuiWorktree>,
 }
 
 pub(super) struct Reconnected {
@@ -51,7 +53,7 @@ pub(super) async fn reconnect(
     // Connecting already has transport deadlines. Give healthy history/inventory hydration one
     // shared budget instead of repeatedly discarding its progress on a short per-attempt timer.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 120);
-    for delay in [0, 1, 2, 4, 8] {
+    for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(8)) {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
             let client = crate::app_server_connection::connect(&target).await?;
@@ -60,7 +62,21 @@ pub(super) async fn reconnect(
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
             let bootstrap = session.bootstrap(&config).await?;
-            let thread = if let Some(thread_id) = thread_id {
+            let thread = if presentation == ReconnectPresentation::RejectedFreshStart {
+                match session
+                    .start_thread_with_session_start_source(
+                        &local_settings,
+                        &config,
+                        /*session_start_source*/ None,
+                        remote_cwd.as_deref(),
+                        /*selected_profile*/ None,
+                    )
+                    .await
+                {
+                    Ok(started) => Some(started),
+                    Err(error) => return Err(error),
+                }
+            } else if let Some(thread_id) = thread_id {
                 match session
                     .resume_thread(
                         &local_settings,
@@ -71,6 +87,13 @@ pub(super) async fn reconnect(
                     .await
                 {
                     Ok(thread) => Some(thread),
+                    Err(error)
+                        if error
+                            .downcast_ref::<TypedRequestError>()
+                            .is_some_and(TypedRequestError::is_server_switching) =>
+                    {
+                        return Err(error);
+                    }
                     Err(error)
                         if matches!(
                             error.downcast_ref::<TypedRequestError>(),
@@ -113,6 +136,12 @@ pub(super) async fn reconnect(
         let result = tokio::time::timeout_at(deadline, attempt).await;
         match result {
             Ok(Ok(connected)) => return Ok(connected),
+            Ok(Err(error)) if presentation == ReconnectPresentation::RejectedFreshStart
+                && error.downcast_ref::<TypedRequestError>().is_some_and(|error| {
+                    matches!(error, TypedRequestError::Transport { method, .. } if method == "thread/start")
+                        || matches!(error, TypedRequestError::Deserialize { method, .. } if method == "thread/start")
+                        || matches!(error, TypedRequestError::Server { method, .. } if method == "thread/start" && !error.is_server_switching())
+                }) => return Err(error),
             Ok(Err(_)) => {}
             Err(_) => break,
         }
@@ -167,10 +196,11 @@ impl App {
     }
 
     pub(super) fn recover_transport_error(&mut self, error: &color_eyre::Report) -> bool {
-        let disconnected = matches!(
-            error.downcast_ref::<TypedRequestError>(),
-            Some(TypedRequestError::Transport { .. })
-        );
+        let disconnected = error
+            .downcast_ref::<TypedRequestError>()
+            .is_some_and(|error| {
+                matches!(error, TypedRequestError::Transport { .. }) || error.is_server_switching()
+            });
         disconnected && self.begin_reconnect()
     }
 
@@ -258,7 +288,7 @@ impl App {
             .chat_widget
             .selected_index_for_present_view(agents_overview::AGENTS_OVERVIEW_VIEW_ID)
             .and_then(|index| self.agents_overview.visible_thread_ids.get(index).copied());
-        let displayed = self.current_displayed_thread_id();
+        let mut displayed = self.current_displayed_thread_id();
         let mut input = self.chat_widget.capture_thread_input_state();
         if let Some(input) = input.as_mut() {
             input.recovered_queue = true;
@@ -383,6 +413,16 @@ impl App {
         }
         if let Some(mut started) = thread {
             let id = started.session.thread_id;
+            if self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart {
+                if let Some(worktree) = self.reconnect.startup_worktree.take() {
+                    worktree.bind(id)?;
+                }
+                displayed = Some(id);
+                self.primary_thread_id = Some(id);
+                if let Some(input) = input.as_mut() {
+                    input.recovered_queue = false;
+                }
+            }
             if !pending_displayed_profile
                 && let Some(channel) = self.thread_event_channels.get(&id)
                 && let Some(cached) = channel.store.lock().await.session.as_ref()
@@ -420,7 +460,11 @@ impl App {
             self.active_thread_rx = Some(receiver);
             self.recap.seed_from_turns(&snapshot.turns, Instant::now());
             self.render_thread_snapshot(
-                tui, app_server, id, snapshot, /*resume_restored_queue*/ false,
+                tui,
+                app_server,
+                id,
+                snapshot,
+                self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart,
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;
@@ -485,9 +529,11 @@ impl App {
             );
         }
         self.feedback_audience = bootstrap.feedback_audience;
-        self.chat_widget.add_info_message(
+        if self.reconnect.presentation != ReconnectPresentation::RejectedFreshStart {
+            self.chat_widget.add_info_message(
             "Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.".into(), /*hint*/ None,
         );
+        }
         let connected_notice_key = crate::status::remote_connection::server_version_notice_key(
             &self.app_server_target,
             app_server.server_codex_home(),

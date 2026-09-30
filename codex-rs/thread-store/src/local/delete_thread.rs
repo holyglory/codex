@@ -255,6 +255,23 @@ async fn delete_thread_after_reference_check(
                 message: format!("failed to stop thread writer before deletion: {err}"),
             })?;
     }
+    match tokio::fs::remove_file(
+        store
+            .config
+            .codex_home
+            .join("maintenance-inbox")
+            .join(format!("{thread_id}.json")),
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(ThreadStoreError::Internal {
+                message: format!("failed to delete pending agent mail for {thread_id}: {error}"),
+            });
+        }
+    }
     let found_rollout_path = !thread_rollouts.paths.is_empty();
     for rollout_path in thread_rollouts.paths {
         delete_rollout_file(store, rollout_path.as_path())?;
@@ -356,12 +373,20 @@ mod tests {
 
         for (uuid, path) in cases {
             let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+            let inbox = home
+                .path()
+                .join("maintenance-inbox")
+                .join(format!("{thread_id}.json"));
+            std::fs::create_dir_all(inbox.parent().expect("inbox directory"))
+                .expect("inbox directory");
+            std::fs::write(&inbox, "[]").expect("retained maintenance inbox");
             store
                 .delete_thread(DeleteThreadParams { thread_id })
                 .await
                 .expect("delete thread");
 
             assert!(!path.exists());
+            assert!(!inbox.exists());
         }
         assert!(!compressed_path.exists());
     }

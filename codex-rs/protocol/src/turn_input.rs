@@ -159,7 +159,7 @@ pub enum CyberAccessProgram {
 /// `final_output_json_schema` is a compatibility requirement: Core only
 /// accepts the steer if the active turn already uses the same schema. For
 /// child input, Core also compares root lineage to detect ambiguity.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnStartOptions {
     /// Source classification for the caller that starts a new turn.
     /// Ignored when the submitted input steers an active turn.

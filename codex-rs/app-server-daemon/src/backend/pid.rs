@@ -87,6 +87,7 @@ enum PidFileState {
 enum PidCommandKind {
     AppServer { remote_control_enabled: bool },
     UpdateLoop { restore_release: Option<String> },
+    Handover,
 }
 
 impl PidBackend {
@@ -125,6 +126,12 @@ impl PidBackend {
             lock_file,
             command_kind: PidCommandKind::UpdateLoop { restore_release },
         }
+    }
+
+    pub(crate) fn new_handover(codex_bin: PathBuf, pid_file: PathBuf) -> Self {
+        let mut backend = Self::new_update_loop(codex_bin, pid_file, None);
+        backend.command_kind = PidCommandKind::Handover;
+        backend
     }
 
     pub(crate) async fn is_starting_or_running(&self) -> Result<bool> {
@@ -200,7 +207,7 @@ impl PidBackend {
                             tracing::warn!(%pid, %err, "managed app-server shutdown request failed; waiting for force deadline");
                         }
                     }
-                    PidCommandKind::UpdateLoop { .. } => {
+                    PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
                         fs::write(self.pid_file.with_extension("shutdown"), pid.to_string())
                             .await
                             .context("failed to request updater shutdown")?;
@@ -381,6 +388,11 @@ impl PidBackend {
             PidCommandKind::AppServer {
                 remote_control_enabled: false,
             } => vec!["app-server".into(), "--listen".into(), "unix://".into()],
+            PidCommandKind::Handover => vec![
+                "app-server".into(),
+                "daemon".into(),
+                "handover-worker".into(),
+            ],
             PidCommandKind::UpdateLoop { restore_release } => {
                 let mut args = vec![
                     "app-server".into(),
@@ -410,7 +422,8 @@ impl PidBackend {
             PidCommandKind::AppServer {
                 remote_control_enabled: true,
             }
-            | PidCommandKind::UpdateLoop { .. } => None,
+            | PidCommandKind::UpdateLoop { .. }
+            | PidCommandKind::Handover => None,
         }
     }
 
@@ -418,9 +431,11 @@ impl PidBackend {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => terminate_process(pid),
             #[cfg(unix)]
-            PidCommandKind::UpdateLoop { .. } => terminate_process_group(pid),
+            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
+                terminate_process_group(pid)
+            }
             #[cfg(not(unix))]
-            PidCommandKind::UpdateLoop { .. } => terminate_process(pid),
+            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => terminate_process(pid),
         }
     }
 
@@ -428,7 +443,9 @@ impl PidBackend {
     fn force_terminate_process(&self, pid: u32) -> Result<()> {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => force_terminate_process(pid),
-            PidCommandKind::UpdateLoop { .. } => force_terminate_process_group(pid),
+            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
+                force_terminate_process_group(pid)
+            }
         }
     }
 

@@ -13,15 +13,23 @@ use super::disconnect::serve_reconnect_requests;
 
 #[tokio::test]
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
-    for (recovered_queue, edit_offline, resume_error_code, deferred_notice, notice_enabled) in [
-        (true, false, -32603, false, false),
-        (true, false, -32603, false, true),
-        (false, false, -32603, false, false),
-        (true, true, -32603, false, false),
-        (true, false, -32600, false, false),
-        (false, false, -32600, false, false),
-        (true, true, -32600, false, false),
-        (true, false, -32603, true, true),
+    for (
+        recovered_queue,
+        edit_offline,
+        resume_error_code,
+        deferred_notice,
+        notice_enabled,
+        maintenance,
+    ) in [
+        (true, false, -32603, false, false, false),
+        (true, false, -32603, false, true, false),
+        (false, false, -32603, false, false, false),
+        (true, true, -32603, false, false, false),
+        (true, false, -32600, false, false, false),
+        (false, false, -32600, false, false, false),
+        (true, true, -32600, false, false, false),
+        (true, false, -32603, true, true, false),
+        (true, false, -32600, false, false, true),
     ] {
         let pending_profile = !recovered_queue && resume_error_code == -32600;
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
@@ -122,7 +130,8 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
                 let (stream, _) = listener.accept().await?;
                 methods.extend(serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
                     "thread/resume" if attempt == 0 => Some(json!({"error": {"code": resume_error_code, "message":
-                        if resume_error_code == -32600 {
+                        if maintenance { "Server is draining; retry after reconnecting".into() }
+                        else if resume_error_code == -32600 {
                             format!("thread {id} is closing; retry thread/resume after the thread is closed")
                         } else {
                             "temporarily unavailable".into()
@@ -618,7 +627,8 @@ async fn reconnect_exhaustion_and_unknown_initial_thread_stay_offline() -> Resul
             .is_err()
         );
     }
-    assert!((15..=65).contains(&start.elapsed().as_secs()));
+    // Refused connections retry through the same total recovery budget as maintenance.
+    assert!((120..=125).contains(&start.elapsed().as_secs()));
     app.begin_reconnect();
     app.chat_widget.reconnect_failed();
     assert_snapshot!(

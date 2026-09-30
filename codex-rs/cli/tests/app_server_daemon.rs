@@ -681,3 +681,8 @@ fn packaged_daemon_bootstrap_seeds_local_package() -> Result<()> {
 fn packaged_daemon_explicit_replacement_migrates_running_legacy() -> Result<()> {
     packaged_daemon_launch("start", InitialDaemon::Legacy)
 }
+
+#[path = "app_server_daemon/commit_proxy.rs"]
+mod commit_proxy;
+#[path = "app_server_daemon/handover_tests.rs"]
+mod handover_tests;

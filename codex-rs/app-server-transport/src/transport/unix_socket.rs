@@ -157,6 +157,7 @@ async fn run_control_socket_acceptor(
         let transport_event_tx = transport_event_tx.clone();
         tokio::spawn(async move {
             let mut shutdown_request = false;
+            let mut maintenance_request = false;
             let websocket_config = WebSocketConfig::default();
             let max_unfragmented_message_bytes = [
                 websocket_config.max_frame_size,
@@ -169,13 +170,17 @@ async fn run_control_socket_acceptor(
                 stream,
                 |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                  mut response: HandshakeResponse| {
-                    if request.uri().path() == "/daemon/shutdown" {
+                    if matches!(
+                        request.uri().path(),
+                        "/daemon/shutdown" | "/daemon/maintenance"
+                    ) {
                         if !matches!(daemon_shutdown_access, DaemonShutdownAccess::Managed) {
                             let mut rejection = Response::new(Some("unmanaged server".to_string()));
                             *rejection.status_mut() = StatusCode::FORBIDDEN;
                             return Err(rejection);
                         }
-                        shutdown_request = true;
+                        shutdown_request = request.uri().path() == "/daemon/shutdown";
+                        maintenance_request = request.uri().path() == "/daemon/maintenance";
                     }
                     if let Some(max_bytes) = max_unfragmented_message_bytes {
                         response.headers_mut().insert(
@@ -195,6 +200,10 @@ async fn run_control_socket_acceptor(
                     return;
                 }
             };
+            if maintenance_request {
+                run_daemon_maintenance(websocket_stream, transport_event_tx).await;
+                return;
+            }
             if shutdown_request {
                 run_daemon_shutdown(websocket_stream, transport_event_tx).await;
                 return;
@@ -364,4 +373,97 @@ impl Drop for ControlSocketFileGuard {
             );
         }
     }
+}
+
+async fn run_daemon_maintenance(
+    mut websocket: tokio_tungstenite::WebSocketStream<UnixStream>,
+    events: mpsc::Sender<TransportEvent>,
+) {
+    use crate::maintenance::MaintenanceCommand;
+    use crate::maintenance::MaintenanceConnection;
+    let Some(Ok(Message::Text(text))) =
+        tokio::time::timeout(Duration::from_secs(5), websocket.next())
+            .await
+            .ok()
+            .flatten()
+    else {
+        return;
+    };
+    if text.len() > 1024 {
+        return;
+    }
+    let Ok(command) = serde_json::from_str::<MaintenanceCommand>(&text) else {
+        return;
+    };
+    let (reply, ready) = tokio::sync::oneshot::channel();
+    let (commands, commit) = mpsc::channel(1);
+    let (committed, receipt) = tokio::sync::oneshot::channel();
+    let cancelled = CancellationToken::new();
+    let _release = cancelled.clone().drop_guard();
+    if events
+        .send(TransportEvent::DaemonMaintenance(MaintenanceConnection {
+            command,
+            reply,
+            commit,
+            committed,
+            cancelled,
+        }))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let response = tokio::select! {
+        response = ready => match response { Ok(response) => response, Err(_) => return },
+        _ = websocket.next() => return,
+    };
+    let Ok(response) = serde_json::to_string(&response) else {
+        return;
+    };
+    if websocket
+        .send(Message::Text(response.into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let Some(Ok(Message::Text(text))) =
+        tokio::time::timeout(Duration::from_secs(30), websocket.next())
+            .await
+            .ok()
+            .flatten()
+    else {
+        return;
+    };
+    if text.len() > 1024 {
+        return;
+    }
+    let Ok(command) = serde_json::from_str::<MaintenanceCommand>(&text) else {
+        return;
+    };
+    if commands.send(command).await.is_err() {
+        return;
+    }
+    let receipt = tokio::select! {
+        receipt = tokio::time::timeout(Duration::from_secs(/*secs*/ 35), receipt) => match receipt { Ok(Ok(receipt)) => receipt, _ => return },
+        _ = websocket.next() => return,
+    };
+    let response = crate::maintenance::MaintenanceResponse::Committed {
+        operation_id: receipt.operation_id,
+        pid: receipt.pid,
+    };
+    let Ok(response) = serde_json::to_string(&response) else {
+        return;
+    };
+    if websocket
+        .send(Message::Text(response.into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let _ = receipt.delivered.send(());
+    // Keep the lease alive until the committed process closes the socket, or the
+    // owner disconnects. No second command can accidentally force a shutdown.
+    let _ = websocket.next().await;
 }

@@ -1095,12 +1095,19 @@ async fn account_list_and_limits_preserve_multiple_buckets_and_reset_times() -> 
     assert_eq!(alpha["NOTE"], "primary");
     let countdown = alpha["RESET IN"].as_str();
     assert_reset_countdown(countdown, /*reset*/ 1893456000, before)?;
-    insta::assert_snapshot!(
-        "account_list_limits",
-        human
-            .replace(countdown, "[Codex reset countdown]")
-            .replace(banked, "[Banked reset]")
+    // The volatile countdown changes the rendered column width as days/hours
+    // lose digits. Normalize only that placeholder's padding in this snapshot.
+    let snapshot = human
+        .replace(countdown, "[Codex reset countdown]")
+        .replace(banked, "[Banked reset]");
+    let (before_banked, after_banked) = snapshot
+        .split_once("[Banked reset]")
+        .expect("banked reset cell");
+    let snapshot = format!(
+        "{before_banked}[Banked reset]   {}",
+        after_banked.trim_start_matches(' ')
     );
+    insta::assert_snapshot!("account_list_limits", snapshot);
 
     codex_command(fixture.home.path())?
         .args(["account", "limits", "beta", "--json"])

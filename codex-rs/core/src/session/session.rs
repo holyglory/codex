@@ -987,6 +987,7 @@ impl Session {
         // Capture follows the flag; replay selects reviewer policy from the saved checkpoint.
         let guardian_context_mode = GuardianContextMode::from_features(&config.features);
         thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
+        thread_extension_data.insert(crate::maintenance::MaintenanceGate::default());
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info

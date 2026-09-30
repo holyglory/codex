@@ -161,6 +161,10 @@ impl CodeModeService {
         self.session().await?.terminate(cell_id).await
     }
 
+    pub(crate) fn has_active_cells(&self) -> bool {
+        !self.dispatch_broker.active_cell_ids().is_empty()
+    }
+
     pub(crate) async fn interrupt_active_cells(&self) {
         let Some(session) = self.session.get() else {
             return;

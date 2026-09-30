@@ -218,7 +218,7 @@ impl PidBackend {
                 PidCommandKind::AppServer { .. } => {
                     command.env(codex_app_server_transport::DAEMON_SHUTDOWN_SOCKET_ENV, "1");
                 }
-                PidCommandKind::UpdateLoop { .. } => {
+                PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
                     let shutdown_file = self.pid_file.with_extension("shutdown");
                     match fs::remove_file(&shutdown_file).await {
                         Ok(()) => {}

@@ -599,6 +599,15 @@ pub enum Op {
         reply: oneshot::Sender<bool>,
     },
 
+    /// Acknowledge all previously accepted session operations before sealing maintenance.
+    MaintenanceBarrier { reply: oneshot::Sender<()> },
+
+    /// Apply a saved Stop only while that turn still owns the thread lifecycle.
+    MaintenanceStop {
+        turn_id: String,
+        reply: oneshot::Sender<CodexResult<()>>,
+    },
+
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,
@@ -931,6 +940,8 @@ impl Op {
         match self {
             Self::Interrupt => "interrupt",
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
+            Self::MaintenanceBarrier { .. } => "maintenance_barrier",
+            Self::MaintenanceStop { .. } => "maintenance_stop",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
