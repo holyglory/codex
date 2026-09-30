@@ -89,13 +89,19 @@ impl MessageProcessor {
         if !matches!(tokio::time::timeout(Duration::from_secs(10), sealed).await, Ok(Ok(()))) { return; }
         // Re-evaluate stopped turns after Ready: user cancellation must win over
         // the previously requested maintenance resume.
-        let snapshot = match self.thread_processor.maintenance_snapshot(operation_id.clone(), &paused).await {
-            Ok(snapshot) => snapshot,
-            Err(reason) => { tracing::warn!(%reason, "maintenance checkpoint rejected"); return; }
+        let snapshot = tokio::select! {
+            _ = cancelled.cancelled() => return,
+            result = tokio::time::timeout(Duration::from_secs(10), self.thread_processor.maintenance_snapshot(operation_id.clone(), &paused)) => {
+                match result {
+                    Ok(Ok(snapshot)) => snapshot,
+                    Ok(Err(reason)) => { tracing::warn!(%reason, "maintenance checkpoint rejected"); return; }
+                    Err(_) => { tracing::warn!("maintenance persistence deadline elapsed"); return; }
+                }
+            }
         };
         // A late write after timeout remains an unselected generation, never the
         // recovery snapshot consumed by startup.
-        let staged = recovery_path.with_extension(format!("maintenance-{operation_id}.json"));
+        let staged = recovery_path.with_extension(format!("maintenance-{operation_id}-{}.json", uuid::Uuid::new_v4()));
         let saved = tokio::select! {
             _ = cancelled.cancelled() => false,
             result = tokio::time::timeout(Duration::from_secs(10), crate::daemon_thread_recovery::snapshot(staged.clone(), snapshot)) => matches!(result, Ok(Ok(()))),
