@@ -119,7 +119,7 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
     let worker =
         PidBackend::new_handover(owner_binary, daemon.pid_file.with_file_name("handover.pid"));
     if worker.is_starting_or_running().await? {
-        let record = read(&daemon)?;
+        let record = read(daemon)?;
         ensure!(
             record.target == target,
             "another handover target is already owned"
@@ -153,7 +153,7 @@ pub(crate) async fn request_locked(daemon: &Daemon) -> Result<HandoverStatus> {
         reason: None,
         compatibility,
     };
-    save(&daemon, &record)?;
+    save(daemon, &record)?;
     let _ = std::fs::remove_file(daemon.pid_file.with_file_name("handover.cancel"));
     worker.start().await?;
     Ok(record)

@@ -61,11 +61,9 @@ impl ThreadRequestProcessor {
                     }
                     continue;
                 }
-                if !paused.threads.contains_key(&id.to_string()) {
+                if let std::collections::btree_map::Entry::Vacant(e) = paused.threads.entry(id.to_string()) {
                     let pause = thread.request_maintenance_pause().ok_or("alreadyPausing")?;
-                    paused
-                        .threads
-                        .insert(id.to_string(), (thread.clone(), pause));
+                    e.insert((thread.clone(), pause));
                 }
                 let (_, pause) = &paused.threads[&id.to_string()];
                 match pause.status() {
