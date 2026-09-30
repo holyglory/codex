@@ -1089,3 +1089,44 @@ async fn daemon_recovery_includes_local_environment_that_finished_starting() -> 
     .await;
     Ok(())
 }
+
+
+#[test_case(false; "release_resumes_same_turn")]
+#[test_case(true; "user_stop_wins")]
+#[tokio::test]
+async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyhow::Result<()> {
+    use codex_core::MaintenancePauseStatus;
+
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("resumed")).await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let mut pause = test.codex.request_maintenance_pause().expect("pause admitted");
+    assert!(test.codex.request_maintenance_pause().is_none());
+    let submitted = test.codex.start_or_steer_turn(user_message_request("preserve this input")).await?;
+    let TurnInputSubmission::Started { turn_id } = submitted else {
+        panic!("expected a new turn");
+    };
+    timeout(Duration::from_secs(10), async {
+        while pause.status() == MaintenancePauseStatus::Requested {
+            pause.changed().await;
+        }
+    }).await?;
+    assert_eq!(pause.status(), MaintenancePauseStatus::Paused);
+    assert!(response.requests().is_empty());
+    let path = test.codex.rollout_path().expect("persistent thread");
+    assert!(tokio::fs::read_to_string(path).await?.contains("preserve this input"));
+    if stop {
+        test.codex.submit(Op::Interrupt).await?;
+        wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    }
+    drop(pause);
+    if stop {
+        assert!(response.requests().is_empty());
+    } else {
+        let event = wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+        let EventMsg::TurnComplete(completed) = event else { unreachable!() };
+        assert_eq!(completed.turn_id, turn_id);
+        assert!(response.single_request().body_contains_text("preserve this input"));
+    }
+    Ok(())
+}

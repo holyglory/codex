@@ -474,6 +474,16 @@ pub(crate) async fn run_turn(
 
         // Input and turn-start injections are recorded before recovery can continue this turn.
         turn_context.extension_data.insert(RecordedTurnInput);
+        if let Some(gate) = sess.services.thread_extension_data
+            .get::<crate::maintenance::MaintenanceGate>()
+            && let Some(pause) = gate.pending()
+        {
+            pause.checkpoint(&sess, &cancellation_token).await;
+            if cancellation_token.is_cancelled() {
+                return Err(CodexErr::TurnAborted);
+            }
+        }
+
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
             sess.as_ref(),

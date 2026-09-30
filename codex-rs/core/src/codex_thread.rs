@@ -246,6 +246,14 @@ impl CodexThread {
         self.session.services.analytics_events_client.is_enabled()
     }
 
+    /// Requests a reversible maintenance pause after the current model/tool step.
+    /// The caller must separately account for background processes and queued input.
+    pub fn request_maintenance_pause(&self) -> Option<crate::MaintenancePause> {
+        self.thread_extension_data()
+            .get::<crate::maintenance::MaintenanceGate>()?
+            .request()
+    }
+
     /// Returns extension-owned data attached to this thread runtime.
     pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
         &self.session.services.thread_extension_data
