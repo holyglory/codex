@@ -61,7 +61,9 @@ impl ThreadRequestProcessor {
                     }
                     continue;
                 }
-                if let std::collections::btree_map::Entry::Vacant(e) = paused.threads.entry(id.to_string()) {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    paused.threads.entry(id.to_string())
+                {
                     let pause = thread.request_maintenance_pause().ok_or("alreadyPausing")?;
                     e.insert((thread.clone(), pause));
                 }
@@ -210,6 +212,10 @@ impl ThreadRequestProcessor {
         Ok(saved)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "each saved turn must serialize dispatch with a concurrent Stop acknowledgment"
+    )]
     pub(crate) async fn resume_maintenance_turns(
         &self,
         turns: Vec<(String, InterruptedTurn, codex_core::MaintenanceTurnContext)>,
@@ -362,18 +368,16 @@ impl ThreadRequestProcessor {
                 .map_err(|_| "stopPersistenceFailed")?;
         }
         // The caller reopens admission only after the complete graph is restored.
-        Ok(restore_order
-            .into_iter()
-            .rev()
-            .filter_map(|id| {
-                saved.interrupted.remove(&id).map(|turn| {
-                    let context = maintenance
-                        .turn_contexts
-                        .remove(&id)
-                        .expect("validated maintenance context");
-                    (id, turn, context)
-                })
-            })
-            .collect())
+        let mut continuations = Vec::new();
+        for id in restore_order.into_iter().rev() {
+            if let Some(turn) = saved.interrupted.remove(&id) {
+                let context = maintenance
+                    .turn_contexts
+                    .remove(&id)
+                    .ok_or("missingMaintenanceContext")?;
+                continuations.push((id, turn, context));
+            }
+        }
+        Ok(continuations)
     }
 }

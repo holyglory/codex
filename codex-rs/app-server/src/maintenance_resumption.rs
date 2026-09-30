@@ -59,6 +59,10 @@ impl MaintenanceResumption {
             .cloned()
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "Stop acknowledgment must serialize with recovery dispatch and checkpoint publication"
+    )]
     pub(crate) async fn cancel(&self, thread_id: &str, turn_id: &str) -> std::io::Result<bool> {
         let Some(entry) = self.get(thread_id) else {
             return Ok(false);
