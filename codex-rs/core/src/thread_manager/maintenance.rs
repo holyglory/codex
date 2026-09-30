@@ -1,0 +1,25 @@
+//! Reloads only the recorded children in a sealed maintenance inventory.
+use super::ThreadManager;
+use codex_protocol::{ThreadId, protocol::MultiAgentVersion};
+use codex_protocol::error::{CodexErr, Result};
+use codex_thread_store::ReadThreadParams;
+
+impl ThreadManager {
+    pub async fn ensure_maintenance_child_loaded(&self, child: ThreadId, expected_parent: ThreadId) -> Result<()> {
+        let stored = self.state.read_stored_thread(ReadThreadParams {
+            thread_id: child, include_archived: true, include_history: false,
+        }).await?;
+        if stored.parent_thread_id != Some(expected_parent) || stored.source.parent_thread_id() != Some(expected_parent) {
+            return Err(CodexErr::InvalidRequest("maintenance parent ownership changed".into()));
+        }
+        let parent = self.get_thread(expected_parent).await?;
+        if parent.multi_agent_version() == Some(MultiAgentVersion::V2) {
+            return self.ensure_multi_agent_v2_child_loaded(child).await;
+        }
+        if self.get_thread(child).await.is_ok() { return Ok(()); }
+        let config = parent.session.get_config().await.as_ref().clone();
+        let control = parent.session.services.local_agent_runtime.control(parent.session.session_id());
+        control.resume_single_agent_from_rollout(config, child, stored.source).await?;
+        Ok(())
+    }
+}

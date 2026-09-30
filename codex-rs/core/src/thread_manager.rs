@@ -1,3 +1,5 @@
+#[path = "thread_manager/maintenance.rs"]
+mod maintenance;
 mod managed;
 mod shared_instructions;
 

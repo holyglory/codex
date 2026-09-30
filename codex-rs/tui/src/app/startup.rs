@@ -791,6 +791,7 @@ See the Codex keymap documentation for supported actions and examples."
             environment_manager,
             app_server_target,
             reconnect: ReconnectState {
+                startup_worktree: managed_worktree.clone(),
                 seen_version_notice: initial_server_version_notice
                     .as_ref()
                     .map(|(_, key)| key.clone()),

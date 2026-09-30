@@ -7,7 +7,6 @@ use codex_core::CodexThread;
 use codex_core::MaintenancePause;
 use codex_core::MaintenancePauseStatus;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_thread_store::PersistContext;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,7 +35,7 @@ impl ThreadRequestProcessor {
         let mut status = self.subscribe_running_assistant_turn_count();
         loop {
             let mut ready = true;
-            let census: std::collections::BTreeSet<_> = self
+            let census: std::collections::HashSet<_> = self
                 .thread_manager
                 .list_thread_ids()
                 .await
@@ -76,7 +75,7 @@ impl ThreadRequestProcessor {
                 ready &= !thread.maintenance_has_pending_input().await;
             }
             if ready {
-                let current: std::collections::BTreeSet<_> = self
+                let current: std::collections::HashSet<_> = self
                     .thread_manager
                     .list_thread_ids()
                     .await
@@ -131,11 +130,6 @@ impl ThreadRequestProcessor {
             let config = thread.config_snapshot().await;
             if config.ephemeral {
                 return Err("nonpersistentWork");
-            }
-            if config.parent_thread_id.is_some()
-                && thread.multi_agent_version() != Some(MultiAgentVersion::V2)
-            {
-                return Err("unsupportedAgentTree");
             }
             let interrupted = thread.interrupted_turn().await;
             if !thread.maintenance_is_idle().await
@@ -254,10 +248,10 @@ impl ThreadRequestProcessor {
                 return Err("invalidAgentTree");
             }
             for (id, parent) in ready {
-                if parent.is_some() {
+                if let Some(parent) = parent {
                     let thread_id = ThreadId::from_string(&id).map_err(|_| "invalidThread")?;
                     self.thread_manager
-                        .ensure_multi_agent_v2_child_loaded(thread_id)
+                        .ensure_maintenance_child_loaded(thread_id, ThreadId::from_string(&parent).map_err(|_| "invalidParent")?)
                         .await
                         .map_err(|_| "childRestoreFailed")?;
                 } else {

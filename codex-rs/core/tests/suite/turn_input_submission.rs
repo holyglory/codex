@@ -1175,3 +1175,36 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids() -> anyhow::Result<()> {
+    use codex_core::MaintenanceMail;
+    use codex_protocol::ResponseItemId;
+    let server = responses::start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    test.codex.ensure_rollout_materialized().await;
+    test.codex.flush_rollout().await?;
+    let make_mail = |suffix: &str| {
+        let mut communication = InterAgentCommunication::new(
+            AgentPath::root().join("worker").unwrap(), AgentPath::root(), Vec::new(),
+            format!("result {suffix}"), false,
+        );
+        communication.id = Some(ResponseItemId::with_suffix("mail", suffix));
+        MaintenanceMail { communication, options: Default::default() }
+    };
+    let pending = make_mail("pending");
+    let quoted = make_mail("quoted");
+    let delivered = make_mail("delivered");
+    test.codex.inject_response_items(vec![
+        responses::user_message_item("This quoted identifier is not delivery: mail_quoted").item,
+        delivered.communication.to_model_input_item(),
+    ]).await?;
+    test.codex.flush_rollout().await?;
+    let snapshot: Vec<MaintenanceMail> = serde_json::from_slice(&serde_json::to_vec(
+        &vec![pending.clone(), quoted.clone(), delivered]
+    )?)?;
+    test.codex.restore_maintenance_mailbox(snapshot.clone()).await?;
+    test.codex.restore_maintenance_mailbox(snapshot).await?;
+    assert_eq!(test.codex.maintenance_mailbox().await, vec![pending, quoted]);
+    Ok(())
+}
