@@ -1717,6 +1717,7 @@ async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Res
     for lose_retry_response in [false, true] {
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         app.pending_startup_thread_start = true;
+        app.config.model = Some("gpt-test".into());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
         app.app_server_target = AppServerTarget::Remote {
@@ -1731,9 +1732,12 @@ async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Res
             "cwd":cwd,"cliVersion":"0.0.0","source":"cli","turns":[]});
         let server = tokio::spawn(async move {
             let mut methods = Vec::new();
+            let mut connections = tokio::task::JoinSet::new();
             for attempt in 0..3 {
                 let (stream, _) = listener.accept().await?;
-                methods.extend(super::disconnect::serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
+                let thread = thread.clone();
+                let cwd = cwd.clone();
+                connections.spawn(async move { super::disconnect::serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
                     "thread/start" if attempt < 2 => Some(serde_json::json!({"error":{"code":-32600,"message":"Server is preparing an upgrade","data":{"reason":"serverSwitching"}}})),
                     "thread/start" if lose_retry_response => None,
                     "thread/start" => Some(serde_json::json!({"result":{"thread":thread,"model":"gpt-test","modelProvider":"test-provider","cwd":cwd,
@@ -1746,7 +1750,10 @@ async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Res
                         Some(serde_json::json!({"result":{"turn":{"id":"accepted","items":[],"status":"inProgress"}}}))
                     }
                     method => panic!("unexpected maintenance reconnect request: {method}"),
-                })).await?);
+                })).await });
+            }
+            while let Some(result) = connections.join_next().await {
+                methods.extend(result??);
             }
             Ok::<_, color_eyre::Report>(methods)
         });

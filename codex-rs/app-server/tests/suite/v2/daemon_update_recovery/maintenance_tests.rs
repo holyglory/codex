@@ -141,10 +141,12 @@ enum AgentTreeScenario {
     StopChild,
     OwnerDisconnect,
     StopDuringRestore,
+    LegacyChild,
 }
 
 #[cfg(unix)]
 #[test_case::test_case(AgentTreeScenario::Continue; "continue_both")]
+#[test_case::test_case(AgentTreeScenario::LegacyChild; "legacy_child_keeps_its_model")]
 #[test_case::test_case(AgentTreeScenario::StopChild; "stop_child_after_ready")]
 #[test_case::test_case(AgentTreeScenario::OwnerDisconnect; "owner_exits_before_ready")]
 #[test_case::test_case(AgentTreeScenario::StopDuringRestore; "stop_while_restoration_waits")]
@@ -172,25 +174,51 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         ]),
     }
     };
+    let legacy_child = scenario == AgentTreeScenario::LegacyChild;
+    let (namespace, spawn_args) = if legacy_child {
+        (
+            "multi_agent_v1",
+            json!({"message":"Do the child work","model":"gpt-5.1-codex","reasoning_effort":"low","fork_context":false}),
+        )
+    } else {
+        (
+            "collaboration",
+            json!({"task_name":"worker","message":"Do the child work","fork_turns":"none"}),
+        )
+    };
     let (mock, _) = start_streaming_sse_server(vec![
-        vec![StreamingSseChunk { gate: None, body: responses::sse(vec![
-            responses::ev_response_created("spawn"),
-            responses::ev_function_call_with_namespace("spawn-worker", "collaboration", "spawn_agent",
-                &json!({"task_name":"worker","message":"Do the child work","fork_turns":"none"}).to_string()),
-            responses::ev_completed("spawn"),
-        ]) }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("spawn"),
+                responses::ev_function_call_with_namespace(
+                    "spawn-worker",
+                    namespace,
+                    "spawn_agent",
+                    &spawn_args.to_string(),
+                ),
+                responses::ev_completed("spawn"),
+            ]),
+        }],
         vec![tool_step("checkpoint-a", gate_a)],
         vec![tool_step("checkpoint-b", gate_b)],
         vec![stream_chunk(Some(gate_c), "Restored first")?],
         vec![stream_chunk(Some(gate_d), "Restored second")?],
-    ]).await;
+    ])
+    .await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let mut config = std::fs::read_to_string(home.path().join("config.toml"))?;
     config = config.replace(
         "sandbox_mode = \"read-only\"",
         "sandbox_mode = \"danger-full-access\"",
     );
-    config.push_str("\n[features]\nmulti_agent = true\ncode_mode = false\ncode_mode_only = false\n[features.multi_agent_v2]\nenabled = true\n");
+    config.push_str("\n[features]\nhooks = true\nstep_model_switching = true\nmulti_agent = true\ncode_mode = false\ncode_mode_only = false\n[features.multi_agent_v2]\nenabled = true\n");
+    if legacy_child {
+        config = config.replace(
+            "[features.multi_agent_v2]\nenabled = true",
+            "[features.multi_agent_v2]\nenabled = false",
+        );
+    }
     std::fs::write(home.path().join("config.toml"), config)?;
     let socket_path = home.path().join("control/server.sock");
     let mut server = spawn_server(home.path(), &socket_path)?;
@@ -325,7 +353,7 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             .model,
         "gpt-5.2"
     );
-    if !stop_child {
+    if !stop_child && !legacy_child {
         assert_eq!(
             retained.turn_contexts[&child_id]
                 .options
@@ -420,6 +448,13 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0]["id"], interrupted.turn_id);
         assert_eq!(turns[0]["status"], "inProgress");
+        if id == &child_id {
+            assert_eq!(read["thread"]["parentThreadId"], parent.thread.id);
+            if legacy_child {
+                assert_eq!(read["thread"]["model"], "gpt-5.1-codex");
+                assert_eq!(read["thread"]["reasoningEffort"], "low");
+            }
+        }
     }
     let requests = mock.requests().await;
     let mut restored_calls = std::collections::BTreeSet::new();

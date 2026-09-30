@@ -98,66 +98,69 @@ esac
 }
 
 struct DaemonProxy {
-    child: Child,
-    output: std::io::BufReader<std::process::ChildStdout>,
+    runtime: tokio::runtime::Runtime,
+    socket: tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
 }
 
 impl DaemonProxy {
     fn connect(daemon: &TestDaemon) -> Result<Self> {
-        use std::io::Write;
         let status = daemon.lifecycle("version")?;
-        let socket = PathBuf::from(status["socketPath"].as_str().context("daemon socket")?);
-        let mut child = daemon
-            .command()
-            .args(["app-server", "proxy", "--sock"])
-            .arg(socket.as_path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let output = std::io::BufReader::new(child.stdout.take().context("proxy output")?);
-        let mut proxy = Self { child, output };
+        let path = PathBuf::from(status["socketPath"].as_str().context("daemon socket")?);
+        let runtime = tokio::runtime::Runtime::new()?;
+        let socket = runtime.block_on(async {
+            let stream = tokio::net::UnixStream::connect(path).await?;
+            let (socket, _) = tokio_tungstenite::client_async("ws://localhost/", stream).await?;
+            Ok::<_, anyhow::Error>(socket)
+        })?;
+        let mut proxy = Self { runtime, socket };
         proxy.request(
             "initialize",
             serde_json::json!({"clientInfo":{"name":"handover-test","version":"1"}}),
         )?;
-        writeln!(
-            proxy.child.stdin.as_mut().context("proxy input")?,
-            "{}",
-            serde_json::json!({"method":"initialized"})
+        use futures::SinkExt;
+        proxy.runtime.block_on(
+            proxy
+                .socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    serde_json::json!({"method":"initialized"})
+                        .to_string()
+                        .into(),
+                )),
         )?;
         Ok(proxy)
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        use std::io::BufRead;
-        use std::io::Write;
-        let input = self.child.stdin.as_mut().context("proxy input")?;
-        writeln!(
-            input,
-            "{}",
-            serde_json::json!({"id":2,"method":method,"params":params})
-        )?;
-        input.flush()?;
-        loop {
-            let mut line = String::new();
-            ensure!(
-                self.output.read_line(&mut line)? > 0,
-                "proxy closed before its response"
-            );
-            let row: Value = serde_json::from_str(&line)?;
-            if row["id"] == 2 && row.get("method").is_none() {
-                ensure!(row.get("error").is_none(), "request rejected: {row}");
-                return Ok(row["result"].clone());
-            }
-        }
-    }
-}
-
-impl Drop for DaemonProxy {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let socket = &mut self.socket;
+        self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({"id":2,"method":method,"params":params})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await?;
+                loop {
+                    let frame = socket
+                        .next()
+                        .await
+                        .context("server closed before response")??;
+                    let Message::Text(text) = frame else {
+                        continue;
+                    };
+                    let row: Value = serde_json::from_str(&text)?;
+                    if row["id"] == 2 && row.get("method").is_none() {
+                        ensure!(row.get("error").is_none(), "request rejected: {row}");
+                        return Ok(row["result"].clone());
+                    }
+                }
+            })
+            .await?
+        })
     }
 }
 

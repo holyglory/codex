@@ -55,7 +55,7 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
         "sandbox_mode = \"read-only\"",
         "sandbox_mode = \"danger-full-access\"",
     );
-    config.push_str("\n[features]\ncode_mode = false\ncode_mode_only = false\n");
+    config.push_str("\n[features]\nhooks = true\ncode_mode = false\ncode_mode_only = false\n");
     std::fs::write(config_path, config)?;
     let socket_path = home.path().join("control/server.sock");
     let mut server = spawn_server(home.path(), &socket_path)?;
@@ -68,10 +68,11 @@ async fn maintenance_rejects_idle_background_work(kind: BackgroundKind) -> Resul
                 &mut client,
                 /*id*/ 4,
                 "thread/read",
-                json!({"threadId":thread.thread.id,"includeTurns":true}),
+                json!({"threadId":thread.thread.id,"includeTurns":false}),
             )
-            .await?;
-            if entered.exists() && read["thread"]["turns"][0]["status"] == "completed" {
+            .await;
+            if entered.exists() && read.is_ok_and(|read| read["thread"]["status"]["type"] == "idle")
+            {
                 break;
             }
             sleep(Duration::from_millis(/*millis*/ 10)).await;

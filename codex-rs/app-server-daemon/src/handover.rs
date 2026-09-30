@@ -255,6 +255,7 @@ async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
 
 async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
     let identity = executable_identity(expected).await?;
+    let settings = daemon.load_settings().await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 75);
     loop {
         if let Ok(MaintenanceResponse::Status {
@@ -269,6 +270,10 @@ async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
             client::verify_session_admission(&daemon.socket_path).await?;
             return Ok(());
         }
+        ensure!(
+            daemon.running_backend_instance(&settings).await?.is_some(),
+            "replacement exited before readiness verification"
+        );
         ensure!(
             tokio::time::Instant::now() < deadline,
             "replacement did not become ready"

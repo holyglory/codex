@@ -1236,8 +1236,22 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
         resumed.codex.maintenance_mailbox().await,
         vec![pending, quoted]
     );
-    let response =
-        responses::mount_sse_once(&server, responses::sse_completed("delivered once")).await;
+    let response = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("mail-boundary"),
+                responses::ev_function_call(
+                    "mail-boundary",
+                    "exec_command",
+                    &serde_json::json!({"cmd":"echo boundary","max_output_tokens":50}).to_string(),
+                ),
+                responses::ev_completed("mail-boundary"),
+            ]),
+            responses::sse_completed("delivered once"),
+        ],
+    )
+    .await;
     resumed
         .codex
         .start_or_steer_turn(user_message_request("consume the restored mailbox"))
@@ -1246,7 +1260,9 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let request = response.single_request();
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
     assert!(request.body_contains_text("result pending"));
     assert!(request.body_contains_text("result quoted"));
     let twice = builder.restart(&server, &resumed).await?;
