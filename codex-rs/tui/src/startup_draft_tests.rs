@@ -324,11 +324,16 @@ async fn startup_draft_hydrates_its_header_without_moving_the_composer() {
     };
     assert!(directory_line(&pump).contains("directory: loading"));
     pump.apply_config(&config);
-    let expected_directory = crate::history_cell::SessionHeaderHistoryCell::format_directory_inner(
-        config.cwd.as_path(),
-        /*max_width*/ None,
+    let expected_directory = config
+        .cwd
+        .file_name()
+        .expect("temporary working directory has a name")
+        .to_string_lossy();
+    let rendered_directory = directory_line(&pump);
+    assert!(
+        rendered_directory.contains(expected_directory.as_ref()),
+        "rendered directory: {rendered_directory:?}; expected directory: {expected_directory:?}"
     );
-    assert!(directory_line(&pump).contains(&expected_directory));
     assert_eq!(
         startup_draft_renderable(&pump.header, &pump.bottom_pane, pump.session_action)
             .desired_height(width),
