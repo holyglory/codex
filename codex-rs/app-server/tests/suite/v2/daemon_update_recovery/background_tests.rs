@@ -62,11 +62,26 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
     } else {
         std::fs::write(home.path().join("hooks.json"), json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":command,"async":true}]}]}}).to_string())?;
     }
-    chunks.push(vec![stream_chunk(
-        code_cell.then_some(turn_gate),
-        "Turn completed while work remains",
-    )?]);
+    if !code_cell {
+        chunks.push(vec![stream_chunk(
+            None,
+            "Turn completed while work remains",
+        )?]);
+    }
     let (mock, _) = start_streaming_sse_server(chunks).await;
+    let wait_response = if code_cell {
+        let wait_response = mock.defer_next_response().await;
+        mock.defer_next_response()
+            .await
+            .send(vec![stream_chunk(
+                Some(turn_gate),
+                "Cell output collected",
+            )?])
+            .map_err(|_| anyhow::anyhow!("final cell response receiver closed"))?;
+        Some(wait_response)
+    } else {
+        None
+    };
     create_config_toml(home.path(), mock.uri(), "never")?;
     let config_path = home.path().join("config.toml");
     let mut config = std::fs::read_to_string(&config_path)?.replace(
@@ -107,7 +122,9 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
     start_turn(&mut client, /*id*/ 3, &thread.thread.id).await?;
     let pending_cell = if code_cell {
         release_cell.send(()).expect("cell request gate");
-        let (id, arguments) = read_cell_probe(&mut client).await?;
+        let (id, arguments) = read_cell_probe(&mut client)
+            .await
+            .context("first cell probe")?;
         assert_eq!(arguments, json!({"phase": "hold"}));
         Some(id)
     } else {
@@ -168,7 +185,9 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
             "id": id,
             "result": {"contentItems": [{"type": "inputText", "text": "survived"}], "success": true}
         }).to_string().into())).await?;
-        let (id, arguments) = read_cell_probe(&mut client).await?;
+        let (id, arguments) = read_cell_probe(&mut client)
+            .await
+            .context("released cell result")?;
         assert_eq!(arguments["phase"], "done");
         assert!(arguments["value"].to_string().contains("survived"));
         client
@@ -181,6 +200,51 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
                 .into(),
             ))
             .await?;
+        wait_for_requests(&mock, /*count*/ 2).await?;
+        let requests = mock.requests().await;
+        let request: serde_json::Value = serde_json::from_slice(&requests[1])?;
+        let output = request["input"]
+            .as_array()
+            .context("cell input")?
+            .iter()
+            .find(|item| {
+                item["call_id"] == "background" && item["type"] == "custom_tool_call_output"
+            })
+            .context("yielded cell output")?;
+        let text = output["output"][0]["text"]
+            .as_str()
+            .context("cell output text")?;
+        let cell_id = text
+            .split_once("Script running with cell ID ")
+            .and_then(|(_, tail)| tail.split_whitespace().next())
+            .context("returned cell identity")?;
+        wait_response
+            .context("deferred wait response")?
+            .send(vec![StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("collect-cell"),
+                    responses::ev_function_call(
+                        "collect-cell",
+                        "wait",
+                        &json!({"cell_id":cell_id,"yield_time_ms":10000}).to_string(),
+                    ),
+                    responses::ev_completed("collect-cell"),
+                ]),
+            }])
+            .map_err(|_| anyhow::anyhow!("wait response receiver closed"))?;
+        wait_for_requests(&mock, /*count*/ 3).await?;
+        let requests = mock.requests().await;
+        let request: serde_json::Value = serde_json::from_slice(&requests[2])?;
+        let result = request["input"]
+            .as_array()
+            .context("collected cell input")?
+            .iter()
+            .find(|item| {
+                item["call_id"] == "collect-cell" && item["type"] == "function_call_output"
+            })
+            .context("collected cell output")?;
+        assert!(result["output"].to_string().contains("survived"));
         // Keep the owning turn alive until its cell has consumed the reply and
         // finished. The ordinary ephemeral-turn rejection then replaces the
         // background-work rejection, proving the cell guard clears correctly.
@@ -225,7 +289,8 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
             }
             Ok::<_, anyhow::Error>(())
         })
-        .await??;
+        .await
+        .context("completed cell still blocks maintenance")??;
         release_turn.send(()).expect("final response gate");
         timeout(DEFAULT_READ_TIMEOUT, async {
             loop {
@@ -245,7 +310,8 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
             }
             Ok::<_, anyhow::Error>(())
         })
-        .await??;
+        .await
+        .context("owning turn completion")??;
     } else {
         std::fs::write(release, "continue")?;
         timeout(DEFAULT_READ_TIMEOUT, async {

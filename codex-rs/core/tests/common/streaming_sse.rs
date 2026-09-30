@@ -20,6 +20,7 @@ pub struct StreamingSseChunk {
 /// Minimal streaming SSE server for tests that need gated per-chunk delivery.
 pub struct StreamingSseServer {
     uri: String,
+    state: Arc<TokioMutex<StreamingSseState>>,
     requests: Arc<TokioMutex<Vec<Vec<u8>>>>,
     request_notify: Arc<Notify>,
     shutdown: oneshot::Sender<()>,
@@ -33,6 +34,19 @@ impl StreamingSseServer {
 
     pub async fn requests(&self) -> Vec<Vec<u8>> {
         self.requests.lock().await.clone()
+    }
+
+    /// Reserve a reply whose body can be filled after observing an earlier
+    /// request, such as a wait call using the actual returned cell identity.
+    pub async fn defer_next_response(&self) -> oneshot::Sender<Vec<StreamingSseChunk>> {
+        let (sender, receiver) = oneshot::channel();
+        let (completion, _completed) = oneshot::channel();
+        let mut state = self.state.lock().await;
+        state
+            .responses
+            .push_back(StreamingResponse::Deferred(receiver));
+        state.completions.push_back(completion);
+        sender
     }
 
     pub async fn wait_for_request_count(&self, count: usize) {
@@ -75,16 +89,21 @@ pub async fn start_streaming_sse_server(
     }
 
     let state = Arc::new(TokioMutex::new(StreamingSseState {
-        responses: VecDeque::from(responses),
+        responses: responses
+            .into_iter()
+            .map(StreamingResponse::Ready)
+            .collect(),
         completions: VecDeque::from(completion_senders),
     }));
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
     let requests_for_task = Arc::clone(&requests);
     let request_notify_for_task = Arc::clone(&request_notify);
+    let state_for_task = Arc::clone(&state);
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     let task = tokio::spawn(async move {
+        let state = state_for_task;
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => break,
@@ -170,6 +189,7 @@ pub async fn start_streaming_sse_server(
     (
         StreamingSseServer {
             uri,
+            state,
             requests,
             request_notify,
             shutdown: shutdown_tx,
@@ -180,16 +200,26 @@ pub async fn start_streaming_sse_server(
 }
 
 struct StreamingSseState {
-    responses: VecDeque<Vec<StreamingSseChunk>>,
+    responses: VecDeque<StreamingResponse>,
     completions: VecDeque<oneshot::Sender<i64>>,
+}
+
+enum StreamingResponse {
+    Ready(Vec<StreamingSseChunk>),
+    Deferred(oneshot::Receiver<Vec<StreamingSseChunk>>),
 }
 
 async fn take_next_stream(
     state: &TokioMutex<StreamingSseState>,
 ) -> Option<(Vec<StreamingSseChunk>, oneshot::Sender<i64>)> {
-    let mut guard = state.lock().await;
-    let chunks = guard.responses.pop_front()?;
-    let completion = guard.completions.pop_front()?;
+    let (response, completion) = {
+        let mut guard = state.lock().await;
+        (guard.responses.pop_front()?, guard.completions.pop_front()?)
+    };
+    let chunks = match response {
+        StreamingResponse::Ready(chunks) => chunks,
+        StreamingResponse::Deferred(receiver) => receiver.await.ok()?,
+    };
     Some((chunks, completion))
 }
 
