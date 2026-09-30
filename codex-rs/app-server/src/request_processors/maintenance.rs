@@ -107,10 +107,11 @@ impl ThreadRequestProcessor {
         Ok(saved)
     }
 
-    pub(crate) async fn restore_maintenance_threads(&self, mut saved: RecoverySnapshot) -> Result<BTreeMap<String, InterruptedTurn>, &'static str> {
+    pub(crate) async fn restore_maintenance_threads(&self, mut saved: RecoverySnapshot) -> Result<Vec<(String, InterruptedTurn)>, &'static str> {
         let maintenance = saved.maintenance.take().ok_or("missingMaintenance")?;
         let mut pending = maintenance.parents;
         let mut loaded = std::collections::BTreeSet::new();
+        let mut restore_order = Vec::new();
         while !pending.is_empty() {
             let ready: Vec<_> = pending.iter().filter(|(_, parent)| parent.as_ref().is_none_or(|parent| loaded.contains(parent)))
                 .map(|(id, parent)| (id.clone(), parent.clone())).collect();
@@ -125,10 +126,11 @@ impl ThreadRequestProcessor {
                         None, None, Default::default()).await.map_err(|_| "rootRestoreFailed")?;
                 }
                 pending.remove(&id);
+                restore_order.push(id.clone());
                 loaded.insert(id);
             }
         }
         // The caller reopens admission only after the complete graph is restored.
-        Ok(saved.interrupted)
+        Ok(restore_order.into_iter().rev().filter_map(|id| saved.interrupted.remove(&id).map(|turn| (id, turn))).collect())
     }
 }
