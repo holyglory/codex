@@ -50,18 +50,26 @@ fn cooperative_handover_failed_start_restores_previous_server() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let daemon = TestDaemon::new()?;
     let state = daemon.home.path().join("app-server-daemon");
-    std::fs::write(state.join("settings.json"), br#"{"updater":{"autoUpdateEnabled":false}}"#)?;
+    std::fs::write(
+        state.join("settings.json"),
+        br#"{"updater":{"autoUpdateEnabled":false}}"#,
+    )?;
     daemon.lifecycle("start")?;
     let standalone = daemon.home.path().join("packages/standalone");
     let candidate = standalone.join("releases/failing-candidate/bin/codex");
     std::fs::create_dir_all(candidate.parent().context("candidate parent")?)?;
-    let executable = format!("'{}'", daemon.codex.display().to_string().replace('\'', "'\\''"));
-    let script = format!(r#"#!/bin/sh
+    let executable = format!(
+        "'{}'",
+        daemon.codex.display().to_string().replace('\'', "'\\''")
+    );
+    let script = format!(
+        r#"#!/bin/sh
 case "$*" in
   "--version"|"app-server daemon handover-compatibility"|"app-server daemon handover-worker"|"app-server --managed-daemon --help") exec {executable} "$@" ;;
   *) exit 73 ;;
 esac
-"#);
+"#
+    );
     std::fs::write(&candidate, script)?;
     std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755))?;
     let selected = standalone.join("selected-next");
@@ -73,10 +81,15 @@ esac
         let current: Value = serde_json::from_slice(&std::fs::read(state.join("handover.json"))?)?;
         match current["phase"].as_str().context("phase")? {
             "rolledBack" => break,
-            "failed" | "needsAttention" | "succeeded" => anyhow::bail!("unexpected replacement outcome: {current}"),
+            "failed" | "needsAttention" | "succeeded" => {
+                anyhow::bail!("unexpected replacement outcome: {current}")
+            }
             _ => {}
         }
-        ensure!(Instant::now() < deadline, "rollback exceeded its acceptance deadline");
+        ensure!(
+            Instant::now() < deadline,
+            "rollback exceeded its acceptance deadline"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(daemon.lifecycle("version")?["status"], "running");

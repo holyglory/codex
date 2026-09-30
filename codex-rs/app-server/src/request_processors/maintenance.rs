@@ -251,7 +251,10 @@ impl ThreadRequestProcessor {
                 if let Some(parent) = parent {
                     let thread_id = ThreadId::from_string(&id).map_err(|_| "invalidThread")?;
                     self.thread_manager
-                        .ensure_maintenance_child_loaded(thread_id, ThreadId::from_string(&parent).map_err(|_| "invalidParent")?)
+                        .ensure_maintenance_child_loaded(
+                            thread_id,
+                            ThreadId::from_string(&parent).map_err(|_| "invalidParent")?,
+                        )
                         .await
                         .map_err(|_| "childRestoreFailed")?;
                 } else {

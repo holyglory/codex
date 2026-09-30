@@ -40,7 +40,10 @@ pub struct MaintenancePause {
 }
 
 impl MaintenanceGate {
-    pub(crate) fn request(&self, lifecycle: watch::Receiver<codex_protocol::protocol::AgentStatus>) -> Option<MaintenancePause> {
+    pub(crate) fn request(
+        &self,
+        lifecycle: watch::Receiver<codex_protocol::protocol::AgentStatus>,
+    ) -> Option<MaintenancePause> {
         let mut current = self
             .request
             .lock()
@@ -169,7 +172,12 @@ impl PauseRequest {
             .input_queue
             .subscribe_activity(turn_state.as_deref())
             .await;
-        if pending.is_some() && session.input_queue.has_pending_input(&session.active_turn).await {
+        if pending.is_some()
+            && session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await
+        {
             self.status.send_replace(MaintenancePauseStatus::Requested);
             return CheckpointWake::RecordInput;
         }
@@ -288,7 +296,12 @@ impl crate::CodexThread {
         )
         .await
         .map_err(std::io::Error::other)??;
-        seen.extend(self.maintenance_mailbox().await.into_iter().filter_map(|entry| entry.communication.id));
+        seen.extend(
+            self.maintenance_mailbox()
+                .await
+                .into_iter()
+                .filter_map(|entry| entry.communication.id),
+        );
         for entry in mail {
             if entry
                 .communication
@@ -298,7 +311,9 @@ impl crate::CodexThread {
             {
                 continue;
             }
-            if let Some(id) = entry.communication.id.clone() { seen.insert(id); }
+            if let Some(id) = entry.communication.id.clone() {
+                seen.insert(id);
+            }
             self.session
                 .input_queue
                 .enqueue_mailbox_communication(entry.communication, entry.options)

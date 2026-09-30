@@ -63,10 +63,16 @@ pub(super) async fn reconnect(
                 .with_thread_tool_transport(task_tools.clone());
             let bootstrap = session.bootstrap(&config).await?;
             let thread = if presentation == ReconnectPresentation::RejectedFreshStart {
-                match session.start_thread_with_session_start_source(
-                    &local_settings, &config, /*session_start_source*/ None,
-                    remote_cwd.as_deref(), /*selected_profile*/ None,
-                ).await {
+                match session
+                    .start_thread_with_session_start_source(
+                        &local_settings,
+                        &config,
+                        /*session_start_source*/ None,
+                        remote_cwd.as_deref(),
+                        /*selected_profile*/ None,
+                    )
+                    .await
+                {
                     Ok(started) => Some(started),
                     Err(error) => return Err(error),
                 }
@@ -408,7 +414,9 @@ impl App {
         if let Some(mut started) = thread {
             let id = started.session.thread_id;
             if self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart {
-                if let Some(worktree) = self.reconnect.startup_worktree.take() { worktree.bind(id)?; }
+                if let Some(worktree) = self.reconnect.startup_worktree.take() {
+                    worktree.bind(id)?;
+                }
                 displayed = Some(id);
                 self.primary_thread_id = Some(id);
                 if let Some(input) = input.as_mut() {
