@@ -95,7 +95,7 @@ impl Drop for MaintenancePause {
 impl PauseRequest {
     pub(crate) async fn checkpoint(
         &self,
-        session: &crate::session::Session,
+        session: &crate::session::session::Session,
         cancellation: &CancellationToken,
     ) {
         if self.released.is_cancelled() || cancellation.is_cancelled() {
