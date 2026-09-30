@@ -1096,9 +1096,9 @@ async fn sample_configured_conversation_history_with_delivery(
     .await?;
     assert!(
         server
-            .wait_for_closed_connections(/*classifier_connection*/ 1, ASYNC_TEST_TIMEOUT)
+            .wait_for_closed_connections(INITIAL_WEBSOCKET_CONNECTIONS, ASYNC_TEST_TIMEOUT)
             .await,
-        "classifier websocket response should be fully delivered before scoring"
+        "Guardian websocket responses should be fully delivered before scoring"
     );
     Ok((request.body_json(), test, registry, thread_server, server))
 }
