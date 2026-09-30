@@ -113,16 +113,17 @@ async fn confirmed_root_delivery_invalidates_root_and_worker_cached_approvals() 
         .mount(&messaging_server)
         .await;
 
-    let (_, test, registry, thread_server, _) = sample_configured_conversation_history_with_delivery(
-        Vec::new(),
-        r#"{"path":"README.md"}"#,
-        Some(TEST_GUARDIAN_POLICY),
-        "",
-        /*model_defaults*/ None,
-        ToolCallSource::Direct,
-        MessagingSetup::CodeMode(format!("{}/user-messaging", messaging_server.uri())),
-    )
-    .await?;
+    let (_, test, registry, thread_server, _) =
+        sample_configured_conversation_history_with_delivery(
+            Vec::new(),
+            r#"{"path":"README.md"}"#,
+            Some(TEST_GUARDIAN_POLICY),
+            "",
+            /*model_defaults*/ None,
+            ToolCallSource::Direct,
+            MessagingSetup::CodeMode(format!("{}/user-messaging", messaging_server.uri())),
+        )
+        .await?;
     wait_for_mcp_server(&test.codex, "codex_apps").await?;
     allow_messaging_guardian_review(&thread_server).await;
     let root_store = test.codex.thread_extension_data();
