@@ -1720,11 +1720,8 @@ async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Res
             auth_token: None,
         },
     };
-    app.chat_widget.bottom_pane.set_composer_text(
-        "preserve my request".into(),
-        Vec::new(),
-        Vec::new(),
-    );
+    app.chat_widget
+        .restore_user_message_to_composer("preserve my request".into());
     let mut server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     app.handle_startup_thread_started(

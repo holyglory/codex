@@ -1,5 +1,6 @@
 //! Complete detached handover through the public CLI and real server process.
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[test]
 fn cooperative_handover_owner_replaces_server_and_verifies_admission() -> Result<()> {
@@ -41,7 +42,7 @@ fn cooperative_handover_owner_replaces_server_and_verifies_admission() -> Result
     assert!(completed["reason"].is_null());
     assert_ne!(daemon.pid("app-server.pid")?, original_pid);
     assert_eq!(daemon.lifecycle("version")?["status"], "running");
-    assert!(!codex_app_server_transport::daemon_recovery_file_path(daemon.home.path()).exists());
+    assert!(!state.join("loaded-threads.json").exists());
     Ok(())
 }
 
@@ -211,7 +212,7 @@ exec {executable} "$@"
     wait_for_exit(owner)?;
     signal(candidate_pid, libc::SIGTERM)?;
     wait_for_exit(candidate_pid)?;
-    let snapshot = codex_app_server_transport::daemon_recovery_file_path(daemon.home.path());
+    let snapshot = state.join("loaded-threads.json");
     assert!(
         snapshot.exists(),
         "committed checkpoint must survive the owner"

@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_threads() -> Result<()> {
