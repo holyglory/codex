@@ -19,22 +19,29 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_rollout::RolloutItem;
 
+pub(super) struct PreparedContinuation {
+    pub(super) thread: std::sync::Arc<codex_core::CodexThread>,
+    pub(super) turn_id: String,
+    pub(super) options: TurnStartOptions,
+}
+
 impl ThreadRequestProcessor {
-    pub(crate) async fn continue_daemon_turn(&self, thread_id: &str, saved: InterruptedTurn) {
+    pub(super) async fn prepare_daemon_continuation(&self, thread_id: &str, saved: InterruptedTurn)
+        -> Result<Option<PreparedContinuation>, &'static str> {
         let Ok(thread_id) = ThreadId::from_string(thread_id) else {
-            return;
+            return Err("invalidThread");
         };
         let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
-            return;
+            return Err("threadUnavailable");
         };
         let Some(path) = thread.rollout_path() else {
-            return;
+            return Err("historyUnavailable");
         };
         let history = match codex_rollout::RolloutRecorder::load_rollout_items(&path).await {
             Ok((history, _, _)) => history,
             Err(err) => {
                 tracing::warn!(%thread_id, %err, "failed to read interrupted turn history");
-                return;
+                return Err("historyUnavailable");
             }
         };
         // The snapshot has complete recorded input, but the old process may have
@@ -43,7 +50,7 @@ impl ThreadRequestProcessor {
             .iter()
             .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
         else {
-            return;
+            return Ok(None);
         };
         if !matches!(&history[start], RolloutItem::EventMsg(EventMsg::TurnStarted(event))
             if event.turn_id == saved.turn_id)
@@ -58,7 +65,7 @@ impl ThreadRequestProcessor {
                 _ => false,
             })
         {
-            return;
+            return Ok(None);
         }
         let previous_context = history.iter().rev().find_map(|item| match item {
             RolloutItem::TurnContext(context)
@@ -69,41 +76,46 @@ impl ThreadRequestProcessor {
             _ => None,
         });
         let Some(previous_context) = previous_context else {
-            return;
+            return Err("turnContextUnavailable");
         };
         let config = thread.config_snapshot().await;
         let [environment] = config.environment_selections() else {
-            return;
+            return Err("environmentChanged");
         };
         if environment.environment_id != codex_exec_server::LOCAL_ENVIRONMENT_ID
             || environment.config != EnvironmentConfigState::FromThread
             || saved.local_environment.as_ref() != Some(&ThreadEnvironment::from(environment))
         {
-            return;
+            return Err("environmentChanged");
         }
         // Recovery must not override a stricter saved or newly configured policy.
         if previous_context.permission_profile() != config.permission_profile {
-            return;
+            return Err("permissionsChanged");
         }
+        let options = TurnStartOptions {
+            turn_trigger: Some("daemon_recovery".to_string()),
+            final_output_json_schema: saved.output_schema,
+            service_tier: saved.service_tier,
+            cyber_access_program: saved.cyber_access_program,
+            root_turn_id: previous_context.root_turn_id.clone(),
+            ..Default::default()
+        };
+        Ok(Some(PreparedContinuation { thread, turn_id: saved.turn_id, options }))
+    }
+
+    pub(crate) async fn continue_daemon_turn(&self, thread_id: &str, saved: InterruptedTurn) -> Result<(), &'static str> {
+        let Some(PreparedContinuation { thread, turn_id, options }) = self.prepare_daemon_continuation(thread_id, saved).await? else { return Ok(()); };
+        let thread_id = ThreadId::from_string(thread_id).map_err(|_| "invalidThread")?;
         let continuation = ContextualUserFragment::into(InternalModelContextFragment::new(
             InternalContextSource::from_static("daemon_recovery"),
             "The server restarted and interrupted the previous turn. Continue the unfinished work from the saved conversation. Check the current state before repeating actions that may already have completed.",
         ));
-        let request = TurnInputRequest::new(TurnInput::ResponseItem(continuation)).on_start(
-            TurnStartOptions {
-                turn_trigger: Some("daemon_recovery".to_string()),
-                final_output_json_schema: saved.output_schema,
-                service_tier: saved.service_tier,
-                cyber_access_program: saved.cyber_access_program,
-                root_turn_id: previous_context.root_turn_id.clone(),
-                ..Default::default()
-            },
-        );
+        let request = TurnInputRequest::new(TurnInput::ResponseItem(continuation)).on_start(options);
         // Close the old turn in persisted history before exposing a new running turn.
         if let Err(err) = thread
             .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::TurnAborted(
                 TurnAbortedEvent {
-                    turn_id: Some(saved.turn_id.clone()),
+                    turn_id: Some(turn_id.clone()),
                     reason: TurnAbortReason::Interrupted,
                     started_at: None,
                     completed_at: None,
@@ -113,9 +125,9 @@ impl ThreadRequestProcessor {
             .await
         {
             tracing::warn!(%thread_id, %err, "failed to close interrupted turn history");
-            return;
+            return Err("persistenceFailed");
         }
-        match thread.continue_turn_if_idle(request, saved.turn_id).await {
+        match thread.continue_turn_if_idle(request, turn_id).await {
             Ok(TurnInputSubmission::Started { .. }) => {
                 crate::extensions::send_thread_warning(
                     &self.outgoing,
@@ -127,9 +139,16 @@ impl ThreadRequestProcessor {
             }
             Ok(TurnInputSubmission::NotSubmitted { reason }) => {
                 tracing::debug!(%thread_id, ?reason, "recovery continuation was not started");
+                if !matches!(reason, codex_core::NotSubmittedReason::Superseded | codex_core::NotSubmittedReason::NotIdle | codex_core::NotSubmittedReason::PendingTriggerTurn) {
+                    return Err("continuationNotStarted");
+                }
             }
             Ok(TurnInputSubmission::Steered { .. }) => unreachable!("continuation cannot steer"),
-            Err(err) => tracing::warn!(%thread_id, %err, "recovery continuation failed"),
+            Err(err) => {
+                tracing::warn!(%thread_id, %err, "recovery continuation failed");
+                return Err("continuationFailed");
+            }
         }
+        Ok(())
     }
 }

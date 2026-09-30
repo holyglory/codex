@@ -74,6 +74,13 @@ async fn status_at(path: &Path) -> Result<MaintenanceResponse> {
 /// Requests a detached operation and returns before any participating agent pauses.
 pub async fn request_handover() -> Result<HandoverStatus> {
     let daemon = Daemon::from_environment()?;
+    let selected = resolved_managed_codex_bin(&daemon.current_managed_codex_bin()?).await?;
+    let worker = PidBackend::new_handover(selected.clone(), daemon.pid_file.with_file_name("handover.pid"));
+    if worker.is_starting_or_running().await? {
+        let record = read(&daemon)?;
+        ensure!(record.target == selected, "another handover target is already owned");
+        return Ok(record);
+    }
     let _lock = daemon.acquire_operation_lock().await?;
     request_locked(&daemon).await
 }
@@ -116,7 +123,9 @@ pub async fn cancel_handover() -> Result<HandoverStatus> {
 }
 
 async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
+    let isolated = tempfile::tempdir()?;
     let output = tokio::time::timeout(Duration::from_secs(10), Command::new(binary)
+        .env("CODEX_HOME", isolated.path()).env("CODEX_SQLITE_HOME", isolated.path())
         .args(["app-server", "daemon", "handover-compatibility"])
         .stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).output()).await??;
     ensure!(output.status.success() && output.stdout.len() < 65536,
@@ -128,7 +137,7 @@ async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
     let identity = executable_identity(expected).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(MaintenanceResponse::Status { executable, accepting: true, .. }) = status_at(&daemon.socket_path).await
+        if let Ok(MaintenanceResponse::Status { executable, accepting: true, restored: true, .. }) = status_at(&daemon.socket_path).await
             && executable_identity(&executable).await? == identity
         {
             client::probe(&daemon.socket_path).await?;
@@ -200,6 +209,8 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
     ensure!(text.len() < 4096, "invalid checkpoint receipt size");
     ensure!(serde_json::from_str::<MaintenanceResponse>(&text)? == MaintenanceResponse::Ready { operation_id: record.operation_id.clone(), pid },
         "server did not checkpoint all work");
+    let codex_home = daemon.settings_file.parent().and_then(Path::parent).context("daemon home")?;
+    let _install_lock = crate::install_lock::acquire_install_lock(&crate::managed_install::package_root(codex_home)).await?;
     ensure!(resolved_managed_codex_bin(&daemon.current_managed_codex_bin()?).await? == record.target,
         "selected package changed during preparation");
     if tokio::fs::read_to_string(&cancel_path).await.ok().as_deref() == Some(record.operation_id.as_str()) {

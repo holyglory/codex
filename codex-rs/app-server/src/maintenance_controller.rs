@@ -14,10 +14,7 @@ impl MessageProcessor {
     ) -> Result<(), &'static str> {
         let continuations = self.thread_processor.restore_maintenance_threads(snapshot).await?;
         drop(admission);
-        for (id, turn) in continuations {
-            self.thread_processor.continue_daemon_turn(&id, turn).await;
-        }
-        Ok(())
+        self.thread_processor.resume_maintenance_turns(continuations).await
     }
 
     pub(crate) async fn maintenance_connection(
@@ -29,7 +26,7 @@ impl MessageProcessor {
         let MaintenanceConnection { command, reply, mut commit, cancelled } = connection;
         let pid = std::process::id();
         if matches!(command, MaintenanceCommand::Status) {
-            let _ = reply.send(MaintenanceResponse::Status { pid, accepting: self.turn_admission.accepting(), executable: std::env::current_exe().unwrap_or_default() });
+            let _ = reply.send(MaintenanceResponse::Status { pid, accepting: self.turn_admission.accepting(), restored: self.turn_admission.restoration_complete(), executable: std::env::current_exe().unwrap_or_default() });
             return;
         }
         let MaintenanceCommand::Prepare { operation_id, pid: expected_pid } = command else {

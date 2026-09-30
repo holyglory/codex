@@ -29,7 +29,8 @@ impl ThreadRequestProcessor {
         let mut status = self.subscribe_running_assistant_turn_count();
         loop {
             let mut ready = true;
-            for id in self.thread_manager.list_thread_ids().await {
+            let census: std::collections::BTreeSet<_> = self.thread_manager.list_thread_ids().await.into_iter().collect();
+            for id in census.iter().copied() {
                 let thread = self.thread_manager.get_thread(id).await.map_err(|_| "threadChanged")?;
                 let config = thread.config_snapshot().await;
                 if config.ephemeral {
@@ -53,7 +54,11 @@ impl ThreadRequestProcessor {
                 }
                 if thread.maintenance_has_background_work().await { return Err("backgroundWork"); }
             }
-            if ready { return Ok(paused); }
+            if ready {
+                let current: std::collections::BTreeSet<_> = self.thread_manager.list_thread_ids().await.into_iter().collect();
+                if census == current { return Ok(paused); }
+                continue;
+            }
             // One bounded operation watches its receipts and the existing thread
             // registry. No agent or host-capacity slot is used for this wait.
             let changed = futures::future::select_all(paused.threads.values_mut()
@@ -75,6 +80,9 @@ impl ThreadRequestProcessor {
         let mut saved = RecoverySnapshot::default();
         let mut parents = BTreeMap::new();
         for (id, (thread, pause)) in &paused.threads {
+            let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
+            let current = self.thread_manager.get_thread(thread_id).await.map_err(|_| "threadChanged")?;
+            if !Arc::ptr_eq(thread, &current) { return Err("threadChanged"); }
             if thread.maintenance_has_background_work().await { return Err("backgroundWork"); }
             let config = thread.config_snapshot().await;
             if config.ephemeral { return Err("nonpersistentWork"); }
@@ -105,6 +113,23 @@ impl ThreadRequestProcessor {
         }
         saved.maintenance = Some(MaintenanceSnapshot { operation_id, parents });
         Ok(saved)
+    }
+
+    pub(crate) async fn resume_maintenance_turns(&self, turns: Vec<(String, InterruptedTurn)>) -> Result<(), &'static str> {
+        let mut prepared = Vec::new();
+        for (id, saved) in turns {
+            if let Some(continuation) = self.prepare_daemon_continuation(&id, saved).await? {
+                prepared.push(continuation);
+            }
+        }
+        for continuation in prepared {
+            match continuation.thread.resume_maintenance_checkpoint(continuation.turn_id, continuation.options).await.map_err(|_| "continuationFailed")? {
+                codex_core::TurnInputSubmission::Started { .. } => {}
+                codex_core::TurnInputSubmission::NotSubmitted { reason: codex_core::NotSubmittedReason::NotIdle | codex_core::NotSubmittedReason::Superseded } => {}
+                codex_core::TurnInputSubmission::NotSubmitted { .. } | codex_core::TurnInputSubmission::Steered { .. } => return Err("continuationNotStarted"),
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn restore_maintenance_threads(&self, mut saved: RecoverySnapshot) -> Result<Vec<(String, InterruptedTurn)>, &'static str> {

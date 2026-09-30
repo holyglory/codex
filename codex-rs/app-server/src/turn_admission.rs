@@ -12,6 +12,8 @@ use crate::error_code::server_draining_error;
 struct AdmissionState {
     closed: bool,
     maintenance: bool,
+    restoring: bool,
+    restoration_failed: bool,
     active: usize,
 }
 
@@ -42,16 +44,35 @@ impl Drop for MaintenanceAdmission {
 }
 
 impl TurnAdmission {
+    pub(crate) fn restoration_failed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.restoring = false;
+        state.restoration_failed = true;
+    }
+
+    pub(crate) fn restoration_complete(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        !state.restoring && !state.restoration_failed
+    }
+
+    pub(crate) fn restoration_started(&self) {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).restoring = true;
+    }
+
+    pub(crate) fn restoration_finished(&self) {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).restoring = false;
+    }
+
     pub(crate) fn begin_maintenance(&self) -> Option<MaintenanceAdmission> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed || state.maintenance { return None; }
+        if state.closed || state.maintenance || state.restoring || state.restoration_failed { return None; }
         state.maintenance = true;
         Some(MaintenanceAdmission(self.clone()))
     }
 
     pub(crate) fn accepting(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        !state.closed && !state.maintenance
+        !state.closed && !state.maintenance && !state.restoring
     }
 
     pub(crate) fn maintenance_requested(&self) -> bool {
@@ -72,8 +93,10 @@ impl TurnAdmission {
     // Admit and close take the same short lock. The permit keeps shutdown from
     // finishing while an earlier request is still preparing or submitting work.
     pub(crate) fn admit(&self) -> Result<TurnPermit, JSONRPCErrorError> {
-        self.try_admit().ok_or_else(|| {
-            if self.maintenance_requested() {
+        let restoring = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).restoring;
+        let permit = if restoring { None } else { self.try_admit() };
+        permit.ok_or_else(|| {
+            if restoring || self.maintenance_requested() {
                 codex_app_server_protocol::JSONRPCErrorError {
                     code: -32600,
                     message: "Server is preparing an upgrade; retry after reconnecting".to_string(),

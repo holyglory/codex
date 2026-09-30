@@ -146,3 +146,16 @@ impl PauseRequest {
         self.status.send_replace(MaintenancePauseStatus::Released);
     }
 }
+
+impl crate::CodexThread {
+    /// Re-enters a sealed maintenance checkpoint under its original turn identity.
+    /// The host must verify persisted terminal events and permissions first.
+    pub async fn resume_maintenance_checkpoint(
+        &self,
+        turn_id: String,
+        options: crate::TurnStartOptions,
+    ) -> codex_protocol::error::Result<crate::TurnInputSubmission> {
+        self.session.services.agent_control.ensure_execution_capacity_for_turn_start(self).await?;
+        self.io.submit_recover_turn(Default::default(), options, None, turn_id).await
+    }
+}

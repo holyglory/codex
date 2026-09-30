@@ -52,14 +52,18 @@ pub(crate) async fn start_recovery(
     if candidates.maintenance.is_some() {
         let admission = processor.turn_admission.begin_maintenance()
             .ok_or_else(|| io::Error::other("maintenance restoration is already active"))?;
+        processor.turn_admission.restoration_started();
         return Ok(tokio::spawn(async move {
             match processor.restore_maintenance(candidates, admission).await {
-                Ok(()) => { let _ = tokio::fs::remove_file(path).await; }
+                Ok(()) => {
+                    let _ = tokio::fs::remove_file(path).await;
+                    processor.turn_admission.restoration_finished();
+                }
                 Err(reason) => {
                     // A partial restore cannot advertise readiness or consume the
                     // receipt needed for operator recovery.
-                    processor.turn_admission.begin_drain();
-                    tracing::error!(%reason, "maintenance restoration failed");
+                    processor.turn_admission.restoration_failed();
+                    tracing::error!(%reason, "maintenance restoration incomplete; new sessions remain available");
                 }
             }
         }));
