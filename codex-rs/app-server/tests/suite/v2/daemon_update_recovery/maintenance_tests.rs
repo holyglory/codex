@@ -172,17 +172,6 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
     use codex_app_server_transport::maintenance::MaintenanceResponse;
     use core_test_support::responses;
     let home = TempDir::new()?;
-    let hook_entered = home.path().join("resume-hook-entered");
-    let release_hook = home.path().join("release-resume-hook");
-    if scenario == AgentTreeScenario::StopDuringRestore {
-        let command = format!(
-            "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done",
-            hook_entered.display(),
-            release_hook.display()
-        );
-        std::fs::write(home.path().join("hooks.json"), json!({"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":command}]}]}}).to_string())?;
-    }
-
     let (release_a, gate_a) = oneshot::channel();
     let (release_b, gate_b) = oneshot::channel();
     let (release_c, gate_c) = oneshot::channel();
@@ -255,9 +244,6 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         },
     )
     .await?;
-    if scenario == AgentTreeScenario::StopDuringRestore {
-        super::background_tests::trust_fixture_hooks(&mut client, home.path()).await?;
-    }
     let parent = if legacy_child {
         let id = app_test_support::create_fake_rollout(
             home.path(),
@@ -435,15 +421,40 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
             .count(),
         1
     );
+    let held_history = if scenario == AgentTreeScenario::StopDuringRestore {
+        let path = parent.thread.path.clone().context("parent history path")?;
+        let held = path.with_extension("held-history");
+        std::fs::rename(&path, &held)?;
+        // A directory at the history-file path deterministically prevents cold
+        // loading, including when the metadata projection is already cached.
+        std::fs::create_dir(&path)?;
+        Some((path, held))
+    } else {
+        None
+    };
     let mut successor = spawn_server(home.path(), &socket_path)?;
     if scenario == AgentTreeScenario::StopDuringRestore {
         let mut client = connect_default_daemon_client(&socket_path).await?;
+        let (path, held) = held_history.context("held history")?;
         timeout(DEFAULT_READ_TIMEOUT, async {
-            while !hook_entered.exists() {
+            loop {
+                let state = maintenance_status(&socket_path).await?;
+                if state["preparing"] == false
+                    && state["restored"] == false
+                    && state["accepting"] == true
+                {
+                    break;
+                }
                 sleep(Duration::from_millis(/*millis*/ 10)).await;
             }
+            Ok::<_, anyhow::Error>(())
         })
-        .await?;
+        .await??;
+        assert_eq!(
+            mock.requests().await.len(),
+            3,
+            "no saved turn may run before this failed restore is repaired"
+        );
         #[cfg(target_os = "linux")]
         {
             // A per-process descriptor limit produces a real pre-publication I/O
@@ -502,7 +513,12 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
         .await?;
         let stopped = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
         assert!(!stopped.interrupted.contains_key(&parent.thread.id));
-        std::fs::write(&release_hook, "continue")?;
+        std::fs::remove_dir(&path)?;
+        std::fs::rename(held, &path)?;
+        successor.kill().await?;
+        successor.wait().await?;
+        successor = spawn_server(home.path(), &socket_path)?;
+        client = connect_default_daemon_client(&socket_path).await?;
         wait_for_requests(&mock, /*count*/ 4).await?;
         release_c.send(()).unwrap();
         timeout(DEFAULT_READ_TIMEOUT, async {
