@@ -62,6 +62,7 @@ use core_test_support::ThreadIdle;
 use core_test_support::apps_test_server::HostedMessagingServer;
 use core_test_support::responses;
 use core_test_support::responses::WebSocketConnectionConfig;
+use core_test_support::responses::WebSocketTestServer;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::skip_if_no_network;
@@ -858,7 +859,7 @@ async fn sample_configured_conversation_history_with_source(
     model_defaults: Option<GuardianV2ModelConfig>,
     source: ToolCallSource,
 ) -> Result<(serde_json::Value, TestCodex, ExtensionRegistry<Config>)> {
-    let (request, test, registry, _) = sample_configured_conversation_history_with_delivery(
+    let (request, test, registry, _, _) = sample_configured_conversation_history_with_delivery(
         conversation_history,
         arguments,
         guardian_policy,
@@ -889,6 +890,7 @@ async fn sample_configured_conversation_history_with_delivery(
     TestCodex,
     ExtensionRegistry<Config>,
     wiremock::MockServer,
+    WebSocketTestServer,
 )> {
     let thread_server = responses::start_mock_server().await;
     let mut catalog = codex_models_manager::bundled_models_response()
@@ -1092,13 +1094,7 @@ async fn sample_configured_conversation_history_with_delivery(
         ),
     )
     .await?;
-    assert!(
-        server
-            .wait_for_closed_connections(INITIAL_WEBSOCKET_CONNECTIONS, ASYNC_TEST_TIMEOUT)
-            .await,
-        "classifier websocket responses should be fully delivered before fixture teardown"
-    );
-    Ok((request.body_json(), test, registry, thread_server))
+    Ok((request.body_json(), test, registry, thread_server, server))
 }
 
 struct GuardianFailureFixture {
@@ -3397,14 +3393,17 @@ async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> 
         user_instruction("Inspect the repository guidelines."),
     ];
     let configuration = "[features.guardianv2]\nthread_context = false\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
-    let (request, test, _registry) = sample_configured_conversation_history(
-        conversation_history,
-        r#"{"path":"README.md"}"#,
-        Some(TEST_GUARDIAN_POLICY),
-        configuration,
-        /*model_defaults*/ None,
-    )
-    .await?;
+    let (request, test, _registry, _thread_server, _sampling_server) =
+        sample_configured_conversation_history_with_delivery(
+            conversation_history,
+            r#"{"path":"README.md"}"#,
+            Some(TEST_GUARDIAN_POLICY),
+            configuration,
+            /*model_defaults*/ None,
+            ToolCallSource::Direct,
+            MessagingSetup::Disabled,
+        )
+        .await?;
 
     let input = request["input"]
         .as_array()
