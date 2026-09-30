@@ -251,7 +251,7 @@ impl CodexThread {
     pub fn request_maintenance_pause(&self) -> Option<crate::MaintenancePause> {
         self.thread_extension_data()
             .get::<crate::maintenance::MaintenanceGate>()?
-            .request()
+            .request(self.io.agent_status.clone())
     }
 
     /// Reports whether this runtime currently owns any executing turn task.

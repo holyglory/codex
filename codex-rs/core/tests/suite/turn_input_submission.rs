@@ -1187,7 +1187,7 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
     let make_mail = |suffix: &str| {
         let mut communication = InterAgentCommunication::new(
             AgentPath::root().join("worker").unwrap(), AgentPath::root(), Vec::new(),
-            format!("result {suffix}"), false,
+            format!("result {suffix}"), /*trigger_turn*/ false,
         );
         communication.id = Some(ResponseItemId::with_suffix("mail", suffix));
         MaintenanceMail { communication, options: Default::default() }
@@ -1196,7 +1196,7 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
     let quoted = make_mail("quoted");
     let delivered = make_mail("delivered");
     test.codex.inject_response_items(vec![
-        responses::user_message_item("This quoted identifier is not delivery: mail_quoted").item,
+        responses::user_message_item("This quoted identifier is not delivery: mail_quoted"),
         delivered.communication.to_model_input_item(),
     ]).await?;
     test.codex.flush_rollout().await?;

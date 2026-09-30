@@ -39,6 +39,7 @@ pub enum MaintenanceResponse {
     Status {
         pid: u32,
         accepting: bool,
+        preparing: bool,
         restored: bool,
         executable: std::path::PathBuf,
     },

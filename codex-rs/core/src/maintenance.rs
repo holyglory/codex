@@ -35,11 +35,12 @@ pub(crate) struct PauseRequest {
 pub struct MaintenancePause {
     request: Arc<PauseRequest>,
     status: watch::Receiver<MaintenancePauseStatus>,
+    lifecycle: watch::Receiver<codex_protocol::protocol::AgentStatus>,
     resume_on_drop: bool,
 }
 
 impl MaintenanceGate {
-    pub(crate) fn request(&self) -> Option<MaintenancePause> {
+    pub(crate) fn request(&self, lifecycle: watch::Receiver<codex_protocol::protocol::AgentStatus>) -> Option<MaintenancePause> {
         let mut current = self
             .request
             .lock()
@@ -60,6 +61,7 @@ impl MaintenanceGate {
         Some(MaintenancePause {
             request,
             status: receiver,
+            lifecycle,
             resume_on_drop: true,
         })
     }
@@ -79,7 +81,10 @@ impl MaintenancePause {
     }
 
     pub async fn changed(&mut self) -> MaintenancePauseStatus {
-        let _ = self.status.changed().await;
+        tokio::select! {
+            _ = self.status.changed() => {}
+            _ = self.lifecycle.changed() => {}
+        }
         self.status()
     }
 
