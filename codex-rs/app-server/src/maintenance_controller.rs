@@ -23,6 +23,8 @@ impl MessageProcessor {
         recovery_path: PathBuf,
         committed: CancellationToken,
     ) {
+        let mut owned = false;
+        async {
         let MaintenanceConnection { command, reply, mut commit, cancelled } = connection;
         let pid = std::process::id();
         if matches!(command, MaintenanceCommand::Status) {
@@ -43,19 +45,21 @@ impl MessageProcessor {
             let _ = reply.send(MaintenanceResponse::Failed { reason: "busy".into() });
             return;
         };
+        owned = true;
+        let mut paused = crate::request_processors::PausedThreads::default();
         let preparation = async {
             let mut active = self.turn_admission.subscribe_active();
             while *active.borrow_and_update() != 0 {
                 active.changed().await.map_err(|_| "admissionUnavailable")?;
             }
-            self.thread_processor.pause_for_maintenance(&cancelled).await
+            self.thread_processor.pause_for_maintenance(&mut paused, &cancelled).await
         };
         let result = tokio::select! {
             _ = cancelled.cancelled() => Err("cancelled"),
             result = tokio::time::timeout(Duration::from_secs(60), preparation) => result.unwrap_or(Err("pauseDeadline")),
         };
-        let paused = match result {
-            Ok(paused) => paused,
+        match result {
+            Ok(()) => {},
             Err(reason) => {
                 let _ = reply.send(MaintenanceResponse::Failed { reason: reason.into() });
                 return;
@@ -67,6 +71,15 @@ impl MessageProcessor {
             decision = tokio::time::timeout(Duration::from_secs(30), commit.recv()) => decision.ok().flatten(),
         };
         if !matches!(decision, Some(MaintenanceCommand::Commit { operation_id: id, pid: process }) if id == operation_id && process == pid) { return; }
+        self.turn_admission.seal_maintenance();
+        let sealed = async {
+            let mut active = self.turn_admission.subscribe_active();
+            while *active.borrow_and_update() != 0 {
+                active.changed().await.map_err(|_| "admissionUnavailable")?;
+            }
+            self.thread_processor.pause_for_maintenance(&mut paused, &cancelled).await
+        };
+        if !matches!(tokio::time::timeout(Duration::from_secs(10), sealed).await, Ok(Ok(()))) { return; }
         // Re-evaluate stopped turns after Ready: user cancellation must win over
         // the previously requested maintenance resume.
         let snapshot = match self.thread_processor.maintenance_snapshot(operation_id.clone(), &paused).await {
@@ -86,5 +99,9 @@ impl MessageProcessor {
         paused.commit();
         drop(admission);
         committed.cancel();
+        }.await;
+        if owned && !committed.is_cancelled() {
+            self.thread_processor.resume_idle_maintenance_work().await;
+        }
     }
 }

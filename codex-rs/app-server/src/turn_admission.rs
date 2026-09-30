@@ -12,6 +12,7 @@ use crate::error_code::server_draining_error;
 struct AdmissionState {
     closed: bool,
     maintenance: bool,
+    sealed: bool,
     restoring: bool,
     restoration_failed: bool,
     active: usize,
@@ -21,6 +22,7 @@ struct AdmissionState {
 pub(crate) struct TurnAdmission {
     state: Arc<Mutex<AdmissionState>>,
     active_tx: watch::Sender<usize>,
+    maintenance_tx: watch::Sender<bool>,
 }
 
 impl Default for TurnAdmission {
@@ -28,6 +30,7 @@ impl Default for TurnAdmission {
         Self {
             state: Arc::new(Mutex::new(AdmissionState::default())),
             active_tx: watch::channel(0).0,
+            maintenance_tx: watch::channel(false).0,
         }
     }
 }
@@ -39,7 +42,10 @@ pub(crate) struct MaintenanceAdmission(TurnAdmission);
 
 impl Drop for MaintenanceAdmission {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).maintenance = false;
+        let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.maintenance = false;
+        state.sealed = false;
+        self.0.maintenance_tx.send_replace(false);
     }
 }
 
@@ -67,12 +73,17 @@ impl TurnAdmission {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.closed || state.maintenance || state.restoring || state.restoration_failed { return None; }
         state.maintenance = true;
+        self.maintenance_tx.send_replace(true);
         Some(MaintenanceAdmission(self.clone()))
+    }
+
+    pub(crate) fn seal_maintenance(&self) {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed = true;
     }
 
     pub(crate) fn accepting(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        !state.closed && !state.maintenance && !state.restoring
+        !state.closed && !state.sealed && !state.restoring
     }
 
     pub(crate) fn maintenance_requested(&self) -> bool {
@@ -111,7 +122,7 @@ impl TurnAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed || state.maintenance {
+        if state.closed || state.sealed {
             return None;
         }
         state.active += 1;
@@ -121,6 +132,17 @@ impl TurnAdmission {
 }
 
 impl TurnStartAdmission for TurnAdmission {
+    fn maintenance_requested(&self) -> bool { self.maintenance_requested() }
+
+    fn maintenance_released(&self) -> codex_extension_api::ExtensionFuture<'_, ()> {
+        Box::pin(async move {
+            let mut state = self.maintenance_tx.subscribe();
+            while *state.borrow_and_update() {
+                if state.changed().await.is_err() { break; }
+            }
+        })
+    }
+
     fn admit_turn_start(&self) -> Option<Box<dyn Send>> {
         self.try_admit()
             .map(|permit| Box::new(permit) as Box<dyn Send>)

@@ -98,6 +98,13 @@ impl InputQueue {
         }
     }
 
+    pub(crate) async fn maintenance_mailbox(&self) -> Vec<crate::MaintenanceMail> {
+        self.mailbox_pending_mails.lock().await.iter_mut().map(|mail| {
+            mail.communication.id.get_or_insert_with(|| codex_protocol::ResponseItemId::new("mail"));
+            crate::MaintenanceMail { communication: mail.communication.clone(), options: mail.start_options.clone() }
+        }).collect()
+    }
+
     pub(crate) async fn subscribe_activity(
         &self,
         turn_state: Option<&Mutex<TurnState>>,

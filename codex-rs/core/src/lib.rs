@@ -32,6 +32,7 @@ pub use codex_protocol::turn_input::SteerSubmission;
 pub use codex_protocol::turn_input::SuspendTurnOutcome;
 mod maintenance;
 pub use maintenance::MaintenancePause;
+pub use maintenance::MaintenanceMail;
 pub use maintenance::MaintenancePauseStatus;
 pub use codex_protocol::turn_input::TurnInput;
 pub use codex_protocol::turn_input::TurnInputRequest;

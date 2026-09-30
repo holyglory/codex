@@ -52,6 +52,7 @@ pub(crate) async fn start_recovery(
     if candidates.maintenance.is_some() {
         let admission = processor.turn_admission.begin_maintenance()
             .ok_or_else(|| io::Error::other("maintenance restoration is already active"))?;
+        processor.turn_admission.seal_maintenance();
         processor.turn_admission.restoration_started();
         return Ok(tokio::spawn(async move {
             match processor.restore_maintenance(candidates, admission).await {

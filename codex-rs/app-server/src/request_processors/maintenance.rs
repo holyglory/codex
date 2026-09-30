@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Default)]
 pub(crate) struct PausedThreads {
     pub(crate) threads: BTreeMap<String, (Arc<CodexThread>, MaintenancePause)>,
 }
@@ -22,9 +23,9 @@ impl PausedThreads {
 impl ThreadRequestProcessor {
     pub(crate) async fn pause_for_maintenance(
         &self,
+        paused: &mut PausedThreads,
         cancelled: &CancellationToken,
-    ) -> Result<PausedThreads, &'static str> {
-        let mut paused = PausedThreads { threads: BTreeMap::new() };
+    ) -> Result<(), &'static str> {
         let mut created = self.thread_manager.subscribe_thread_created();
         let mut status = self.subscribe_running_assistant_turn_count();
         loop {
@@ -53,10 +54,11 @@ impl ThreadRequestProcessor {
                     MaintenancePauseStatus::Paused => {}
                 }
                 if thread.maintenance_has_background_work().await { return Err("backgroundWork"); }
+                ready &= !thread.maintenance_has_pending_input().await;
             }
             if ready {
                 let current: std::collections::BTreeSet<_> = self.thread_manager.list_thread_ids().await.into_iter().collect();
-                if census == current { return Ok(paused); }
+                if census == current { return Ok(()); }
                 continue;
             }
             // One bounded operation watches its receipts and the existing thread
@@ -79,11 +81,13 @@ impl ThreadRequestProcessor {
     ) -> Result<RecoverySnapshot, &'static str> {
         let mut saved = RecoverySnapshot::default();
         let mut parents = BTreeMap::new();
+        let mut mailboxes = BTreeMap::new();
         for (id, (thread, pause)) in &paused.threads {
             let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
             let current = self.thread_manager.get_thread(thread_id).await.map_err(|_| "threadChanged")?;
             if !Arc::ptr_eq(thread, &current) { return Err("threadChanged"); }
             if thread.maintenance_has_background_work().await { return Err("backgroundWork"); }
+            if thread.maintenance_has_pending_input().await { return Err("pendingInput"); }
             let config = thread.config_snapshot().await;
             if config.ephemeral { return Err("nonpersistentWork"); }
             if config.parent_thread_id.is_some() && thread.multi_agent_version() != Some(MultiAgentVersion::V2) {
@@ -96,6 +100,11 @@ impl ThreadRequestProcessor {
             let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
             self.thread_store.persist_thread(thread_id, PersistContext::Standard).await.map_err(|_| "persistenceFailed")?;
             thread.flush_rollout().await.map_err(|_| "persistenceFailed")?;
+            let mail = thread.maintenance_mailbox().await;
+            if thread.maintenance_is_idle().await && mail.iter().any(|mail| mail.communication.trigger_turn) {
+                return Err("pendingTrigger");
+            }
+            if !mail.is_empty() { mailboxes.insert(id.clone(), mail); }
             saved.loaded.insert(id.clone());
             parents.insert(id.clone(), config.parent_thread_id.map(|id| id.to_string()));
             if let Some((turn_id, options, environment)) = interrupted {
@@ -111,7 +120,7 @@ impl ThreadRequestProcessor {
         if parents.values().flatten().any(|parent| !parents.contains_key(parent)) {
             return Err("missingParent");
         }
-        saved.maintenance = Some(MaintenanceSnapshot { operation_id, parents });
+        saved.maintenance = Some(MaintenanceSnapshot { operation_id, parents, mailboxes });
         Ok(saved)
     }
 
@@ -129,7 +138,16 @@ impl ThreadRequestProcessor {
                 codex_core::TurnInputSubmission::NotSubmitted { .. } | codex_core::TurnInputSubmission::Steered { .. } => return Err("continuationNotStarted"),
             }
         }
+        self.resume_idle_maintenance_work().await;
         Ok(())
+    }
+
+    pub(crate) async fn resume_idle_maintenance_work(&self) {
+        for id in self.thread_manager.list_thread_ids().await {
+            if let Ok(thread) = self.thread_manager.get_thread(id).await {
+                thread.emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed).await;
+            }
+        }
     }
 
     pub(crate) async fn restore_maintenance_threads(&self, mut saved: RecoverySnapshot) -> Result<Vec<(String, InterruptedTurn)>, &'static str> {
@@ -154,6 +172,11 @@ impl ThreadRequestProcessor {
                 restore_order.push(id.clone());
                 loaded.insert(id);
             }
+        }
+        for (id, mail) in maintenance.mailboxes {
+            let id = ThreadId::from_string(&id).map_err(|_| "invalidThread")?;
+            self.thread_manager.get_thread(id).await.map_err(|_| "threadUnavailable")?
+                .restore_maintenance_mailbox(mail).await.map_err(|_| "mailboxRestoreFailed")?;
         }
         // The caller reopens admission only after the complete graph is restored.
         Ok(restore_order.into_iter().rev().filter_map(|id| saved.interrupted.remove(&id).map(|turn| (id, turn))).collect())

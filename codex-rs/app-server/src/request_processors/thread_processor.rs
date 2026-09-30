@@ -1,5 +1,6 @@
 #[path = "maintenance.rs"]
 mod maintenance;
+pub(crate) use maintenance::PausedThreads;
 
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;

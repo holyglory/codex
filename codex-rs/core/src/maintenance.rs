@@ -21,6 +21,7 @@ pub enum MaintenancePauseStatus {
 #[derive(Debug, Default)]
 pub(crate) struct MaintenanceGate {
     request: Mutex<Weak<PauseRequest>>,
+    pub(crate) requested: tokio::sync::Notify,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,7 @@ impl MaintenanceGate {
             released: CancellationToken::new(),
         });
         *current = Arc::downgrade(&request);
+        self.requested.notify_waiters();
         Some(MaintenancePause {
             request,
             status: receiver,
@@ -101,20 +103,22 @@ impl Drop for MaintenancePause {
     }
 }
 
+pub(crate) enum CheckpointWake { Released, RecordInput }
+
 impl PauseRequest {
     pub(crate) async fn checkpoint(
         &self,
         session: &crate::session::session::Session,
         cancellation: &CancellationToken,
-    ) {
+    ) -> CheckpointWake {
         if self.released.is_cancelled() || cancellation.is_cancelled() {
-            return;
+            return CheckpointWake::Released;
         }
         if session.services.code_mode_service.has_active_cells()
             || !session.services.unified_exec_manager.list_processes().await.is_empty()
         {
             self.status.send_replace(MaintenancePauseStatus::BackgroundWork);
-            return;
+            return CheckpointWake::Released;
         }
         // Async hooks must publish their outputs before the checkpoint is sealed.
         let hooks = session.services.hooks.load_full();
@@ -126,24 +130,35 @@ impl PauseRequest {
         // Unconsumed hook output is handled by the next normal step, not discarded.
         if !session.async_hook_results.is_empty() {
             self.status.send_replace(MaintenancePauseStatus::BackgroundWork);
-            return;
+            return CheckpointWake::Released;
         }
         // This call is made only between complete sampling/tool steps. A failed
         // flush is reported to the maintenance owner, never made a fatal turn error.
         if session.flush_rollout().await.is_err() {
             self.status
                 .send_replace(MaintenancePauseStatus::PersistenceFailed);
-            return;
+            return CheckpointWake::Released;
         }
         if self.released.is_cancelled() || cancellation.is_cancelled() {
-            return;
+            return CheckpointWake::Released;
+        }
+        let turn_state = session.active_turn.lock().await.as_ref().map(|turn| turn.turn_state.clone());
+        let (mut input, pending) = session.input_queue.subscribe_activity(turn_state.as_deref()).await;
+        if pending.is_some() {
+            self.status.send_replace(MaintenancePauseStatus::Requested);
+            return CheckpointWake::RecordInput;
         }
         self.status.send_replace(MaintenancePauseStatus::Paused);
         tokio::select! {
             _ = self.released.cancelled() => {}
             _ = cancellation.cancelled() => {}
+            _ = input.changed() => {
+                self.status.send_replace(MaintenancePauseStatus::Requested);
+                return CheckpointWake::RecordInput;
+            }
         }
         self.status.send_replace(MaintenancePauseStatus::Released);
+        CheckpointWake::Released
     }
 }
 
@@ -157,5 +172,60 @@ impl crate::CodexThread {
     ) -> codex_protocol::error::Result<crate::TurnInputSubmission> {
         self.session.services.agent_control.ensure_execution_capacity_for_turn_start(self).await?;
         self.io.submit_recover_turn(Default::default(), options, None, turn_id).await
+    }
+}
+
+
+/// Pending agent mail belongs to its conversation, never the usage/event log.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MaintenanceMail {
+    pub communication: codex_protocol::protocol::InterAgentCommunication,
+    pub options: crate::TurnStartOptions,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryIdentity {
+    #[serde(rename = "type")]
+    kind: String,
+    payload: HistoryPayloadIdentity,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryPayloadIdentity {
+    #[serde(default)]
+    id: Option<codex_protocol::ResponseItemId>,
+}
+
+impl crate::CodexThread {
+    pub async fn maintenance_mailbox(&self) -> Vec<MaintenanceMail> {
+        self.session.input_queue.maintenance_mailbox().await
+    }
+
+    /// Restore only mail not already recorded before a prior recovery attempt.
+    /// The streaming decoder ignores payload content, including compacted history.
+    pub async fn restore_maintenance_mailbox(&self, mail: Vec<MaintenanceMail>) -> std::io::Result<()> {
+        if mail.is_empty() { return Ok(()); }
+        let path = self.rollout_path().ok_or_else(|| std::io::Error::other("missing mailbox history"))?;
+        let path = path.clone();
+        let wanted: std::collections::BTreeSet<_> = mail.iter().map(|entry| entry.communication.id.clone()
+            .ok_or_else(|| std::io::Error::other("mailbox entry lacks its stable identity")))
+            .collect::<std::io::Result<_>>()?;
+        let seen = tokio::task::spawn_blocking(move || -> std::io::Result<std::collections::BTreeSet<_>> {
+            let input = std::io::BufReader::new(std::fs::File::open(path)?);
+            let mut seen = std::collections::BTreeSet::new();
+            for row in serde_json::Deserializer::from_reader(input).into_iter::<HistoryIdentity>() {
+                let row = row.map_err(std::io::Error::other)?;
+                if matches!(row.kind.as_str(), "response_item" | "inter_agent_communication")
+                    && let Some(id) = row.payload.id
+                    && wanted.contains(&id) { seen.insert(id); }
+                if seen.len() == wanted.len() { break; }
+            }
+            Ok(seen)
+        }).await.map_err(std::io::Error::other)??;
+        for entry in mail {
+            if entry.communication.id.as_ref().is_some_and(|id| seen.contains(id)) { continue; }
+            self.session.input_queue.enqueue_mailbox_communication(entry.communication, entry.options).await;
+        }
+        Ok(())
     }
 }

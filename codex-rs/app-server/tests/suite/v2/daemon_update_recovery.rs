@@ -942,6 +942,10 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
         let frame = timeout(DEFAULT_READ_TIMEOUT, maintenance.next()).await?.context("maintenance reply")??;
         let Message::Text(text) = frame else { anyhow::bail!("expected readiness receipt") };
         assert_eq!(serde_json::from_str::<MaintenanceResponse>(&text)?, MaintenanceResponse::Ready { operation_id: operation_id.into(), pid });
+        // Preparation keeps fresh sessions available; commit must also capture
+        // runtimes created after the initial readiness receipt.
+        let added = start_thread(&mut client, /*id*/ 20, json!({})).await?;
+        assert!(!added.thread.id.is_empty());
         let command = if commit { MaintenanceCommand::Commit { operation_id: operation_id.into(), pid } } else { MaintenanceCommand::Cancel };
         maintenance.send(Message::Text(serde_json::to_string(&command)?.into())).await?;
         if commit {

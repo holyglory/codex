@@ -24,6 +24,8 @@ pub struct MaintenanceSnapshot {
     pub operation_id: String,
     /// Roots have no parent; children are loaded after their immediate owner.
     pub parents: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub mailboxes: BTreeMap<String, Vec<codex_core::MaintenanceMail>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

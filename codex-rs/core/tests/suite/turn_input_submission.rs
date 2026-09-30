@@ -1113,6 +1113,18 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
     }).await?;
     assert_eq!(pause.status(), MaintenancePauseStatus::Paused);
     assert!(response.requests().is_empty());
+    assert_eq!(test.codex.start_or_steer_turn(user_message_request("queued during maintenance")).await?,
+        TurnInputSubmission::Steered { turn_id: turn_id.clone() });
+    // Wait for the receipt to be refreshed after the new input reaches history.
+    timeout(Duration::from_secs(10), async {
+        loop {
+            pause.changed().await;
+            if pause.status() == MaintenancePauseStatus::Paused {
+                let path = test.codex.rollout_path().expect("persistent thread");
+                if tokio::fs::read_to_string(path).await.unwrap().contains("queued during maintenance") { break; }
+            }
+        }
+    }).await?;
     let path = test.codex.rollout_path().expect("persistent thread");
     assert!(tokio::fs::read_to_string(path).await?.contains("preserve this input"));
     if stop {
@@ -1126,7 +1138,9 @@ async fn maintenance_pause_preserves_input_and_respects_stop(stop: bool) -> anyh
         let event = wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
         let EventMsg::TurnComplete(completed) = event else { unreachable!() };
         assert_eq!(completed.turn_id, turn_id);
-        assert!(response.single_request().body_contains_text("preserve this input"));
+        let request = response.single_request();
+        assert!(request.body_contains_text("preserve this input"));
+        assert!(request.body_contains_text("queued during maintenance"));
     }
     Ok(())
 }
