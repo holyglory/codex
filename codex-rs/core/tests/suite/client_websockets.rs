@@ -220,10 +220,10 @@ async fn responses_websocket_preserves_credit_usage_metadata() {
 async fn responses_websocket_preserves_raw_tool_metadata_for_openai_custom_endpoint() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
     .await;
     let harness = websocket_harness_for_codex_backend(&server).await;
     let mut call = ExecutedToolCall::new("test_tool".to_string(), json!({ "query": "keep" }));
@@ -240,7 +240,7 @@ async fn responses_websocket_preserves_raw_tool_metadata_for_openai_custom_endpo
     });
     output.append_executed_tool_calls(vec![call]);
     output.mark_tool_calls_complete();
-    let prompt = prompt_with_input(vec![output.clone()]);
+    let mut prompt = prompt_with_input(vec![output.clone()]);
     let expected = serde_json::to_value(&output).unwrap();
 
     let mut client_session = harness.client.new_session();
@@ -259,6 +259,26 @@ async fn responses_websocket_preserves_raw_tool_metadata_for_openai_custom_endpo
     assert_eq!(body["type"], "response.create");
     assert_eq!(body["input"], json!([expected]));
     assert_eq!(prompt.input, vec![output]);
+
+    let mut next_output = prompt.input[0].clone();
+    let ResponseItem::FunctionCallOutput { call_id, .. } = &mut next_output else {
+        panic!("function output fixture");
+    };
+    *call_id = Some("next-tool-call".to_string());
+    prompt.input.push(next_output.clone());
+    stream_until_complete_with_model_info(
+        &mut client_session,
+        &harness,
+        &prompt,
+        &harness.model_info,
+        "resp-2",
+    )
+    .await;
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let delta = connection[1].body_json();
+    assert_eq!(delta["previous_response_id"], "resp-1");
+    assert_eq!(delta["input"], json!([next_output]));
     server.shutdown().await;
 }
 

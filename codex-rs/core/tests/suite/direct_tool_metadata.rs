@@ -50,7 +50,7 @@ pub(super) fn tool_call_metadata(mut item: Value) -> Value {
 }
 
 #[test_case(false; "http")]
-#[test_case(true; "websocket")]
+#[test_case(true; "websocket_fallback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn message_budget_sheds_inventory_without_changing_tool_results_or_history(
     websocket: bool,
@@ -59,13 +59,13 @@ async fn message_budget_sheds_inventory_without_changing_tool_results_or_history
     let message_limit = 15 * 1024 * 1024;
     let call_count = 16;
     // Each argument fits 8 KiB and all observations fit Direct's 1 MiB budget.
-    // Only the final message budget should shed this inventory. HTTP includes
-    // the original call arguments; a WebSocket delta already has those upstream.
+    // Only the final message budget should shed this inventory. Indivisible
+    // instructions exceed the WebSocket batching target and must use HTTP.
     let arguments = json!({"plan": [{"step": "x".repeat(7 * 1024), "status": "in_progress"}]});
     assert!(arguments.to_string().len() < 8 * 1024);
     assert!(call_count * arguments.to_string().len() < 1024 * 1024);
     let next_arguments = json!({"plan": [{"step": "done", "status": "completed"}]});
-    let instruction_bytes = message_limit - if websocket { 64 * 1024 } else { 192 * 1024 };
+    let instruction_bytes = message_limit - 192 * 1024;
     let instructions = "padding ".repeat(instruction_bytes / 8);
     let mut builder = test_codex().with_config(move |config| {
         config.base_instructions = Some(instructions);
@@ -114,52 +114,71 @@ async fn message_budget_sheds_inventory_without_changing_tool_results_or_history
         ],
         vec![ev_response_created("resp-3"), ev_completed("resp-3")],
     ];
-    let http_server = if websocket {
-        None
-    } else {
-        Some(start_mock_server().await)
-    };
-    let http_mock = if let Some(server) = &http_server {
-        Some(mount_sse_sequence(server, events.iter().cloned().map(sse).collect()).await)
-    } else {
-        None
-    };
+    let http_server = start_mock_server().await;
+    let http_mock =
+        mount_sse_sequence(&http_server, events.iter().cloned().map(sse).collect()).await;
     let websocket_server = if websocket {
-        let mut responses = vec![vec![ev_response_created("warmup"), ev_completed("warmup")]];
-        responses.extend(events);
-        Some(start_websocket_server(vec![responses]).await)
+        Some(start_websocket_server(vec![vec![vec![]]]).await)
     } else {
         None
     };
-    let test = if let Some(server) = &websocket_server {
-        builder.build_with_websocket_server(server).await?
-    } else {
-        builder
-            .build_with_auto_env(http_server.as_ref().expect("HTTP test server"))
-            .await?
-    };
+    let mut proxy_tasks = tokio::task::JoinSet::new();
+    if let Some(server) = &websocket_server {
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+        let websocket_address = url::Url::parse(server.uri())?.socket_addrs(|| None)?[0];
+        let http_address = *http_server.address();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/v1", listener.local_addr()?);
+        // The same provider endpoint accepts both transports. No response is
+        // synthesized by this router; the real test servers own all replies.
+        proxy_tasks.spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    incoming = listener.accept() => {
+                        let (mut incoming, _) = incoming.expect("accept transport connection");
+                        connections.spawn(async move {
+                            let mut first_line = Vec::new();
+                            loop {
+                                let byte = incoming.read_u8().await.expect("request line");
+                                first_line.push(byte);
+                                assert!(first_line.len() <= 8192);
+                                if byte == b'\n' { break; }
+                            }
+                            let line = std::str::from_utf8(&first_line).expect("HTTP request line");
+                            let destination = if line.starts_with("GET ") && line.contains("/responses ") {
+                                websocket_address
+                            } else {
+                                http_address
+                            };
+                            let mut outgoing = tokio::net::TcpStream::connect(destination).await.expect("fixture backend");
+                            outgoing.write_all(&first_line).await.expect("forward request line");
+                            let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+                        });
+                    }
+                    Some(result) = connections.join_next(), if !connections.is_empty() => {
+                        result.expect("transport forwarding task");
+                    }
+                }
+            }
+        });
+        builder = builder.with_config(move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.supports_websockets = true;
+        });
+    }
+    let test = builder.build_with_auto_env(&http_server).await?;
     test.submit_turn("Update the plan, then finish it").await?;
-    let requests = if let Some(server) = &websocket_server {
-        let connection = server.single_connection();
-        assert_eq!(connection.len(), 4);
-        assert_eq!(connection[0].body_json()["generate"], false);
-        connection[1..]
-            .iter()
-            .map(core_test_support::responses::WebSocketRequest::body_json)
-            .collect::<Vec<_>>()
-    } else {
-        http_mock
-            .as_ref()
-            .expect("HTTP response sequence")
-            .requests()
-            .iter()
-            .map(core_test_support::responses::ResponsesRequest::body_json)
-            .collect()
-    };
+    let requests = http_mock
+        .requests()
+        .iter()
+        .map(core_test_support::responses::ResponsesRequest::body_json)
+        .collect::<Vec<_>>();
     assert_eq!(requests.len(), 3);
-    if websocket {
-        assert_eq!(requests[1]["previous_response_id"], "resp-1");
-        assert_eq!(requests[2]["previous_response_id"], "resp-2");
+    if let Some(server) = &websocket_server {
+        assert!(!server.handshakes().is_empty());
+        assert!(server.connections().iter().all(Vec::is_empty));
     }
     for (index, request) in requests.iter().enumerate() {
         assert_eq!(
@@ -208,7 +227,7 @@ async fn message_budget_sheds_inventory_without_changing_tool_results_or_history
         .iter()
         .filter(|item| item["type"] == "function_call")
         .collect::<Vec<_>>();
-    assert_eq!(wire_calls.len(), if websocket { 0 } else { call_count });
+    assert_eq!(wire_calls.len(), call_count);
     for (index, call) in wire_calls.iter().enumerate() {
         assert_eq!(call["call_id"], format!("plan-{index}"));
         assert_eq!(call["name"], "update_plan");
@@ -293,19 +312,15 @@ async fn message_budget_sheds_inventory_without_changing_tool_results_or_history
     }
     assert_eq!(matched_outputs, call_count);
     assert!(serde_json::to_vec(&unbounded)?.len() > message_limit);
-    if websocket {
-        let delta = requests[2]["input"]
-            .as_array()
-            .expect("WebSocket continuation input");
-        assert_eq!(delta.len(), 1);
-        assert_eq!(delta[0]["call_id"], "plan-next");
-        assert_eq!(delta[0]["output"], "Plan updated");
-        assert_eq!(
-            tool_call_metadata(delta[0].clone()),
-            tool_call_metadata((*outputs[call_count]).clone())
-        );
-    }
     test.codex.shutdown_and_wait().await?;
+    assert!(
+        proxy_tasks.try_join_next().is_none(),
+        "transport router exited early"
+    );
+    proxy_tasks.abort_all();
+    while let Some(result) = proxy_tasks.join_next().await {
+        assert!(result.unwrap_err().is_cancelled());
+    }
     if let Some(server) = websocket_server {
         server.shutdown().await;
     }
