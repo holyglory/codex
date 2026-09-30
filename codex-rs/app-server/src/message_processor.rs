@@ -1852,13 +1852,14 @@ impl MessageProcessor {
                         internal_error(format!("failed to preserve Stop during recovery: {error}"))
                     })?
                 {
-                    return Ok(Some(
+                    Ok(Some(
                         codex_app_server_protocol::TurnInterruptResponse {}.into(),
-                    ));
+                    ))
+                } else {
+                    self.turn_processor
+                        .turn_interrupt(&request_id, params)
+                        .await
                 }
-                self.turn_processor
-                    .turn_interrupt(&request_id, params)
-                    .await
             }
             ClientRequest::ThreadRealtimeStart { params, .. } => {
                 self.turn_processor

@@ -1190,7 +1190,8 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
     use codex_core::MaintenanceMail;
     use codex_protocol::ResponseItemId;
     let server = responses::start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    let mut builder = test_codex();
+    let test = builder.build_with_auto_env(&server).await?;
     test.codex.ensure_rollout_materialized().await;
     test.codex.flush_rollout().await?;
     let make_mail = |suffix: &str| {
@@ -1228,7 +1229,27 @@ async fn maintenance_mailbox_retains_pending_mail_and_deduplicates_recorded_ids(
     test.codex.restore_maintenance_mailbox(snapshot).await?;
     assert_eq!(
         test.codex.maintenance_mailbox().await,
+        vec![pending.clone(), quoted.clone()]
+    );
+    let resumed = builder.restart(&server, &test).await?;
+    assert_eq!(
+        resumed.codex.maintenance_mailbox().await,
         vec![pending, quoted]
     );
+    let response =
+        responses::mount_sse_once(&server, responses::sse_completed("delivered once")).await;
+    resumed
+        .codex
+        .start_or_steer_turn(user_message_request("consume the restored mailbox"))
+        .await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let request = response.single_request();
+    assert!(request.body_contains_text("result pending"));
+    assert!(request.body_contains_text("result quoted"));
+    let twice = builder.restart(&server, &resumed).await?;
+    assert!(twice.codex.maintenance_mailbox().await.is_empty());
     Ok(())
 }

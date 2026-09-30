@@ -924,5 +924,7 @@ async fn request(
     .context("timed out waiting for app-server response")?
 }
 
+#[path = "daemon_update_recovery/background_tests.rs"]
+mod background_tests;
 #[path = "daemon_update_recovery/maintenance_tests.rs"]
 mod maintenance_tests;

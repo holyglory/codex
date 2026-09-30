@@ -14,10 +14,12 @@ impl MessageProcessor {
         snapshot: codex_app_server_transport::daemon_recovery::RecoverySnapshot,
         admission: crate::turn_admission::MaintenanceAdmission,
     ) -> Result<(), &'static str> {
-        let continuations = self
-            .thread_processor
-            .restore_maintenance_threads(snapshot)
-            .await?;
+        let continuations = tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 60),
+            self.thread_processor.restore_maintenance_threads(snapshot),
+        )
+        .await
+        .map_err(|_| "restorationDeadline")??;
         drop(admission);
         self.thread_processor
             .resume_maintenance_turns(continuations, &self.turn_admission.resumptions)

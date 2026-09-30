@@ -112,7 +112,7 @@ impl TurnAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        !state.closed && !state.sealed && !state.restoring
+        !state.closed && !state.sealed
     }
 
     pub(crate) fn maintenance_requested(&self) -> bool {
@@ -141,7 +141,9 @@ impl TurnAdmission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .restoring;
-        let permit = if restoring { None } else { self.try_admit() };
+        // Loading seals admission. Once the complete graph is present, fresh
+        // sessions remain usable while recovered turns wait for normal capacity.
+        let permit = self.try_admit();
         permit.ok_or_else(|| {
             if restoring || self.maintenance_requested() {
                 codex_app_server_protocol::JSONRPCErrorError {

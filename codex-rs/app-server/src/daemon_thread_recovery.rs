@@ -34,20 +34,24 @@ pub(crate) async fn start_recovery(
     processor: std::sync::Arc<crate::message_processor::MessageProcessor>,
 ) -> io::Result<tokio::task::JoinHandle<()>> {
     let read_path = path.clone();
-    let candidates = tokio::task::spawn_blocking(move || {
-        let path = read_path;
-        let candidates = daemon_recovery::read_snapshot(&path)?;
-        if candidates.maintenance.is_some() {
-            return Ok(candidates);
-        }
-        // Valid legacy snapshots retain their established one-start lifetime.
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(candidates),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(candidates),
-            Err(err) => Err(err),
-        }
-    })
+    let candidates = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 5),
+        tokio::task::spawn_blocking(move || {
+            let path = read_path;
+            let candidates = daemon_recovery::read_snapshot(&path)?;
+            if candidates.maintenance.is_some() {
+                return Ok(candidates);
+            }
+            // Valid legacy snapshots retain their established one-start lifetime.
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(candidates),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(candidates),
+                Err(err) => Err(err),
+            }
+        }),
+    )
     .await
+    .map_err(|_| io::Error::other("recovery metadata deadline elapsed"))?
     .map_err(io::Error::other)??;
     if candidates.maintenance.is_some() {
         processor

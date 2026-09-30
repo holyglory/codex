@@ -255,7 +255,7 @@ async fn compatibility(binary: &Path) -> Result<Vec<u8>> {
 
 async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
     let identity = executable_identity(expected).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 75);
     loop {
         if let Ok(MaintenanceResponse::Status {
             executable,

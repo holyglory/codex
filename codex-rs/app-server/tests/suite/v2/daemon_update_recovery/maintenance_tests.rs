@@ -135,8 +135,24 @@ async fn maintenance_status(socket_path: &Path) -> Result<serde_json::Value> {
     Ok(serde_json::from_str(&text)?)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentTreeScenario {
+    Continue,
+    StopChild,
+    OwnerDisconnect,
+    StopDuringRestore,
+}
+
+#[cfg(unix)]
+#[test_case::test_case(AgentTreeScenario::Continue; "continue_both")]
+#[test_case::test_case(AgentTreeScenario::StopChild; "stop_child_after_ready")]
+#[test_case::test_case(AgentTreeScenario::OwnerDisconnect; "owner_exits_before_ready")]
+#[test_case::test_case(AgentTreeScenario::StopDuringRestore; "stop_while_restoration_waits")]
 #[tokio::test]
-async fn maintenance_restores_active_parent_and_child_without_replaying_tools() -> Result<()> {
+async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
+    scenario: AgentTreeScenario,
+) -> Result<()> {
+    let stop_child = scenario == AgentTreeScenario::StopChild;
     use codex_app_server_transport::maintenance::MaintenanceCommand;
     use codex_app_server_transport::maintenance::MaintenanceResponse;
     use core_test_support::responses;
@@ -145,12 +161,13 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
     let (release_b, gate_b) = oneshot::channel();
     let (release_c, gate_c) = oneshot::channel();
     let (release_d, gate_d) = oneshot::channel();
+    let effects = home.path().join("effects.txt");
     let tool_step = |call: &str, gate| {
         StreamingSseChunk {
         gate: Some(gate),
         body: responses::sse(vec![
             responses::ev_response_created(call),
-            responses::ev_function_call(call, "exec_command", &json!({"cmd":"echo checkpoint-result","yield_time_ms":5000,"max_output_tokens":200}).to_string()),
+            responses::ev_function_call(call, "exec_command", &json!({"cmd":format!("echo {call} >> '{}'; echo checkpoint-result", effects.display()),"yield_time_ms":5000,"max_output_tokens":200}).to_string()),
             responses::ev_completed(call),
         ]),
     }
@@ -169,11 +186,22 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
     ]).await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let mut config = std::fs::read_to_string(home.path().join("config.toml"))?;
+    config = config.replace(
+        "sandbox_mode = \"read-only\"",
+        "sandbox_mode = \"danger-full-access\"",
+    );
     config.push_str("\n[features]\nmulti_agent = true\ncode_mode = false\ncode_mode_only = false\n[features.multi_agent_v2]\nenabled = true\n");
     std::fs::write(home.path().join("config.toml"), config)?;
     let socket_path = home.path().join("control/server.sock");
     let mut server = spawn_server(home.path(), &socket_path)?;
-    let mut client = connect_default_daemon_client(&socket_path).await?;
+    let mut client = connect_daemon_client(
+        &socket_path,
+        InitializeCapabilities {
+            experimental_api: true,
+            ..Default::default()
+        },
+    )
+    .await?;
     let parent = start_thread(&mut client, /*id*/ 2, json!({})).await?;
     start_turn(&mut client, /*id*/ 3, &parent.thread.id).await?;
     wait_for_requests(&mock, /*count*/ 3).await?;
@@ -196,8 +224,43 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
         Ok::<(), anyhow::Error>(())
     })
     .await??;
+    // Both model responses remain held: preparation must not block unrelated
+    // fresh sessions or accepted steering while participants reach their boundary.
+    let added = start_thread(&mut client, /*id*/ 30, json!({})).await?;
+    let read = request(
+        &mut client,
+        /*id*/ 31,
+        "thread/read",
+        json!({"threadId":parent.thread.id,"includeTurns":true}),
+    )
+    .await?;
+    let parent_turn = read["thread"]["turns"][0]["id"]
+        .as_str()
+        .context("parent turn")?
+        .to_string();
+    request(&mut client, /*id*/ 32, "turn/steer", json!({"threadId":parent.thread.id,"expectedTurnId":parent_turn,"input":[{"type":"text","text":"preserved steering during preparation"}]})).await?;
+    let settings = request(&mut client, /*id*/ 33, "turn/settings/update", json!({"threadId":parent.thread.id,"turnId":parent_turn,"model":"gpt-5.2","effort":"high","summary":"detailed"})).await?;
+    assert_eq!(settings["status"], "applied");
+    assert_eq!(mock.requests().await.len(), 3);
+    if scenario == AgentTreeScenario::OwnerDisconnect {
+        control.close(None).await?;
+    }
     release_a.send(()).unwrap();
     release_b.send(()).unwrap();
+    if scenario == AgentTreeScenario::OwnerDisconnect {
+        wait_for_requests(&mock, /*count*/ 5).await?;
+        let status = maintenance_status(&socket_path).await?;
+        assert_eq!(status["accepting"], true);
+        assert_eq!(status["preparing"], false);
+        start_thread(&mut client, /*id*/ 40, json!({})).await?;
+        assert!(server.try_wait()?.is_none());
+        assert!(!daemon_recovery_file_path(home.path()).exists());
+        release_c.send(()).unwrap();
+        release_d.send(()).unwrap();
+        request_shutdown(&server, &socket_path).await?;
+        wait_success(&mut server).await?;
+        return Ok(());
+    }
     let frame = timeout(Duration::from_secs(30), control.next())
         .await?
         .context("prepare reply")??;
@@ -212,6 +275,35 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
         }
     );
     assert_eq!(mock.requests().await.len(), 3);
+    let loaded = request(&mut client, /*id*/ 34, "thread/loaded/list", json!({})).await?;
+    let child_id = loaded["data"]
+        .as_array()
+        .context("loaded agent tree")?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|id| *id != parent.thread.id && *id != added.thread.id)
+        .context("child")?
+        .to_string();
+    let child_before = request(
+        &mut client,
+        /*id*/ 35,
+        "thread/read",
+        json!({"threadId":child_id,"includeTurns":true}),
+    )
+    .await?;
+    let child_turn = child_before["thread"]["turns"][0]["id"]
+        .as_str()
+        .context("child turn")?
+        .to_string();
+    if stop_child {
+        request(
+            &mut client,
+            /*id*/ 36,
+            "turn/interrupt",
+            json!({"threadId":child_id,"turnId":child_turn}),
+        )
+        .await?;
+    }
     control
         .send(Message::Text(
             serde_json::to_string(&MaintenanceCommand::Commit {
@@ -223,7 +315,25 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
         .await?;
     wait_success(&mut server).await?;
     let saved = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
-    assert_eq!(saved.interrupted.len(), 2);
+    assert_eq!(saved.interrupted.len(), if stop_child { 1 } else { 2 });
+    assert!(saved.loaded.contains(&added.thread.id));
+    let retained = saved.maintenance.as_ref().context("maintenance context")?;
+    assert_eq!(
+        retained.turn_contexts[&parent.thread.id]
+            .collaboration_mode
+            .settings
+            .model,
+        "gpt-5.2"
+    );
+    if !stop_child {
+        assert_eq!(
+            retained.turn_contexts[&child_id]
+                .options
+                .parent_turn_id
+                .as_deref(),
+            Some(parent_turn.as_str())
+        );
+    }
     let parents = &saved.maintenance.as_ref().context("tree metadata")?.parents;
     assert_eq!(parents.get(&parent.thread.id), Some(&None));
     assert_eq!(
@@ -233,9 +343,69 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
             .count(),
         1
     );
+    let hook_entered = home.path().join("resume-hook-entered");
+    let release_hook = home.path().join("release-resume-hook");
+    if scenario == AgentTreeScenario::StopDuringRestore {
+        let command = format!(
+            "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done",
+            hook_entered.display(),
+            release_hook.display()
+        );
+        std::fs::write(home.path().join("hooks.json"), json!({"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":command}]}]}}).to_string())?;
+    }
     let mut successor = spawn_server(home.path(), &socket_path)?;
-    wait_for_requests(&mock, /*count*/ 5).await?;
+    if scenario == AgentTreeScenario::StopDuringRestore {
+        let mut client = connect_default_daemon_client(&socket_path).await?;
+        timeout(DEFAULT_READ_TIMEOUT, async {
+            while !hook_entered.exists() {
+                sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        })
+        .await?;
+        request(
+            &mut client,
+            /*id*/ 41,
+            "turn/interrupt",
+            json!({"threadId":parent.thread.id,"turnId":parent_turn}),
+        )
+        .await?;
+        let stopped = daemon_recovery::read_snapshot(&daemon_recovery_file_path(home.path()))?;
+        assert!(!stopped.interrupted.contains_key(&parent.thread.id));
+        std::fs::write(&release_hook, "continue")?;
+        wait_for_requests(&mock, /*count*/ 4).await?;
+        release_c.send(()).unwrap();
+        timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                let read = request(
+                    &mut client,
+                    /*id*/ 42,
+                    "thread/read",
+                    json!({"threadId":parent.thread.id,"includeTurns":true}),
+                )
+                .await?;
+                if read["thread"]["turns"][0]["status"] == "interrupted" {
+                    break;
+                }
+                sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        request_shutdown(&successor, &socket_path).await?;
+        wait_success(&mut successor).await?;
+        assert_eq!(mock.requests().await.len(), 4);
+        return Ok(());
+    }
+    let expected_requests = if stop_child { 4 } else { 5 };
+    wait_for_requests(&mock, expected_requests).await?;
     let mut client = connect_default_daemon_client(&socket_path).await?;
+    let loaded = request(&mut client, /*id*/ 37, "thread/loaded/list", json!({})).await?;
+    assert!(
+        loaded["data"]
+            .as_array()
+            .context("restored census")?
+            .contains(&json!(added.thread.id))
+    );
     for (id, interrupted) in &saved.interrupted {
         let read = request(
             &mut client,
@@ -274,9 +444,31 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
         );
         restored_calls.insert(outputs[0]["call_id"].as_str().unwrap().to_string());
     }
-    assert_eq!(
-        restored_calls,
-        ["checkpoint-a".to_string(), "checkpoint-b".to_string()].into()
+    if stop_child {
+        assert_eq!(restored_calls.len(), 1);
+    } else {
+        assert_eq!(
+            restored_calls,
+            ["checkpoint-a".to_string(), "checkpoint-b".to_string()].into()
+        );
+    }
+    let parent_request = requests[3..]
+        .iter()
+        .map(|body| serde_json::from_slice::<serde_json::Value>(body).unwrap())
+        .find(|body| {
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["call_id"] == "spawn-worker")
+        })
+        .context("parent continuation")?;
+    assert_eq!(parent_request["model"], "gpt-5.2");
+    assert_eq!(parent_request["reasoning"]["effort"], "high");
+    assert!(
+        parent_request
+            .to_string()
+            .contains("preserved steering during preparation")
     );
     let first: serde_json::Value = serde_json::from_slice(&requests[3])?;
     let parent_first = first["input"]
@@ -307,10 +499,27 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools() 
         Ok::<(), anyhow::Error>(())
     })
     .await??;
-    release_child.send(()).unwrap();
+    if stop_child {
+        let child = request(
+            &mut client,
+            /*id*/ 38,
+            "thread/read",
+            json!({"threadId":child_id,"includeTurns":true}),
+        )
+        .await?;
+        assert_eq!(child["thread"]["turns"][0]["status"], "interrupted");
+    } else {
+        release_child.send(()).unwrap();
+    }
+    let mut observed_effects: Vec<_> = std::fs::read_to_string(&effects)?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    observed_effects.sort();
+    assert_eq!(observed_effects, vec!["checkpoint-a", "checkpoint-b"]);
     request_shutdown(&successor, &socket_path).await?;
     wait_success(&mut successor).await?;
-    assert_eq!(mock.requests().await.len(), 5);
+    assert_eq!(mock.requests().await.len(), expected_requests);
     Ok(())
 }
 
