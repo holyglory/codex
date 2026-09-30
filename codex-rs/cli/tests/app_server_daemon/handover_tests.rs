@@ -105,8 +105,8 @@ struct DaemonProxy {
 impl DaemonProxy {
     fn connect(daemon: &TestDaemon) -> Result<Self> {
         use std::io::Write;
-        let socket =
-            codex_app_server_transport::app_server_control_socket_path(daemon.home.path())?;
+        let status = daemon.lifecycle("status")?;
+        let socket = PathBuf::from(status["socketPath"].as_str().context("daemon socket")?);
         let mut child = daemon
             .command()
             .args(["app-server", "proxy", "--sock"])
