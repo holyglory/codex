@@ -26,8 +26,11 @@ pub(super) struct PreparedContinuation {
 }
 
 impl ThreadRequestProcessor {
-    pub(super) async fn prepare_daemon_continuation(&self, thread_id: &str, saved: InterruptedTurn)
-        -> Result<Option<PreparedContinuation>, &'static str> {
+    pub(super) async fn prepare_daemon_continuation(
+        &self,
+        thread_id: &str,
+        saved: InterruptedTurn,
+    ) -> Result<Option<PreparedContinuation>, &'static str> {
         let Ok(thread_id) = ThreadId::from_string(thread_id) else {
             return Err("invalidThread");
         };
@@ -100,17 +103,33 @@ impl ThreadRequestProcessor {
             root_turn_id: previous_context.root_turn_id.clone(),
             ..Default::default()
         };
-        Ok(Some(PreparedContinuation { thread, turn_id: saved.turn_id, options }))
+        Ok(Some(PreparedContinuation {
+            thread,
+            turn_id: saved.turn_id,
+            options,
+        }))
     }
 
-    pub(crate) async fn continue_daemon_turn(&self, thread_id: &str, saved: InterruptedTurn) -> Result<(), &'static str> {
-        let Some(PreparedContinuation { thread, turn_id, options }) = self.prepare_daemon_continuation(thread_id, saved).await? else { return Ok(()); };
+    pub(crate) async fn continue_daemon_turn(
+        &self,
+        thread_id: &str,
+        saved: InterruptedTurn,
+    ) -> Result<(), &'static str> {
+        let Some(PreparedContinuation {
+            thread,
+            turn_id,
+            options,
+        }) = self.prepare_daemon_continuation(thread_id, saved).await?
+        else {
+            return Ok(());
+        };
         let thread_id = ThreadId::from_string(thread_id).map_err(|_| "invalidThread")?;
         let continuation = ContextualUserFragment::into(InternalModelContextFragment::new(
             InternalContextSource::from_static("daemon_recovery"),
             "The server restarted and interrupted the previous turn. Continue the unfinished work from the saved conversation. Check the current state before repeating actions that may already have completed.",
         ));
-        let request = TurnInputRequest::new(TurnInput::ResponseItem(continuation)).on_start(options);
+        let request =
+            TurnInputRequest::new(TurnInput::ResponseItem(continuation)).on_start(options);
         // Close the old turn in persisted history before exposing a new running turn.
         if let Err(err) = thread
             .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::TurnAborted(
@@ -139,7 +158,12 @@ impl ThreadRequestProcessor {
             }
             Ok(TurnInputSubmission::NotSubmitted { reason }) => {
                 tracing::debug!(%thread_id, ?reason, "recovery continuation was not started");
-                if !matches!(reason, codex_core::NotSubmittedReason::Superseded | codex_core::NotSubmittedReason::NotIdle | codex_core::NotSubmittedReason::PendingTriggerTurn) {
+                if !matches!(
+                    reason,
+                    codex_core::NotSubmittedReason::Superseded
+                        | codex_core::NotSubmittedReason::NotIdle
+                        | codex_core::NotSubmittedReason::PendingTriggerTurn
+                ) {
                     return Err("continuationNotStarted");
                 }
             }

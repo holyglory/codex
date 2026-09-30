@@ -836,7 +836,6 @@ enum AppServerDaemonSubcommand {
     #[clap(hide = true)]
     HandoverCompatibility,
 
-
     /// Update the daemon package (may interrupt running work).
     Update {
         /// Copy and pin this CLI package.
@@ -1502,18 +1501,27 @@ async fn cli_main(
                         println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::Handover { status, cancel } => {
-                        let result = if status { codex_app_server_daemon::handover_status().await? }
-                            else if cancel { codex_app_server_daemon::cancel_handover().await? }
-                            else { codex_app_server_daemon::request_handover().await? };
+                        let result = if status {
+                            codex_app_server_daemon::handover_status().await?
+                        } else if cancel {
+                            codex_app_server_daemon::cancel_handover().await?
+                        } else {
+                            codex_app_server_daemon::request_handover().await?
+                        };
                         println!("{}", serde_json::to_string(&result)?);
                     }
                     AppServerDaemonSubcommand::HandoverWorker => {
                         codex_app_server_daemon::run_handover().await?;
                     }
                     AppServerDaemonSubcommand::HandoverCompatibility => {
-                        println!("{}", serde_json::to_string(&(1_u32,
-                            codex_state::maintenance_schema_signature(),
-                            codex_usage::maintenance_schema_signature()))?);
+                        println!(
+                            "{}",
+                            serde_json::to_string(&(
+                                1_u32,
+                                codex_state::maintenance_schema_signature(),
+                                codex_usage::maintenance_schema_signature()
+                            ))?
+                        );
                     }
                     AppServerDaemonSubcommand::Restart => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Restart).await?;

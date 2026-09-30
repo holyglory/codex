@@ -1,7 +1,10 @@
 //! Managed app-server lifecycle, serialized across CLI invocations and the updater.
 
 mod handover;
-pub use handover::{request_handover, handover_status, cancel_handover, run_handover};
+pub use handover::cancel_handover;
+pub use handover::handover_status;
+pub use handover::request_handover;
+pub use handover::run_handover;
 
 mod backend;
 #[cfg(windows)]

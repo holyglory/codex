@@ -261,7 +261,12 @@ impl CodexThread {
 
     /// Pending turn input must reach its persisted checkpoint before commit.
     pub async fn maintenance_has_pending_input(&self) -> bool {
-        !self.maintenance_is_idle().await && self.session.input_queue.has_pending_input(&self.session.active_turn).await
+        !self.maintenance_is_idle().await
+            && self
+                .session
+                .input_queue
+                .has_pending_input(&self.session.active_turn)
+                .await
     }
 
     /// Checks process-local work that cannot be transferred in a maintenance checkpoint.

@@ -11,7 +11,9 @@ pub trait TurnStartAdmission: std::fmt::Debug + Send + Sync {
     fn admit_turn_start(&self) -> Option<Box<dyn Send>>;
 
     /// New turns may record input while maintenance preparation holds sampling.
-    fn maintenance_requested(&self) -> bool { false }
+    fn maintenance_requested(&self) -> bool {
+        false
+    }
 
     /// Resolves when the current maintenance preparation ends. Implementations
     /// must subscribe before testing their state to avoid losing a release.

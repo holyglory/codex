@@ -430,7 +430,10 @@ async fn update_once(
                 }
             }
             RestartIfRunningOutcome::Scheduled => {
-                return Ok((UpdateLoopControl::Continue, Some(RestartIfRunningOutcome::Scheduled)));
+                return Ok((
+                    UpdateLoopControl::Continue,
+                    Some(RestartIfRunningOutcome::Scheduled),
+                ));
             }
             RestartIfRunningOutcome::Restarted => {
                 return Ok((

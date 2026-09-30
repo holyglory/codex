@@ -194,11 +194,15 @@ impl<C: Sync> ExtensionRegistry<C> {
     }
 
     pub fn maintenance_requested(&self) -> bool {
-        self.turn_start_admission.as_ref().is_some_and(|gate| gate.maintenance_requested())
+        self.turn_start_admission
+            .as_ref()
+            .is_some_and(|gate| gate.maintenance_requested())
     }
 
     pub async fn maintenance_released(&self) {
-        if let Some(gate) = &self.turn_start_admission { gate.maintenance_released().await; }
+        if let Some(gate) = &self.turn_start_admission {
+            gate.maintenance_released().await;
+        }
     }
 
     /// Returns the host event sink retained by this registry.

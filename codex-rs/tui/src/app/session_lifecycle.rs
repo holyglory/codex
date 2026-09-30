@@ -928,11 +928,19 @@ impl App {
                 }
                 self.chat_widget.maybe_send_next_queued_input();
             }
-            Err(err) if err.downcast_ref::<codex_app_server_client::TypedRequestError>()
-                .is_some_and(codex_app_server_client::TypedRequestError::is_server_switching) => {
+            Err(err)
+                if err
+                    .downcast_ref::<codex_app_server_client::TypedRequestError>()
+                    .is_some_and(
+                        codex_app_server_client::TypedRequestError::is_server_switching,
+                    ) =>
+            {
                 if self.begin_reconnect() {
-                    self.reconnect.presentation = super::reconnect::ReconnectPresentation::RejectedFreshStart;
-                } else { return Err(err); }
+                    self.reconnect.presentation =
+                        super::reconnect::ReconnectPresentation::RejectedFreshStart;
+                } else {
+                    return Err(err);
+                }
             }
             Err(err) if self.recover_transport_error(&err) => {}
             Err(err) => {

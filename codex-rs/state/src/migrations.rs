@@ -121,14 +121,26 @@ WHERE version = ?
 #[path = "migrations_tests.rs"]
 mod tests;
 
-
 /// Embedded migration identities used to reject unsafe automatic binary rollback.
 /// This reads code metadata only and never opens or migrates a database.
 pub fn maintenance_schema_signature() -> Vec<(String, i64, Vec<u8>)> {
-    [("state", &STATE_MIGRATOR), ("logs", &LOGS_MIGRATOR),
-     ("goals", &GOALS_MIGRATOR), ("memories", &MEMORIES_MIGRATOR),
-     ("queue", &QUEUE_MIGRATOR), ("history", &THREAD_HISTORY_MIGRATOR)]
-        .into_iter().flat_map(|(name, migrator)| migrator.iter()
-            .map(move |migration| (name.to_string(), migration.version, migration.checksum.to_vec())))
-        .collect()
+    [
+        ("state", &STATE_MIGRATOR),
+        ("logs", &LOGS_MIGRATOR),
+        ("goals", &GOALS_MIGRATOR),
+        ("memories", &MEMORIES_MIGRATOR),
+        ("queue", &QUEUE_MIGRATOR),
+        ("history", &THREAD_HISTORY_MIGRATOR),
+    ]
+    .into_iter()
+    .flat_map(|(name, migrator)| {
+        migrator.iter().map(move |migration| {
+            (
+                name.to_string(),
+                migration.version,
+                migration.checksum.to_vec(),
+            )
+        })
+    })
+    .collect()
 }

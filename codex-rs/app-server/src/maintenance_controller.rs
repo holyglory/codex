@@ -1,6 +1,8 @@
 //! Owns a reversible maintenance lease until checkpoint commit.
 use super::MessageProcessor;
-use codex_app_server_transport::maintenance::{MaintenanceCommand, MaintenanceConnection, MaintenanceResponse};
+use codex_app_server_transport::maintenance::MaintenanceCommand;
+use codex_app_server_transport::maintenance::MaintenanceConnection;
+use codex_app_server_transport::maintenance::MaintenanceResponse;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,9 +14,14 @@ impl MessageProcessor {
         snapshot: codex_app_server_transport::daemon_recovery::RecoverySnapshot,
         admission: crate::turn_admission::MaintenanceAdmission,
     ) -> Result<(), &'static str> {
-        let continuations = self.thread_processor.restore_maintenance_threads(snapshot).await?;
+        let continuations = self
+            .thread_processor
+            .restore_maintenance_threads(snapshot)
+            .await?;
         drop(admission);
-        self.thread_processor.resume_maintenance_turns(continuations).await
+        self.thread_processor
+            .resume_maintenance_turns(continuations)
+            .await
     }
 
     pub(crate) async fn maintenance_connection(

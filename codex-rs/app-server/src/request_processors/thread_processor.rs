@@ -3653,7 +3653,8 @@ impl ThreadRequestProcessor {
                 if self.thread_manager.get_thread(thread_id).await.is_ok() {
                     if let Some(saved) = saved {
                         self.continue_daemon_turn(&params.thread_id, saved.clone())
-                            .await.map_err(internal_error)?;
+                            .await
+                            .map_err(internal_error)?;
                     }
                     return Ok(ControlFlow::Break(()));
                 }
@@ -3961,7 +3962,8 @@ impl ThreadRequestProcessor {
                         .await;
                     if let ThreadResumeTarget::DaemonRecovery(Some(saved)) = target {
                         self.continue_daemon_turn(&thread_id.to_string(), saved.clone())
-                            .await.map_err(internal_error)?;
+                            .await
+                            .map_err(internal_error)?;
                     }
                     let state = self.thread_state_manager.thread_state(thread_id).await;
                     self.ensure_listener_task_running(thread_id, Arc::clone(&codex_thread), state)

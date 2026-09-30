@@ -6,7 +6,11 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum MaintenanceCommand {
     Prepare { operation_id: String, pid: u32 },
     Commit { operation_id: String, pid: u32 },
@@ -15,12 +19,29 @@ pub enum MaintenanceCommand {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum MaintenanceResponse {
-    Ready { operation_id: String, pid: u32 },
-    Committed { operation_id: String, pid: u32 },
-    Failed { reason: String },
-    Status { pid: u32, accepting: bool, restored: bool, executable: std::path::PathBuf },
+    Ready {
+        operation_id: String,
+        pid: u32,
+    },
+    Committed {
+        operation_id: String,
+        pid: u32,
+    },
+    Failed {
+        reason: String,
+    },
+    Status {
+        pid: u32,
+        accepting: bool,
+        restored: bool,
+        executable: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug)]

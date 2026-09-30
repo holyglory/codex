@@ -474,16 +474,25 @@ pub(crate) async fn run_turn(
 
         // Input and turn-start injections are recorded before recovery can continue this turn.
         turn_context.extension_data.insert(RecordedTurnInput);
-        if let Some(gate) = sess.services.thread_extension_data.get::<crate::maintenance::MaintenanceGate>() {
+        if let Some(gate) = sess
+            .services
+            .thread_extension_data
+            .get::<crate::maintenance::MaintenanceGate>()
+        {
             let requested = gate.requested.notified();
             tokio::pin!(requested);
             requested.as_mut().enable();
             if let Some(pause) = gate.pending() {
-                if matches!(pause.checkpoint(&sess, &cancellation_token).await, crate::maintenance::CheckpointWake::RecordInput) {
+                if matches!(
+                    pause.checkpoint(&sess, &cancellation_token).await,
+                    crate::maintenance::CheckpointWake::RecordInput
+                ) {
                     can_drain_pending_input = true;
                     continue;
                 }
-                if cancellation_token.is_cancelled() { return Err(CodexErr::TurnAborted); }
+                if cancellation_token.is_cancelled() {
+                    return Err(CodexErr::TurnAborted);
+                }
             } else if sess.services.extensions.maintenance_requested() {
                 tokio::select! {
                     _ = &mut requested => {}

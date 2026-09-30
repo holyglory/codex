@@ -388,7 +388,11 @@ impl PidBackend {
             PidCommandKind::AppServer {
                 remote_control_enabled: false,
             } => vec!["app-server".into(), "--listen".into(), "unix://".into()],
-            PidCommandKind::Handover => vec!["app-server".into(), "daemon".into(), "handover-worker".into()],
+            PidCommandKind::Handover => vec![
+                "app-server".into(),
+                "daemon".into(),
+                "handover-worker".into(),
+            ],
             PidCommandKind::UpdateLoop { restore_release } => {
                 let mut args = vec![
                     "app-server".into(),
@@ -418,7 +422,8 @@ impl PidBackend {
             PidCommandKind::AppServer {
                 remote_control_enabled: true,
             }
-            | PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => None,
+            | PidCommandKind::UpdateLoop { .. }
+            | PidCommandKind::Handover => None,
         }
     }
 
@@ -426,7 +431,9 @@ impl PidBackend {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => terminate_process(pid),
             #[cfg(unix)]
-            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => terminate_process_group(pid),
+            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
+                terminate_process_group(pid)
+            }
             #[cfg(not(unix))]
             PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => terminate_process(pid),
         }
@@ -436,7 +443,9 @@ impl PidBackend {
     fn force_terminate_process(&self, pid: u32) -> Result<()> {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => force_terminate_process(pid),
-            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => force_terminate_process_group(pid),
+            PidCommandKind::UpdateLoop { .. } | PidCommandKind::Handover => {
+                force_terminate_process_group(pid)
+            }
         }
     }
 

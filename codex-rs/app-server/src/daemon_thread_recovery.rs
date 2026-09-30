@@ -37,7 +37,10 @@ pub(crate) async fn start_recovery(
     let candidates = tokio::task::spawn_blocking(move || {
         let path = read_path;
         let candidates = daemon_recovery::read_snapshot(&path);
-        if candidates.as_ref().is_ok_and(|saved| saved.maintenance.is_some()) {
+        if candidates
+            .as_ref()
+            .is_ok_and(|saved| saved.maintenance.is_some())
+        {
             return candidates;
         }
         // Even malformed or temporarily unreadable snapshots belong to this generation only.
@@ -50,7 +53,9 @@ pub(crate) async fn start_recovery(
     .await
     .map_err(io::Error::other)??;
     if candidates.maintenance.is_some() {
-        let admission = processor.turn_admission.begin_maintenance()
+        let admission = processor
+            .turn_admission
+            .begin_maintenance()
             .ok_or_else(|| io::Error::other("maintenance restoration is already active"))?;
         processor.turn_admission.seal_maintenance();
         processor.turn_admission.restoration_started();

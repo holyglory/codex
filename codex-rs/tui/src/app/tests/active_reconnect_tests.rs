@@ -13,7 +13,14 @@ use super::disconnect::serve_reconnect_requests;
 
 #[tokio::test]
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
-    for (recovered_queue, edit_offline, resume_error_code, deferred_notice, notice_enabled, maintenance) in [
+    for (
+        recovered_queue,
+        edit_offline,
+        resume_error_code,
+        deferred_notice,
+        notice_enabled,
+        maintenance,
+    ) in [
         (true, false, -32603, false, false, false),
         (true, false, -32603, false, true, false),
         (false, false, -32603, false, false, false),

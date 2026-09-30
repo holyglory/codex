@@ -1710,30 +1710,41 @@ async fn windows_sandbox_config_refresh_uses_connected_server() -> Result<()> {
     Ok(())
 }
 
-
 #[tokio::test]
 async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     app.pending_startup_thread_start = true;
     app.app_server_target = AppServerTarget::Remote {
         endpoint: crate::RemoteAppServerEndpoint::WebSocket {
-            websocket_url: "ws://127.0.0.1:1".into(), auth_token: None,
+            websocket_url: "ws://127.0.0.1:1".into(),
+            auth_token: None,
         },
     };
-    app.chat_widget.set_composer_text("preserve my request".into(), Vec::new(), Vec::new());
-    let mut server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    app.handle_startup_thread_started(&mut server, Err(
-        codex_app_server_client::TypedRequestError::Server {
+    app.chat_widget
+        .set_composer_text("preserve my request".into(), Vec::new(), Vec::new());
+    let mut server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.handle_startup_thread_started(
+        &mut server,
+        Err(codex_app_server_client::TypedRequestError::Server {
             method: "thread/start".into(),
             source: codex_app_server_protocol::JSONRPCErrorError {
                 code: -32600,
                 message: "Server is preparing an upgrade".into(),
                 data: Some(serde_json::json!({"reason":"serverSwitching"})),
             },
-        }.into(),
-    )).await?;
+        }
+        .into()),
+    )
+    .await?;
     assert!(app.reconnect.offline);
-    assert!(app.reconnect.presentation == super::super::reconnect::ReconnectPresentation::RejectedFreshStart);
-    insta::assert_snapshot!("maintenance_rejected_start", render_bottom_popup(&app.chat_widget, 80));
+    assert!(
+        app.reconnect.presentation
+            == super::super::reconnect::ReconnectPresentation::RejectedFreshStart
+    );
+    insta::assert_snapshot!(
+        "maintenance_rejected_start",
+        render_bottom_popup(&app.chat_widget, 80)
+    );
     Ok(())
 }

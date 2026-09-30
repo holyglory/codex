@@ -78,7 +78,9 @@ pub(super) async fn reconnect(
                 {
                     Ok(thread) => Some(thread),
                     Err(error)
-                        if error.downcast_ref::<TypedRequestError>().is_some_and(TypedRequestError::is_server_switching) =>
+                        if error
+                            .downcast_ref::<TypedRequestError>()
+                            .is_some_and(TypedRequestError::is_server_switching) =>
                     {
                         return Err(error);
                     }
@@ -184,8 +186,11 @@ impl App {
     }
 
     pub(super) fn recover_transport_error(&mut self, error: &color_eyre::Report) -> bool {
-        let disconnected = error.downcast_ref::<TypedRequestError>().is_some_and(|error|
-            matches!(error, TypedRequestError::Transport { .. }) || error.is_server_switching());
+        let disconnected = error
+            .downcast_ref::<TypedRequestError>()
+            .is_some_and(|error| {
+                matches!(error, TypedRequestError::Transport { .. }) || error.is_server_switching()
+            });
         disconnected && self.begin_reconnect()
     }
 
@@ -401,7 +406,9 @@ impl App {
             if self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart {
                 displayed = Some(id);
                 self.primary_thread_id = Some(id);
-                if let Some(input) = input.as_mut() { input.recovered_queue = false; }
+                if let Some(input) = input.as_mut() {
+                    input.recovered_queue = false;
+                }
             }
             if !pending_displayed_profile
                 && let Some(channel) = self.thread_event_channels.get(&id)
@@ -440,7 +447,11 @@ impl App {
             self.active_thread_rx = Some(receiver);
             self.recap.seed_from_turns(&snapshot.turns, Instant::now());
             self.render_thread_snapshot(
-                tui, app_server, id, snapshot, self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart,
+                tui,
+                app_server,
+                id,
+                snapshot,
+                self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart,
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;
@@ -506,7 +517,7 @@ impl App {
         }
         self.feedback_audience = bootstrap.feedback_audience;
         if self.reconnect.presentation != ReconnectPresentation::RejectedFreshStart {
-        self.chat_widget.add_info_message(
+            self.chat_widget.add_info_message(
             "Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.".into(), /*hint*/ None,
         );
         }

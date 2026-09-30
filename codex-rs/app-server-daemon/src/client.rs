@@ -64,7 +64,10 @@ pub(crate) async fn connect(socket_path: &Path) -> Result<WebSocketStream<UnixSt
     connect_at(socket_path, "ws://localhost/").await
 }
 
-pub(crate) async fn connect_at(socket_path: &Path, url: &str) -> Result<WebSocketStream<UnixStream>> {
+pub(crate) async fn connect_at(
+    socket_path: &Path,
+    url: &str,
+) -> Result<WebSocketStream<UnixStream>> {
     let stream = UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("failed to connect to {}", socket_path.display()))?;
@@ -206,43 +209,69 @@ mod tests {
     }
 }
 
-
 /// Exercises the same fresh-session admission that a TUI needs, then detaches
 /// its ephemeral probe thread without starting model work.
 pub(crate) async fn verify_session_admission(socket_path: &Path) -> Result<()> {
     timeout(Duration::from_secs(15), async {
         let mut socket = connect(socket_path).await?;
         initialize(&mut socket, false).await?;
-        send_message(&mut socket, &JSONRPCMessage::Notification(JSONRPCNotification {
-            method: "initialized".into(), params: None,
-        })).await?;
-        send_message(&mut socket, &JSONRPCMessage::Request(JSONRPCRequest {
-            id: RequestId::Integer(2), method: "thread/start".into(),
-            params: Some(serde_json::json!({"ephemeral": true})), trace: None,
-        })).await?;
+        send_message(
+            &mut socket,
+            &JSONRPCMessage::Notification(JSONRPCNotification {
+                method: "initialized".into(),
+                params: None,
+            }),
+        )
+        .await?;
+        send_message(
+            &mut socket,
+            &JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(2),
+                method: "thread/start".into(),
+                params: Some(serde_json::json!({"ephemeral": true})),
+                trace: None,
+            }),
+        )
+        .await?;
         let thread_id = loop {
             match read_message(&mut socket).await? {
                 JSONRPCMessage::Response(response) if response.id == RequestId::Integer(2) => {
-                    break response.result["thread"]["id"].as_str().context("missing probe thread")?.to_string();
+                    break response.result["thread"]["id"]
+                        .as_str()
+                        .context("missing probe thread")?
+                        .to_string();
                 }
                 JSONRPCMessage::Error(error) if error.id == RequestId::Integer(2) => {
-                    anyhow::bail!("replacement rejected fresh-session admission (code {})", error.error.code);
+                    anyhow::bail!(
+                        "replacement rejected fresh-session admission (code {})",
+                        error.error.code
+                    );
                 }
                 _ => {}
             }
         };
-        send_message(&mut socket, &JSONRPCMessage::Request(JSONRPCRequest {
-            id: RequestId::Integer(3), method: "thread/unsubscribe".into(),
-            params: Some(serde_json::json!({"threadId": thread_id})), trace: None,
-        })).await?;
+        send_message(
+            &mut socket,
+            &JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(3),
+                method: "thread/unsubscribe".into(),
+                params: Some(serde_json::json!({"threadId": thread_id})),
+                trace: None,
+            }),
+        )
+        .await?;
         loop {
             match read_message(&mut socket).await? {
                 JSONRPCMessage::Response(response) if response.id == RequestId::Integer(3) => break,
-                JSONRPCMessage::Error(error) if error.id == RequestId::Integer(3) => anyhow::bail!("probe cleanup failed (code {})", error.error.code),
+                JSONRPCMessage::Error(error) if error.id == RequestId::Integer(3) => {
+                    anyhow::bail!("probe cleanup failed (code {})", error.error.code)
+                }
                 _ => {}
             }
         }
         socket.close(None).await?;
         Ok(())
-    }).await.context("replacement session verification timed out")?
+    })
+    .await
+    .context("replacement session verification timed out")?
 }
