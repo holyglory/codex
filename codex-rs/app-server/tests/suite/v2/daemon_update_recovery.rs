@@ -928,3 +928,6 @@ async fn request(
 mod background_tests;
 #[path = "daemon_update_recovery/maintenance_tests.rs"]
 mod maintenance_tests;
+
+#[path = "daemon_update_recovery/mailbox_tests.rs"]
+mod mailbox_tests;

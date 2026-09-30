@@ -129,7 +129,7 @@ async fn managed_maintenance_cancel_reopens_admission_and_commit_restores_thread
     Ok(())
 }
 
-async fn maintenance_status(socket_path: &Path) -> Result<serde_json::Value> {
+pub(super) async fn maintenance_status(socket_path: &Path) -> Result<serde_json::Value> {
     use codex_app_server_transport::maintenance::MaintenanceCommand;
     let stream = UnixStream::connect(socket_path).await?;
     let (mut socket, _) = client_async("ws://localhost/daemon/maintenance", stream).await?;

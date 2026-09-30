@@ -14,7 +14,10 @@ fn cooperative_handover_owner_replaces_server_and_verifies_admission() -> Result
         daemon.lifecycle("start")?;
         let original_pid = daemon.pid("app-server.pid")?;
         let proxy = if lose_commit {
-            Some(super::lost_commit_proxy::LostCommitProxy::start(&daemon)?)
+            Some(super::commit_proxy::CommitProxy::start(
+                &daemon,
+                super::commit_proxy::CommitFault::LoseReceipt,
+            )?)
         } else {
             None
         };
@@ -51,7 +54,7 @@ fn cooperative_handover_owner_replaces_server_and_verifies_admission() -> Result
         assert_eq!(daemon.lifecycle("version")?["status"], "running");
         assert!(!state.join("loaded-threads.json").exists());
         if let Some(proxy) = proxy {
-            assert!(proxy.dropped_receipt());
+            assert!(proxy.fault_applied());
         }
     }
     Ok(())
@@ -256,5 +259,123 @@ exec {executable} "$@"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    Ok(())
+}
+
+#[test]
+fn cooperative_handover_live_unready_candidate_keeps_checkpoint_and_single_writer() -> Result<()> {
+    use futures::SinkExt;
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let daemon = TestDaemon::new()?;
+    let state = daemon.home.path().join("app-server-daemon");
+    std::fs::write(
+        state.join("settings.json"),
+        br#"{"updater":{"autoUpdateEnabled":false}}"#,
+    )?;
+    daemon.lifecycle("start")?;
+    let original_pid = daemon.pid("app-server.pid")?;
+    let mut original = DaemonProxy::connect(&daemon)?;
+    let created = original.request("thread/start", serde_json::json!({}))?;
+    let thread_id = created["thread"]["id"].as_str().context("created thread")?;
+    let history = PathBuf::from(created["thread"]["path"].as_str().context("history path")?);
+    let relay = super::commit_proxy::CommitProxy::start(
+        &daemon,
+        super::commit_proxy::CommitFault::BlockHistory(history),
+    )?;
+    let requested = daemon.lifecycle("handover")?;
+    let operation = requested["operationId"]
+        .as_str()
+        .context("operation identity")?;
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 110);
+    let (candidate_pid, mut candidate) = loop {
+        let current: Value = serde_json::from_slice(&std::fs::read(state.join("handover.json"))?)?;
+        if current["phase"] == "starting"
+            && let Ok(pid) = daemon.pid("app-server.pid")
+            && pid != original_pid
+            && let Ok(candidate) = DaemonProxy::connect(&daemon)
+        {
+            break (pid, candidate);
+        }
+        ensure!(
+            matches!(
+                current["phase"].as_str(),
+                Some("queued" | "preparing" | "committing" | "starting")
+            ),
+            "replacement did not initialize during verification: {current}"
+        );
+        ensure!(Instant::now() < deadline, "replacement did not initialize");
+        std::thread::sleep(Duration::from_millis(/*millis*/ 25));
+    };
+    assert!(relay.fault_applied());
+    wait_for_exit(original_pid)?;
+    let checkpoint_path = state.join("loaded-threads.json");
+    let checkpoint_bytes = std::fs::read(&checkpoint_path)?;
+    let snapshot = codex_app_server_transport::daemon_recovery::read_snapshot(&checkpoint_path)?;
+    assert!(snapshot.loaded.contains(thread_id));
+    let retained = snapshot.maintenance.context("maintenance receipt")?;
+    assert_eq!(
+        (retained.operation_id.as_str(), retained.source_pid),
+        (operation, original_pid)
+    );
+
+    // A successful initialize is insufficient: graph restoration must also succeed.
+    let status = daemon.lifecycle("version")?;
+    let socket = PathBuf::from(status["socketPath"].as_str().context("candidate socket")?);
+    let readiness: Value = candidate.runtime.block_on(async {
+        let stream = tokio::net::UnixStream::connect(socket).await?;
+        let (mut socket, _) =
+            tokio_tungstenite::client_async("ws://localhost/daemon/maintenance", stream).await?;
+        socket
+            .send(Message::Text(
+                serde_json::json!({"type":"status"}).to_string().into(),
+            ))
+            .await?;
+        let Message::Text(message) = socket.next().await.context("maintenance response")?? else {
+            anyhow::bail!("invalid maintenance status");
+        };
+        Ok::<_, anyhow::Error>(serde_json::from_str(&message)?)
+    })?;
+    assert_eq!(readiness["pid"], candidate_pid);
+    assert_eq!(readiness["restored"], false);
+    loop {
+        let current: Value = serde_json::from_slice(&std::fs::read(state.join("handover.json"))?)?;
+        assert_eq!(current["operationId"], operation);
+        match current["phase"].as_str().context("phase")? {
+            "needsAttention" => break,
+            "failed" | "succeeded" | "rolledBack" | "cancelled" => {
+                anyhow::bail!("unexpected readiness outcome: {current}");
+            }
+            _ => {}
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "unready candidate exceeded its deadline"
+        );
+        std::thread::sleep(Duration::from_millis(/*millis*/ 50));
+    }
+    assert_eq!(daemon.pid("app-server.pid")?, candidate_pid);
+    candidate.request("thread/start", serde_json::json!({"ephemeral":true}))?;
+    assert_eq!(daemon.pid("app-server.pid")?, candidate_pid);
+    assert_eq!(std::fs::read(&checkpoint_path)?, checkpoint_bytes);
+    drop(candidate);
+    drop(original);
+    drop(relay);
+    // Repair the history fault, retire only the owned failed candidate, then
+    // exercise the documented operator recovery through the ordinary launcher.
+    signal(candidate_pid, libc::SIGKILL)?;
+    wait_for_exit(candidate_pid)?;
+    daemon.lifecycle("start")?;
+    let mut recovered = DaemonProxy::connect(&daemon)?;
+    let loaded = recovered.request("thread/loaded/list", serde_json::json!({}))?;
+    assert!(
+        loaded["data"]
+            .as_array()
+            .context("recovered inventory")?
+            .contains(&serde_json::json!(thread_id))
+    );
+    recovered.request("thread/start", serde_json::json!({"ephemeral":true}))?;
+    assert!(!checkpoint_path.exists());
     Ok(())
 }

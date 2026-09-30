@@ -20,6 +20,11 @@ slow-timeout = { period = "1m", terminate-after = 3 }
 filter = 'package(codex-cli) & binary(app_server_daemon) & test(packaged_daemon_)'
 slow-timeout = { period = "1m", terminate-after = 2 }
 
+[[profile.default.overrides]]
+# Exercise the real 75-second replacement readiness deadline and subsequent recovery.
+filter = 'package(codex-cli) & binary(app_server_daemon) & test(=handover_tests::cooperative_handover_live_unready_candidate_keeps_checkpoint_and_single_writer)'
+slow-timeout = { period = "1m", terminate-after = 3 }
+
 [profile.default.junit]
 path = "junit.xml"
 
