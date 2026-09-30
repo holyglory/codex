@@ -831,21 +831,18 @@ pub(super) async fn read_response_for_id(
     loop {
         let message = read_jsonrpc_message(stream).await?;
         match message {
-            JSONRPCMessage::Response(response) => {
-                if response.id == target_id {
-                    return Ok(response);
-                }
+            JSONRPCMessage::Response(response) if response.id == target_id => return Ok(response),
+            JSONRPCMessage::Error(error) if error.id == target_id => {
+                anyhow::bail!(
+                    "request {id} returned error {}: {}",
+                    error.error.code,
+                    error.error.message
+                );
             }
-            JSONRPCMessage::Error(error) => {
-                if error.id == target_id {
-                    anyhow::bail!(
-                        "request {id} returned error {}: {}",
-                        error.error.code,
-                        error.error.message
-                    );
-                }
-            }
-            JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_) => {}
+            JSONRPCMessage::Response(_)
+            | JSONRPCMessage::Error(_)
+            | JSONRPCMessage::Request(_)
+            | JSONRPCMessage::Notification(_) => {}
         }
     }
 }
@@ -908,19 +905,14 @@ pub(super) async fn read_error_for_id(stream: &mut WsClient, id: i64) -> Result<
     loop {
         let message = read_jsonrpc_message(stream).await?;
         match message {
-            JSONRPCMessage::Error(error) => {
-                if error.id == target_id {
-                    return Ok(error);
-                }
+            JSONRPCMessage::Error(error) if error.id == target_id => return Ok(error),
+            JSONRPCMessage::Response(response) if response.id == target_id => {
+                anyhow::bail!("request {id} unexpectedly succeeded while an error was required");
             }
-            JSONRPCMessage::Response(response) => {
-                if response.id == target_id {
-                    anyhow::bail!(
-                        "request {id} unexpectedly succeeded while an error was required"
-                    );
-                }
-            }
-            JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_) => {}
+            JSONRPCMessage::Response(_)
+            | JSONRPCMessage::Error(_)
+            | JSONRPCMessage::Request(_)
+            | JSONRPCMessage::Notification(_) => {}
         }
     }
 }
