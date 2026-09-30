@@ -1,12 +1,14 @@
 ---
 source: tui/src/startup_draft_tests.rs
-assertion_line: 154
 expression: "snapshots.join(\"\\n---\\n\")"
 ---
 empty (48 columns):
-
-  >_ OpenAI Codex (v<VERSION>)
-     loading
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v<VERSION>)          │
+│                                       │
+│ model:     loading   /model to change │
+│ directory: loading                    │
+╰───────────────────────────────────────╯
 
   Pull up a prompt.
 
@@ -16,9 +18,12 @@ empty (48 columns):
   ? for shortcuts
 ---
 resuming (48 columns):
-
-  >_ OpenAI Codex (v<VERSION>)
-     loading
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v<VERSION>)          │
+│                                       │
+│ model:     loading   /model to change │
+│ directory: loading                    │
+╰───────────────────────────────────────╯
   Resuming session…
 
 › Ask Codex to do anything
@@ -26,18 +31,24 @@ resuming (48 columns):
   ? for shortcuts
 ---
 forking (48 columns):
-
-  >_ OpenAI Codex (v<VERSION>)
-     loading
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v<VERSION>)          │
+│                                       │
+│ model:     loading   /model to change │
+│ directory: loading                    │
+╰───────────────────────────────────────╯
   Forking session…
 
 › draft while loading
 
 ---
 multiline (48 columns):
-
-  >_ OpenAI Codex (v<VERSION>)
-     loading
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v<VERSION>)          │
+│                                       │
+│ model:     loading   /model to change │
+│ directory: loading                    │
+╰───────────────────────────────────────╯
 
   Pull up a prompt.
 
@@ -47,9 +58,12 @@ multiline (48 columns):
 
 ---
 narrow (18 columns):
-
-  >_ OpenAI Codex…
-     loading
+╭────────────────╮
+│ >_ OpenAI Cod… │
+│                │
+│ model:     lo… │
+│ directory: …ng │
+╰────────────────╯
 
   Pull up a promp…
 

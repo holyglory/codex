@@ -206,9 +206,7 @@ fn terminal_app_ssh_fallback_renders_inline_startup() {
     }
     insta::assert_snapshot!(
         "terminal_app_ssh_startup",
-        frames
-            .join("\n---\n")
-            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+        normalize_cli_version(frames.join("\n---\n"))
     );
 }
 
@@ -306,6 +304,7 @@ async fn startup_draft_hydrates_its_header_without_moving_the_composer() {
     let codex_home = tempfile::tempdir().expect("create temporary Codex home");
     let config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
         .build()
         .await
         .expect("build startup configuration");
@@ -315,16 +314,21 @@ async fn startup_draft_hydrates_its_header_without_moving_the_composer() {
         startup_draft_renderable(&pump.header, &pump.bottom_pane, pump.session_action)
             .desired_height(width);
 
-    assert_eq!(pump.header.raw_lines()[2].to_string().trim(), "loading");
+    let directory_line = |pump: &StartupDraftPump| {
+        pump.header
+            .raw_lines()
+            .iter()
+            .map(ToString::to_string)
+            .find(|line| line.contains("directory:"))
+            .expect("session header has a directory row")
+    };
+    assert!(directory_line(&pump).contains("directory: loading"));
     pump.apply_config(&config);
     let expected_directory = crate::history_cell::SessionHeaderHistoryCell::format_directory_inner(
         config.cwd.as_path(),
         /*max_width*/ None,
     );
-    assert_eq!(
-        pump.header.raw_lines()[2].to_string().trim(),
-        expected_directory
-    );
+    assert!(directory_line(&pump).contains(&expected_directory));
     assert_eq!(
         startup_draft_renderable(&pump.header, &pump.bottom_pane, pump.session_action)
             .desired_height(width),

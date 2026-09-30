@@ -1894,7 +1894,7 @@ fn session_header_clamps_to_narrow_width() {
     let cell = SessionHeaderHistoryCell::new(
         "gpt-5.6-sol".to_string(),
         Some(ReasoningEffortConfig::XHigh),
-        /*show_fast_status*/ false,
+        /*show_fast_status*/ true,
         PathBuf::from("project"),
         "test",
     )

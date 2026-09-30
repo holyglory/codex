@@ -38,36 +38,38 @@ fn owned_startup_keeps_the_live_bottom_geometry() {
 #[test]
 fn new_startup_decoration_tracks_draft_and_session_action() {
     let mut pump = crate::startup_draft::tests::quiet_startup_test_pump();
-    let area = Rect::new(
-        /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 32,
-    );
-    let mut blossom_visible = Vec::new();
-    for (draft, action, pending) in [
-        ("", StartupDraftSessionAction::New, false),
-        (" ", StartupDraftSessionAction::New, false),
-        ("", StartupDraftSessionAction::New, false),
-        ("", StartupDraftSessionAction::New, true),
-        ("", StartupDraftSessionAction::Resume, false),
-        ("", StartupDraftSessionAction::Fork, false),
-        ("", StartupDraftSessionAction::NewFromCommandCenter, false),
+    for (height, expected) in [
+        (32, [false; 7]),
+        (44, [true, false, true, false, false, false, true]),
     ] {
-        pump.session_action = action;
-        pump.submission_pending = pending;
-        pump.bottom_pane
-            .set_composer_text(draft.into(), Vec::new(), Vec::new());
-        let layout = OwnedStartupLayout::new(&pump);
-        let mut buffer = Buffer::empty(area);
-        layout.render(area, &mut buffer);
-        blossom_visible.push(buffer.content.iter().any(|cell| {
-            cell.symbol()
-                .chars()
-                .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
-        }));
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ height,
+        );
+        let mut blossom_visible = Vec::new();
+        for (draft, action, pending) in [
+            ("", StartupDraftSessionAction::New, false),
+            (" ", StartupDraftSessionAction::New, false),
+            ("", StartupDraftSessionAction::New, false),
+            ("", StartupDraftSessionAction::New, true),
+            ("", StartupDraftSessionAction::Resume, false),
+            ("", StartupDraftSessionAction::Fork, false),
+            ("", StartupDraftSessionAction::NewFromCommandCenter, false),
+        ] {
+            pump.session_action = action;
+            pump.submission_pending = pending;
+            pump.bottom_pane
+                .set_composer_text(draft.into(), Vec::new(), Vec::new());
+            let layout = OwnedStartupLayout::new(&pump);
+            let mut buffer = Buffer::empty(area);
+            layout.render(area, &mut buffer);
+            blossom_visible.push(buffer.content.iter().any(|cell| {
+                cell.symbol()
+                    .chars()
+                    .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+            }));
+        }
+        assert_eq!(blossom_visible, expected, "height={height}");
     }
-    assert_eq!(
-        blossom_visible,
-        [true, false, true, false, false, false, true]
-    );
 }
 
 #[tokio::test]
