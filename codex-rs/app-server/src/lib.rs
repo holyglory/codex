@@ -1089,6 +1089,7 @@ pub async fn run_main_with_transport_options(
                                 continue;
                             }
                         };
+                        #[cfg(unix)]
                         if managed_daemon && matches!(signal, ShutdownSignal::GracefulOnly) {
                             warn!("unowned graceful restart ignored; request a supervised daemon handover");
                             continue;

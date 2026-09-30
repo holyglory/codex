@@ -22,7 +22,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::Message;
 
-pub(crate) const CONTROL_SOCKET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const CONTROL_SOCKET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 const CLIENT_NAME: &str = "codex_app_server_daemon";
 const INITIALIZE_REQUEST_ID: RequestId = RequestId::Integer(1);
 
@@ -212,9 +212,9 @@ mod tests {
 /// Exercises the same fresh-session admission that a TUI needs, then detaches
 /// its ephemeral probe thread without starting model work.
 pub(crate) async fn verify_session_admission(socket_path: &Path) -> Result<()> {
-    timeout(Duration::from_secs(15), async {
+    timeout(Duration::from_secs(/*secs*/ 15), async {
         let mut socket = connect(socket_path).await?;
-        initialize(&mut socket, false).await?;
+        initialize(&mut socket, /*experimental_api*/ false).await?;
         send_message(
             &mut socket,
             &JSONRPCMessage::Notification(JSONRPCNotification {

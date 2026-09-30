@@ -335,8 +335,8 @@ impl ThreadRequestProcessor {
                             exclude_turns: true,
                             ..Default::default()
                         },
-                        None,
-                        None,
+                        /*app_server_client_name*/ None,
+                        /*app_server_client_version*/ None,
                         Default::default(),
                     )
                     .await

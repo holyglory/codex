@@ -627,7 +627,8 @@ async fn reconnect_exhaustion_and_unknown_initial_thread_stay_offline() -> Resul
             .is_err()
         );
     }
-    assert!((15..=65).contains(&start.elapsed().as_secs()));
+    // Refused connections retry through the same total recovery budget as maintenance.
+    assert!((120..=125).contains(&start.elapsed().as_secs()));
     app.begin_reconnect();
     app.chat_widget.reconnect_failed();
     assert_snapshot!(

@@ -65,7 +65,7 @@ impl MessageProcessor {
         };
         let result = tokio::select! {
             _ = cancelled.cancelled() => Err("cancelled"),
-            result = tokio::time::timeout(Duration::from_secs(60), preparation) => result.unwrap_or(Err("pauseDeadline")),
+            result = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), preparation) => result.unwrap_or(Err("pauseDeadline")),
         };
         match result {
             Ok(()) => {},
@@ -77,7 +77,7 @@ impl MessageProcessor {
         if reply.send(MaintenanceResponse::Ready { operation_id: operation_id.clone(), pid }).is_err() { return; }
         let decision = tokio::select! {
             _ = cancelled.cancelled() => None,
-            decision = tokio::time::timeout(Duration::from_secs(30), commit.recv()) => decision.ok().flatten(),
+            decision = tokio::time::timeout(Duration::from_secs(/*secs*/ 30), commit.recv()) => decision.ok().flatten(),
         };
         if !matches!(decision, Some(MaintenanceCommand::Commit { operation_id: id, pid: process }) if id == operation_id && process == pid) { return; }
         self.turn_admission.seal_maintenance();
@@ -88,12 +88,12 @@ impl MessageProcessor {
             }
             self.thread_processor.pause_for_maintenance(&mut paused, &cancelled).await
         };
-        if !matches!(tokio::time::timeout(Duration::from_secs(10), sealed).await, Ok(Ok(()))) { return; }
+        if !matches!(tokio::time::timeout(Duration::from_secs(/*secs*/ 10), sealed).await, Ok(Ok(()))) { return; }
         // Re-evaluate stopped turns after Ready: user cancellation must win over
         // the previously requested maintenance resume.
         let snapshot = tokio::select! {
             _ = cancelled.cancelled() => return,
-            result = tokio::time::timeout(Duration::from_secs(10), self.thread_processor.maintenance_snapshot(operation_id.clone(), &paused)) => {
+            result = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), self.thread_processor.maintenance_snapshot(operation_id.clone(), &paused)) => {
                 match result {
                     Ok(Ok(snapshot)) => snapshot,
                     Ok(Err(reason)) => { tracing::warn!(%reason, "maintenance checkpoint rejected"); return; }
@@ -106,7 +106,7 @@ impl MessageProcessor {
         let staged = recovery_path.with_extension(format!("maintenance-{operation_id}-{}.json", uuid::Uuid::new_v4()));
         let saved = tokio::select! {
             _ = cancelled.cancelled() => false,
-            result = tokio::time::timeout(Duration::from_secs(10), crate::daemon_thread_recovery::snapshot(staged.clone(), snapshot)) => matches!(result, Ok(Ok(()))),
+            result = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), crate::daemon_thread_recovery::snapshot(staged.clone(), snapshot)) => matches!(result, Ok(Ok(()))),
         };
         if !saved || cancelled.is_cancelled() { return; }
         if std::fs::rename(&staged, &recovery_path).is_err() { return; }

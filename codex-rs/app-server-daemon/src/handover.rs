@@ -70,7 +70,7 @@ fn read(daemon: &Daemon) -> Result<HandoverStatus> {
 }
 
 async fn status_at(path: &Path) -> Result<MaintenanceResponse> {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 3), async {
         let mut socket = client::connect_at(path, "ws://localhost/daemon/maintenance").await?;
         socket
             .send(Message::Text(
@@ -236,7 +236,7 @@ pub async fn cancel_handover() -> Result<HandoverStatus> {
 async fn compatibility(binary: &Path) -> Result<String> {
     let isolated = tempfile::tempdir()?;
     let output = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(/*secs*/ 10),
         Command::new(binary)
             .env("CODEX_HOME", isolated.path())
             .env("CODEX_SQLITE_HOME", isolated.path())
@@ -279,7 +279,7 @@ async fn wait_ready(daemon: &Daemon, expected: &Path) -> Result<()> {
             tokio::time::Instant::now() < deadline,
             "replacement did not become ready"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(/*millis*/ 100)).await;
     }
 }
 
@@ -356,7 +356,7 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
     let cancel_path = daemon.pid_file.with_file_name("handover.cancel");
     let operation = record.operation_id.clone();
     let cancellation = async {
-        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        let mut interval = tokio::time::interval(Duration::from_millis(/*millis*/ 250));
         loop {
             interval.tick().await;
             if tokio::fs::read_to_string(&cancel_path)
@@ -375,7 +375,7 @@ async fn perform(daemon: &Daemon, record: &mut HandoverStatus) -> Result<()> {
             record.phase = HandoverPhase::Cancelled;
             return Ok(());
         }
-        frame = tokio::time::timeout(Duration::from_secs(75), socket.next()) => frame?.context("maintenance owner disconnected")??,
+        frame = tokio::time::timeout(Duration::from_secs(/*secs*/ 75), socket.next()) => frame?.context("maintenance owner disconnected")??,
     };
     let Message::Text(text) = frame else {
         anyhow::bail!("invalid checkpoint receipt")

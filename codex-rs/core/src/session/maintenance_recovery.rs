@@ -177,16 +177,19 @@ impl Session {
                 return Ok(());
             }
         }
-        let active = self.active_turn.lock().await;
-        if let Some(task) = active.as_ref().and_then(|active| active.task.as_ref()) {
-            let same = task.turn_context.sub_id == turn_id;
-            drop(active);
-            if same {
+        let active_id = {
+            let active = self.active_turn.lock().await;
+            active
+                .as_ref()
+                .and_then(|active| active.task.as_ref())
+                .map(|task| task.turn_context.sub_id.clone())
+        };
+        if let Some(active_id) = active_id {
+            if active_id == turn_id {
                 self.interrupt_task().await;
             }
             return Ok(());
         }
-        drop(active);
         self.stop_subscription_work().await;
         if self.state_db().is_some()
             && self

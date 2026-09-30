@@ -231,7 +231,7 @@ impl crate::CodexThread {
             )),
         );
         self.io
-            .submit_recover_turn(Default::default(), options, None, turn_id)
+            .submit_recover_turn(Default::default(), options, /*trace*/ None, turn_id)
             .await
     }
 }

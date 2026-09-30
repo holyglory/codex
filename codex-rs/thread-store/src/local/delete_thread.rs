@@ -373,12 +373,20 @@ mod tests {
 
         for (uuid, path) in cases {
             let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+            let inbox = home
+                .path()
+                .join("maintenance-inbox")
+                .join(format!("{thread_id}.json"));
+            std::fs::create_dir_all(inbox.parent().expect("inbox directory"))
+                .expect("inbox directory");
+            std::fs::write(&inbox, "[]").expect("retained maintenance inbox");
             store
                 .delete_thread(DeleteThreadParams { thread_id })
                 .await
                 .expect("delete thread");
 
             assert!(!path.exists());
+            assert!(!inbox.exists());
         }
         assert!(!compressed_path.exists());
     }
