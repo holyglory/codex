@@ -9,4 +9,8 @@ export type AccountProfile = { id: string, alias: string, authMode: AuthMode, em
  * Whether this profile currently has locally managed credentials.
  * Credential values are never returned.
  */
-authenticated: boolean, priority: number, createdAt: bigint, lastUsedAt: bigint | null, note: string | null, isDefault: boolean, isActive: boolean, };
+authenticated: boolean, priority: number,
+/**
+ * Permission for automatic credit fallback; manual sessions and pins are unaffected.
+ */
+creditUsageEnabled: boolean, createdAt: bigint, lastUsedAt: bigint | null, note: string | null, isDefault: boolean, isActive: boolean, };

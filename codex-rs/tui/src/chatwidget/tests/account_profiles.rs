@@ -25,6 +25,7 @@ fn profile(alias: &str, active: bool) -> AccountProfile {
         enabled: true,
         authenticated: true,
         priority: 10,
+        credit_usage_enabled: false,
         created_at: 1,
         last_used_at: Some(2),
         note: None,
@@ -294,6 +295,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: Some("INVALID-alias".to_string()),
         enabled: None,
         priority: None,
+        credit_usage_enabled: None,
         note: None,
         clear_note: false,
     });
@@ -315,6 +317,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: None,
         enabled: None,
         priority: None,
+        credit_usage_enabled: None,
         note: Some("correctable note".to_string()),
         clear_note: false,
     });
@@ -336,6 +339,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: None,
         enabled: None,
         priority: Some(42),
+        credit_usage_enabled: None,
         note: None,
         clear_note: false,
     });
@@ -442,6 +446,7 @@ async fn successful_mutations_refresh_and_reveal_the_changed_profile() {
             alias: Some(edited.alias.clone()),
             enabled: None,
             priority: None,
+            credit_usage_enabled: None,
             note: None,
             clear_note: false,
         });

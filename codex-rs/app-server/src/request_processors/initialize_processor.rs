@@ -224,6 +224,7 @@ impl InitializeRequestProcessor {
                     version: 2,
                     supports_managed_login: true,
                     supports_auto_selection: true,
+                    supports_credit_usage: true,
                 }),
             local_usage_accounting: Some(
                 codex_app_server_protocol::LocalUsageAccountingCapability { version: 2 },

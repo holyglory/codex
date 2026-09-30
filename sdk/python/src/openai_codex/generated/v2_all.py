@@ -7357,6 +7357,13 @@ class AccountProfile(BaseModel):
         ),
     ]
     created_at: Annotated[int, Field(alias="createdAt")]
+    credit_usage_enabled: Annotated[
+        bool | None,
+        Field(
+            alias="creditUsageEnabled",
+            description="Permission for automatic credit fallback; manual sessions and pins are unaffected.",
+        ),
+    ] = False
     email: str | None = None
     enabled: bool
     id: str

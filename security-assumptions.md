@@ -83,6 +83,13 @@ Last reviewed: 2026-09-03
   This does not authorize an agent tool to read credentials, complete login,
   delete profiles or credentials, expose email or opaque service/workspace
   identities, or broaden automatic selection beyond managed ChatGPT OAuth.
+- **Per-account credit permission:** The owner explicitly approved agent control
+  of `set_credit_usage` on 2026-09-30 in chat
+  `01a0f1fe-143a-7bc0-9a41-8f4f13bf01ee` (`account-credit-fallback-v1`).
+  The permission defaults off and governs automatic managed-ChatGPT routing only.
+  Included allowance precedes permitted credits within a priority tier; that
+  tier precedes lower priorities. Unknown allowance cannot authorize credit use.
+  Existing service restrictions, manual selection and current-turn leases remain.
 - **Provider-neutral event ingress:** Subscription management and event ingress
   reuse the existing app-server transport boundary. Local stdio and Unix-socket
   callers rely on the existing owner-controlled OS access boundary; WebSocket

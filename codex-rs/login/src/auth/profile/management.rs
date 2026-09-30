@@ -27,6 +27,7 @@ pub struct ManagedAccountSummary {
     pub enabled: bool,
     pub authenticated: bool,
     pub priority: u32,
+    pub credit_usage_enabled: bool,
     pub is_default: bool,
 }
 
@@ -181,6 +182,7 @@ fn summary(
         enabled: account.enabled,
         authenticated: auth.is_some(),
         priority: account.priority,
+        credit_usage_enabled: account.credit_usage_enabled,
         is_default: registry.default_account_id.as_ref() == Some(&account.id),
     })
 }

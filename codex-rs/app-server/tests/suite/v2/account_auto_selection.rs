@@ -188,16 +188,23 @@ async fn desktop_first_turn_refreshes_cli_profiles_and_selects_eligible_account(
     Ok(())
 }
 
+#[test_case::test_case(false; "included backup")]
+#[test_case::test_case(true; "credit backup")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn desktop_turn_continues_on_backup_profile_after_clean_usage_limit() -> Result<()> {
+async fn desktop_turn_continues_on_backup_profile_after_clean_usage_limit(
+    credit_backup: bool,
+) -> Result<()> {
     let codex_home = TempDir::new()?;
     let backend = MockServer::start().await;
     write_test_config(codex_home.path(), &backend.uri()).await?;
     let [alpha, beta, gamma] = persist_cli_profile_set(codex_home.path())?;
-    RegistryStore::new(codex_home.path())
-        .compare_and_swap(/*expected_generation*/ 0, |registry| {
-            registry.default_account_id = Some(beta.metadata.id.clone())
-        })?;
+    RegistryStore::new(codex_home.path()).compare_and_swap(
+        /*expected_generation*/ 0,
+        |registry| {
+            registry.default_account_id = Some(beta.metadata.id.clone());
+            registry.accounts[2].credit_usage_enabled = credit_backup;
+        },
+    )?;
 
     mount_observed_probe(
         &backend, &alpha, /*used_percent*/ 10, /*expected*/ 0,
@@ -207,10 +214,19 @@ async fn desktop_turn_continues_on_backup_profile_after_clean_usage_limit() -> R
         &backend, &beta, /*used_percent*/ 10, /*expected*/ 1,
     )
     .await;
-    mount_observed_probe(
-        &backend, &gamma, /*used_percent*/ 10, /*expected*/ 1,
-    )
-    .await;
+    if credit_backup {
+        Mock::given(method("GET")).and(path(RATE_LIMIT_PATH))
+            .and(header("authorization", format!("Bearer {}", gamma.access_token)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "plan_type":"pro", "credits":{"has_credits":true,"unlimited":false,"balance":"20"},
+                "rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":3600,"reset_at":chrono::Utc::now().timestamp()+3600}}
+            }))).expect(1).mount(&backend).await;
+    } else {
+        mount_observed_probe(
+            &backend, &gamma, /*used_percent*/ 10, /*expected*/ 1,
+        )
+        .await;
+    }
     Mock::given(method("GET"))
         .and(path(RESPONSES_PATH))
         .respond_with(ResponseTemplate::new(/*status*/ 426))
@@ -817,3 +833,6 @@ fn profile_probe_count(requests: &[Request], profile: &ManagedChatGptProfile) ->
         })
         .count()
 }
+
+#[path = "account_auto_selection_credit_tests.rs"]
+mod credit_tests;
