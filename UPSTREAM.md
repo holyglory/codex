@@ -146,3 +146,15 @@ the authority for release outcomes and verification receipts.
   were refreshed. When a rebase includes a later UI layout commit, inspect the
   feature history and update behavioral assertions to the current contract;
   snapshot refresh alone is not sufficient.
+- **A complete-suite failure can still have a clean release-focused slice.** On
+  `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
+  one timeout clustered in Code Mode pressure, Guardian async scorer load,
+  wiremock request-count races, stale pending-input and skills snapshots, and
+  missing voice jitter-buffer support. Reproduce each cluster in a focused
+  governed check before changing production code; do not turn a saturated
+  full-suite run into a broad rebase patch.
+- **Package smoke needs loopback permission.** The Linux candidate build can
+  produce valid archives while its in-sandbox smoke run reports
+  `PermissionError: [Errno 1] Operation not permitted` when the fixture binds
+  `127.0.0.1`. Rerun the unchanged smoke artifacts with the host-approved
+  loopback capability, then retain the gzip and zstd XML receipts.
