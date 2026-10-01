@@ -129,3 +129,9 @@ the authority for release outcomes and verification receipts.
   build does not prove local deployment when DevCoordinator has no declaration
   for the repository. Likewise, `npm whoami` must succeed before staging a
   publish; an npm `E401` is an authentication blocker, not a package failure.
+- **Package smoke tests are the capacity contract.** The local `0.159.1+multi.1`
+  Linux package initially caught a real regression that unit tests missed:
+  `response.failed` with `slow_down` was mapped to `rateLimitExceeded` instead
+  of the shared capacity retry boundary. Keep both `server_is_overloaded` and
+  `slow_down` in the packaged gzip and zstd smoke matrix; a passing source build
+  alone is not enough.
