@@ -111,6 +111,7 @@ use codex_features::Stage;
 use codex_features::is_known_feature_key;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
+#[cfg(test)]
 use codex_login::CodexAuth;
 use codex_login::is_workload_identity_selected;
 use codex_memories_write::clear_memory_roots_contents;
