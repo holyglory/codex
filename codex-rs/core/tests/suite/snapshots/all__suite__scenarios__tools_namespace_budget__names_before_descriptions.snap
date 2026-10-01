@@ -6,9 +6,11 @@ Scenario: A crowded tool catalog retains every namespace, discovers a late names
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [04] <tools>
         Deferred tool namespaces:
         - service_00: Find records & retrieve <details> from this service. Search by project, owner, date, or st... questions with its title, summary, source link, a... [hash=0ab3fdffc78b8a7e]
         - service_01: Find records & retrieve <details> from this service. Search by project, owner, date, or st... questions with its title, summary, source link, a... [hash=8c11455aa17451d3]

@@ -6,15 +6,15 @@ Scenario: Astra receives host and handler timings on completed and failed code-m
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=0562cdf224e25134):
-        - namespace/functions; hash=9676d28a18d5b73d
+00:additional_tools/developer (3; hash=06294106c512ed0d):
+        - namespace/functions; hash=d6cadb0292b35e85
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=b263e3c84ad07c37
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

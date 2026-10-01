@@ -1,15 +1,16 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 1288
 expression: snapshot
 ---
 Scenario: A root uses Code Mode to send a confirmation and receives a real user reply; a worker then requests an action that Guardian reviews with the confirmed question as assistant context. Independent model streams are grouped as root, worker, then Guardian.
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [04] <APPS_INSTRUCTIONS>
 01:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -49,9 +50,11 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
 
 ## Window 2 (after request 4: input diverged at item 01, settings changed (tools))
 -- request 5 (turn) --
-00:message/developer[2]:
+00:message/developer[4]:
     [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
+    [02] <USAGE_STATS_INSTRUCTIONS>
+    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [04] <APPS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
