@@ -99,6 +99,11 @@ the authority for release outcomes and verification receipts.
   change; rename it around the thread-owned behavior or remove it in favor of
   the existing incompatible-compaction coverage. Do not “fix” the production
   code to restore the removed mode.
+- **Preserve submission-loop acceptance tests when settings APIs move.** The
+  standalone settings test must exercise the submission loop and verify that
+  acceptance is delivered before the queued event is released. Replacing it
+  with a direct `thread_settings::update` call changes the synchronization
+  contract and produces a false full-suite failure.
 - **Retain asynchronous test evidence.** When a focused test times out, first
   distinguish startup/catalog, handshake/prewarm, request delivery, and score
   publication. Add bounded diagnostics, reproduce the exact await point, then
