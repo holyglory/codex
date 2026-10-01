@@ -1113,25 +1113,22 @@ mod tests {
             let events = collect_events(&[sse.as_bytes()]).await;
             match (code, events.as_slice()) {
                 (
-                    "rate_limit_exceeded" | "slow_down",
-                    [
-                        Err(ApiError::RateLimitExceeded {
-                            message: actual,
-                            retry_after,
-                        }),
-                    ],
-                )
-                | (
-                    "unknown_error",
-                    [
-                        Err(ApiError::Retryable {
-                            message: actual,
-                            retry_after,
-                        }),
-                    ],
-                ) => {
-                    assert_eq!((actual.as_str(), *retry_after), (message, None));
+                    "rate_limit_exceeded",
+                    [Err(ApiError::RateLimitExceeded {
+                        message: actual,
+                        retry_after,
+                    })],
+                ) => assert_eq!((actual.as_str(), *retry_after), (message, None)),
+                ("slow_down", [Err(ApiError::ServerOverloaded { retry_after })]) => {
+                    assert_eq!(*retry_after, None);
                 }
+                (
+                    "unknown_error",
+                    [Err(ApiError::Retryable {
+                        message: actual,
+                        retry_after,
+                    })],
+                ) => assert_eq!((actual.as_str(), *retry_after), (message, None)),
                 _ => panic!("unexpected events for {code}: {events:?}"),
             }
         }
