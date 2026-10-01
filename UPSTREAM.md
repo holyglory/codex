@@ -93,6 +93,12 @@ the authority for release outcomes and verification receipts.
   for the disposable warm socket to close before leasing the classifier socket.
   A single server with two scripted connections can leave the test waiting on a
   socket that was never accepted.
+- **The Guardian `thread_context` opt-out is no longer a legacy mode.** Stable
+  upstream ignores the setting and keeps thread-owned context enabled. A test
+  named `legacy_*` that expects the opt-out to omit context is stale after this
+  change; rename it around the thread-owned behavior or remove it in favor of
+  the existing incompatible-compaction coverage. Do not “fix” the production
+  code to restore the removed mode.
 - **Retain asynchronous test evidence.** When a focused test times out, first
   distinguish startup/catalog, handshake/prewarm, request delivery, and score
   publication. Add bounded diagnostics, reproduce the exact await point, then

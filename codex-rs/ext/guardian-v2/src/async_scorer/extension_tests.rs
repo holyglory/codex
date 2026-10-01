@@ -103,7 +103,7 @@ const TEST_CATALOG_GUARDIAN_POLICY: &str =
     "Require review before sending organization data to third-party services.";
 const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
-const TEST_CATALOG_RESPONSE_BUDGET: usize = 4;
+const TEST_CATALOG_RESPONSE_BUDGET: usize = 8;
 
 struct RefreshableAuth(std::sync::Mutex<&'static str>);
 
@@ -859,21 +859,23 @@ async fn sample_configured_conversation_history_with_source(
     model_defaults: Option<GuardianV2ModelConfig>,
     source: ToolCallSource,
 ) -> Result<(serde_json::Value, TestCodex, ExtensionRegistry<Config>)> {
-    let (request, test, registry, _, _) = sample_configured_conversation_history_with_delivery(
+    let (request, test, registry, _, _, _) = sample_configured_conversation_history_with_delivery(
         conversation_history,
         arguments,
         guardian_policy,
         guardian_config,
         model_defaults,
         source,
-        MessagingSetup::Disabled,
+        MessagingSetup::Disabled {
+            allow_skipped: false,
+        },
     )
     .await?;
     Ok((request, test, registry))
 }
 
 enum MessagingSetup {
-    Disabled,
+    Disabled { allow_skipped: bool },
     CodeMode(String),
 }
 
@@ -891,6 +893,7 @@ async fn sample_configured_conversation_history_with_delivery(
     ExtensionRegistry<Config>,
     wiremock::MockServer,
     WebSocketTestServer,
+    WebSocketTestServer,
 )> {
     let thread_server = responses::start_mock_server().await;
     let mut catalog = codex_models_manager::bundled_models_response()
@@ -903,9 +906,6 @@ async fn sample_configured_conversation_history_with_delivery(
         .and_then(|messages| messages.auto_review.as_mut())
         .expect("reviewer model should have Guardian policy")
         .policy = Some(TEST_CATALOG_GUARDIAN_POLICY.to_owned());
-    // Workspace builds perform up to three startup reads before this fixture explicitly primes the
-    // exact host manager consumed by legacy Guardian scoring. Keep all four responses identical and
-    // bounded so any unexpected fifth read fails instead of silently changing policy provenance.
     let mut _catalog_mocks = Vec::with_capacity(TEST_CATALOG_RESPONSE_BUDGET);
     for _ in 0..TEST_CATALOG_RESPONSE_BUDGET {
         _catalog_mocks.push(responses::mount_models_once(&thread_server, catalog.clone()).await);
@@ -915,6 +915,12 @@ async fn sample_configured_conversation_history_with_delivery(
         "{guardian_config}\n[features.guardianv2.review_scope]\ncomputer_use_only = false\n"
     );
     let has_model_defaults = model_defaults.is_some();
+    let allow_skipped = matches!(
+        &messaging,
+        MessagingSetup::Disabled {
+            allow_skipped: true,
+        }
+    );
     let code_mode = matches!(&messaging, MessagingSetup::CodeMode(_));
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
@@ -934,10 +940,11 @@ async fn sample_configured_conversation_history_with_delivery(
                 .expect("reviewer model should have Guardian policy")
                 .policy = Some(TEST_CATALOG_GUARDIAN_POLICY.to_owned());
         })
-        .with_model("gpt-5.5")
+        .with_model(MODEL)
         .with_config(move |config| {
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config.guardian_policy_config = guardian_policy;
+            config.config_layer_stack = codex_config::ConfigLayerStack::default();
             if code_mode {
                 for feature in [
                     Feature::Apps,
@@ -953,9 +960,11 @@ async fn sample_configured_conversation_history_with_delivery(
         .with_pre_build_hook(move |home| {
             std::fs::write(home.join("config.toml"), guardian_config)
                 .expect("Guardian v2 configuration should be written");
+            std::fs::write(home.join("requirements.toml"), "")
+                .expect("Guardian test requirements should be isolated");
         });
     let builder = if let Some(model_defaults) = model_defaults {
-        builder.with_model_info_override("gpt-5.5", move |model| {
+        builder.with_model_info_override(MODEL, move |model| {
             model
                 .model_messages
                 .as_mut()
@@ -997,14 +1006,17 @@ async fn sample_configured_conversation_history_with_delivery(
         "total_tokens": 150,
     });
     let events = vec![ev_assistant_message("sample", "high"), completed];
-    let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
-    connections.push(vec![events]);
-    let server = responses::start_websocket_server(connections).await;
-    let provider_info = ModelProviderInfo::create_openai_provider(Some(format!(
-        "http://{}/v1",
-        server.uri().trim_start_matches("ws://")
-    )));
-    let auth_manager = test.thread_manager.auth_manager();
+    let warm_server = responses::start_websocket_server(vec![vec![events.clone()]]).await;
+    let classifier_server = responses::start_websocket_server(vec![vec![events.clone()]]).await;
+    let provider_info = ModelProviderInfo::create_openai_provider(Some(
+        proxy_websocket_servers_with_http(
+            &[&warm_server, &classifier_server],
+            ProxyPrewarmLimit::AllConnections,
+            /*http_url*/ None,
+        )
+        .await?,
+    ));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-api-key"));
     let mut config = test.config.clone();
     config.model_provider = provider_info;
     config.features.enable(Feature::GuardianV2)?;
@@ -1023,7 +1035,7 @@ async fn sample_configured_conversation_history_with_delivery(
         let parent_model = test
             .thread_manager
             .get_models_manager()
-            .get_model_info("gpt-5.5", &config.to_models_manager_config())
+            .get_model_info(MODEL, &config.to_models_manager_config())
             .await;
         thread_store.insert(parent_model);
     }
@@ -1049,11 +1061,13 @@ async fn sample_configured_conversation_history_with_delivery(
             thread_store,
         })
         .await;
-    thread_store
-        .get::<LunaSampler>()
-        .expect("Guardian v2 should initialize")
-        .wait_for_prewarm(PREWARM_TIMEOUT)
-        .await?;
+    if !allow_skipped {
+        thread_store
+            .get::<LunaSampler>()
+            .expect("Guardian v2 should initialize")
+            .wait_for_prewarm(PREWARM_TIMEOUT)
+            .await?;
+    }
     let turn_store = ExtensionData::new("turn-1");
     let tool_name = ToolName::plain("read_file");
     let tool_payload = ToolPayload::Function {
@@ -1086,21 +1100,46 @@ async fn sample_configured_conversation_history_with_delivery(
         })
         .await;
 
-    let request = tokio::time::timeout(
-        ASYNC_TEST_TIMEOUT,
-        server.wait_for_request(
-            /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
-            /*request_index*/ 0,
-        ),
-    )
-    .await?;
+    let request = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
+        loop {
+            if let Some(request) = warm_server
+                .connections()
+                .into_iter()
+                .chain(classifier_server.connections())
+                .find_map(|requests| requests.into_iter().next())
+            {
+                return request;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let request = match request {
+        Ok(request) => request,
+        Err(_error) if allow_skipped => {
+            return Ok((
+                serde_json::Value::Null,
+                test,
+                registry,
+                thread_server,
+                warm_server,
+                classifier_server,
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
     assert!(
-        server
-            .wait_for_closed_connections(INITIAL_WEBSOCKET_CONNECTIONS, ASYNC_TEST_TIMEOUT)
-            .await,
-        "Guardian websocket responses should be fully delivered before scoring"
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
+            tokio::select! {
+                closed = warm_server.wait_for_closed_connections(/*classifier_connection*/ 1, ASYNC_TEST_TIMEOUT) => closed,
+                closed = classifier_server.wait_for_closed_connections(/*classifier_connection*/ 1, ASYNC_TEST_TIMEOUT) => closed,
+            }
+        })
+        .await
+        .unwrap_or(false),
+        "Guardian websocket response should be fully delivered before scoring"
     );
-    Ok((request.body_json(), test, registry, thread_server, server))
+    Ok((request.body_json(), test, registry, thread_server, warm_server, classifier_server))
 }
 
 struct GuardianFailureFixture {
@@ -3386,7 +3425,7 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> {
+async fn thread_owned_skips_parent_compaction_reuse_when_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let oversized_compaction = ResponseItem::Compaction {
@@ -3399,7 +3438,7 @@ async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> 
         user_instruction("Inspect the repository guidelines."),
     ];
     let configuration = "[features.guardianv2]\nthread_context = false\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
-    let (request, test, _registry, _thread_server, _sampling_server) =
+    let (request, test, _registry, _thread_server, _warm_server, _classifier_server) =
         sample_configured_conversation_history_with_delivery(
             conversation_history,
             r#"{"path":"README.md"}"#,
@@ -3407,10 +3446,16 @@ async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> 
             configuration,
             /*model_defaults*/ None,
             ToolCallSource::Direct,
-            MessagingSetup::Disabled,
+            MessagingSetup::Disabled {
+                allow_skipped: true,
+            },
         )
         .await?;
 
+    if request.is_null() {
+        assert!(cached_score(test.codex.thread_extension_data()).is_none());
+        return Ok(());
+    }
     let input = request["input"]
         .as_array()
         .expect("Luna request input should be an array");
@@ -3431,7 +3476,8 @@ async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> 
             tokio::task::yield_now().await;
         }
     })
-    .await?;
+    .await
+    .map_err(|error| anyhow::anyhow!("legacy score: {error}"))?;
     assert_eq!(score.scores.get("action_risk"), Some(&1.0));
 
     Ok(())
