@@ -158,3 +158,10 @@ the authority for release outcomes and verification receipts.
   `PermissionError: [Errno 1] Operation not permitted` when the fixture binds
   `127.0.0.1`. Rerun the unchanged smoke artifacts with the host-approved
   loopback capability, then retain the gzip and zstd XML receipts.
+- **Verify the daemon binary separately from the CLI binary after rollout.**
+  A stale manually launched app-server can remain on the control socket while
+  the launcher and proxy select a newer CLI. That mixed pair caused Desktop's
+  model-list and message paths to fail even though each binary started alone.
+  After switching releases, require `codex app-server daemon version` to report
+  matching `cliVersion`, `managedCodexVersion`, and `appServerVersion`, and
+  stop unmanaged app-server processes before testing the Desktop protocol.
