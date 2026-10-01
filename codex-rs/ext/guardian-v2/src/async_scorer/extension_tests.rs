@@ -1139,7 +1139,14 @@ async fn sample_configured_conversation_history_with_delivery(
         .unwrap_or(false),
         "Guardian websocket response should be fully delivered before scoring"
     );
-    Ok((request.body_json(), test, registry, thread_server, warm_server, classifier_server))
+    Ok((
+        request.body_json(),
+        test,
+        registry,
+        thread_server,
+        warm_server,
+        classifier_server,
+    ))
 }
 
 struct GuardianFailureFixture {
