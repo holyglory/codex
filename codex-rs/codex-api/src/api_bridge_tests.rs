@@ -56,7 +56,7 @@ async fn map_api_error_preserves_retry_delay() {
 }
 
 #[test]
-fn map_api_error_uses_capacity_recovery_for_service_unavailable() {
+fn map_api_error_distinguishes_capacity_from_generic_service_unavailable() {
     for (code, expected, retryable) in [
         (
             "server_is_overloaded",
@@ -64,7 +64,13 @@ fn map_api_error_uses_capacity_recovery_for_service_unavailable() {
             false,
         ),
         ("slow_down", CodexErrorInfo::ServerOverloaded, false),
-        ("unknown_error", CodexErrorInfo::Other, true),
+        (
+            "unknown_error",
+            CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(503),
+            },
+            true,
+        ),
     ] {
         let err = map_api_error(ApiError::Transport(TransportError::Http {
             retry_after: None,

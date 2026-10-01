@@ -113,7 +113,19 @@ the authority for release outcomes and verification receipts.
   Rust/Bazel candidate validation. Do not use a full-suite failure caused by
   stale snapshots, missing native plugins, or saturated Code Mode fixtures as
   evidence of a production regression without reproducing the affected path.
+- **Classify a complete-suite failure before repairing it.** On the 0.159.1
+  candidate, the full Rust pass separated into: stale API/client expectations,
+  stale session timing, snapshot drift from current instructions/tool exposure,
+  flaky stopwatch timing, Code Mode pressure timeouts, hook request-count
+  mismatches, and Guardian tests that inherited a required-model configuration.
+  Use the bounded failure index and focused reproductions to repair only source
+  or fixtures with causal evidence; preserve environment/load failures as
+  separate evidence instead of broadening the patch.
 - **Package and publish only from the tested commit.** Confirm the release
   version in Cargo and npm metadata, stage all seven platform tarballs from the
   candidate artifact, verify checksums and smoke tests with a temporary
   `CODEX_HOME`, and check npm authentication before attempting publication.
+- **Deployment and npm are independent gates.** A healthy checkout or package
+  build does not prove local deployment when DevCoordinator has no declaration
+  for the repository. Likewise, `npm whoami` must succeed before staging a
+  publish; an npm `E401` is an authentication blocker, not a package failure.

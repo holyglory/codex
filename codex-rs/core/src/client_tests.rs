@@ -852,6 +852,7 @@ async fn responses_http_omits_raw_tool_metadata_for_openai_named_custom_endpoint
         ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
     provider.requires_openai_auth = false;
     provider.supports_websockets = false;
+    provider.include_internal_metadata = false;
     let mut client = test_model_client(SessionSource::Cli);
     Arc::get_mut(&mut client.state)
         .expect("test client should have unique session state")
