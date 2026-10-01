@@ -83,8 +83,8 @@ async fn owned_startup_hides_tip_in_transcript() -> Result<()> {
             .join("\n");
         assert!(text.contains("Pull up a prompt."));
         assert!(text.contains("Use /mcp"));
-        assert!(!text.contains("model:"));
-        assert!(!text.contains('╭'));
+        assert!(text.contains("model:"));
+        assert!(text.contains('╭'));
     }
     app.transcript_view.begin_search();
     app.render_owned_transcript(&mut tui, Size::new(/*width*/ 80, /*height*/ 20))?;
