@@ -1,6 +1,5 @@
 ---
 source: core/tests/suite/skills_extension.rs
-assertion_line: 3190
 expression: "context_snapshot::format_request_history_snapshot(\"Cloud skills rebalance once to retain every executor skill. Post-turn compaction and resume restore the same cloud allocation before the executor reconnects; both catalogs are fully reinjected once into the new history.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Cloud skills rebalance once to retain every executor skill. Post-turn compaction and resume restore the same cloud allocation before the executor reconnects; both catalogs are fully reinjected once into the new history.
@@ -17,7 +16,17 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (5; hash=fb9143ee40054f2b):
+  tools (15; hash=18279a27482c15cf):
+    - function/usage_activity: Declare the category for upcoming work or append an enum-only correction to stored usage. Use set...; args=[action, activity, phase, relation, target_id]; hash=740c43c2dd54c7ed
+    - function/usage_stats: Read the private, content-free local usage collector. Summaries retain totals and paginate detail...; args=[account, action, agent_id, cursor_id, cursor_sort_value, detail, from_at_ms, include_descendants, limit, outcome_cursor, outcome_limit, repository, root_thread_id, scope, thread_id, to_at_ms]; hash=bd050e2efea083bb
+    - function/project_automation: Read legacy project clock state for migration using command {action:status}. Scheduling and mutat...; args=[command, expected_revision]; hash=ba1664a0bcde44da
+    - function/alarm_set: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[absolute_at_ms, active_work_ms, dedupe_key, expires_at_ms, operation_result, project_id, relative_ms, subject, summary, workstream_id]; hash=0f94442a933b9a02
+    - function/alarm_list: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[limit, offset]; hash=5926af42905f1dea
+    - function/alarm_status: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=56fc632b8cb88f58
+    - function/alarm_ack: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=b5e32bd6aea4e381
+    - function/alarm_cancel: Durable generic reminders for this task; no project policy, worker, or business completion. alarm...; args=[alarm_id]; hash=32d76dc4805df5f0
+    - function/await_work: Wait without model polling for a real provider-neutral event or an expected-event deadline. The p...; args=[after_sequence, deadline_at_ms, event_types, labels, source]; hash=df45672360ef66fd
+    - function/account_management: Manage existing local account profiles and inspect current service limits. Use list before mutati...; args=[account, action, expected_generation, limit, mode, new_alias, offset, priority, refresh_service_usage]; hash=f51496ac6a2b4646
     - function/wait_for_environment: Wait for the selected environment.; args=[environment_id]; hash=aac8552da86b3b20
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - namespace/skills: Tools in the skills namespace.; hash=998a720eb0f017bc
@@ -26,7 +35,7 @@ Settings:
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
     - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
-00:message/developer[3]:
+00:message/developer[5]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -36,7 +45,9 @@ Settings:
 
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [05] <SKILLS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -44,13 +55,13 @@ Settings:
 
 ## Window 2 (after request 1)
 Settings: relative to window 1
-  tools (9; hash=1df9146cc32e8188):
+  tools (19; hash=97445b3a057bc1e4):
     + function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     + function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
     + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
     + function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
 -- request 2 (turn) --
-00:message/developer[3]:
+00:message/developer[5]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -60,7 +71,9 @@ Settings: relative to window 1
 
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [05] <SKILLS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -82,6 +95,16 @@ Settings: relative to window 2
   tools (0; hash=09612b07b5ecb5a5):
     - removed function/exec_command
     - removed function/write_stdin
+    - removed function/usage_activity
+    - removed function/usage_stats
+    - removed function/project_automation
+    - removed function/alarm_set
+    - removed function/alarm_list
+    - removed function/alarm_status
+    - removed function/alarm_ack
+    - removed function/alarm_cancel
+    - removed function/await_work
+    - removed function/account_management
     - removed function/wait_for_environment
     - removed function/request_user_input
     - removed custom/apply_patch
@@ -90,7 +113,7 @@ Settings: relative to window 2
     - removed tool_search
     - removed web_search
 -- request 4 (compaction) --
-00:message/developer[3]:
+00:message/developer[5]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -100,7 +123,9 @@ Settings: relative to window 2
 
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [05] <SKILLS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:
@@ -127,7 +152,7 @@ Settings: same as window 1
 02:message/user:
     <COMPACTION_SUMMARY>
     The available skills were inspected.
-03:message/developer[3]:
+03:message/developer[5]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -137,7 +162,9 @@ Settings: same as window 1
 
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [05] <SKILLS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -153,7 +180,7 @@ Settings: same as window 2
 02:message/user:
     <COMPACTION_SUMMARY>
     The available skills were inspected.
-03:message/developer[3]:
+03:message/developer[5]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -163,7 +190,9 @@ Settings: same as window 2
 
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    [03] <USAGE_STATS_INSTRUCTIONS>
+    [04] <PROJECT_AUTOMATION_INSTRUCTIONS>
+    [05] <SKILLS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:

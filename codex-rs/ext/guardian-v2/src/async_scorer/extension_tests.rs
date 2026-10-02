@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -866,16 +867,14 @@ async fn sample_configured_conversation_history_with_source(
         guardian_config,
         model_defaults,
         source,
-        MessagingSetup::Disabled {
-            allow_skipped: false,
-        },
+        MessagingSetup::Disabled,
     )
     .await?;
     Ok((request, test, registry))
 }
 
 enum MessagingSetup {
-    Disabled { allow_skipped: bool },
+    Disabled,
     CodeMode(String),
 }
 
@@ -915,12 +914,6 @@ async fn sample_configured_conversation_history_with_delivery(
         "{guardian_config}\n[features.guardianv2.review_scope]\ncomputer_use_only = false\n"
     );
     let has_model_defaults = model_defaults.is_some();
-    let allow_skipped = matches!(
-        &messaging,
-        MessagingSetup::Disabled {
-            allow_skipped: true,
-        }
-    );
     let code_mode = matches!(&messaging, MessagingSetup::CodeMode(_));
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
@@ -944,7 +937,6 @@ async fn sample_configured_conversation_history_with_delivery(
         .with_config(move |config| {
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config.guardian_policy_config = guardian_policy;
-            config.config_layer_stack = codex_config::ConfigLayerStack::default();
             if code_mode {
                 for feature in [
                     Feature::Apps,
@@ -1061,13 +1053,12 @@ async fn sample_configured_conversation_history_with_delivery(
             thread_store,
         })
         .await;
-    if !allow_skipped {
-        thread_store
-            .get::<LunaSampler>()
-            .expect("Guardian v2 should initialize")
-            .wait_for_prewarm(PREWARM_TIMEOUT)
-            .await?;
-    }
+    thread_store
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await
+        .context("Guardian fixture must prewarm the classifier sockets")?;
     let turn_store = ExtensionData::new("turn-1");
     let tool_name = ToolName::plain("read_file");
     let tool_payload = ToolPayload::Function {
@@ -1113,21 +1104,8 @@ async fn sample_configured_conversation_history_with_delivery(
             tokio::task::yield_now().await;
         }
     })
-    .await;
-    let request = match request {
-        Ok(request) => request,
-        Err(_error) if allow_skipped => {
-            return Ok((
-                serde_json::Value::Null,
-                test,
-                registry,
-                thread_server,
-                warm_server,
-                classifier_server,
-            ));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    .await
+    .context("Guardian fixture must receive a classifier request")?;
     assert!(
         tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
             tokio::select! {
@@ -3432,62 +3410,31 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn thread_owned_skips_parent_compaction_reuse_when_disabled() -> Result<()> {
+async fn thread_owned_requires_sync_when_parent_compaction_reuse_is_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let oversized_compaction = ResponseItem::Compaction {
-        id: Some(ResponseItemId::from_server("cmp_oversized".to_owned())),
-        encrypted_content: "a".repeat(TruncationPolicy::Tokens(/*limit*/ 256).byte_budget()),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let conversation_history = vec![
-        oversized_compaction,
-        user_instruction("Inspect the repository guidelines."),
-    ];
-    let configuration = "[features.guardianv2]\nthread_context = false\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
-    let (request, test, _registry, _thread_server, _warm_server, _classifier_server) =
-        sample_configured_conversation_history_with_delivery(
-            conversation_history,
-            r#"{"path":"README.md"}"#,
-            Some(TEST_GUARDIAN_POLICY),
-            configuration,
-            /*model_defaults*/ None,
-            ToolCallSource::Direct,
-            MessagingSetup::Disabled {
-                allow_skipped: true,
+    let fixture = GuardianFailureFixture::with_config(
+        "[features.guardianv2]\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n",
+    )
+    .await?;
+    fixture
+        .test
+        .codex
+        .inject_response_items(vec![
+            ResponseItem::Compaction {
+                id: Some(ResponseItemId::from_server("cmp_oversized".to_owned())),
+                encrypted_content: "a"
+                    .repeat(TruncationPolicy::Tokens(/*limit*/ 256).byte_budget()),
+                internal_chat_message_metadata_passthrough: None,
             },
-        )
+            user_instruction("Inspect the repository guidelines."),
+        ])
         .await?;
 
-    if request.is_null() {
-        assert!(cached_score(test.codex.thread_extension_data()).is_none());
-        return Ok(());
-    }
-    let input = request["input"]
-        .as_array()
-        .expect("Luna request input should be an array");
-    assert_eq!(input.len(), 3);
-    assert_eq!(input[2]["role"], "user");
-    assert!(
-        input
-            .iter()
-            .all(|item| item["type"] != "compaction" && item["type"] != "context_compaction")
-    );
-
-    let thread_store = test.codex.thread_extension_data();
-    let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
-        loop {
-            if let Some(score) = cached_score(thread_store) {
-                return score;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("legacy score: {error}"))?;
-    assert_eq!(score.scores.get("action_risk"), Some(&1.0));
-
-    Ok(())
+    // Thread-owned history requires synchronous review when its checkpoint
+    // cannot be reused. A fail-closed score must never become a cached approval.
+    fixture.score_tool(ToolName::plain("read_file")).await;
+    fixture.assert_fails_closed("incompatible_compaction").await
 }
 
 struct CacheMiss;

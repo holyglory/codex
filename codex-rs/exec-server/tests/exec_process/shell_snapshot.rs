@@ -102,8 +102,16 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
             FileSystemAccessMode::Write,
         ));
         if deny_fd_path {
+            // Linux exposes /dev/fd as a symlink into procfs. Bubblewrap cannot
+            // mount a deny mask on that symlink; hide its backing filesystem to
+            // exercise descriptor-unavailable replay without failing sandbox setup.
+            let descriptor_root = if cfg!(target_os = "linux") {
+                "/proc"
+            } else {
+                "/dev/fd"
+            };
             policy.entries.push(FileSystemSandboxEntry::new(
-                PathUri::from_host_native_path("/dev/fd")?.into(),
+                PathUri::from_host_native_path(descriptor_root)?.into(),
                 FileSystemAccessMode::Deny,
             ));
         } else {
@@ -172,7 +180,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 collect_process_output_from_events(started.process).await?;
             assert!(
                 output.ends_with(&format!("restored:input-{index}")),
-                "{output:?}"
+                "output={output:?}, errors={errors:?}, status={status:?}, closed={closed}"
             );
             if shell == "zsh" {
                 assert!(

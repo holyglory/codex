@@ -89,8 +89,9 @@ the authority for release outcomes and verification receipts.
 - **Guardian WebSocket fixtures must model the pool.** Test prewarm uses
   `INITIAL_WEBSOCKET_CONNECTIONS = 2`, and the helper server handles one socket
   at a time. Use separate scripted servers behind the existing proxy helper,
-  keep every returned server alive until the test no longer needs it, and wait
-  for the disposable warm socket to close before leasing the classifier socket.
+  keep every returned server alive until the test no longer needs it, and allow
+  either pooled socket to serve classification. An unused warm socket may stay
+  open; wait for the socket that actually delivered the response.
   A single server with two scripted connections can leave the test waiting on a
   socket that was never accepted.
 - **The Guardian `thread_context` opt-out is no longer a legacy mode.** Stable
@@ -108,6 +109,30 @@ the authority for release outcomes and verification receipts.
   distinguish startup/catalog, handshake/prewarm, request delivery, and score
   publication. Add bounded diagnostics, reproduce the exact await point, then
   remove diagnostics before committing the fixture repair.
+- **Preserve fixture configuration while isolating host settings.** The 0.159.1
+  Guardian helper wrote its scoring configuration and then cleared the entire
+  configuration stack, disabling prewarm and causing 25 identical timeouts.
+  Isolate host configuration at the runner boundary; do not erase the fixture's
+  own layers. Name the failed await boundary in diagnostic errors.
+- **Review automatically merged test setup as well as conflicts.** An upstream
+  hook fix and the existing downstream fix both removed the same gate file. The
+  second removal aborted the test; the mock-server cleanup then reported a
+  misleading missing request. Trace the first failure before changing timing
+  limits, request counts, or production behavior.
+- **Snapshot provenance comes from source and fixture setup.** Built-in usage,
+  account, and alarm tools are intentional fork output. Their names appearing
+  in a snapshot do not establish host contamination. An empty temporary workspace
+  does not supply AGENTS.md. Review those setup facts and the individual diff
+  before accepting or rejecting a generated snapshot.
+- **Test the current Guardian contract.** Disabling parent-compaction reuse in
+  thread-owned mode requires synchronous review. Verify rejection of cached
+  approval using the existing failure fixture; do not treat a 30-second timeout
+  or missing classifier request as success for the removed legacy mode.
+- **Make descriptor-denial fixtures portable.** On Linux, `/dev/fd` is a symlink
+  into procfs and Bubblewrap cannot mount a deny mask on that symlink. Hide
+  `/proc` in the disposable fixture to exercise environment replay, retaining
+  stdin, output, exit-status, and protected-file checks. Include stderr and exit
+  status in failure assertions so sandbox setup errors are visible.
 - **Keep environment failures separate from source regressions.** The full
   suite may require the managed GStreamer plugin path and the repository's
   native test environment. `just fmt` can also fail when `uv` cannot write its
@@ -118,14 +143,19 @@ the authority for release outcomes and verification receipts.
   Rust/Bazel candidate validation. Do not use a full-suite failure caused by
   stale snapshots, missing native plugins, or saturated Code Mode fixtures as
   evidence of a production regression without reproducing the affected path.
-- **Classify a complete-suite failure before repairing it.** On the 0.159.1
-  candidate, the full Rust pass separated into: stale API/client expectations,
-  stale session timing, snapshot drift from current instructions/tool exposure,
-  flaky stopwatch timing, Code Mode pressure timeouts, hook request-count
-  mismatches, and Guardian tests that inherited a required-model configuration.
-  Use the bounded failure index and focused reproductions to repair only source
-  or fixtures with causal evidence; preserve environment/load failures as
-  separate evidence instead of broadening the patch.
+- **Keep one reproducible runner and reuse build outputs.** Resolve all GNU and
+  musl V8 inputs, the musl `libcap.pc` directory, smoke-test Python, and helper
+  binaries before starting acceptance. Keep Cargo profile and package selection
+  consistent to reuse dependencies. Run through Coordinator so chat interruption
+  does not terminate the job. Mount private build-volume scratch at `/tmp`, create
+  the isolated `CODEX_HOME`, and hide host `/etc/codex`. Do not include snapshot
+  refresh commands in an acceptance graph. A passed selected check is diagnostic
+  evidence; publication still requires the complete exact-commit receipt.
+- **Classify a complete-suite failure before repairing it.** Group failures by
+  their shared fixture and first failed operation. Preserve the bounded failure
+  index and reproduce a representative case. Do not label consistent failures
+  as load, races, or host contamination without evidence that distinguishes
+  those causes from deterministic setup errors.
 - **Package and publish only from the tested commit.** Confirm the release
   version in Cargo and npm metadata, stage all seven platform tarballs from the
   candidate artifact, verify checksums and smoke tests with a temporary
@@ -133,8 +163,9 @@ the authority for release outcomes and verification receipts.
 - **Large single-item WebSocket fixtures must follow the batching contract.**
   The fork stages context in 4 MiB chunks and falls back to HTTP when an
   indivisible input item is larger than that target. Adapt upstream tests that
-  put a 15 MiB instruction item on a WebSocket: use the real HTTP fallback
-  fixture while retaining the message-budget, yield, and wait assertions. Do
+  put a 15 MiB instruction item on a WebSocket: exercise the HTTP message-budget
+  path while retaining yield and wait assertions, and keep the separate
+  WebSocket-to-HTTP fallback integration coverage. Do
   not weaken the production fallback or expect a WebSocket request that the
   transport is designed not to send.
 - **Startup and generation WebSocket fallback must agree.** A 426 or 5xx
