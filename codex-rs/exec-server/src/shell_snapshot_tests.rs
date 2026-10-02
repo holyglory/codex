@@ -131,10 +131,30 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
         };
         let second = second.expect("waiting command must complete even when prewarm fails");
         for (prepared, reader) in [(&mut prepared, first), (&mut concurrent, second)] {
-            if let Some(reader) = reader {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
-                prepared.command[2] =
-                    prepared.command[2].replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
+            if reader.is_some() {
+                // The two equivalent readers can receive different descriptor numbers.
+                // Compare the replay command independent of those process-local handles.
+                let command = prepared
+                    .command
+                    .iter_mut()
+                    .find(|argument| argument.contains("/dev/fd/"))
+                    .expect("snapshot replay command should contain its reader");
+                let mut normalized = String::with_capacity(command.len());
+                let mut remaining = command.as_str();
+                while let Some(start) = remaining.find("/dev/fd/") {
+                    normalized.push_str(&remaining[..start]);
+                    let suffix = &remaining[start + "/dev/fd/".len()..];
+                    let digit_count = suffix.bytes().take_while(u8::is_ascii_digit).count();
+                    if digit_count == 0 {
+                        normalized.push_str("/dev/fd/");
+                        remaining = suffix;
+                    } else {
+                        normalized.push_str("/dev/fd/SNAPSHOT");
+                        remaining = &suffix[digit_count..];
+                    }
+                }
+                normalized.push_str(remaining);
+                *command = normalized;
             }
         }
         assert_eq!(
