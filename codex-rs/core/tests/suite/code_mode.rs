@@ -9035,7 +9035,7 @@ text(JSON.stringify({
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_oversized_websocket_yield_keeps_later_wait_incomplete() -> Result<()> {
+async fn code_mode_oversized_yield_keeps_later_wait_incomplete() -> Result<()> {
     skip_if_no_network!(Ok(()));
     const LIMIT: usize = 15 * 1024 * 1024;
     const PROMPT: &str = "Record a call, yield, then stop";
@@ -9059,26 +9059,23 @@ async fn code_mode_oversized_websocket_yield_keeps_later_wait_incomplete() -> Re
         config.model_provider.request_max_retries = Some(0);
         config.model_provider.stream_max_retries = Some(0);
     };
-    let warmup = || vec![ev_response_created("warmup"), ev_completed("warmup")];
-    let probe_server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("probe"), ev_completed("probe")],
-    ]])
+    let probe_server = responses::start_mock_server().await;
+    let probe_response = responses::mount_sse_once(
+        &probe_server,
+        sse(vec![ev_response_created("probe"), ev_completed("probe")]),
+    )
     .await;
     let mut probe_builder = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| configure(config, String::new()));
-    let probe = probe_builder
-        .build_with_websocket_server(&probe_server)
-        .await?;
+    let probe = probe_builder.build(&probe_server).await?;
     probe.submit_turn(PROMPT).await?;
-    let probe_connection = probe_server.single_connection();
-    assert_eq!(probe_connection.len(), 2);
-    let base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
+    let base_bytes = serde_json::to_vec(&probe_response.single_request().body_json())?.len();
     assert!(base_bytes + 4 * 1024 < LIMIT);
     probe.codex.shutdown_and_wait().await?;
-    probe_server.shutdown().await;
-
+    // The downstream WebSocket batching layer falls back to HTTP when one
+    // indivisible input item exceeds its 4 MiB staging target. Keep this
+    // message-budget regression on the transport-neutral Responses path.
     // One 7 KiB invocation stays under the recorder's per-output argument
     // budget. It pushes the yielded delta over the message budget only.
     let instructions = "x".repeat(LIMIT - base_bytes - 4 * 1024);
@@ -9093,27 +9090,36 @@ await new Promise(() => {});
     let mut wait =
         responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
     wait["item"]["id"] = serde_json::json!("fc_wait_a");
-    let server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
-        vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
-        vec![ev_response_created("resp-3"), ev_completed("resp-3")],
-    ]])
+    let server = responses::start_mock_server().await;
+    let response_log = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                exec,
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                wait,
+                ev_completed("resp-2"),
+            ]),
+            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
+        ],
+    )
     .await;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| configure(config, instructions));
-    let test = builder.build_with_websocket_server(&server).await?;
+    let test = builder.build(&server).await?;
     test.submit_turn(PROMPT).await?;
-    let connection = server.single_connection();
-    assert_eq!(connection.len(), 4);
-    let first = connection[1].body_json();
-    let yielded_request = connection[2].body_json();
-    let terminal_request = connection[3].body_json();
+    let requests = response_log.requests();
+    assert_eq!(requests.len(), 3);
+    let first = requests[0].body_json();
+    let yielded_request = requests[1].body_json();
+    let terminal_request = requests[2].body_json();
     assert!(serde_json::to_vec(&first)?.len() <= LIMIT);
     assert!(serde_json::to_vec(&yielded_request)?.len() <= LIMIT);
-    assert_eq!(yielded_request["previous_response_id"], "resp-1");
-    assert_eq!(terminal_request["previous_response_id"], "resp-2");
 
     let find_output = |request: &Value, call_id: &str| -> Value {
         request["input"]
@@ -9169,6 +9175,5 @@ await new Promise(() => {});
         assert_eq!(actual["output"], original["output"]);
     }
     test.codex.shutdown_and_wait().await?;
-    server.shutdown().await;
     Ok(())
 }

@@ -1730,7 +1730,7 @@ impl ModelClientSession {
             {
                 Ok(_) => return Ok(()),
                 Err(ApiError::Transport(TransportError::Http { status, .. }))
-                    if status == StatusCode::UPGRADE_REQUIRED =>
+                    if status == StatusCode::UPGRADE_REQUIRED || status.is_server_error() =>
                 {
                     self.try_switch_fallback_transport(session_telemetry, model_info);
                     return Ok(());

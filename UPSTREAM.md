@@ -130,6 +130,18 @@ the authority for release outcomes and verification receipts.
   version in Cargo and npm metadata, stage all seven platform tarballs from the
   candidate artifact, verify checksums and smoke tests with a temporary
   `CODEX_HOME`, and check npm authentication before attempting publication.
+- **Large single-item WebSocket fixtures must follow the batching contract.**
+  The fork stages context in 4 MiB chunks and falls back to HTTP when an
+  indivisible input item is larger than that target. Adapt upstream tests that
+  put a 15 MiB instruction item on a WebSocket: use the real HTTP fallback
+  fixture while retaining the message-budget, yield, and wait assertions. Do
+  not weaken the production fallback or expect a WebSocket request that the
+  transport is designed not to send.
+- **Startup and generation WebSocket fallback must agree.** A 426 or 5xx
+  response during preconnect must activate the sticky HTTP fallback before the
+  first user turn. If preconnect handles only 426, a 5xx gateway failure causes
+  one extra failed WebSocket attempt; keep both cases in the focused fallback
+  integration group.
 - **Deployment and npm are independent gates.** A healthy checkout or package
   build does not prove local deployment when DevCoordinator has no declaration
   for the repository. Likewise, `npm whoami` must succeed before staging a
