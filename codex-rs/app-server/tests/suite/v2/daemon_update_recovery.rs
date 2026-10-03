@@ -821,6 +821,9 @@ fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
         ("codex-app-server", &binary),
         ("codex-code-mode-host", &code_mode_host),
     ] {
+        if destination.is_file() {
+            continue;
+        }
         let source = codex_utils_cargo_bin::cargo_bin(source_name)?;
         std::fs::hard_link(&source, destination)
             .or_else(|_| std::fs::copy(&source, destination).map(|_| ()))
