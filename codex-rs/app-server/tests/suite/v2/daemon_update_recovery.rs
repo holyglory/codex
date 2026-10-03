@@ -813,7 +813,19 @@ async fn connect_daemon_client(
 }
 
 fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
-    let binary = codex_utils_cargo_bin::cargo_bin("codex-app-server")?;
+    let install_dir = home.join("bin");
+    std::fs::create_dir_all(&install_dir)?;
+    let binary = install_dir.join("codex-app-server");
+    let code_mode_host = install_dir.join("codex-code-mode-host");
+    for (source_name, destination) in [
+        ("codex-app-server", &binary),
+        ("codex-code-mode-host", &code_mode_host),
+    ] {
+        let source = codex_utils_cargo_bin::cargo_bin(source_name)?;
+        std::fs::hard_link(&source, destination)
+            .or_else(|_| std::fs::copy(&source, destination).map(|_| ()))
+            .with_context(|| format!("stage executable {}", source.display()))?;
+    }
     Ok(Command::new(binary)
         .args(["--listen", &format!("unix://{}", socket_path.display())])
         .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
