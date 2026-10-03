@@ -156,6 +156,12 @@ the authority for release outcomes and verification receipts.
   index and reproduce a representative case. Do not label consistent failures
   as load, races, or host contamination without evidence that distinguishes
   those causes from deterministic setup errors.
+- **Stage companion executables in direct Bazel fixtures.** A raw app-server
+  test launcher can find `codex-app-server` while its Code Mode host remains in
+  a separate Bazel runfiles directory. Stage both binaries beside the launched
+  server, or use the shared test-server builder that already recreates the
+  installed sibling layout. Otherwise the host spawn fails with `ENOENT` and
+  the test later reports only a misleading readiness timeout.
 - **Package and publish only from the tested commit.** Confirm the release
   version in Cargo and npm metadata, stage all seven platform tarballs from the
   candidate artifact, verify checksums and smoke tests with a temporary
