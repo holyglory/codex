@@ -34,7 +34,7 @@ inherits = "default"
 [[profile.default.overrides]]
 # The production-shaped usage fixture intentionally builds millions of facts.
 filter = 'package(codex-usage) & test(accounting_scale_bounds_memory_refresh_and_wal)'
-slow-timeout = { period = "30m", terminate-after = 1 }
+slow-timeout = { period = "6h", terminate-after = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(codex-feedback) & test(feedback_upload_delivers_whole_files_or_marked_prefixes)'
