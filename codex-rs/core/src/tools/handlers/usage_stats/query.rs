@@ -70,7 +70,8 @@ pub(super) async fn execute(
                 })
                 .await
                 .map_err(|error| match error {
-                    codex_usage::UsageStoreError::InvalidReviewCursor => {
+                    codex_usage::UsageStoreError::InvalidReviewCursor
+                    | codex_usage::UsageStoreError::ReportTimedOut => {
                         tool_error(&error.to_string())
                     }
                     _ => storage_error(),

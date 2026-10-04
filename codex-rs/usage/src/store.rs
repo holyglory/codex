@@ -70,6 +70,8 @@ pub enum UsageStoreError {
     TaskTreeTooLarge,
     #[error("usage summary exceeds its memory bound; narrow the scope or time range")]
     ReportTooLarge,
+    #[error("usage report exceeded its time budget; narrow the scope or time range")]
+    ReportTimedOut,
     #[error("outcome cursor expired or does not match this report; start a new first page")]
     InvalidReviewCursor,
 }
