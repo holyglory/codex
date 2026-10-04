@@ -17,6 +17,9 @@ mod outcomes;
 #[path = "performance_review_scope_tests.rs"]
 mod scope;
 
+#[path = "performance_review_lifecycle_tests.rs"]
+mod lifecycle;
+
 struct Fixture {
     store: UsageStore,
     process: ProcessId,

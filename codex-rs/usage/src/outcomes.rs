@@ -30,7 +30,7 @@ pub(crate) async fn read(
     source: &query::Selection,
 ) -> Result<OutcomeReport, UsageStoreError> {
     let mut builder = query::selection(scope, source);
-    let rows = builder.push(query::TOKEN_FACTS).push("SELECT owner.id, owner.agent_id, owner.operation_kind,
+    let rows = builder.push(query::token_facts(source)).push("SELECT owner.id, owner.agent_id, owner.operation_kind,
         owner.started_at_ms, terminal.occurred_at_ms ended_at_ms, terminal.duration_ns IS NOT NULL timing_known, effective.effective_state,
         owner.retry_of_operation_id IS NOT NULL retry, owner.rework_of_operation_id IS NOT NULL rework,
         context.operation_id context_id, context.native_project_id, context.workstream_id, context.outcome_id,
@@ -126,7 +126,7 @@ pub(crate) async fn read(
         );
     }
     let mut builder = query::selection(scope, source);
-    let tokens = builder.push(query::TOKEN_FACTS).push("SELECT operation_id, token_count,
+    let tokens = builder.push(query::token_facts(source)).push("SELECT operation_id, token_count,
         unknown_count, incomplete, COALESCE(conflict, 0) conflict FROM token_facts
         WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported' LIMIT 200001")
         .build().fetch_all(&mut *connection).await.map_err(UsageStoreError::Database)?;

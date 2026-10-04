@@ -12,6 +12,8 @@ pub(crate) enum ClassificationSource {
 pub(crate) struct Selection {
     pub classification: ClassificationSource,
     pub operation_ids: Option<Vec<String>>,
+    pub scope_materialized: bool,
+    pub materialized: bool,
 }
 
 pub(crate) async fn long_lived_declaration_count(
@@ -71,7 +73,7 @@ pub(crate) async fn window_operation_ids(
     // Put bounds first so SQLite can seek time indexes before reading collector rows.
     let mut builder = selection(query, source);
     builder.push(", candidates(id) AS (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT operation_id FROM bounds CROSS JOIN operation_events WHERE terminal = 1 AND occurred_at_ms > lower_ms
+        UNION SELECT terminal.operation_id FROM bounds CROSS JOIN operation_events terminal JOIN operations operation ON operation.id = terminal.operation_id WHERE terminal.terminal = 1 AND terminal.occurred_at_ms > lower_ms AND operation.started_at_ms < upper_ms
         UNION ");
     builder.push(match source.classification {
         ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
@@ -104,16 +106,38 @@ pub(crate) fn selection(
     query: &PerformanceReviewQuery,
     source: &Selection,
 ) -> QueryBuilder<Sqlite> {
-    let mut builder = QueryBuilder::new(
-        "WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ",
-    );
+    selection_with_prefix(query, source, "")
+}
+
+fn selection_with_prefix(
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+    prefix: &'static str,
+) -> QueryBuilder<Sqlite> {
+    if source.materialized {
+        let mut builder = QueryBuilder::new(prefix);
+        builder.push("WITH scoped AS (SELECT * FROM temp._review_scoped), selected AS (SELECT * FROM temp._review_selected), effective AS (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
+            .push_bind(query.time_range.map_or(i64::MIN, crate::UtcTimeRange::start_ms))
+            .push(" AS lower_ms, ")
+            .push_bind(query.time_range.map_or(i64::MAX, crate::UtcTimeRange::end_ms))
+            .push(" AS upper_ms)");
+        return builder;
+    }
+    let mut builder = QueryBuilder::new(prefix);
+    builder.push("WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ");
     builder.push_bind(query.thread_id.as_ref().map(crate::ThreadId::as_str));
     builder.push(" UNION SELECT child.id FROM threads child JOIN review_threads parent ON child.parent_thread_id = parent.id WHERE ")
         .push_bind(query.include_descendants).push("), repository_family(id) AS (SELECT ")
         .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
         .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
             JOIN repository_family family ON merge.target_repository_id = family.id),
-            scoped AS (SELECT operation.* FROM operations operation WHERE 1=1");
+            scoped AS (SELECT operation.* FROM ");
+    builder.push(if source.scope_materialized {
+        "temp._review_scoped"
+    } else {
+        "operations"
+    });
+    builder.push(" operation WHERE 1=1");
     if let Some(ids) = &source.operation_ids {
         builder
             .push(" AND operation.id IN (SELECT value FROM json_each(")
@@ -229,3 +253,56 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
       AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
 ) SELECT category, COUNT(*) count, COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms,
     SUM(interval_ms IS NULL) unknown_intervals FROM waits GROUP BY category ORDER BY category";
+
+pub(crate) fn token_facts(source: &Selection) -> &'static str {
+    if source.materialized {
+        ", token_facts AS (SELECT * FROM temp._review_tokens)"
+    } else {
+        TOKEN_FACTS
+    }
+}
+
+pub(crate) async fn materialize(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &mut Selection,
+) -> Result<(), crate::UsageStoreError> {
+    use crate::UsageStoreError;
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_scoped AS ");
+    builder
+        .push(" SELECT * FROM scoped")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE UNIQUE INDEX temp._review_scoped_id ON _review_scoped(id)")
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    source.scope_materialized = true;
+    let mut builder =
+        selection_with_prefix(query, source, "CREATE TEMP TABLE _review_selected AS ");
+    builder
+        .push(" SELECT * FROM selected")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::raw_sql("CREATE INDEX temp._review_selected_group ON _review_selected(execution_group_id, execution_role);
+        CREATE TEMP TABLE _review_effective AS SELECT selected.* FROM _review_selected selected
+        WHERE NOT (COALESCE(execution_role, 'standalone') = 'wrapper' AND execution_group_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM _review_selected nested WHERE nested.execution_group_id = selected.execution_group_id AND nested.execution_role = 'nested'));
+        CREATE UNIQUE INDEX temp._review_effective_id ON _review_effective(id);")
+        .execute(&mut *connection).await.map_err(UsageStoreError::Database)?;
+    source.materialized = true;
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_tokens AS ");
+    builder
+        .push(TOKEN_FACTS)
+        .push(" SELECT * FROM token_facts")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE INDEX temp._review_tokens_owner ON _review_tokens(operation_id,category_path,measurement_provenance)").execute(connection).await.map_err(UsageStoreError::Database)?;
+    Ok(())
+}
