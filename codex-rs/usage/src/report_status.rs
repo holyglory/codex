@@ -42,3 +42,25 @@ impl UsageStoreError {
         })
     }
 }
+
+pub(crate) fn sqlite_code(error: &sqlx::Error) -> &'static str {
+    match error {
+        sqlx::Error::Database(database) => match database
+            .code()
+            .and_then(|code| code.parse::<u32>().ok())
+            .map(|code| code & 255)
+        {
+            Some(5) => "busy",
+            Some(6) => "locked",
+            Some(9) => "interrupt",
+            Some(10) => "io",
+            Some(11) => "corrupt",
+            Some(13) => "full",
+            Some(19) => "constraint",
+            _ => "database",
+        },
+        sqlx::Error::PoolTimedOut => "pool_timeout",
+        sqlx::Error::PoolClosed => "pool_closed",
+        _ => "storage",
+    }
+}

@@ -66,7 +66,8 @@ impl ReportRefresh {
                     Err(_error) if pool.is_closed() => break,
                     Err(error) => {
                         tracing::warn!(
-                            error = %error,
+                            sqlite_code = crate::report_status::sqlite_code(&error),
+                            stage = "refresh",
                             retry_after_ms = delay.as_millis(),
                             "usage report refresh failed; canonical reporting remains available"
                         );

@@ -164,7 +164,20 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
         // growing its WAL indefinitely; canonical capture remains independent.
         return Ok(Progress::ReaderBusy);
     }
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    use sqlx::Connection;
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(
+            &mut connection,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 100")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     let (version, ready): (i64, i64) = sqlx::query_as(
         "SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1",
     )

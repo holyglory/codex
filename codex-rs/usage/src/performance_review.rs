@@ -11,10 +11,9 @@ use crate::detail_query_support::required_enum;
 use sqlx::Connection;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use std::time::Duration;
-use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use tokio::time::Instant;
 
 #[path = "performance_review_pages.rs"]
 mod pages;
@@ -29,16 +28,37 @@ pub use types::*;
 impl UsageStore {
     pub async fn performance_review_packet(
         &self,
-        mut query: PerformanceReviewQuery,
+        query: PerformanceReviewQuery,
     ) -> Result<PerformanceReviewPacket, UsageStoreError> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + crate::report_read::REPORT_BUDGET;
+        let mut reader = crate::report_read::ReportRead::acquire(
+            &self.pool,
+            &self.report_refresh.reader,
+            deadline,
+        )
+        .await?;
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.read_performance_review(query, &mut reader.connection, deadline),
+        )
+        .await
+        .unwrap_or(Err(UsageStoreError::ReportTimedOut));
+        reader.finish(result, deadline).await
+    }
+
+    async fn read_performance_review(
+        &self,
+        mut query: PerformanceReviewQuery,
+        connection: &mut sqlx::SqliteConnection,
+        deadline: Instant,
+    ) -> Result<PerformanceReviewPacket, UsageStoreError> {
         if let Some(repository) = &query.repository_id {
             query.repository_id = Some(self.canonical_repository_id(repository).await?);
         }
         if let Some(page) = pages::existing(self, &query)? {
             return Ok(page);
         }
-        let classification = if crate::report_cache::is_ready(&self.pool)
+        let classification = if crate::report_cache::is_ready_on(connection)
             .await
             .map_err(|error| database_error(error, deadline))?
         {
@@ -46,17 +66,6 @@ impl UsageStore {
         } else {
             query::ClassificationSource::Canonical
         };
-        let mut connection = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|error| database_error(error, deadline))?;
-        connection.close_on_drop();
-        connection
-            .lock_handle()
-            .await
-            .map_err(|error| database_error(error, deadline))?
-            .set_progress_handler(/*num_ops*/ 1_000, move || Instant::now() < deadline);
         let mut transaction = connection
             .begin()
             .await
@@ -64,12 +73,15 @@ impl UsageStore {
         let mut source = query::Selection {
             classification,
             operation_ids: None,
+            scope_materialized: false,
+            materialized: false,
         };
         source.operation_ids =
             query::window_operation_ids(transaction.as_mut(), &query, &source).await?;
+        query::materialize(transaction.as_mut(), &query, &mut source).await?;
         let mut builder = query::selection(&query, &source);
         let coverage_row = builder
-            .push(query::TOKEN_FACTS)
+            .push(query::token_facts(&source))
             .push(query::OPERATION_COVERAGE)
             .build()
             .fetch_one(transaction.as_mut())
@@ -78,7 +90,7 @@ impl UsageStore {
         let missing_totals = number(&coverage_row, "model_requests_without_provider_total")?;
 
         let mut builder = query::selection(&query, &source);
-        let token_rows = builder.push(query::TOKEN_FACTS).push("SELECT category_path, measurement_provenance,
+        let token_rows = builder.push(query::token_facts(&source)).push("SELECT category_path, measurement_provenance,
             COALESCE(SUM(CASE WHEN COALESCE(conflict, 0) = 0 THEN token_count ELSE 0 END), 0) measured_tokens,
             COUNT(*) observations, SUM(unknown_count) unknown_observations,
             MAX(incomplete OR COALESCE(conflict, 0)) incomplete, COUNT(*) OVER () category_count
