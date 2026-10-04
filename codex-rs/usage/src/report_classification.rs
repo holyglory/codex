@@ -1,3 +1,6 @@
+//! Reporting view repair; canonical facts and migration checksums are unchanged.
+
+pub(super) const UPGRADE: &str = r#"
 DROP VIEW effective_classification_events;
 
 -- A malformed or interrupted correction can leave more than one unsuperseded
@@ -28,3 +31,11 @@ AND NOT EXISTS (
           )
       )
 );
+
+DROP TRIGGER IF EXISTS _usage_report_classification;
+CREATE TRIGGER _usage_report_classification AFTER INSERT ON classification_events
+WHEN EXISTS(SELECT 1 FROM effective_classification_events WHERE event_id = NEW.event_id)
+BEGIN
+ UPDATE _usage_report_operations SET phase=NEW.phase,activity=NEW.activity,activity_state=NEW.activity_state,attribution_provenance=NEW.provenance WHERE operation_id=NEW.operation_id;
+END;
+"#;

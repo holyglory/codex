@@ -20,7 +20,10 @@ pub(crate) mod coverage;
 #[path = "report_cost_rollups.rs"]
 pub(crate) mod cost_rollups;
 
-const REPORT_CACHE_SCHEMA_VERSION: i64 = 7;
+#[path = "report_classification.rs"]
+mod classification;
+
+pub(crate) const REPORT_CACHE_SCHEMA_VERSION: i64 = 8;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -328,8 +331,9 @@ pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<boo
     Ok(state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)))
 }
 
-pub(crate) async fn status(pool: &SqlitePool) -> Result<ReportCacheStatus, sqlx::Error> {
-    let mut connection = pool.acquire().await?;
+pub(crate) async fn status_on(
+    connection: &mut SqliteConnection,
+) -> Result<ReportCacheStatus, sqlx::Error> {
     let state = sqlx::query_as::<_, (i64, i64)>(
         "SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1",
     )
@@ -357,6 +361,11 @@ pub(crate) async fn status(pool: &SqlitePool) -> Result<ReportCacheStatus, sqlx:
     })
 }
 
+pub(crate) async fn status(pool: &SqlitePool) -> Result<ReportCacheStatus, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    status_on(&mut connection).await
+}
+
 async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {
     let exists = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?)",
@@ -370,6 +379,19 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
         )
         .fetch_optional(&mut *connection)
         .await?;
+        if let Some((7, ready)) = state {
+            // Resume the existing frontier: no raw history or completed pages are reset.
+            sqlx::raw_sql(classification::UPGRADE)
+                .execute(&mut *connection)
+                .await?;
+            sqlx::query(
+                "UPDATE _usage_report_cache_meta SET schema_version = ? WHERE singleton = 1",
+            )
+            .bind(REPORT_CACHE_SCHEMA_VERSION)
+            .execute(&mut *connection)
+            .await?;
+            return Ok(ready == 0);
+        }
         if state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)) {
             return Ok(false);
         }
@@ -399,6 +421,9 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
         .execute(&mut *connection)
         .await?;
     sqlx::raw_sql(cost_rollups::SCHEMA)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(classification::UPGRADE)
         .execute(&mut *connection)
         .await?;
     backfill::initialize(connection).await?;
