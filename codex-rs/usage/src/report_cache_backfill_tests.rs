@@ -27,6 +27,23 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
             .await
             .expect("history");
     }
+    // Reproduce a historical correction fork: two unsuperseded roots for one
+    // operation must still produce one deterministic derived owner row.
+    for (event_id, occurred_at_ms, activity) in [
+        ("10000000-0000-4000-8000-000000000001", 1_050, "coding"),
+        ("10000000-0000-4000-8000-000000000002", 1_060, "diagnosis"),
+    ] {
+        sqlx::query(
+            "INSERT INTO classification_events(event_id, operation_id, taxonomy_version, phase, activity, activity_state, provenance, supersedes_event_id, occurred_at_ms) VALUES (?, ?, 1, 'implementation', ?, 'model_active', 'agent_declared', NULL, ?)",
+        )
+        .bind(event_id)
+        .bind(op.id.as_string())
+        .bind(activity)
+        .bind(occurred_at_ms)
+        .execute(&store.pool)
+        .await
+        .expect("forked classification root");
+    }
     let expected = store
         .usage_summary(UsageSummaryScope::All)
         .await
