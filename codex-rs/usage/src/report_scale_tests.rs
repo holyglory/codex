@@ -54,8 +54,12 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .expect("seed repository");
     }
     use sqlx::Connection;
-    for start in (0..requests).step_by(256) {
-        let end = (start + 256).min(requests);
+    // Keep each fixture transaction large enough to exercise production-sized
+    // history without spending most of the run in per-page transaction setup.
+    // The refresh implementation still enforces its own bounded backfill
+    // pages; this only controls disposable fixture construction.
+    for start in (0..requests).step_by(8_192) {
+        let end = (start + 8_192).min(requests);
         let mut tx = connection.begin().await.expect("bounded seed transaction");
         sqlx::query("DELETE FROM seed")
             .execute(&mut *tx)
@@ -93,6 +97,19 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .fetch_one(&store.pool)
         .await
         .expect("raw count");
+    let memory = || {
+        let status = std::fs::read_to_string("/proc/self/status").expect("Linux memory evidence");
+        let value = |prefix: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix))
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse::<u64>().ok())
+                .expect("RSS value")
+        };
+        (value("VmRSS:"), value("VmHWM:"))
+    };
+    let (seed_rss_kib, seed_peak_rss_kib) = memory();
     assert_eq!(raw_before, requests * 6);
     store.report_refresh.cancel();
     sqlx::query("DELETE FROM _usage_report_cache_meta")
@@ -164,23 +181,27 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .await
         .expect("bounded raw fallback");
     let cold_ms = started.elapsed().as_millis();
+    let (cold_rss_kib, cold_peak_rss_kib) = memory();
     let started = Instant::now();
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("complete refresh");
     let refresh_ms = started.elapsed().as_millis();
+    let (refresh_rss_kib, refresh_peak_rss_kib) = memory();
     let started = Instant::now();
     let warm = store
         .usage_summary(UsageSummaryScope::All)
         .await
         .expect("warm rollups");
     let warm_ms = started.elapsed().as_millis();
+    let (warm_rss_kib, warm_peak_rss_kib) = memory();
     let started = Instant::now();
     let repeated = store
         .usage_summary(UsageSummaryScope::All)
         .await
         .expect("repeated rollups");
     let repeated_ms = started.elapsed().as_millis();
+    let (repeated_rss_kib, repeated_peak_rss_kib) = memory();
     let measured_total = warm
         .tokens
         .iter()
@@ -214,6 +235,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .await
         .expect("maximum supported groups");
     let wide_groups = wide.tokens.len();
+    let (wide_rss_kib, wide_peak_rss_kib) = memory();
     drop(wide);
     let too_large = matches!(
         store
@@ -232,16 +254,17 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .fetch_one(&store.pool)
             .await
             .expect("compact cost groups");
-    let status = std::fs::read_to_string("/proc/self/status").expect("Linux memory evidence");
-    let peak_rss_kib: u64 = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
-        .expect("peak RSS")
-        .split_whitespace()
-        .next()
-        .expect("RSS value")
-        .parse()
-        .expect("RSS number");
+    let peak_rss_kib = [
+        seed_peak_rss_kib,
+        cold_peak_rss_kib,
+        refresh_peak_rss_kib,
+        warm_peak_rss_kib,
+        repeated_peak_rss_kib,
+        wide_peak_rss_kib,
+    ]
+    .into_iter()
+    .max()
+    .expect("memory samples");
     let checks = [
         ("cold and warm summaries agree", cold == warm),
         ("repeated summaries agree", warm == repeated),
@@ -263,7 +286,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     ];
     println!(
         "{}",
-        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
+        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"memory_kib":{"seed":[seed_rss_kib,seed_peak_rss_kib],"cold":[cold_rss_kib,cold_peak_rss_kib],"refresh":[refresh_rss_kib,refresh_peak_rss_kib],"warm":[warm_rss_kib,warm_peak_rss_kib],"repeated":[repeated_rss_kib,repeated_peak_rss_kib],"wide":[wide_rss_kib,wide_peak_rss_kib]},"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
     );
     assert!(
         checks.iter().all(|(_, passed)| *passed),

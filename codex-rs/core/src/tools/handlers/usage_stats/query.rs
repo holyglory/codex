@@ -58,7 +58,7 @@ pub(super) async fn execute(
             task_tree_summary(store, context, &args, time_range).await
         }
         UsageStatsAction::PerformanceReview => {
-            let packet = store
+            let packet = match store
                 .performance_review_packet(codex_usage::PerformanceReviewQuery {
                     repository_id: optional_repository(store, context, args.repository.as_deref())
                         .await?,
@@ -69,18 +69,21 @@ pub(super) async fn execute(
                     outcome_limit: args.outcome_limit,
                 })
                 .await
-                .map_err(|error| match error {
-                    codex_usage::UsageStoreError::InvalidReviewCursor
-                    | codex_usage::UsageStoreError::ReportTimedOut
-                    | codex_usage::UsageStoreError::ReportBusy => tool_error(&error.to_string()),
-                    codex_usage::UsageStoreError::ReportWarming(cache) => {
-                        return Ok(warming_response(
-                            UsageStatsAction::PerformanceReview,
-                            *cache,
-                        ));
-                    }
-                    _ => storage_error(),
-                })?;
+            {
+                Ok(packet) => packet,
+                Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
+                    return Ok(warming_response(
+                        UsageStatsAction::PerformanceReview,
+                        *cache,
+                    ));
+                }
+                Err(error @ codex_usage::UsageStoreError::InvalidReviewCursor)
+                | Err(error @ codex_usage::UsageStoreError::ReportTimedOut)
+                | Err(error @ codex_usage::UsageStoreError::ReportBusy) => {
+                    return Err(tool_error(&error.to_string()));
+                }
+                Err(_) => return Err(storage_error()),
+            };
             serde_json::to_value(packet).map_err(|_| storage_error())
         }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,

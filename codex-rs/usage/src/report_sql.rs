@@ -57,11 +57,11 @@ impl UsageStore {
             .await
             .map_err(|_| database_error(sqlx::Error::PoolClosed))?;
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
-        // Five store connections at 8 MiB each leave room for bounded returned
+        // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.
         sqlx::raw_sql(
-            "PRAGMA temp_store = FILE; PRAGMA cache_size = -8192; PRAGMA temp.cache_size = -2048;",
+            "PRAGMA temp_store = FILE; PRAGMA cache_size = -2048; PRAGMA temp.cache_size = -512; PRAGMA cache_spill = ON;",
         )
         .execute(&mut *connection)
         .await

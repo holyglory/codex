@@ -96,6 +96,8 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageSummaryParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, params.from_at, params.to_at)
+            .await?;
         Ok(Some(
             self.summary_response(
                 &store,
@@ -117,6 +119,7 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, None, None).await?;
         let id = thread_id(params.thread_id)?;
         let record = store
             .read_thread(&id)
@@ -176,6 +179,7 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageRepositoryReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, None, None).await?;
         let id = repository_id(params.repository_key)?;
         let record = store
             .read_repository(&id)
@@ -377,6 +381,8 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageExportCreateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, params.from_at, params.to_at)
+            .await?;
         let created_at = now_seconds();
         let response = self
             .summary_response(
@@ -420,6 +426,23 @@ impl LocalUsageRequestProcessor {
             })
             .await
             .map(Arc::clone)
+    }
+
+    async fn ensure_report_ready(
+        &self,
+        store: &UsageStore,
+        from_at: Option<i64>,
+        to_at: Option<i64>,
+    ) -> Result<(), JSONRPCErrorError> {
+        if from_at.is_none() && to_at.is_none() {
+            let status = store.report_cache_status().await.map_err(report_error)?;
+            if !status.ready {
+                return Err(report_error(UsageStoreError::ReportWarming(Box::new(
+                    status,
+                ))));
+            }
+        }
+        Ok(())
     }
 
     async fn summary_response(
@@ -684,6 +707,14 @@ fn resource_not_found() -> JSONRPCErrorError {
 }
 
 fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
+    if matches!(
+        &error,
+        UsageStoreError::ReportTimedOut
+            | UsageStoreError::ReportBusy
+            | UsageStoreError::ReportWarming(_)
+    ) {
+        return report_error(error);
+    }
     match error {
         UsageStoreError::ReportTooLarge
         | UsageStoreError::ReportTimedOut
@@ -691,6 +722,9 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
         | UsageStoreError::ReportWarming(_) => invalid_params(
             "local usage summary exceeds its memory bound; narrow the scope or time range",
         ),
+        UsageStoreError::ReportTimedOut
+        | UsageStoreError::ReportBusy
+        | UsageStoreError::ReportWarming(_) => report_error(error),
         UsageStoreError::InvalidReviewCursor => invalid_params("invalid or expired usage cursor"),
         UsageStoreError::RepositoryMergeCycle => {
             invalid_params("repository merge would create a cycle")
@@ -719,6 +753,15 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
             internal_error("local usage request could not be completed")
         }
     }
+}
+
+fn report_error(error: UsageStoreError) -> JSONRPCErrorError {
+    let Some(failure) = error.report_failure() else {
+        return internal_error("local usage report could not be completed");
+    };
+    let mut response = invalid_params(failure.message);
+    response.data = serde_json::to_value(failure).ok();
+    response
 }
 
 fn usage_phase(value: LocalUsagePhase) -> Phase {
