@@ -87,6 +87,8 @@ pub use report::TokenAggregate;
 pub use report::UsageSummary;
 pub use report::UsageSummaryQuery;
 pub use report::UsageSummaryScope;
+pub use report_cache::ReportCacheProgress;
+pub use report_cache::ReportCacheStatus;
 pub use report_cost::UsageApiEquivalentCost;
 pub use report_math::DurationAggregate;
 pub use report_math::NamedDuration;

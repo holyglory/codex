@@ -99,6 +99,28 @@ async fn performance_review_resolves_current_thread_without_optional_arguments()
     assert!(query::execute(&store, &context, request).await.is_err());
 }
 
+#[test]
+fn warming_response_is_bounded_and_retryable() {
+    let value = query::warming_response(
+        UsageStatsAction::PerformanceReview,
+        codex_usage::ReportCacheStatus {
+            schema_version: 7,
+            ready: false,
+            freshness: "warming",
+            progress: vec![codex_usage::ReportCacheProgress {
+                source: "token_observations".to_string(),
+                cursor: 10,
+                high_water: 20,
+            }],
+        },
+    );
+    assert_eq!(value["kind"], "usageReportWarming");
+    assert_eq!(value["freshness"], "warming");
+    assert_eq!(value["reportingOperationInProgress"], false);
+    assert_eq!(value["retryAfterMs"], 1_000);
+    assert!(value["cache"]["progress"].is_array());
+}
+
 #[tokio::test]
 async fn task_tree_summary_defaults_accept_the_advertised_call() {
     let temp = tempfile::tempdir().expect("tempdir");

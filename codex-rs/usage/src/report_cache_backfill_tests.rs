@@ -38,6 +38,11 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     crate::report_cache::prepare(&store.pool)
         .await
         .expect("start backfill");
+    let status = store.report_cache_status().await.expect("cache status");
+    assert!(!status.ready);
+    assert!(status.progress.iter().any(|progress| {
+        progress.source == "token_observations" && progress.high_water > progress.cursor
+    }));
     assert!(
         !crate::report_cache::is_ready(&store.pool)
             .await

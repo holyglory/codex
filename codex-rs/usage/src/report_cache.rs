@@ -1,3 +1,4 @@
+use serde::Serialize;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
@@ -21,6 +22,23 @@ pub(crate) mod cost_rollups;
 
 const REPORT_CACHE_SCHEMA_VERSION: i64 = 7;
 const CACHE_META_TABLE: &str = "_usage_report_cache_meta";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportCacheProgress {
+    pub source: String,
+    pub cursor: i64,
+    pub high_water: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportCacheStatus {
+    pub schema_version: i64,
+    pub ready: bool,
+    pub freshness: &'static str,
+    pub progress: Vec<ReportCacheProgress>,
+}
 
 const RESET_CACHE_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_operation_insert;
@@ -308,6 +326,35 @@ pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<boo
     .fetch_optional(&mut *connection)
     .await?;
     Ok(state == Some((REPORT_CACHE_SCHEMA_VERSION, 1)))
+}
+
+pub(crate) async fn status(pool: &SqlitePool) -> Result<ReportCacheStatus, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    let state = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT schema_version, ready FROM _usage_report_cache_meta WHERE singleton = 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    let progress = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT source, cursor, high_water FROM _usage_report_backfill ORDER BY source",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap_or_default();
+    let (schema_version, ready) = state.unwrap_or((REPORT_CACHE_SCHEMA_VERSION, 0));
+    Ok(ReportCacheStatus {
+        schema_version,
+        ready: ready == 1,
+        freshness: if ready == 1 { "fresh" } else { "warming" },
+        progress: progress
+            .into_iter()
+            .map(|(source, cursor, high_water)| ReportCacheProgress {
+                source,
+                cursor,
+                high_water,
+            })
+            .collect(),
+    })
 }
 
 async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {

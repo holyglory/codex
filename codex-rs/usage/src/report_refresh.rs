@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use tokio::task::JoinHandle;
+use tokio::time::Duration;
 
 static REFRESHES: OnceLock<Mutex<HashMap<PathBuf, Weak<ReportRefresh>>>> = OnceLock::new();
 
@@ -58,10 +59,21 @@ impl ReportRefresh {
         }
         let reader = Arc::clone(&self.reader);
         *task = Some(tokio::spawn(async move {
-            if crate::report_cache::ensure(&pool, &reader).await.is_err() && !pool.is_closed() {
-                tracing::warn!(
-                    "usage report refresh failed; canonical reporting remains available"
-                );
+            let mut delay = Duration::from_millis(250);
+            loop {
+                match crate::report_cache::ensure(&pool, &reader).await {
+                    Ok(()) => break,
+                    Err(_error) if pool.is_closed() => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            retry_after_ms = delay.as_millis(),
+                            "usage report refresh failed; canonical reporting remains available"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
+                }
             }
         }));
     }

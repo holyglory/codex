@@ -93,6 +93,12 @@ pub struct UsageStore {
 }
 
 impl UsageStore {
+    pub async fn report_cache_status(&self) -> Result<crate::ReportCacheStatus, UsageStoreError> {
+        crate::report_cache::status(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)
+    }
+
     pub async fn activity_declaration(
         &self,
         thread_id: &str,
@@ -240,11 +246,6 @@ impl UsageStore {
             .await
             .map_err(UsageStoreError::Database)?;
         let refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
-        if refresh_pending {
-            // Short-lived CLI readers must also advance durable backfill, even
-            // when their runtime exits before the shared worker gets scheduled.
-            let _ = crate::report_cache::backfill::step(&pool).await;
-        }
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [

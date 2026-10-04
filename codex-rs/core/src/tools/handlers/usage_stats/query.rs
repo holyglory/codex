@@ -39,6 +39,19 @@ pub(super) async fn execute(
 ) -> Result<Value, FunctionCallError> {
     validate_args(&args)?;
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
+    if time_range.is_none()
+        && (matches!(args.action, UsageStatsAction::PerformanceReview)
+            || matches!(args.action, UsageStatsAction::Summary)
+                && matches!(args.scope, Some(UsageStatsScope::All)))
+    {
+        let cache = store
+            .report_cache_status()
+            .await
+            .map_err(|_| storage_error())?;
+        if !cache.ready {
+            return Ok(warming_response(args.action, cache));
+        }
+    }
     let mut value = match args.action {
         UsageStatsAction::Summary => summary(store, context, &args, time_range).await,
         UsageStatsAction::TaskTreeSummary => {
@@ -86,6 +99,35 @@ pub(super) async fn execute(
         );
     }
     Ok(value)
+}
+
+pub(super) fn warming_response(
+    action: UsageStatsAction,
+    cache: codex_usage::ReportCacheStatus,
+) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "kind": "usageReportWarming",
+        "action": action_name(action),
+        "freshness": cache.freshness,
+        "cache": cache,
+        "retryAfterMs": 1_000,
+        "message": "The rolled-up usage report is still warming. Retry shortly or provide from_at_ms and to_at_ms for a bounded window.",
+        "reportingOperationInProgress": false,
+    })
+}
+
+fn action_name(action: UsageStatsAction) -> &'static str {
+    match action {
+        UsageStatsAction::Summary => "summary",
+        UsageStatsAction::TaskTreeSummary => "task_tree_summary",
+        UsageStatsAction::PerformanceReview => "performance_review",
+        UsageStatsAction::Repositories => "repositories",
+        UsageStatsAction::Tools => "tools",
+        UsageStatsAction::Activities => "activities",
+        UsageStatsAction::Events => "events",
+        UsageStatsAction::Details => "details",
+    }
 }
 
 async fn task_tree_summary(

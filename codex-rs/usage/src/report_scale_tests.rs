@@ -6,7 +6,11 @@ use std::time::Instant;
 #[tokio::test]
 #[ignore = "requires explicit disk-backed scale storage and measures process memory"]
 async fn accounting_scale_bounds_memory_refresh_and_wal() {
-    const REQUESTS: i64 = 20_000;
+    let requests = std::env::var("CXM_USAGE_SCALE_REQUESTS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(20_000);
+    assert!(requests >= 20_000);
     let prefix = format!("{}.{}.{}_", "x".repeat(60), "y".repeat(60), "z".repeat(50));
     TokenCategoryPath::new(format!("{prefix}00000_tokens")).expect("valid long category");
     let root = std::env::var_os("CXM_USAGE_SCALE_ROOT").expect("explicit scale storage");
@@ -50,8 +54,8 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .expect("seed repository");
     }
     use sqlx::Connection;
-    for start in (0..REQUESTS).step_by(256) {
-        let end = (start + 256).min(REQUESTS);
+    for start in (0..requests).step_by(256) {
+        let end = (start + 256).min(requests);
         let mut tx = connection.begin().await.expect("bounded seed transaction");
         sqlx::query("DELETE FROM seed")
             .execute(&mut *tx)
@@ -89,7 +93,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .fetch_one(&store.pool)
         .await
         .expect("raw count");
-    assert_eq!(raw_before, REQUESTS * 6);
+    assert_eq!(raw_before, requests * 6);
     store.report_refresh.cancel();
     sqlx::query("DELETE FROM _usage_report_cache_meta")
         .execute(&store.pool)
@@ -243,15 +247,15 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         ("repeated summaries agree", warm == repeated),
         (
             "all operations counted",
-            warm.operation_count == REQUESTS as u64,
+            warm.operation_count == requests as u64,
         ),
         (
             "late total captured once",
-            measured_total == REQUESTS * 1050 + 7,
+            measured_total == requests * 1050 + 7,
         ),
         ("raw history preserved", raw_after == raw_before + 1),
         ("dimensions compressed", dimensional_rows < raw_after / 10),
-        ("costs compressed", compact_cost_rows < REQUESTS / 100),
+        ("costs compressed", compact_cost_rows < requests / 100),
         ("maximum-width response accepted", wide_groups == 16_384),
         ("oversized response rejected", too_large),
         ("wide facts preserved", all_raw == raw_after + 16_385),
@@ -259,7 +263,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     ];
     println!(
         "{}",
-        serde_json::json!({"fixture":"synthetic SQLite accounting history","requests":REQUESTS,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
+        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
     );
     assert!(
         checks.iter().all(|(_, passed)| *passed),
