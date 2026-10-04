@@ -72,6 +72,10 @@ pub enum UsageStoreError {
     ReportTooLarge,
     #[error("usage report exceeded its time budget; narrow the scope or time range")]
     ReportTimedOut,
+    #[error("usage reporting is busy; retry the request")]
+    ReportBusy,
+    #[error("usage reporting cache is warming")]
+    ReportWarming(Box<crate::ReportCacheStatus>),
     #[error("outcome cursor expired or does not match this report; start a new first page")]
     InvalidReviewCursor,
 }
@@ -96,9 +100,13 @@ pub struct UsageStore {
 
 impl UsageStore {
     pub async fn report_cache_status(&self) -> Result<crate::ReportCacheStatus, UsageStoreError> {
-        crate::report_cache::status(&self.pool)
-            .await
-            .map_err(UsageStoreError::Database)
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::report_cache::status(&self.pool),
+        )
+        .await
+        .map_err(|_| UsageStoreError::ReportTimedOut)?
+        .map_err(UsageStoreError::Database)
     }
 
     pub async fn activity_declaration(

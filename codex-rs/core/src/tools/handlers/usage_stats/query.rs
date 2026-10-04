@@ -71,8 +71,13 @@ pub(super) async fn execute(
                 .await
                 .map_err(|error| match error {
                     codex_usage::UsageStoreError::InvalidReviewCursor
-                    | codex_usage::UsageStoreError::ReportTimedOut => {
-                        tool_error(&error.to_string())
+                    | codex_usage::UsageStoreError::ReportTimedOut
+                    | codex_usage::UsageStoreError::ReportBusy => tool_error(&error.to_string()),
+                    codex_usage::UsageStoreError::ReportWarming(cache) => {
+                        return Ok(warming_response(
+                            UsageStatsAction::PerformanceReview,
+                            *cache,
+                        ));
                     }
                     _ => storage_error(),
                 })?;

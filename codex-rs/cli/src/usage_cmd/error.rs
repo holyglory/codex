@@ -84,7 +84,9 @@ impl From<UsageStoreError> for UsageCommandError {
         let kind = match error {
             UsageStoreError::InvalidReviewCursor
             | UsageStoreError::ReportTooLarge
-            | UsageStoreError::ReportTimedOut => UsageErrorKind::Input,
+            | UsageStoreError::ReportTimedOut
+            | UsageStoreError::ReportBusy
+            | UsageStoreError::ReportWarming(_) => UsageErrorKind::Input,
             UsageStoreError::OperationConflict
             | UsageStoreError::ProcessConflict
             | UsageStoreError::ProcessEventConflict
