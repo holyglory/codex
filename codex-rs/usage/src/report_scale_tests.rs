@@ -54,8 +54,12 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .expect("seed repository");
     }
     use sqlx::Connection;
-    for start in (0..requests).step_by(256) {
-        let end = (start + 256).min(requests);
+    // Keep each fixture transaction large enough to exercise production-sized
+    // history without spending most of the run in per-page transaction setup.
+    // The refresh implementation still enforces its own bounded backfill
+    // pages; this only controls disposable fixture construction.
+    for start in (0..requests).step_by(8_192) {
+        let end = (start + 8_192).min(requests);
         let mut tx = connection.begin().await.expect("bounded seed transaction");
         sqlx::query("DELETE FROM seed")
             .execute(&mut *tx)
