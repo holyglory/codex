@@ -716,10 +716,7 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
         return report_error(error);
     }
     match error {
-        UsageStoreError::ReportTooLarge
-        | UsageStoreError::ReportTimedOut
-        | UsageStoreError::ReportBusy
-        | UsageStoreError::ReportWarming(_) => invalid_params(
+        UsageStoreError::ReportTooLarge => invalid_params(
             "local usage summary exceeds its memory bound; narrow the scope or time range",
         ),
         UsageStoreError::ReportTimedOut
