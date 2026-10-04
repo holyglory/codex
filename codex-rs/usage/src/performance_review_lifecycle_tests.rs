@@ -2,7 +2,6 @@
 //! cannot deterministically keep a statement running until cancellation.
 use super::*;
 use crate::report_read::ReportRead;
-use pretty_assertions::assert_eq;
 use sqlx::Connection;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,8 +47,8 @@ async fn report_deadline_interrupts_sql_and_releases_the_snapshot() {
     .await
     .expect("snapshot released promptly")
     .expect("checkpoint");
-    assert_eq!(busy, 0);
-    assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
+    std::assert_eq!(busy, 0);
+    std::assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
 }
 
 #[tokio::test]
@@ -88,8 +87,8 @@ async fn dropped_report_stops_sql_without_waiting_for_the_deadline() {
     .await
     .expect("snapshot released promptly")
     .expect("checkpoint");
-    assert_eq!(busy, 0);
-    assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
+    std::assert_eq!(busy, 0);
+    std::assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
 }
 
 #[tokio::test]
@@ -129,5 +128,5 @@ async fn overlapping_report_admission_leaves_connections_for_capture() {
         assert!(result.expect("report admission"));
     }
     drop(permit);
-    assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
+    std::assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
 }
