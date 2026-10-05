@@ -135,7 +135,7 @@ fn selection_with_prefix(
         .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
         .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
             JOIN repository_family family ON merge.target_repository_id = family.id),
-            scoped AS (SELECT operation.* FROM ");
+            scoped AS MATERIALIZED (SELECT operation.* FROM ");
     builder.push(if source.scope_materialized {
         "temp._review_scoped"
     } else {
