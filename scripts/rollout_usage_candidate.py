@@ -42,7 +42,9 @@ def identities(package):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["backup", "stage", "activate", "verify", "rollback"])
+    parser.add_argument(
+        "action", choices=["backup", "stage", "activate", "verify", "rollback"]
+    )
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--runtime-home", required=True, type=Path)
     parser.add_argument("--receipt", type=Path)
@@ -64,64 +66,114 @@ def main():
         backup = args.evidence / "usage.sqlite3"
         if backup.exists():
             raise SystemExit("Refusing to overwrite backup")
-        with sqlite3.connect("file:" + str(home / "usage/usage.sqlite3") + "?mode=ro", uri=True) as source:
+        with sqlite3.connect(
+            "file:" + str(home / "usage/usage.sqlite3") + "?mode=ro", uri=True
+        ) as source:
             source.execute("BEGIN")
             source.execute("SELECT count(*) FROM sqlite_schema").fetchone()
             with sqlite3.connect(backup) as destination:
                 source.backup(destination, pages=1024, sleep=0.1)
-                if destination.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                if destination.execute("PRAGMA integrity_check").fetchall() != [
+                    ("ok",)
+                ]:
                     raise SystemExit("Backup integrity failed")
             source.rollback()
-        save(receipt_path, {"previous": str(previous), "previous_files": identities(previous),
-                            "backup_sha256": digest(backup), "status": "backed_up"})
+        save(
+            receipt_path,
+            {
+                "previous": str(previous),
+                "previous_files": identities(previous),
+                "backup_sha256": digest(backup),
+                "status": "backed_up",
+            },
+        )
     else:
         record = json.loads(receipt_path.read_text())
         previous = Path(record["previous"])
         if args.action == "stage":
             from local_candidate import validate
+
             if args.receipt is None:
                 raise SystemExit("Provide exact-commit local acceptance")
             accepted = json.loads(args.receipt.read_text())
             validate(accepted, accepted["commit"])
             for check in accepted["checks"]:
-                if digest(args.receipt.parent / (check["name"] + ".log")) != check["log_sha256"]:
+                if (
+                    digest(args.receipt.parent / (check["name"] + ".log"))
+                    != check["log_sha256"]
+                ):
                     raise SystemExit("Acceptance evidence changed")
             package = args.receipt.parent / "linux-package"
-            if (package / "source-commit.txt").read_text().strip() != accepted["commit"]:
+            if (package / "source-commit.txt").read_text().strip() != accepted[
+                "commit"
+            ]:
                 raise SystemExit("Package source mismatch")
-            archive = package / "native-dist/codex-package-x86_64-unknown-linux-musl.tar.gz"
+            archive = (
+                package / "native-dist/codex-package-x86_64-unknown-linux-musl.tar.gz"
+            )
             checksums = (archive.parent / "SHA256SUMS").read_text().splitlines()
-            expected = next(line.split()[0] for line in checksums if line.split()[-1].removeprefix("./") == archive.name)
+            expected = next(
+                line.split()[0]
+                for line in checksums
+                if line.split()[-1].removeprefix("./") == archive.name
+            )
             if digest(archive) != expected:
                 raise SystemExit("Package checksum mismatch")
             releases = package_root / "releases"
-            with tempfile.TemporaryDirectory(prefix=".usage-stage-", dir=releases) as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix=".usage-stage-", dir=releases
+            ) as temporary:
                 stage = Path(temporary)
                 with tarfile.open(archive) as bundle:
                     bundle.extractall(stage, filter="data")
                 metadata = json.loads((stage / "codex-package.json").read_text())
-                if metadata["version"] != "0.159.1+multi.2" or metadata["target"] != "x86_64-unknown-linux-musl":
+                if (
+                    metadata["version"] != "0.159.1+multi.2"
+                    or metadata["target"] != "x86_64-unknown-linux-musl"
+                ):
                     raise SystemExit("Unexpected package identity")
-                version = subprocess.check_output([str(stage / "bin/codex"), "--version"], text=True).strip()
+                version = subprocess.check_output(
+                    [str(stage / "bin/codex"), "--version"], text=True
+                ).strip()
                 if version != "codex-cli " + metadata["version"]:
                     raise SystemExit("Executable version mismatch")
-                release = releases / (metadata["version"] + "-x86_64-unknown-linux-musl-local-" + accepted["commit"][:12])
+                release = releases / (
+                    metadata["version"]
+                    + "-x86_64-unknown-linux-musl-local-"
+                    + accepted["commit"][:12]
+                )
                 files = identities(stage)
                 if release.exists():
                     if identities(release) != files:
                         raise SystemExit("Existing package differs")
                 else:
                     os.rename(stage, release)
-            record.update(target=str(release), source_commit=accepted["commit"], files=files, status="staged")
+            record.update(
+                target=str(release),
+                source_commit=accepted["commit"],
+                files=files,
+                status="staged",
+            )
             save(receipt_path, record)
         elif args.action in ("activate", "rollback"):
             target = previous if args.action == "rollback" else Path(record["target"])
-            expected = record["previous_files"] if args.action == "rollback" else record["files"]
-            if identities(target) != expected or digest(args.evidence / "usage.sqlite3") != record["backup_sha256"]:
+            expected = (
+                record["previous_files"]
+                if args.action == "rollback"
+                else record["files"]
+            )
+            if (
+                identities(target) != expected
+                or digest(args.evidence / "usage.sqlite3") != record["backup_sha256"]
+            ):
                 raise SystemExit("Package or backup changed")
             environment = dict(os.environ, CODEX_HOME=str(home))
             compatibility = ["app-server", "daemon", "handover-compatibility"]
-            if subprocess.check_output([str(target / "bin/codex"), *compatibility], env=environment) != subprocess.check_output([str(previous / "bin/codex"), *compatibility], env=environment):
+            if subprocess.check_output(
+                [str(target / "bin/codex"), *compatibility], env=environment
+            ) != subprocess.check_output(
+                [str(previous / "bin/codex"), *compatibility], env=environment
+            ):
                 raise SystemExit("Incompatible handover package")
             with (package_root / "install.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -132,7 +184,11 @@ def main():
                 os.replace(temporary, current)
             # The supported worker retains live recovery state and the previous
             # serving executable. No direct process stop or database restore.
-            response = subprocess.check_output([str(target / "bin/codex"), "app-server", "daemon", "handover"], text=True, env=environment)
+            response = subprocess.check_output(
+                [str(target / "bin/codex"), "app-server", "daemon", "handover"],
+                text=True,
+                env=environment,
+            )
             record["handover"] = json.loads(response)
             record["status"] = args.action + "_requested"
             save(receipt_path, record)
@@ -142,12 +198,23 @@ def main():
                 raise SystemExit("Installed package mismatch")
             with socket.socket(socket.AF_UNIX) as connection:
                 connection.settimeout(5)
-                connection.connect(str(home / "app-server-control/app-server-control.sock"))
-                pid, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                connection.connect(
+                    str(home / "app-server-control/app-server-control.sock")
+                )
+                pid, uid, _ = struct.unpack(
+                    "3i",
+                    connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12),
+                )
             serving = Path("/proc") / str(pid) / "exe"
-            if uid != os.getuid() or serving.resolve() not in (target / "bin/codex", target / "bin/codex-app-server"):
+            if uid != os.getuid() or serving.resolve() not in (
+                target / "bin/codex",
+                target / "bin/codex-app-server",
+            ):
                 raise SystemExit("Serving executable mismatch")
-            if digest(serving) != record["files"][str(serving.resolve().relative_to(target))]:
+            if (
+                digest(serving)
+                != record["files"][str(serving.resolve().relative_to(target))]
+            ):
                 raise SystemExit("Serving executable digest mismatch")
             record["status"] = "serving_verified"
             save(receipt_path, record)

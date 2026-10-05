@@ -72,12 +72,12 @@ pub(crate) async fn window_operation_ids(
     }
     // Put bounds first so SQLite can seek time indexes before reading collector rows.
     let mut builder = selection(query, source);
-    builder.push(", candidates(id) AS (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT terminal.operation_id FROM bounds CROSS JOIN operation_events terminal JOIN operations operation ON operation.id = terminal.operation_id WHERE terminal.terminal = 1 AND terminal.occurred_at_ms > lower_ms AND operation.started_at_ms < upper_ms
-        UNION ");
+    builder.push(", candidates(id) AS (");
     builder.push(match source.classification {
-        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
-        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
+        // The cache already stores both interval bounds. Avoid random canonical
+        // lookups for every operation that finishes after the requested window.
+        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE started_at_ms < upper_ms AND (ended_at_ms IS NULL OR ended_at_ms > lower_ms OR (ended_at_ms = started_at_ms AND started_at_ms >= lower_ms))",
+        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
         " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
