@@ -304,6 +304,8 @@ pub(crate) async fn ensure(
 pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let build = rebuild_if_needed(&mut tx).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_interval_end_idx ON _usage_report_operations(ended_at_ms,started_at_ms,operation_id) WHERE ended_at_ms IS NOT NULL")
+        .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(build)
 }
