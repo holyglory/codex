@@ -47,10 +47,20 @@ async fn isolated_daily_window_scale_probe() {
             packet.outcomes.totals.provider_total_tokens.measured,
             provider.map_or(0, |tokens| tokens.measured_tokens)
         );
-        assert_eq!(
-            packet.outcomes.attributed.operations, 0,
-            "historical operations must not gain outcomes"
-        );
+        if let Some(expected) = scope["expected_operations"].as_u64() {
+            assert_eq!(packet.outcomes.totals.operations, expected);
+            assert_eq!(
+                packet.outcomes.totals.provider_total_tokens.measured,
+                scope["expected_provider_tokens"]
+                    .as_u64()
+                    .expect("independent token total")
+            );
+        } else {
+            assert_eq!(
+                packet.outcomes.attributed.operations, 0,
+                "historical operations must not gain outcomes"
+            );
+        }
         evidence.push(json!({"repository":scope["name"], "elapsed_ms":elapsed_ms, "operations":packet.outcomes.totals.operations,
             "provider_tokens":packet.outcomes.totals.provider_total_tokens.measured, "coverage":packet.outcomes.coverage}));
     }

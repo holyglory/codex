@@ -55,11 +55,12 @@ impl UsageErrorKind {
 #[derive(Debug)]
 pub(crate) struct UsageCommandError {
     kind: UsageErrorKind,
+    report: Option<codex_usage::UsageReportFailure>,
 }
 
 impl UsageCommandError {
     pub(crate) const fn new(kind: UsageErrorKind) -> Self {
-        Self { kind }
+        Self { kind, report: None }
     }
 
     pub(crate) const fn kind(&self) -> UsageErrorKind {
@@ -73,7 +74,11 @@ impl UsageCommandError {
 
 impl fmt::Display for UsageCommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.kind.message())
+        formatter.write_str(
+            self.report
+                .as_ref()
+                .map_or(self.kind.message(), |failure| failure.message),
+        )
     }
 }
 
@@ -81,6 +86,7 @@ impl std::error::Error for UsageCommandError {}
 
 impl From<UsageStoreError> for UsageCommandError {
     fn from(error: UsageStoreError) -> Self {
+        let report = error.report_failure();
         let kind = match error {
             UsageStoreError::InvalidReviewCursor
             | UsageStoreError::ReportTooLarge
@@ -108,7 +114,7 @@ impl From<UsageStoreError> for UsageCommandError {
             | UsageStoreError::AggregateOverflow
             | UsageStoreError::TaskTreeTooLarge => UsageErrorKind::Storage,
         };
-        Self::new(kind)
+        Self { kind, report }
     }
 }
 
@@ -127,6 +133,13 @@ struct ErrorBody<'a> {
 
 pub(crate) fn print_error(error: &UsageCommandError, json: bool) {
     if json {
+        if let Some(report) = &error.report {
+            eprintln!(
+                "{}",
+                serde_json::json!({"schemaVersion": 1, "error": report})
+            );
+            return;
+        }
         let envelope = ErrorEnvelope {
             schema_version: 1,
             error: ErrorBody {

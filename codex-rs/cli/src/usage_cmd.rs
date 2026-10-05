@@ -542,12 +542,17 @@ async fn build_summary(
         .as_deref()
         .map(|reference| resolve_account_filter(registry_store, reference))
         .transpose()?;
+    let time_range = filters.time_range()?;
+    store
+        .require_report_ready(time_range)
+        .await
+        .map_err(UsageCommandError::from)?;
     let summary = store
         .usage_summary_query(UsageSummaryQuery {
             thread_id,
             repository_id,
             account_profile_ref: account.as_ref().map(|account| account.profile_ref.clone()),
-            time_range: filters.time_range()?,
+            time_range,
         })
         .await
         .map_err(UsageCommandError::from)?;

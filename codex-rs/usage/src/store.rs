@@ -109,6 +109,20 @@ impl UsageStore {
         .map_err(UsageStoreError::Database)
     }
 
+    /// Unbounded public requests must not scan raw history during rebuilding.
+    pub async fn require_report_ready(
+        &self,
+        range: Option<crate::UtcTimeRange>,
+    ) -> Result<(), UsageStoreError> {
+        if range.is_none_or(|range| !range.is_finite()) {
+            let status = self.report_cache_status().await?;
+            if !status.ready {
+                return Err(UsageStoreError::ReportWarming(Box::new(status)));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn activity_declaration(
         &self,
         thread_id: &str,

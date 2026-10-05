@@ -92,6 +92,44 @@ async fn performance_review_resolves_current_thread_without_optional_arguments()
     assert_eq!(output["diagnostics"]["longLivedDeclarations"]["count"], 0);
     assert!(serde_json::to_vec(&output).expect("json").len() <= 12 * 1024);
     bounded_output(output).expect("bounded result");
+    let pool = codex_state::open_sqlite_pool(
+        &temp.path().join("usage/usage.sqlite3"),
+        codex_state::SqlitePoolProfile::DurableEvents,
+    )
+    .await
+    .expect("fixture pool");
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready=0, schema_version=schema_version+1")
+        .execute(&pool)
+        .await
+        .expect("warming fixture");
+    for range in [json!({}), json!({"from_at_ms": 1})] {
+        let mut input = json!({"action":"performance_review", "thread_id":"current"});
+        input
+            .as_object_mut()
+            .expect("args")
+            .extend(range.as_object().expect("range").clone());
+        let request = serde_json::from_value(input).expect("arguments");
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            query::execute(&store, &context, request),
+        )
+        .await
+        .expect("bounded warming")
+        .expect("warming");
+        assert_eq!(output["kind"], "usageReportWarming");
+        assert!(output.get("tokens").is_none());
+        bounded_output(output).expect("bounded diagnostic");
+    }
+    let request = serde_json::from_value(
+        json!({"action":"performance_review","thread_id":"current","from_at_ms":1,"to_at_ms":2}),
+    )
+    .expect("bounded args");
+    assert_eq!(
+        query::execute(&store, &context, request)
+            .await
+            .expect("finite review")["kind"],
+        "performanceReview"
+    );
     let request = serde_json::from_value(json!({
         "action": "performance_review", "scope": "all"
     }))

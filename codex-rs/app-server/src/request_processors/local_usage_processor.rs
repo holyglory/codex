@@ -434,15 +434,10 @@ impl LocalUsageRequestProcessor {
         from_at: Option<i64>,
         to_at: Option<i64>,
     ) -> Result<(), JSONRPCErrorError> {
-        if from_at.is_none() && to_at.is_none() {
-            let status = store.report_cache_status().await.map_err(report_error)?;
-            if !status.ready {
-                return Err(report_error(UsageStoreError::ReportWarming(Box::new(
-                    status,
-                ))));
-            }
-        }
-        Ok(())
+        store
+            .require_report_ready(time_range(from_at, to_at)?)
+            .await
+            .map_err(store_error)
     }
 
     async fn summary_response(

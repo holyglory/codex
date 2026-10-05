@@ -39,15 +39,24 @@ pub(super) async fn execute(
 ) -> Result<Value, FunctionCallError> {
     validate_args(&args)?;
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
-    if time_range.is_none()
-        && (matches!(args.action, UsageStatsAction::PerformanceReview)
-            || matches!(args.action, UsageStatsAction::Summary)
-                && matches!(args.scope, Some(UsageStatsScope::All)))
+    if time_range.is_none_or(|range| !range.is_finite())
+        && matches!(
+            args.action,
+            UsageStatsAction::PerformanceReview
+                | UsageStatsAction::Summary
+                | UsageStatsAction::TaskTreeSummary
+        )
     {
-        let cache = store
-            .report_cache_status()
-            .await
-            .map_err(|_| storage_error())?;
+        let cache = store.report_cache_status().await.map_err(|error| {
+            if let Some(failure) = error.report_failure() {
+                tool_error(
+                    &serde_json::to_string(&failure)
+                        .unwrap_or_else(|_| "Usage report unavailable".into()),
+                )
+            } else {
+                storage_error()
+            }
+        })?;
         if !cache.ready {
             return Ok(warming_response(args.action, cache));
         }
