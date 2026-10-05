@@ -236,8 +236,11 @@ impl UsageStore {
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
         tracing::debug!(stage = "outcomes", "usage report progress");
+        tracing::debug!(stage = "work_start", "usage report progress");
         let work_bindings = work::read(transaction.as_mut(), &query, &source).await?;
+        tracing::debug!(stage = "work_done", "usage report progress");
         let outcomes = crate::outcomes::read(transaction.as_mut(), &query, &source).await?;
+        tracing::debug!(stage = "outcomes_done", "usage report progress");
         let long_lived_declarations = query::long_lived_declaration_count(
             transaction.as_mut(),
             &query,
