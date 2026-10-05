@@ -129,3 +129,9 @@ platform = 'cfg(windows)'
 filter = 'test(suite::resume::) | test(suite::cli_stream::) | test(suite::auth_env::) | test(start_thread_uses_all_default_environments_from_codex_home) | test(connect_stdio_command_initializes_json_rpc_client_on_windows)'
 test-group = 'windows_process_heavy'
 slow-timeout = { period = "45s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+# This diagnostic executes eight separately budgeted 15-second reviews.
+filter = 'package(codex-usage) & test(isolated_daily_window_scale_probe)'
+slow-timeout = { period = "30s", terminate-after = 6 }
+retries = 0

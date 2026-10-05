@@ -74,9 +74,11 @@ pub(crate) async fn window_operation_ids(
     let mut builder = selection(query, source);
     builder.push(", candidates(id) AS (");
     builder.push(match source.classification {
-        // The cache already stores both interval bounds. Avoid random canonical
-        // lookups for every operation that finishes after the requested window.
-        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE started_at_ms < upper_ms AND (ended_at_ms IS NULL OR ended_at_ms > lower_ms OR (ended_at_ms = started_at_ms AND started_at_ms >= lower_ms))",
+        // Intersect the covering time indexes: scanning wide cached operation
+        // rows or joining every later terminal does unrelated historical I/O.
+        ClassificationSource::Cache => "SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
+            UNION SELECT id FROM (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms < upper_ms INTERSECT SELECT operation_id FROM bounds CROSS JOIN operation_events WHERE terminal = 1 AND occurred_at_ms > lower_ms)
+            UNION SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
         ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
