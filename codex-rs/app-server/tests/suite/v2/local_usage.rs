@@ -122,6 +122,55 @@ async fn empty_summary_is_explicitly_unobserved() -> Result<()> {
     assert_eq!(response.report.schema_version, 1);
     assert_eq!(response.report.coverage.state, "unobserved");
     assert!(response.report.coverage.has_gaps);
+    let pool = codex_state::open_sqlite_pool(
+        &codex_home.path().join("usage/usage.sqlite3"),
+        codex_state::SqlitePoolProfile::DurableEvents,
+    )
+    .await?;
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready=0, schema_version=schema_version+1")
+        .execute(&pool)
+        .await?;
+    let warming = timeout(
+        Duration::from_secs(2),
+        raw_error(
+            &mut server,
+            "localUsage/summary",
+            serde_json::to_value(empty_summary_params())?,
+        ),
+    )
+    .await??;
+    assert_eq!(warming.error.code, -32602);
+    let diagnostic = warming.error.data.expect("typed warming diagnostic");
+    assert_eq!(diagnostic["code"], "usage_report_warming");
+    assert_eq!(diagnostic["cache"]["ready"], false);
+    assert!(diagnostic.get("totals").is_none());
+    let finite: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams {
+                from_at: Some(1),
+                to_at: Some(2),
+                ..empty_summary_params()
+            },
+        })
+        .await?;
+    assert_eq!(finite.aggregate.model_requests, 0);
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready=1, schema_version=schema_version-1")
+        .execute(&pool)
+        .await?;
+    let recovered: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: empty_summary_params(),
+        })
+        .await?;
+    assert_eq!(
+        recovered,
+        LocalUsageSummaryResponse {
+            generated_at: recovered.generated_at,
+            ..response
+        }
+    );
     Ok(())
 }
 

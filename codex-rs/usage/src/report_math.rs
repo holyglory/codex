@@ -16,6 +16,10 @@ impl UtcTimeRange {
             .ok_or(UtcTimeRangeError)
     }
 
+    pub fn is_finite(self) -> bool {
+        self.start_ms != i64::MIN && self.end_ms != i64::MAX
+    }
+
     pub fn start_ms(self) -> i64 {
         self.start_ms
     }

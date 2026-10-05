@@ -32,7 +32,28 @@ enum ReportSource {
 impl UsageStore {
     pub(crate) async fn bounded_usage_summary(
         &self,
+        query: UsageSummaryQuery,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        let deadline = tokio::time::Instant::now() + crate::report_read::REPORT_BUDGET;
+        let mut reader = crate::report_read::ReportRead::acquire(
+            &self.pool,
+            &self.report_refresh.reader,
+            deadline,
+        )
+        .await?;
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.read_usage_summary(query, &mut reader.connection),
+        )
+        .await
+        .unwrap_or(Err(UsageStoreError::ReportTimedOut));
+        reader.finish(result, deadline).await
+    }
+
+    pub(crate) async fn read_usage_summary(
+        &self,
         mut query: UsageSummaryQuery,
+        connection: &mut SqliteConnection,
     ) -> Result<UsageSummary, UsageStoreError> {
         query.repository_id = match query.repository_id {
             Some(id) => Some(self.canonical_repository_id(&id).await?),
@@ -50,13 +71,6 @@ impl UsageStore {
         let include_global = matches!(scope, UsageSummaryScope::All)
             && query.account_profile_ref.is_none()
             && family.is_none();
-        let _reader = self
-            .report_refresh
-            .reader
-            .acquire()
-            .await
-            .map_err(|_| database_error(sqlx::Error::PoolClosed))?;
-        let mut connection = self.pool.acquire().await.map_err(database_error)?;
         // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.

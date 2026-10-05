@@ -340,16 +340,16 @@ pub(crate) async fn status_on(
     .fetch_optional(&mut *connection)
     .await?;
     let progress = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT source, cursor, high_water FROM _usage_report_backfill ORDER BY source",
+        "SELECT source, cursor, high_water FROM _usage_report_backfill WHERE source IN ('operations','token_observations','coverage_events','activity_spans') ORDER BY source LIMIT 4",
     )
     .fetch_all(&mut *connection)
-    .await
-    .unwrap_or_default();
+    .await?;
     let (schema_version, ready) = state.unwrap_or((REPORT_CACHE_SCHEMA_VERSION, 0));
+    let ready = ready == 1 && schema_version == REPORT_CACHE_SCHEMA_VERSION;
     Ok(ReportCacheStatus {
         schema_version,
-        ready: ready == 1,
-        freshness: if ready == 1 { "fresh" } else { "warming" },
+        ready,
+        freshness: if ready { "fresh" } else { "warming" },
         progress: progress
             .into_iter()
             .map(|(source, cursor, high_water)| ReportCacheProgress {

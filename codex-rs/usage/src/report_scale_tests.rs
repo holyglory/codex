@@ -176,11 +176,21 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         crate::report_cache::backfill::Progress::ReaderBusy
     ));
     let started = Instant::now();
+    // Full-history raw equivalence is an internal fixture oracle. Public
+    // requests use the finite-window budget and warming contract below.
+    let mut oracle = store.pool.acquire().await.expect("oracle connection");
+    let all = UsageSummaryQuery {
+        thread_id: None,
+        repository_id: None,
+        account_profile_ref: None,
+        time_range: None,
+    };
     let cold = store
-        .usage_summary(UsageSummaryScope::All)
+        .read_usage_summary(all.clone(), &mut oracle)
         .await
         .expect("bounded raw fallback");
     let cold_ms = started.elapsed().as_millis();
+    drop(oracle);
     let (cold_rss_kib, cold_peak_rss_kib) = memory();
     let started = Instant::now();
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
@@ -189,18 +199,20 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let refresh_ms = started.elapsed().as_millis();
     let (refresh_rss_kib, refresh_peak_rss_kib) = memory();
     let started = Instant::now();
+    let mut oracle = store.pool.acquire().await.expect("oracle connection");
     let warm = store
-        .usage_summary(UsageSummaryScope::All)
+        .read_usage_summary(all.clone(), &mut oracle)
         .await
         .expect("warm rollups");
     let warm_ms = started.elapsed().as_millis();
     let (warm_rss_kib, warm_peak_rss_kib) = memory();
     let started = Instant::now();
     let repeated = store
-        .usage_summary(UsageSummaryScope::All)
+        .read_usage_summary(all, &mut oracle)
         .await
         .expect("repeated rollups");
     let repeated_ms = started.elapsed().as_millis();
+    drop(oracle);
     let (repeated_rss_kib, repeated_peak_rss_kib) = memory();
     let measured_total = warm
         .tokens

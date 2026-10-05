@@ -57,6 +57,50 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         .expect("start backfill");
     let status = store.report_cache_status().await.expect("cache status");
     assert!(!status.ready);
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        store.require_report_ready(None).await,
+        Err(UsageStoreError::ReportWarming(_))
+    ));
+    assert!(matches!(
+        store
+            .require_report_ready(Some(
+                UtcTimeRange::new(i64::MIN, 2000).expect("unbounded start")
+            ))
+            .await,
+        Err(UsageStoreError::ReportWarming(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    let finite = UtcTimeRange::new(1000, 2000).expect("finite window");
+    store
+        .require_report_ready(Some(finite))
+        .await
+        .expect("finite review during warming");
+    let review = store
+        .performance_review_packet(crate::PerformanceReviewQuery {
+            time_range: Some(finite),
+            ..Default::default()
+        })
+        .await
+        .expect("cold finite review");
+    assert_eq!(review.coverage.raw_operations, 1);
+    // The source-owned upgrade resumes exactly the saved frontier.
+    sqlx::query("UPDATE _usage_report_cache_meta SET schema_version = 7")
+        .execute(&store.pool)
+        .await
+        .expect("previous version");
+    crate::report_cache::prepare(&store.pool)
+        .await
+        .expect("compatible upgrade");
+    assert_eq!(
+        store
+            .report_cache_status()
+            .await
+            .expect("resumed status")
+            .progress,
+        status.progress
+    );
+
     assert!(status.progress.iter().any(|progress| {
         progress.source == "token_observations" && progress.high_water > progress.cursor
     }));
