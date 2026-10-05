@@ -267,6 +267,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .await
             .expect("compact cost groups");
     let peak_rss_kib = [
+        memory().1,
         seed_peak_rss_kib,
         cold_peak_rss_kib,
         refresh_peak_rss_kib,

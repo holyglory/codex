@@ -72,12 +72,14 @@ pub(crate) async fn window_operation_ids(
     }
     // Put bounds first so SQLite can seek time indexes before reading collector rows.
     let mut builder = selection(query, source);
-    builder.push(", candidates(id) AS (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT terminal.operation_id FROM bounds CROSS JOIN operation_events terminal JOIN operations operation ON operation.id = terminal.operation_id WHERE terminal.terminal = 1 AND terminal.occurred_at_ms > lower_ms AND operation.started_at_ms < upper_ms
-        UNION ");
+    builder.push(", candidates(id) AS (");
     builder.push(match source.classification {
-        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
-        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
+        // Intersect the covering time indexes: scanning wide cached operation
+        // rows or joining every later terminal does unrelated historical I/O.
+        ClassificationSource::Cache => "SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
+            UNION SELECT id FROM (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms < upper_ms INTERSECT SELECT operation_id FROM bounds CROSS JOIN operation_events WHERE terminal = 1 AND occurred_at_ms > lower_ms)
+            UNION SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
+        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
         " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
@@ -116,7 +118,7 @@ fn selection_with_prefix(
 ) -> QueryBuilder<Sqlite> {
     if source.materialized {
         let mut builder = QueryBuilder::new(prefix);
-        builder.push("WITH scoped AS (SELECT * FROM temp._review_scoped), selected AS (SELECT * FROM temp._review_selected), effective AS (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
+        builder.push("WITH scoped AS NOT MATERIALIZED (SELECT * FROM temp._review_scoped), selected AS NOT MATERIALIZED (SELECT * FROM temp._review_selected), effective AS NOT MATERIALIZED (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
             .push_bind(query.time_range.map_or(i64::MIN, crate::UtcTimeRange::start_ms))
             .push(" AS lower_ms, ")
             .push_bind(query.time_range.map_or(i64::MAX, crate::UtcTimeRange::end_ms))
@@ -191,17 +193,17 @@ fn selection_with_prefix(
 // bound the read. Covered tool observations still deduplicate with their model request.
 pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN token_observations token ON token.model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN token_observations token ON token.model_request_id = request.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
     CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
-    JOIN token_observations token ON token.tool_invocation_id = tool.id
+    CROSS JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
 ), token_facts AS (
     SELECT token.operation_id,
            token.source_event_id, token.category_path, token.measurement_provenance,
@@ -256,7 +258,7 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
 
 pub(crate) fn token_facts(source: &Selection) -> &'static str {
     if source.materialized {
-        ", token_facts AS (SELECT * FROM temp._review_tokens)"
+        ", token_facts AS NOT MATERIALIZED (SELECT * FROM temp._review_tokens)"
     } else {
         TOKEN_FACTS
     }
@@ -268,6 +270,7 @@ pub(crate) async fn materialize(
     source: &mut Selection,
 ) -> Result<(), crate::UsageStoreError> {
     use crate::UsageStoreError;
+    tracing::debug!(stage = "materialize_scoped", "usage report progress");
     let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_scoped AS ");
     builder
         .push(" SELECT * FROM scoped")
@@ -279,6 +282,7 @@ pub(crate) async fn materialize(
         .execute(&mut *connection)
         .await
         .map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_selected", "usage report progress");
     source.scope_materialized = true;
     let mut builder =
         selection_with_prefix(query, source, "CREATE TEMP TABLE _review_selected AS ");
@@ -294,6 +298,7 @@ pub(crate) async fn materialize(
             SELECT 1 FROM _review_selected nested WHERE nested.execution_group_id = selected.execution_group_id AND nested.execution_role = 'nested'));
         CREATE UNIQUE INDEX temp._review_effective_id ON _review_effective(id);")
         .execute(&mut *connection).await.map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_tokens", "usage report progress");
     source.materialized = true;
     let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_tokens AS ");
     builder
