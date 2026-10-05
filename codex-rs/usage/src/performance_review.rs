@@ -91,6 +91,7 @@ impl UsageStore {
             .fetch_one(transaction.as_mut())
             .await
             .map_err(|error| database_error(error, deadline))?;
+        tracing::debug!(stage = "tokens", "usage report progress");
         let missing_totals = number(&coverage_row, "model_requests_without_provider_total")?;
 
         let mut builder = query::selection(&query, &source);
@@ -136,6 +137,7 @@ impl UsageStore {
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
 
+        tracing::debug!(stage = "operations", "usage report progress");
         let mut builder = query::selection(&query, &source);
         let rows = builder.push("SELECT operation_kind category, COUNT(*) count,
             COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms, SUM(interval_ms IS NULL) unknown_intervals
