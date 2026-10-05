@@ -8,6 +8,12 @@ use std::time::Instant;
 #[tokio::test]
 #[ignore = "requires an explicitly prepared isolated collector snapshot"]
 async fn isolated_daily_window_scale_probe() {
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish(),
+    );
     let directory = std::path::PathBuf::from(
         std::env::var("CXM_USAGE_SCALE_FIXTURE").expect("isolated fixture path"),
     );
