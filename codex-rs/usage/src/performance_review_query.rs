@@ -74,11 +74,11 @@ pub(crate) async fn window_operation_ids(
     let mut builder = selection(query, source);
     builder.push(", candidates(id) AS (");
     builder.push(match source.classification {
-        // Read both interval bounds from one narrow derived index; historical
-        // intervals need no random lookups or large temporary intersections.
-        ClassificationSource::Cache => "SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-            UNION SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms > lower_ms AND started_at_ms < upper_ms
-            UNION SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
+        // Apply the requested scope before walking historical interval indexes;
+        // otherwise every repository report scans the entire collector first.
+        ClassificationSource::Cache => "SELECT operation.id FROM bounds CROSS JOIN scoped operation WHERE operation.started_at_ms >= lower_ms AND operation.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms > lower_ms AND cached.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms IS NULL AND cached.started_at_ms < upper_ms",
         ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
@@ -87,11 +87,13 @@ pub(crate) async fn window_operation_ids(
         LEFT JOIN model_requests request ON request.id = token.model_request_id
         LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
         LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
+        JOIN scoped operation ON operation.id = COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
         WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
           AND token.category_path NOT GLOB 'attribution.items.*'
-        UNION SELECT operation_id FROM bounds CROSS JOIN coverage_events
-          WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
-        SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001",
+        UNION SELECT coverage.operation_id FROM bounds CROSS JOIN coverage_events coverage
+          JOIN scoped operation ON operation.id = coverage.operation_id
+          WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms)
+        SELECT id FROM candidates ORDER BY id LIMIT 200001",
     );
     let ids = builder
         .build_query_scalar::<String>()
