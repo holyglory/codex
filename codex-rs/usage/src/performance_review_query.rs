@@ -116,7 +116,7 @@ fn selection_with_prefix(
 ) -> QueryBuilder<Sqlite> {
     if source.materialized {
         let mut builder = QueryBuilder::new(prefix);
-        builder.push("WITH scoped AS (SELECT * FROM temp._review_scoped), selected AS (SELECT * FROM temp._review_selected), effective AS (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
+        builder.push("WITH scoped AS NOT MATERIALIZED (SELECT * FROM temp._review_scoped), selected AS NOT MATERIALIZED (SELECT * FROM temp._review_selected), effective AS NOT MATERIALIZED (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
             .push_bind(query.time_range.map_or(i64::MIN, crate::UtcTimeRange::start_ms))
             .push(" AS lower_ms, ")
             .push_bind(query.time_range.map_or(i64::MAX, crate::UtcTimeRange::end_ms))
@@ -191,17 +191,17 @@ fn selection_with_prefix(
 // bound the read. Covered tool observations still deduplicate with their model request.
 pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN token_observations token ON token.model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN token_observations token ON token.model_request_id = request.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
     CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
-    JOIN token_observations token ON token.tool_invocation_id = tool.id
+    CROSS JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
 ), token_facts AS (
     SELECT token.operation_id,
            token.source_event_id, token.category_path, token.measurement_provenance,
@@ -256,7 +256,7 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
 
 pub(crate) fn token_facts(source: &Selection) -> &'static str {
     if source.materialized {
-        ", token_facts AS (SELECT * FROM temp._review_tokens)"
+        ", token_facts AS NOT MATERIALIZED (SELECT * FROM temp._review_tokens)"
     } else {
         TOKEN_FACTS
     }
@@ -268,6 +268,7 @@ pub(crate) async fn materialize(
     source: &mut Selection,
 ) -> Result<(), crate::UsageStoreError> {
     use crate::UsageStoreError;
+    tracing::debug!(stage = "materialize_scoped", "usage report progress");
     let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_scoped AS ");
     builder
         .push(" SELECT * FROM scoped")
@@ -279,6 +280,7 @@ pub(crate) async fn materialize(
         .execute(&mut *connection)
         .await
         .map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_selected", "usage report progress");
     source.scope_materialized = true;
     let mut builder =
         selection_with_prefix(query, source, "CREATE TEMP TABLE _review_selected AS ");
@@ -294,6 +296,7 @@ pub(crate) async fn materialize(
             SELECT 1 FROM _review_selected nested WHERE nested.execution_group_id = selected.execution_group_id AND nested.execution_role = 'nested'));
         CREATE UNIQUE INDEX temp._review_effective_id ON _review_effective(id);")
         .execute(&mut *connection).await.map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_tokens", "usage report progress");
     source.materialized = true;
     let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_tokens AS ");
     builder

@@ -58,6 +58,7 @@ impl UsageStore {
         if let Some(page) = pages::existing(self, &query)? {
             return Ok(page);
         }
+        tracing::debug!(stage = "classification", "usage report progress");
         let classification = if crate::report_cache::is_ready_on(connection)
             .await
             .map_err(|error| database_error(error, deadline))?
@@ -76,9 +77,12 @@ impl UsageStore {
             scope_materialized: false,
             materialized: false,
         };
+        tracing::debug!(stage = "window_selection", "usage report progress");
         source.operation_ids =
             query::window_operation_ids(transaction.as_mut(), &query, &source).await?;
+        tracing::debug!(stage = "materialize", "usage report progress");
         query::materialize(transaction.as_mut(), &query, &mut source).await?;
+        tracing::debug!(stage = "coverage", "usage report progress");
         let mut builder = query::selection(&query, &source);
         let coverage_row = builder
             .push(query::token_facts(&source))
@@ -231,6 +235,7 @@ impl UsageStore {
                 })
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
+        tracing::debug!(stage = "outcomes", "usage report progress");
         let work_bindings = work::read(transaction.as_mut(), &query, &source).await?;
         let outcomes = crate::outcomes::read(transaction.as_mut(), &query, &source).await?;
         let long_lived_declarations = query::long_lived_declaration_count(
@@ -244,6 +249,7 @@ impl UsageStore {
                 .unwrap_or(i64::MAX),
         )
         .await?;
+        tracing::debug!(stage = "commit", "usage report progress");
         transaction
             .commit()
             .await

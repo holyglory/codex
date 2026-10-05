@@ -19,6 +19,7 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v5", "v7"] }
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["fmt"] }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
