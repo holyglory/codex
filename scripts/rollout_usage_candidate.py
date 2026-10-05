@@ -65,10 +65,13 @@ def main():
         if backup.exists():
             raise SystemExit("Refusing to overwrite backup")
         with sqlite3.connect("file:" + str(home / "usage/usage.sqlite3") + "?mode=ro", uri=True) as source:
+            source.execute("BEGIN")
+            source.execute("SELECT count(*) FROM sqlite_schema").fetchone()
             with sqlite3.connect(backup) as destination:
                 source.backup(destination, pages=1024, sleep=0.1)
                 if destination.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                     raise SystemExit("Backup integrity failed")
+            source.rollback()
         save(receipt_path, {"previous": str(previous), "previous_files": identities(previous),
                             "backup_sha256": digest(backup), "status": "backed_up"})
     else:
@@ -116,6 +119,10 @@ def main():
             expected = record["previous_files"] if args.action == "rollback" else record["files"]
             if identities(target) != expected or digest(args.evidence / "usage.sqlite3") != record["backup_sha256"]:
                 raise SystemExit("Package or backup changed")
+            environment = dict(os.environ, CODEX_HOME=str(home))
+            compatibility = ["app-server", "daemon", "handover-compatibility"]
+            if subprocess.check_output([str(target / "bin/codex"), *compatibility], env=environment) != subprocess.check_output([str(previous / "bin/codex"), *compatibility], env=environment):
+                raise SystemExit("Incompatible handover package")
             with (package_root / "install.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 if current.resolve() not in (previous, Path(record["target"])):
@@ -125,7 +132,7 @@ def main():
                 os.replace(temporary, current)
             # The supported worker retains live recovery state and the previous
             # serving executable. No direct process stop or database restore.
-            response = subprocess.check_output([str(target / "bin/codex"), "app-server", "daemon", "handover"], text=True)
+            response = subprocess.check_output([str(target / "bin/codex"), "app-server", "daemon", "handover"], text=True, env=environment)
             record["handover"] = json.loads(response)
             record["status"] = args.action + "_requested"
             save(receipt_path, record)
