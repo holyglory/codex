@@ -7,8 +7,8 @@
 - Peeled commit: `8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`
 - Selected: 2026-09-29
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.159.1+multi.1`
-- Downstream npm version: `0.159.1-multi.1`
+- Downstream Rust version: `0.159.1+multi.2`
+- Downstream npm version: `0.159.1-multi.2`
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic
@@ -183,7 +183,7 @@ the authority for release outcomes and verification receipts.
   build does not prove local deployment when DevCoordinator has no declaration
   for the repository. Likewise, `npm whoami` must succeed before staging a
   publish; an npm `E401` is an authentication blocker, not a package failure.
-- **Package smoke tests are the capacity contract.** The local `0.159.1+multi.1`
+- **Package smoke tests are the capacity contract.** The local `0.159.1+multi.2`
   Linux package initially caught a real regression that unit tests missed:
   `response.failed` with `slow_down` was mapped to `rateLimitExceeded` instead
   of the shared capacity retry boundary. Keep both `server_is_overloaded` and
@@ -214,3 +214,32 @@ the authority for release outcomes and verification receipts.
   After switching releases, require `codex app-server daemon version` to report
   matching `cliVersion`, `managedCodexVersion`, and `appServerVersion`, and
   stop unmanaged app-server processes before testing the Desktop protocol.
+
+- **Verify usage reporting through its public boundary.** A warming response
+  proves bounded behavior, not usable reporting. Exercise finite-window reviews
+  during cache rebuilding and after readiness, with deterministic histories of
+  at least 1.3 million operations and 4.3 million observations. Independently
+  calculate expected totals; preserve half-open windows, late facts, corrections,
+  covered tools, descendants and pagination. Include cancellation checks that
+  demonstrate SQLite stopped and released its snapshot while capture continues.
+- **Diagnose SQLite with its WAL attached.** Use a consistent online backup for
+  private recovery; independently copied database/sidecar files can miss committed
+  facts. Inspect per-source cursors and the failing page. Multiple effective
+  classification roots can duplicate a projected owner and stop a rebuild even
+  with ample disk space. Upgrade source-owned derived views and resume compatible
+  cursors; never delete raw history or manually mark a live cache ready.
+- **Place release state on the approved bulk volume before building.** Check
+  capacity on every actual output mount, including Cargo, Bazel output, action
+  cache and temporary files. Free space on the bulk disk does not protect `/tmp`
+  or the root filesystem. Retain warm build stores and exact failure evidence;
+  preserve working source and installed rollback packages during cleanup.
+- **Publish from the immutable npm tag.** After exact-commit validation and live
+  recovery, create the annotated `npm-v<version>` tag and dispatch
+  `downstream-npm-publish.yml` from that tag using its matching candidate run.
+  The protected npm environment rejects branch-based publication. Stage and approve
+  six platform payloads before the root launcher, then verify registry integrity,
+  provenance and an isolated public install. Browser/2FA authorization remains a
+  human step; an old login success does not prove the current npm session is valid.
+
+These corrections are retained in Coordinator decision
+`usage-rebuild-release-prevention-v2`; test and delivery receipts remain there.
