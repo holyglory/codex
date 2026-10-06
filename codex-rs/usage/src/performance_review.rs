@@ -214,8 +214,8 @@ impl UsageStore {
         let mut builder = query::selection(&query, &source);
         let rows = builder
             .push(
-                "SELECT coverage.coverage_state, COUNT(*) count FROM coverage_events coverage
-            JOIN scoped ON scoped.id = coverage.operation_id CROSS JOIN bounds
+                "SELECT coverage.coverage_state, COUNT(*) count FROM scoped
+            CROSS JOIN coverage_events coverage ON coverage.operation_id = scoped.id CROSS JOIN bounds
             WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms
             GROUP BY coverage.coverage_state ORDER BY coverage.coverage_state",
             )

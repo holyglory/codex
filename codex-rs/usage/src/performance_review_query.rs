@@ -135,7 +135,7 @@ fn selection_with_prefix(
         .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
         .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
             JOIN repository_family family ON merge.target_repository_id = family.id),
-            scoped AS (SELECT operation.* FROM ");
+            scoped AS MATERIALIZED (SELECT operation.* FROM ");
     builder.push(if source.scope_materialized {
         "temp._review_scoped"
     } else {
@@ -251,7 +251,7 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
     UNION ALL
     SELECT span.activity_state, CASE WHEN ended.occurred_at_ms IS NOT NULL THEN
       MAX(0, MIN(ended.occurred_at_ms, upper_ms) - MAX(span.started_at_ms, lower_ms)) END
-    FROM activity_spans span JOIN effective ON effective.id = span.operation_id CROSS JOIN bounds
+    FROM effective CROSS JOIN activity_spans span ON span.operation_id = effective.id CROSS JOIN bounds
     LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
     WHERE effective.effective_state NOT IN ('user_wait', 'external_wait', 'blocked_wait')
       AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
