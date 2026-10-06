@@ -215,9 +215,8 @@ impl UsageStore {
         let rows = builder
             .push(
                 "SELECT coverage.coverage_state, COUNT(*) count FROM scoped
-            CROSS JOIN coverage_events coverage CROSS JOIN bounds
-            WHERE coverage.operation_id = scoped.id
-              AND coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms
+            CROSS JOIN coverage_events coverage ON coverage.operation_id = scoped.id CROSS JOIN bounds
+            WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms
             GROUP BY coverage.coverage_state ORDER BY coverage.coverage_state",
             )
             .build()

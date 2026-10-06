@@ -163,10 +163,9 @@ pub(crate) async fn read(
     }
     let mut builder = query::selection(scope, source);
     let rows = builder.push("SELECT span.operation_id, span.started_at_ms, ended.occurred_at_ms ended_at_ms
-        FROM effective CROSS JOIN activity_spans span CROSS JOIN bounds
+        FROM effective CROSS JOIN activity_spans span ON span.operation_id = effective.id CROSS JOIN bounds
         LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
-        WHERE span.operation_id = effective.id
-        AND span.activity_state IN ('user_wait', 'external_wait', 'blocked_wait')
+        WHERE span.activity_state IN ('user_wait', 'external_wait', 'blocked_wait')
         AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
         LIMIT 200001").build().fetch_all(&mut *connection).await.map_err(UsageStoreError::Database)?;
     if rows.len() > MAX_FACT_ROWS {
