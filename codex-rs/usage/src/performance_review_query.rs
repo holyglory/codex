@@ -251,9 +251,10 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
     UNION ALL
     SELECT span.activity_state, CASE WHEN ended.occurred_at_ms IS NOT NULL THEN
       MAX(0, MIN(ended.occurred_at_ms, upper_ms) - MAX(span.started_at_ms, lower_ms)) END
-    FROM activity_spans span JOIN effective ON effective.id = span.operation_id CROSS JOIN bounds
+    FROM effective CROSS JOIN activity_spans span CROSS JOIN bounds
     LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
-    WHERE effective.effective_state NOT IN ('user_wait', 'external_wait', 'blocked_wait')
+    WHERE span.operation_id = effective.id
+      AND effective.effective_state NOT IN ('user_wait', 'external_wait', 'blocked_wait')
       AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
 ) SELECT category, COUNT(*) count, COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms,
     SUM(interval_ms IS NULL) unknown_intervals FROM waits GROUP BY category ORDER BY category";
