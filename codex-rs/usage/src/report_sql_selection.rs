@@ -20,6 +20,7 @@ pub(super) async fn select(
         sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected(id)")
             .execute(&mut *connection)
             .await?;
+        create_worktree_tokens(connection, query).await?;
         return Ok(());
     }
     let mut sql = QueryBuilder::<Sqlite>::new(
@@ -91,6 +92,7 @@ pub(super) async fn select(
     {
         sqlx::query("CREATE TEMP TABLE _usage_tokens AS SELECT category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state,SUM(measured_tokens) AS measured_tokens,SUM(unknown_observations) AS unknown_observations,SUM(observation_count) AS observation_count,MAX(aggregate_overflow) AS aggregate_overflow FROM _usage_report_dimension_tokens WHERE thread_id = ? GROUP BY category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state")
                 .bind(thread.as_str()).execute(&mut *connection).await?;
+        create_worktree_tokens(connection, query).await?;
         return Ok(());
     }
     let mut tokens = QueryBuilder::<Sqlite>::new(
@@ -154,5 +156,43 @@ pub(super) async fn select(
     }
     tokens.push(" GROUP BY token.category_path, token.repository_bucket, token.measurement_provenance, selected.phase, selected.activity, selected.provenance, token.coverage_state");
     tokens.build().execute(&mut *connection).await?;
+    create_worktree_tokens(connection, query).await?;
+    Ok(())
+}
+
+async fn create_worktree_tokens(
+    connection: &mut SqliteConnection,
+    query: &UsageSummaryQuery,
+) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql("DROP TABLE IF EXISTS temp._usage_worktree_tokens;")
+        .execute(&mut *connection)
+        .await?;
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE _usage_worktree_tokens(worktree_id TEXT NOT NULL, operation_id TEXT NOT NULL, token_id TEXT NOT NULL, category_path TEXT NOT NULL, measurement_provenance TEXT NOT NULL, token_count INTEGER, PRIMARY KEY(worktree_id, token_id));",
+    )
+    .execute(&mut *connection)
+    .await?;
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "INSERT OR IGNORE INTO _usage_worktree_tokens(worktree_id,operation_id,token_id,category_path,measurement_provenance,token_count) SELECT attribution.worktree_id,selected.id,token.id,token.category_path,token.measurement_provenance,token.token_count FROM _usage_selected AS selected JOIN repository_attributions AS attribution ON attribution.operation_id = selected.id AND attribution.worktree_id IS NOT NULL JOIN model_requests AS request ON request.operation_id = selected.id JOIN token_observations AS token ON token.model_request_id = request.id WHERE token.category_path NOT GLOB 'attribution.items.*'",
+    );
+    if let Some(range) = query.time_range {
+        builder
+            .push(" AND token.observed_at_ms >= ")
+            .push_bind(range.start_ms())
+            .push(" AND token.observed_at_ms < ")
+            .push_bind(range.end_ms());
+    }
+    builder.push(" UNION ALL SELECT attribution.worktree_id,selected.id,token.id,token.category_path,token.measurement_provenance,token.token_count FROM _usage_selected AS selected JOIN repository_attributions AS attribution ON attribution.operation_id = selected.id AND attribution.worktree_id IS NOT NULL JOIN tool_invocations AS tool ON tool.operation_id = selected.id JOIN token_observations AS token ON token.tool_invocation_id = tool.id WHERE token.category_path NOT GLOB 'attribution.items.*'");
+    if let Some(range) = query.time_range {
+        builder
+            .push(" AND token.observed_at_ms >= ")
+            .push_bind(range.start_ms())
+            .push(" AND token.observed_at_ms < ")
+            .push_bind(range.end_ms());
+    }
+    builder.build().execute(&mut *connection).await?;
+    sqlx::query("CREATE INDEX temp._usage_worktree_tokens_worktree_idx ON _usage_worktree_tokens(worktree_id, category_path, measurement_provenance)")
+        .execute(&mut *connection)
+        .await?;
     Ok(())
 }
