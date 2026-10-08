@@ -349,6 +349,7 @@ impl UsageRuntime {
             hosted_seen: std::sync::Mutex::new(HashSet::new()),
             repository_ids: Vec::new(),
             repository_bucket: RepositoryBucket::Unknown,
+            worktree_id: None,
             pending,
             durable: false,
         }

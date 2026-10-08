@@ -1,9 +1,12 @@
+use crate::WorktreeAggregate;
+use crate::WorktreeCoverage;
 use crate::report_math::ParticipationCounts;
 use crate::report_math::ReportTimeMetrics;
 use crate::report_math::TokenActivityAggregate;
 use crate::report_math::ToolMetrics;
 use crate::report_math::UtcTimeRange;
 use crate::repository::RepositoryId;
+use crate::repository::WorktreeId;
 use crate::store::UsageStore;
 use crate::store::UsageStoreError;
 use crate::types::AccountProfileRef;
@@ -22,6 +25,8 @@ pub struct UsageSummaryQuery {
     pub repository_id: Option<RepositoryId>,
     pub account_profile_ref: Option<AccountProfileRef>,
     pub time_range: Option<UtcTimeRange>,
+    pub worktree_ids: Option<Vec<WorktreeId>>,
+    pub include_unassigned_worktrees: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +80,8 @@ pub struct UsageSummary {
     pub model_request_count: u64,
     pub tool_count: u64,
     pub classifications: Vec<ClassificationCount>,
+    pub worktrees: Vec<WorktreeAggregate>,
+    pub worktree_coverage: WorktreeCoverage,
     pub aggregation: &'static str,
 }
 
@@ -98,18 +105,24 @@ impl UsageStore {
                 repository_id: None,
                 account_profile_ref: None,
                 time_range,
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
             },
             UsageSummaryScope::Thread(thread_id) => UsageSummaryQuery {
                 thread_id: Some(thread_id),
                 repository_id: None,
                 account_profile_ref: None,
                 time_range,
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
             },
             UsageSummaryScope::Repository(repository_id) => UsageSummaryQuery {
                 thread_id: None,
                 repository_id: Some(repository_id),
                 account_profile_ref: None,
                 time_range,
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
             },
         };
         self.usage_summary_query(query).await

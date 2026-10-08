@@ -117,6 +117,8 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
         tools,
         time,
         classifications,
+        worktrees,
+        worktree_coverage,
         repository_participation,
         cost,
         formulas,
@@ -149,6 +151,26 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
             .into_iter()
             .map(report_classification)
             .collect(),
+        worktrees: worktrees
+            .into_iter()
+            .map(|worktree| protocol::LocalUsageReportWorktree {
+                worktree_key: worktree.worktree_key,
+                repository_key: worktree.repository_key,
+                label: worktree.label,
+                operation_count: worktree.operation_count,
+                model_request_count: worktree.model_request_count,
+                tool_count: worktree.tool_count,
+                total_tokens: worktree.total_tokens,
+                unknown_token_observations: worktree.unknown_token_observations,
+            })
+            .collect(),
+        worktree_coverage: protocol::LocalUsageReportWorktreeCoverage {
+            assigned_operation_count: worktree_coverage.assigned_operation_count,
+            unassigned_operation_count: worktree_coverage.unassigned_operation_count,
+            assigned_token_observation_count: worktree_coverage.assigned_token_observation_count,
+            unassigned_token_observation_count: worktree_coverage
+                .unassigned_token_observation_count,
+        },
         repository_participation: report_repository_participation(repository_participation),
         formulas: report_formulas(formulas),
         cost: cost.map(report_cost),

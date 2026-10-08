@@ -103,6 +103,7 @@ async fn attribute(
         event_id: FactEventId::new(),
         operation_id,
         repository_id,
+        worktree_id: None,
         kind,
         provenance: RepositoryAttributionProvenance::RuntimeObserved,
         occurred_at_ms: 1_001,

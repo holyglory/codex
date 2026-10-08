@@ -58,6 +58,7 @@ use codex_usage::UsageSummaryQuery;
 use codex_usage::UsageThreadRecord;
 use codex_usage::UsageToolListQuery;
 use codex_usage::UtcTimeRange;
+use codex_usage::WorktreeId;
 use codex_usage::redacted_account_profile_label;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -103,6 +104,8 @@ impl LocalUsageRequestProcessor {
                 &store,
                 SummaryFilters {
                     repository_key: params.repository_key,
+                    worktree_keys: params.worktree_keys,
+                    include_unassigned: params.include_unassigned,
                     thread_id: params.thread_id,
                     account_id: params.account_id,
                     from_at: params.from_at,
@@ -128,6 +131,8 @@ impl LocalUsageRequestProcessor {
             .ok_or_else(resource_not_found)?;
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: Some(id),
                 repository_id: None,
                 account_profile_ref: None,
@@ -188,6 +193,8 @@ impl LocalUsageRequestProcessor {
             .ok_or_else(resource_not_found)?;
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: None,
                 repository_id: Some(record.id.clone()),
                 account_profile_ref: None,
@@ -389,6 +396,8 @@ impl LocalUsageRequestProcessor {
                 &store,
                 SummaryFilters {
                     repository_key: params.repository_key,
+                    worktree_keys: None,
+                    include_unassigned: None,
                     thread_id: params.thread_id,
                     account_id: None,
                     from_at: params.from_at,
@@ -455,6 +464,10 @@ impl LocalUsageRequestProcessor {
             .transpose()?;
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: parse_worktree_keys(filters.worktree_keys.clone())?,
+                include_unassigned_worktrees: filters
+                    .include_unassigned
+                    .unwrap_or(filters.worktree_keys.is_none()),
                 thread_id: filters.thread_id.map(thread_id).transpose()?,
                 repository_id: filters.repository_key.map(repository_id).transpose()?,
                 account_profile_ref,
@@ -519,6 +532,8 @@ impl LocalUsageRequestProcessor {
     ) -> Result<LocalUsageRepository, JSONRPCErrorError> {
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: None,
                 repository_id: Some(record.id.clone()),
                 account_profile_ref: None,
@@ -552,10 +567,32 @@ impl LocalUsageRequestProcessor {
 
 struct SummaryFilters {
     repository_key: Option<String>,
+    worktree_keys: Option<Vec<String>>,
+    include_unassigned: Option<bool>,
     thread_id: Option<String>,
     account_id: Option<String>,
     from_at: Option<i64>,
     to_at: Option<i64>,
+}
+
+fn parse_worktree_keys(
+    keys: Option<Vec<String>>,
+) -> Result<Option<Vec<WorktreeId>>, JSONRPCErrorError> {
+    const MAX_KEYS: usize = 256;
+    let Some(keys) = keys else {
+        return Ok(None);
+    };
+    if keys.len() > MAX_KEYS {
+        return Err(invalid_params("worktreeKeys must contain at most 256 keys"));
+    }
+    let mut ids = Vec::with_capacity(keys.len());
+    for key in keys {
+        let id = WorktreeId::new(key).map_err(|_| invalid_params("worktree key is invalid"))?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(Some(ids))
 }
 
 fn api_thread(

@@ -198,6 +198,8 @@ async fn summary(
         .transpose()?;
     let summary = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id,
             repository_id,
             account_profile_ref: account.as_ref().map(|account| account.profile_ref.clone()),

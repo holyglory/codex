@@ -70,7 +70,9 @@ impl UsageStore {
         };
         let include_global = matches!(scope, UsageSummaryScope::All)
             && query.account_profile_ref.is_none()
-            && family.is_none();
+            && family.is_none()
+            && query.worktree_ids.is_none()
+            && query.include_unassigned_worktrees;
         // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.
@@ -159,6 +161,7 @@ impl UsageStore {
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
         let cost = Some(cost::cost(&mut tx, &query, family.as_ref(), source).await?);
         let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
+        let (worktrees, worktree_coverage) = crate::report_worktree::aggregates(&mut tx).await?;
         let has_evidence = !tokens.is_empty() || !event_counts.is_empty();
         let has_gaps = !has_evidence
             || tokens.iter().any(|t| t.exact_tokens.is_none())
@@ -213,6 +216,8 @@ impl UsageStore {
             tool_count: tools.count,
             tools,
             classifications,
+            worktrees,
+            worktree_coverage,
             aggregation: "checked sum of each stored observation once; merged repository source history resolves to its canonical target",
         })
     }

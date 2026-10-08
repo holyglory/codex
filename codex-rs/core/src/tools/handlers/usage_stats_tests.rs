@@ -240,6 +240,7 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
             event_id: codex_usage::FactEventId::new(),
             operation_id,
             repository_id: Some(repository.clone()),
+            worktree_id: None,
             kind: RepositoryAttributionKind::Primary,
             provenance: RepositoryAttributionProvenance::RuntimeObserved,
             occurred_at_ms: 6,

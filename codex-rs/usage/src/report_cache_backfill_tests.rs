@@ -187,6 +187,8 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         2_051
     );
     let scoped = UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
         thread_id: Some(ThreadId::new("backfill").expect("thread")),
         repository_id: None,
         account_profile_ref: None,

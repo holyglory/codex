@@ -93,6 +93,8 @@ async fn empty_json_summary_preserves_unknowns_and_formulas() {
     let store = UsageStore::open(home.path()).await.expect("store");
     let summary = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: None,
             repository_id: None,
             account_profile_ref: None,

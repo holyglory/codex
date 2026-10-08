@@ -180,6 +180,8 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     // requests use the finite-window budget and warming contract below.
     let mut oracle = store.pool.acquire().await.expect("oracle connection");
     let all = UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
         thread_id: None,
         repository_id: None,
         account_profile_ref: None,

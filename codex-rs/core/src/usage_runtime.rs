@@ -171,6 +171,7 @@ pub(crate) struct UsageAttempt {
     hosted_seen: std::sync::Mutex<HashSet<String>>,
     repository_ids: Vec<codex_usage::RepositoryId>,
     repository_bucket: RepositoryBucket,
+    worktree_id: Option<codex_usage::WorktreeId>,
     pending: Arc<buffer::PendingModelAttempt>,
     durable: bool,
 }
@@ -491,6 +492,7 @@ impl UsageRuntime {
             hosted_seen: std::sync::Mutex::new(HashSet::new()),
             repository_ids: repository_resolution.ids,
             repository_bucket: repository_resolution.bucket,
+            worktree_id: repository_resolution.worktree_id,
             pending,
             durable: true,
         })

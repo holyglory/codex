@@ -997,6 +997,8 @@ async fn fetch_local_usage(
             .request_typed::<LocalUsageSummaryResponse>(ClientRequest::LocalUsageSummary {
                 request_id,
                 params: LocalUsageSummaryParams {
+                    worktree_keys: None,
+                    include_unassigned: None,
                     repository_key: None,
                     thread_id: None,
                     account_id: None,

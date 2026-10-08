@@ -7,6 +7,7 @@ use codex_usage::RepositoryId;
 use codex_usage::RepositoryIdentityInput;
 use codex_usage::RepositoryIdentityMaterial;
 use codex_usage::SafeRepositoryLabel;
+use codex_usage::WorktreeId;
 use std::path::Path;
 
 /// Raw repository material owned only until the usage boundary hashes it.
@@ -17,6 +18,7 @@ pub(crate) struct RepositoryCandidate {
     origin: Option<String>,
     common_dir: Option<String>,
     safe_label: String,
+    worktree_label: String,
 }
 
 pub(crate) fn repository_safe_label(workspace: &str) -> String {
@@ -43,11 +45,14 @@ impl RepositoryCandidate {
         origin: Option<String>,
         safe_label: impl Into<String>,
     ) -> Self {
+        let workspace = workspace.into();
+        let worktree_label = repository_safe_label(&workspace);
         Self {
-            workspace: workspace.into(),
+            workspace,
             origin,
             common_dir: None,
             safe_label: safe_label.into(),
+            worktree_label,
         }
     }
 }
@@ -67,11 +72,13 @@ struct TurnRepositoryEntries {
 struct RepositoryChoice {
     id: RepositoryId,
     authority: u8,
+    worktree_id: WorktreeId,
 }
 
 pub(super) struct RepositoryResolution {
     pub(super) ids: Vec<RepositoryId>,
     pub(super) bucket: RepositoryBucket,
+    pub(super) worktree_id: Option<WorktreeId>,
 }
 
 impl UsageRuntime {
@@ -106,7 +113,10 @@ impl UsageRuntime {
             } else {
                 1
             };
-            let mut identity = RepositoryIdentityInput::new(workspace);
+            let mut identity = RepositoryIdentityInput::new(
+                CanonicalRepositoryPath::new(workspace.as_str())
+                    .map_err(|_| self.reject_invalid_metadata())?,
+            );
             if let Some(common_dir) = discovered_common {
                 identity = identity.with_git_common_dir(common_dir);
             }
@@ -120,17 +130,27 @@ impl UsageRuntime {
                 .map_err(|_| self.reject_invalid_metadata())?;
             let repository_id =
                 self.write_required(store.resolve_repository(&identity, &label, now_ms()).await)?;
+            let worktree_id =
+                self.write_required(store.worktree_id_for_workspace(&repository_id, &workspace))?;
+            let worktree_label = SafeRepositoryLabel::new(candidate.worktree_label.as_str())
+                .map_err(|_| self.reject_invalid_metadata())?;
+            self.write_required(
+                store
+                    .ensure_worktree(&worktree_id, &repository_id, &worktree_label, now_ms())
+                    .await,
+            )?;
             resolved.push((
                 workspace_key,
                 RepositoryChoice {
                     id: repository_id,
                     authority,
+                    worktree_id,
                 },
             ));
         }
 
         let mut merges = Vec::new();
-        let ids = {
+        let (ids, worktree_id) = {
             let mut state = self.repository_state.inner.lock().await;
             let TurnRepositoryEntries {
                 ids,
@@ -138,6 +158,7 @@ impl UsageRuntime {
             } = &mut *state;
             let choices = workspace_choices.entry(key.clone()).or_default();
             let ids = ids.entry(key).or_default();
+            let mut worktrees = HashSet::new();
             for (workspace_key, candidate) in resolved {
                 let selected = match choices.get(&workspace_key) {
                     Some(previous) if previous.id == candidate.id => previous.clone(),
@@ -157,8 +178,11 @@ impl UsageRuntime {
                 if !ids.contains(&selected.id) {
                     ids.push(selected.id);
                 }
+                worktrees.insert(selected.worktree_id);
             }
-            ids.clone()
+            let worktree_id = (ids.len() == 1 && worktrees.len() == 1)
+                .then(|| worktrees.into_iter().next().expect("one worktree"));
+            (ids.clone(), worktree_id)
         };
         for (previous_id, repository_id) in merges {
             self.write_required(
@@ -177,7 +201,11 @@ impl UsageRuntime {
             [repository_id] => RepositoryBucket::Single(repository_id.clone()),
             [_, _, ..] => RepositoryBucket::MultiRepo,
         };
-        Ok(RepositoryResolution { ids, bucket })
+        Ok(RepositoryResolution {
+            ids,
+            bucket,
+            worktree_id,
+        })
     }
 
     pub(super) async fn record_repository_resolution(
@@ -195,6 +223,7 @@ impl UsageRuntime {
                         event_id: FactEventId::new(),
                         operation_id,
                         repository_id: None,
+                        worktree_id: None,
                         kind: RepositoryAttributionKind::Unknown,
                         provenance: RepositoryAttributionProvenance::Unknown,
                         occurred_at_ms,
@@ -210,6 +239,11 @@ impl UsageRuntime {
                         event_id: FactEventId::new(),
                         operation_id,
                         repository_id: Some(repository_id.clone()),
+                        worktree_id: if resolution.ids.len() == 1 {
+                            resolution.worktree_id.clone()
+                        } else {
+                            None
+                        },
                         kind: if index == 0 {
                             RepositoryAttributionKind::Primary
                         } else {
@@ -229,6 +263,7 @@ impl UsageRuntime {
                         event_id: FactEventId::new(),
                         operation_id,
                         repository_id: None,
+                        worktree_id: None,
                         kind: RepositoryAttributionKind::MultiRepo,
                         provenance: RepositoryAttributionProvenance::RuntimeObserved,
                         occurred_at_ms,
@@ -254,6 +289,38 @@ fn canonical_path(value: &str) -> Option<CanonicalRepositoryPath> {
 pub(crate) async fn model_repository_candidates(
     metadata: &crate::responses_metadata::CodexResponsesMetadata,
 ) -> Vec<crate::usage_runtime::RepositoryCandidate> {
+    if let Some(cwd) = &metadata.local_usage_workspace {
+        // Optional Git enrichment also scans the working tree and can finish after
+        // a fast model request. Resolve its known directory independently.
+        let workspace = cwd.to_path_buf();
+        let repository_root =
+            codex_git_utils::get_git_repo_root(cwd.as_path()).unwrap_or_else(|| cwd.to_path_buf());
+        let origin = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            codex_git_utils::get_git_remote_urls_assume_git_repo(&repository_root),
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|remotes| {
+            remotes
+                .get("origin")
+                .or_else(|| remotes.values().next())
+                .cloned()
+        })
+        .map(String::from);
+        if let Some(workspace) = workspace.to_str() {
+            let repository_label = repository_root
+                .to_str()
+                .map(repository_safe_label)
+                .unwrap_or_else(|| repository_safe_label(workspace));
+            return vec![RepositoryCandidate::new(
+                workspace,
+                origin,
+                repository_label,
+            )];
+        }
+    }
     metadata
         .workspaces
         .iter()
