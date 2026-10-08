@@ -128,7 +128,7 @@ def main():
                     bundle.extractall(stage, filter="data")
                 metadata = json.loads((stage / "codex-package.json").read_text())
                 if (
-                    metadata["version"] != "0.159.1+multi.2"
+                    metadata["version"] != "0.159.1+multi.3"
                     or metadata["target"] != "x86_64-unknown-linux-musl"
                 ):
                     raise SystemExit("Unexpected package identity")
