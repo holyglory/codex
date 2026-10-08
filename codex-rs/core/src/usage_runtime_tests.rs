@@ -1167,6 +1167,10 @@ async fn linked_worktrees_share_repository_totals_but_keep_private_worktree_attr
     let home = tempfile::tempdir().expect("tempdir");
     let runtime = UsageRuntime::new(home.path().to_path_buf());
     let origin = "https://example.test/owner/codex.git";
+    let worktree_one = home.path().join("codex");
+    let worktree_two = home.path().join("codex-linked");
+    std::fs::create_dir_all(&worktree_one).expect("worktree one");
+    std::fs::create_dir_all(&worktree_two).expect("worktree two");
     let retry_slot = Arc::new(StdMutex::new(None));
     for (thread, workspace, tokens) in [
         (
@@ -1180,6 +1184,11 @@ async fn linked_worktrees_share_repository_totals_but_keep_private_worktree_attr
             11,
         ),
     ] {
+        let workspace = if workspace == "/workspace/codex" {
+            worktree_one.to_string_lossy().into_owned()
+        } else {
+            worktree_two.to_string_lossy().into_owned()
+        };
         let mut model = context(thread, None, "worktree-turn", Arc::clone(&retry_slot));
         model.repositories = vec![RepositoryCandidate::new(
             workspace,
@@ -1195,6 +1204,7 @@ async fn linked_worktrees_share_repository_totals_but_keep_private_worktree_attr
                 })),
             )
             .await;
+        assert!(attempt.durable, "durable worktree attempt");
         attempt.finish(TerminalStatus::Completed, None).await;
     }
     let store = runtime.store.get().expect("usage store");
