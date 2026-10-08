@@ -150,6 +150,8 @@ pub struct LocalUsageReport {
     pub tools: LocalUsageReportToolMetrics,
     pub time: LocalUsageReportTimeMetrics,
     pub classifications: Vec<LocalUsageReportClassificationCount>,
+    pub worktrees: Vec<LocalUsageReportWorktree>,
+    pub worktree_coverage: LocalUsageReportWorktreeCoverage,
     pub repository_participation: LocalUsageReportRepositoryParticipation,
     pub formulas: LocalUsageReportFormulas,
 }
@@ -319,6 +321,12 @@ pub struct LocalUsageReportFormulas {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct LocalUsageSummaryParams {
+    /// Omitted or empty selects all worktrees, including historical unassigned usage.
+    #[ts(optional = nullable)]
+    pub worktree_keys: Option<Vec<String>>,
+    /// Include historical operations without a captured worktree identity.
+    #[ts(optional = nullable)]
+    pub include_unassigned: Option<bool>,
     #[ts(optional = nullable)]
     pub repository_key: Option<String>,
     #[ts(optional = nullable)]
@@ -651,4 +659,28 @@ pub struct LocalUsageUpdatedNotification {
     pub updated_at: i64,
     pub thread_id: Option<String>,
     pub repository_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportWorktree {
+    pub worktree_key: String,
+    pub repository_key: String,
+    pub label: String,
+    pub operation_count: u64,
+    pub model_request_count: u64,
+    pub tool_count: u64,
+    pub total_tokens: Option<i64>,
+    pub unknown_token_observations: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportWorktreeCoverage {
+    pub assigned_operation_count: u64,
+    pub unassigned_operation_count: u64,
+    pub assigned_token_observation_count: u64,
+    pub unassigned_token_observation_count: u64,
 }

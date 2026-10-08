@@ -109,6 +109,7 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
             event_id: FactEventId::new(),
             operation_id,
             repository_id: Some(repository.clone()),
+            worktree_id: None,
             kind: RepositoryAttributionKind::Primary,
             provenance: RepositoryAttributionProvenance::RuntimeObserved,
             occurred_at_ms: 6,

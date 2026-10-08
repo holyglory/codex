@@ -1,4 +1,5 @@
 use crate::repository::RepositoryId;
+use crate::repository::WorktreeId;
 use crate::store::UsageStore;
 use crate::store::UsageStoreError;
 use crate::types::AccountProfileRef;
@@ -274,6 +275,7 @@ pub struct NewRepositoryAttribution {
     pub event_id: FactEventId,
     pub operation_id: OperationId,
     pub repository_id: Option<RepositoryId>,
+    pub worktree_id: Option<WorktreeId>,
     pub kind: RepositoryAttributionKind,
     pub provenance: RepositoryAttributionProvenance,
     pub occurred_at_ms: i64,
@@ -577,8 +579,8 @@ impl UsageStore {
             r#"
             INSERT INTO repository_attributions(
                 event_id, operation_id, repository_id, attribution_kind,
-                provenance, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING
+                provenance, occurred_at_ms, worktree_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING
             "#,
         )
         .bind(fact.event_id.as_string())
@@ -587,6 +589,7 @@ impl UsageStore {
         .bind(fact.kind.as_str())
         .bind(fact.provenance.as_str())
         .bind(fact.occurred_at_ms)
+        .bind(fact.worktree_id.as_ref().map(WorktreeId::as_str))
         .execute(&self.pool)
         .await
         .map_err(UsageStoreError::Database)?;
@@ -742,16 +745,18 @@ impl UsageStore {
         &self,
         fact: &NewRepositoryAttribution,
     ) -> Result<bool, UsageStoreError> {
-        let row = sqlx::query_as::<_, (String, Option<String>, String, String, i64)>(
-            r#"
-            SELECT operation_id, repository_id, attribution_kind, provenance, occurred_at_ms
+        let row =
+            sqlx::query_as::<_, (String, Option<String>, String, String, i64, Option<String>)>(
+                r#"
+            SELECT operation_id, repository_id, attribution_kind, provenance, occurred_at_ms,
+                   worktree_id
             FROM repository_attributions WHERE event_id = ?
             "#,
-        )
-        .bind(fact.event_id.as_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(UsageStoreError::Database)?;
+            )
+            .bind(fact.event_id.as_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?;
         Ok(row.is_some_and(|row| {
             row == (
                 fact.operation_id.as_string(),
@@ -761,6 +766,7 @@ impl UsageStore {
                 fact.kind.as_str().to_string(),
                 fact.provenance.as_str().to_string(),
                 fact.occurred_at_ms,
+                fact.worktree_id.as_ref().map(|id| id.as_str().to_string()),
             )
         }))
     }

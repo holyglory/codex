@@ -615,6 +615,7 @@ async fn attribute(
             event_id: FactEventId::new(),
             operation_id,
             repository_id: Some(repository_id.clone()),
+            worktree_id: None,
             kind: RepositoryAttributionKind::Primary,
             provenance: RepositoryAttributionProvenance::RuntimeObserved,
             occurred_at_ms,

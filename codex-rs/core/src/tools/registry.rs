@@ -1042,16 +1042,7 @@ fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<Repo
         .primary()
         .map(|environment| {
             let cwd = environment.cwd().to_path_buf();
-            vec![
-                codex_git_utils::get_git_repo_root(&cwd)
-                    .or_else(|| {
-                        environment
-                            .workspace_roots()
-                            .first()
-                            .map(codex_utils_path_uri::PathUri::to_path_buf)
-                    })
-                    .unwrap_or(cwd),
-            ]
+            vec![cwd]
         })
         .unwrap_or_default();
     if workspaces.is_empty() {
@@ -1060,14 +1051,15 @@ fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<Repo
     workspaces
         .into_iter()
         .filter_map(|workspace| {
-            let workspace = if workspace.is_absolute() {
-                codex_git_utils::get_git_repo_root(&workspace).unwrap_or(workspace)
+            let repository_root = if workspace.is_absolute() {
+                codex_git_utils::get_git_repo_root(&workspace).unwrap_or_else(|| workspace.clone())
             } else {
-                workspace
+                workspace.clone()
             };
             let workspace = workspace.to_str()?.to_string();
+            let repository_root = repository_root.to_str()?.to_string();
             let origin = enriched
-                .get(&workspace)
+                .get(&repository_root)
                 .and_then(|details| {
                     details.associated_remote_urls.as_ref().and_then(|remotes| {
                         remotes
@@ -1080,7 +1072,7 @@ fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<Repo
             Some(RepositoryCandidate::new(
                 workspace.clone(),
                 origin,
-                repository_safe_label(&workspace),
+                repository_safe_label(&repository_root),
             ))
         })
         .collect()

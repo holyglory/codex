@@ -55,6 +55,17 @@ pub(super) async fn select(
         sql.push(" AND operation.id IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(")
             .push_bind(Json(family.iter().collect::<Vec<_>>())).push(")))");
     }
+    if let Some(worktrees) = &query.worktree_ids {
+        sql.push(" AND (operation.id IN (SELECT operation_id FROM repository_attributions WHERE worktree_id IN (SELECT value FROM json_each(")
+            .push_bind(Json(worktrees.iter().map(|id| id.as_str()).collect::<Vec<_>>()))
+            .push(")))");
+        if query.include_unassigned_worktrees {
+            sql.push(" OR NOT EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = operation.id AND worktree_id IS NOT NULL)");
+        }
+        sql.push(")");
+    } else if !query.include_unassigned_worktrees {
+        sql.push(" AND EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = operation.id AND worktree_id IS NOT NULL)");
+    }
     if let Some(account) = &query.account_profile_ref {
         sql.push(" AND COALESCE(request.account_profile_ref, parent_request.account_profile_ref, turn.account_profile_ref) = ")
             .push_bind(account.as_str());
@@ -74,6 +85,8 @@ pub(super) async fn select(
         && query.time_range.is_none()
         && family.is_none()
         && query.account_profile_ref.is_none()
+        && query.include_unassigned_worktrees
+        && query.worktree_ids.is_none()
         && let Some(thread) = &query.thread_id
     {
         sqlx::query("CREATE TEMP TABLE _usage_tokens AS SELECT category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state,SUM(measured_tokens) AS measured_tokens,SUM(unknown_observations) AS unknown_observations,SUM(observation_count) AS observation_count,MAX(aggregate_overflow) AS aggregate_overflow FROM _usage_report_dimension_tokens WHERE thread_id = ? GROUP BY category_path,repository_bucket,measurement_provenance,phase,activity,provenance,coverage_state")

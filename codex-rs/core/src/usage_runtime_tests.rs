@@ -1159,3 +1159,72 @@ async fn corrupt_database_buffers_requests_without_replacing_it() {
         corrupt
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn linked_worktrees_share_repository_totals_but_keep_private_worktree_attribution() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let runtime = UsageRuntime::new(home.path().to_path_buf());
+    let origin = "https://example.test/owner/codex.git";
+    let retry_slot = Arc::new(StdMutex::new(None));
+    for (thread, workspace, tokens) in [
+        (
+            "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa",
+            "/workspace/codex",
+            7,
+        ),
+        (
+            "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+            "/workspace/codex-linked",
+            11,
+        ),
+    ] {
+        let mut model = context(thread, None, "worktree-turn", Arc::clone(&retry_slot));
+        model.repositories = vec![RepositoryCandidate::new(
+            workspace,
+            Some(origin.to_string()),
+            "codex",
+        )];
+        let attempt = runtime.begin_model_attempt(model).await;
+        attempt
+            .record_provider_usage_parts(
+                None,
+                &ProviderUsage::from_json_value(&serde_json::json!({
+                    "total_tokens": tokens,
+                })),
+            )
+            .await;
+        attempt.finish(TerminalStatus::Completed, None).await;
+    }
+    let store = runtime.store.get().expect("usage store");
+    let repository_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repositories")
+        .fetch_one(&store.pool)
+        .await
+        .expect("repository count");
+    let worktree_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worktrees")
+        .fetch_one(&store.pool)
+        .await
+        .expect("worktree count");
+    assert_eq!(repository_count, 1);
+    assert_eq!(worktree_count, 2);
+    let attribution_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM repository_attributions WHERE worktree_id IS NOT NULL",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("worktree attribution count");
+    assert_eq!(attribution_count, 2);
+    let all = store
+        .usage_summary(UsageSummaryScope::All)
+        .await
+        .expect("all summary");
+    assert_eq!(
+        all.tokens
+            .iter()
+            .map(|token| token.measured_tokens)
+            .sum::<i64>(),
+        18
+    );
+    assert_eq!(all.worktrees.len(), 2);
+    assert_eq!(all.worktree_coverage.unassigned_operation_count, 0);
+}

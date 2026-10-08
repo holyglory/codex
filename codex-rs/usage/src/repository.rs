@@ -19,6 +19,7 @@ const REPOSITORY_KEY_FILENAME: &str = "repository-hmac.key";
 const REPOSITORY_KEY_BYTES: usize = 32;
 const MAX_IDENTITY_BYTES: usize = 4_096;
 const MAX_LABEL_BYTES: usize = 80;
+const MAX_WORKTREE_IDENTITY_BYTES: usize = 4_096;
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -255,6 +256,30 @@ impl RepositoryId {
     }
 }
 
+/// Privacy-preserving identity for one canonical local checkout path.
+///
+/// Worktree IDs are derived from the private repository HMAC key and never
+/// expose the source path at the usage or API boundary.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct WorktreeId(String);
+
+impl WorktreeId {
+    pub fn new(value: impl Into<String>) -> Result<Self, RepositoryIdentityError> {
+        let value = value.into();
+        let valid = value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+        valid
+            .then_some(Self(value))
+            .ok_or(RepositoryIdentityError::InvalidIdentity)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SafeRepositoryLabel(String);
 
@@ -301,6 +326,24 @@ impl RepositoryHmacKey {
         mac.update(normalized_identity.as_bytes());
         Ok(RepositoryId(hex_lower(&mac.finalize().into_bytes())))
     }
+
+    fn worktree_id(
+        &self,
+        repository_id: &RepositoryId,
+        workspace: &CanonicalRepositoryPath,
+    ) -> Result<WorktreeId, UsageStoreError> {
+        if workspace.as_str().len() > MAX_WORKTREE_IDENTITY_BYTES {
+            return Err(UsageStoreError::RepositoryKeyCorrupt);
+        }
+        let mut mac = HmacSha256::new_from_slice(&self.0)
+            .map_err(|_| UsageStoreError::RepositoryKeyCorrupt)?;
+        mac.update(b"codex-worktree-identity-v1\0");
+        mac.update(repository_id.as_str().as_bytes());
+        mac.update(b"\0");
+        mac.update(workspace.as_str().as_bytes());
+        WorktreeId::new(hex_lower(&mac.finalize().into_bytes()))
+            .map_err(|_| UsageStoreError::RepositoryKeyCorrupt)
+    }
 }
 
 pub(crate) async fn load_or_create_repository_key(
@@ -340,6 +383,71 @@ impl UsageStore {
     ) -> Result<RepositoryId, UsageStoreError> {
         let (source, normalized) = identity.selected();
         self.repository_key.repository_id(source, &normalized)
+    }
+
+    pub fn worktree_id_for_workspace(
+        &self,
+        repository_id: &RepositoryId,
+        workspace: &CanonicalRepositoryPath,
+    ) -> Result<WorktreeId, UsageStoreError> {
+        self.repository_key.worktree_id(repository_id, workspace)
+    }
+
+    pub async fn find_worktree_for_workspace(
+        &self,
+        repository_id: &RepositoryId,
+        workspace: &CanonicalRepositoryPath,
+    ) -> Result<Option<WorktreeId>, UsageStoreError> {
+        let id = self.worktree_id_for_workspace(repository_id, workspace)?;
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id = ? AND repository_id = ?)",
+        )
+        .bind(id.as_str())
+        .bind(repository_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)?;
+        Ok((exists != 0).then_some(id))
+    }
+
+    pub async fn ensure_worktree(
+        &self,
+        id: &WorktreeId,
+        repository_id: &RepositoryId,
+        label: &SafeRepositoryLabel,
+        observed_at_ms: i64,
+    ) -> Result<(), UsageStoreError> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO worktrees(id, repository_id, safe_display_label, created_at_ms)
+            VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(id.as_str())
+        .bind(repository_id.as_str())
+        .bind(label.as_str())
+        .bind(observed_at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)?;
+        if result.rows_affected() == 0 {
+            let row = sqlx::query_as::<_, (String, String)>(
+                "SELECT repository_id, safe_display_label FROM worktrees WHERE id = ?",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(UsageStoreError::Database)?;
+            if row
+                != Some((
+                    repository_id.as_str().to_string(),
+                    label.as_str().to_string(),
+                ))
+            {
+                return Err(UsageStoreError::FactConflict);
+            }
+        }
+        Ok(())
     }
 
     /// Returns privacy-preserving candidate IDs in descending identity authority.

@@ -554,6 +554,8 @@ async fn expected_reports(
     let store = UsageStore::open(codex_home).await?;
     let all = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: None,
             repository_id: None,
             account_profile_ref: None,
@@ -562,6 +564,8 @@ async fn expected_reports(
         .await?;
     let thread = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: Some(ThreadId::new("thread-one")?),
             repository_id: None,
             account_profile_ref: None,
@@ -570,6 +574,8 @@ async fn expected_reports(
         .await?;
     let repository = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: None,
             repository_id: Some(repository_id.clone()),
             account_profile_ref: None,
@@ -608,6 +614,7 @@ fn assert_report_matches_structured(report: &LocalUsageReport, expected: serde_j
 
 fn empty_summary_params() -> LocalUsageSummaryParams {
     LocalUsageSummaryParams {
+        worktree_keys: None,
         repository_key: None,
         thread_id: None,
         account_id: None,
@@ -836,6 +843,7 @@ async fn attribute(store: &UsageStore, operation_id: OperationId, id: Repository
             event_id: FactEventId::new(),
             operation_id,
             repository_id: Some(id),
+            worktree_id: None,
             kind: RepositoryAttributionKind::Primary,
             provenance: RepositoryAttributionProvenance::RuntimeObserved,
             occurred_at_ms: STARTED_AT_MS + 1,

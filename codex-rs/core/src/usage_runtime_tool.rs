@@ -1133,6 +1133,7 @@ impl UsageAttempt {
         let repository_resolution = repository::RepositoryResolution {
             ids: self.repository_ids.clone(),
             bucket: self.repository_bucket.clone(),
+            worktree_id: self.worktree_id.clone(),
         };
         let writes = async {
             store
