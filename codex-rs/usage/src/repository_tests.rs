@@ -325,3 +325,25 @@ fn canonical_paths_accept_and_normalize_windows_drive_and_unc_shapes() {
         ));
     }
 }
+
+#[test]
+fn worktree_ids_are_distinct_per_checkout_and_share_repository_identity() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let one = temp.path().join("codex");
+    let two = temp.path().join("codex-linked");
+    std::fs::create_dir_all(&one).expect("worktree one");
+    std::fs::create_dir_all(&two).expect("worktree two");
+    let key = [7_u8; 32];
+    let repository_id = RepositoryId::new("a".repeat(64)).expect("repository");
+    let one = CanonicalRepositoryPath::new(one.to_string_lossy()).expect("path one");
+    let two = CanonicalRepositoryPath::new(two.to_string_lossy()).expect("path two");
+    let first = test_repository_key(key);
+    let one_id = first.worktree_id(&repository_id, &one).expect("one id");
+    let two_id = first.worktree_id(&repository_id, &two).expect("two id");
+    assert_ne!(one_id, two_id);
+    assert_eq!(one_id, first.worktree_id(&repository_id, &one).expect("stable id"));
+}
+
+fn test_repository_key(bytes: [u8; 32]) -> RepositoryHmacKey {
+    RepositoryHmacKey(bytes)
+}
