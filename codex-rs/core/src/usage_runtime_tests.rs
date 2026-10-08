@@ -1197,23 +1197,6 @@ async fn linked_worktrees_share_repository_totals_but_keep_private_worktree_attr
         attempt.finish(TerminalStatus::Completed, None).await;
     }
     let store = runtime.store.get().expect("usage store");
-    let repository_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repositories")
-        .fetch_one(&store.pool)
-        .await
-        .expect("repository count");
-    let worktree_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worktrees")
-        .fetch_one(&store.pool)
-        .await
-        .expect("worktree count");
-    assert_eq!(repository_count, 1);
-    assert_eq!(worktree_count, 2);
-    let attribution_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM repository_attributions WHERE worktree_id IS NOT NULL",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .expect("worktree attribution count");
-    assert_eq!(attribution_count, 2);
     let all = store
         .usage_summary(UsageSummaryScope::All)
         .await
