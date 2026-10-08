@@ -7,8 +7,8 @@
 - Peeled commit: `8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`
 - Selected: 2026-09-29
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.159.1+multi.2`
-- Downstream npm version: `0.159.1-multi.2`
+- Downstream Rust version: `0.159.1+multi.3`
+- Downstream npm version: `0.159.1-multi.3`
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic
@@ -183,7 +183,7 @@ the authority for release outcomes and verification receipts.
   build does not prove local deployment when DevCoordinator has no declaration
   for the repository. Likewise, `npm whoami` must succeed before staging a
   publish; an npm `E401` is an authentication blocker, not a package failure.
-- **Package smoke tests are the capacity contract.** The local `0.159.1+multi.2`
+- **Package smoke tests are the capacity contract.** The local `0.159.1+multi.3`
   Linux package initially caught a real regression that unit tests missed:
   `response.failed` with `slow_down` was mapped to `rateLimitExceeded` instead
   of the shared capacity retry boundary. Keep both `server_is_overloaded` and
@@ -222,6 +222,14 @@ the authority for release outcomes and verification receipts.
   calculate expected totals; preserve half-open windows, late facts, corrections,
   covered tools, descendants and pagination. Include cancellation checks that
   demonstrate SQLite stopped and released its snapshot while capture continues.
+- **Test effective-UID home resolution at the installed boundary.** A root
+  launch with an inherited non-root `HOME` must use UID 0's passwd home when
+  `CODEX_HOME` is unset; an explicit `CODEX_HOME` remains authoritative. The
+  usage database and sidecars must remain owner-only. A helper-only test or a
+  non-root fixture is insufficient: run the packaged binary as UID 0, verify
+  open/migrate/reopen and private modes, and ensure the ordinary-user path
+  still uses its own home. Keep root data separate; never fix this by
+  broadening permissions or changing ownership.
 - **Diagnose SQLite with its WAL attached.** Use a consistent online backup for
   private recovery; independently copied database/sidecar files can miss committed
   facts. Inspect per-source cursors and the failing page. Multiple effective

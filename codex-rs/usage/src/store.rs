@@ -255,12 +255,29 @@ impl UsageStore {
 
     pub async fn open(codex_home: &Path) -> Result<Self, UsageStoreError> {
         let usage_dir = codex_home.join("usage");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let home_owner = std::fs::metadata(codex_home)
+                .ok()
+                .map(|metadata| metadata.uid());
+            tracing::debug!(
+                home_owner,
+                stage = "resolve_codex_home",
+                "usage storage initialization"
+            );
+        }
         ensure_private_directory(&usage_dir).map_err(private_storage_error)?;
         let database_path = usage_dir.join("usage.sqlite3");
+        tracing::debug!(stage = "open_usage_database", "opening usage database");
         let pool = open_sqlite_pool(&database_path, SqlitePoolProfile::DurableEvents)
             .await
             .map_err(UsageStoreError::Database)?;
         ensure_private_file(&database_path).map_err(private_storage_error)?;
+        tracing::debug!(
+            stage = "migrate_usage_database",
+            "usage storage initialization"
+        );
         if let Err(error) = MIGRATOR.run(&pool).await {
             pool.close().await;
             return Err(UsageStoreError::Migration(error));
@@ -300,6 +317,10 @@ impl UsageStore {
                 return Err(error);
             }
         };
+        tracing::debug!(
+            stage = "verify_usage_storage",
+            "usage storage initialization"
+        );
         verify_sqlite_files(&database_path)?;
         let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path)
             .map_err(UsageStoreError::Filesystem)?;

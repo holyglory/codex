@@ -30,7 +30,7 @@ GATES = (
     "native-inputs",
 )
 LANES = {
-    "rust": ("clippy", "rust-tests", "linux-package"),
+    "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
     "bazel": ("bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
@@ -166,6 +166,15 @@ def commands(root, state, directory):
                 "bash",
                 "scripts/build_local_linux_candidate.sh",
                 str(directory / "linux-package"),
+            ],
+            root,
+        ),
+        "root-usage": (
+            [
+                os.environ.get("LOCAL_PACKAGE_PYTHON", sys.executable),
+                "scripts/check_root_usage.py",
+                "--binary",
+                str(directory / "linux-package/bin/codex"),
             ],
             root,
         ),
