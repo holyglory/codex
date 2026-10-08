@@ -161,7 +161,8 @@ impl UsageStore {
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
         let cost = Some(cost::cost(&mut tx, &query, family.as_ref(), source).await?);
         let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
-        let (worktrees, worktree_coverage) = crate::report_worktree::aggregates(&mut tx).await?;
+        let (worktrees, worktree_coverage) =
+            crate::report_worktree::aggregates(&mut tx, query.time_range).await?;
         let has_evidence = !tokens.is_empty() || !event_counts.is_empty();
         let has_gaps = !has_evidence
             || tokens.iter().any(|t| t.exact_tokens.is_none())
