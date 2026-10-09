@@ -660,7 +660,7 @@ async fn connection_statuses_follow_latest_reconnect_outcome() {
                 match attempt {
                     0 | 1 => Err(StartupOutcomeError::Failed {
                         error: "retry failed".to_string(),
-                        is_authentication_required: attempt == 0,
+                        is_authentication_required: false,
                     }),
                     _ => Ok(recovered),
                 }
@@ -678,11 +678,7 @@ async fn connection_statuses_follow_latest_reconnect_outcome() {
         expected(Status::Failed)
     );
 
-    for status in [
-        Status::AuthenticationRequired,
-        Status::Failed,
-        Status::Connected,
-    ] {
+    for status in [Status::Failed, Status::Failed, Status::Connected] {
         client.reconnect_failed_startup().await;
         started.notified().await;
         assert_eq!(
@@ -695,6 +691,31 @@ async fn connection_statuses_follow_latest_reconnect_outcome() {
         tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF * 2).await;
     }
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn authentication_failure_stales_apps_startup_without_reconnect_loop() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_reconnect = Arc::clone(&attempts);
+    let reconnect_factory = Arc::new(move || {
+        attempts_for_reconnect.fetch_add(1, Ordering::SeqCst);
+        async {
+            Err(StartupOutcomeError::Failed {
+                error: "invalid_token".to_string(),
+                is_authentication_required: true,
+            })
+        }
+        .boxed()
+        .shared()
+    });
+    let manager = create_test_manager_with_auth_failed_apps_startup(Vec::new(), reconnect_factory);
+    let client = manager.test_client(CODEX_APPS_MCP_SERVER_NAME);
+
+    assert!(client.client().await.is_err());
+    client.reconnect_failed_startup().await;
+    client.reconnect_failed_startup().await;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
 }
 
 fn create_gated_async_managed_client(
@@ -816,9 +837,32 @@ fn create_test_manager_with_failed_apps_startup(
     cached_tools: Vec<ToolInfo>,
     reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
 ) -> McpConnectionSet {
+    create_test_manager_with_failed_apps_startup_and_auth(
+        cached_tools,
+        reconnect_factory,
+        /*initial_authentication_required*/ false,
+    )
+}
+
+fn create_test_manager_with_auth_failed_apps_startup(
+    cached_tools: Vec<ToolInfo>,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+) -> McpConnectionSet {
+    create_test_manager_with_failed_apps_startup_and_auth(
+        cached_tools,
+        reconnect_factory,
+        /*initial_authentication_required*/ true,
+    )
+}
+
+fn create_test_manager_with_failed_apps_startup_and_auth(
+    cached_tools: Vec<ToolInfo>,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+    initial_authentication_required: bool,
+) -> McpConnectionSet {
     let client: ManagedClientFuture = futures::future::ready(Err(StartupOutcomeError::Failed {
         error: "startup failed".to_string(),
-        is_authentication_required: false,
+        is_authentication_required: initial_authentication_required,
     }))
     .boxed()
     .shared();

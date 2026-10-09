@@ -248,6 +248,13 @@ the authority for release outcomes and verification receipts.
   six platform payloads before the root launcher, then verify registry integrity,
   provenance and an isolated public install. Browser/2FA authorization remains a
   human step; an old login success does not prove the current npm session is valid.
+- **Authentication failures must stale resolver work instead of retrying forever.** A
+  repeated `invalid_token` from a Codex Apps or MCP worker can leave the app-server
+  consuming CPU while a skills resolver waits. Treat an auth-required startup failure
+  as terminal for the current runtime, stop reconnect attempts with unchanged
+  credentials, and bound `skills/list` so the client receives a stale-resolver error.
+  Cover both the circuit breaker and the public app-server/TUI request path; recovery
+  must come from a fresh authenticated runtime or explicit credential change.
 
 These corrections are retained in Coordinator decision
 `usage-rebuild-release-prevention-v2`; test and delivery receipts remain there.

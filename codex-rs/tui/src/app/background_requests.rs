@@ -81,6 +81,8 @@ const RATE_LIMIT_RESET_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const WORKSPACE_HEADLINE_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(/*millis*/ 2000);
+const SKILLS_LIST_FETCH_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(/*secs*/ 15);
 
 impl App {
     pub(super) fn fetch_mcp_inventory(
@@ -325,9 +327,13 @@ impl App {
         let app_event_tx = self.app_event_tx.clone();
         let cwd = self.config.cwd.to_path_buf();
         tokio::spawn(async move {
-            let result = fetch_skills_list(request_handle, cwd.clone())
-                .await
-                .map_err(|err| format!("{err:#}"));
+            let result = tokio::time::timeout(
+                SKILLS_LIST_FETCH_TIMEOUT,
+                fetch_skills_list(request_handle, cwd.clone()),
+            )
+            .await
+            .map_err(|_| "skills resolver turn became stale after timeout".to_string())
+            .and_then(|result| result.map_err(|err| format!("{err:#}")));
             app_event_tx.send(AppEvent::SkillsListLoaded { cwd, result });
         });
     }

@@ -162,6 +162,7 @@ struct CodexAppsStartupReconnectState {
     current_client: Option<ManagedClient>,
     last_error: Option<StartupOutcomeError>,
     reconnect_in_flight: bool,
+    authentication_blocked: bool,
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
 }
@@ -219,6 +220,9 @@ impl CodexAppsStartupReconnect {
             if state.current_client.is_some() || state.reconnect_in_flight {
                 return;
             }
+            if state.authentication_blocked {
+                return;
+            }
             if state
                 .retry_not_before
                 .is_some_and(|retry_not_before| TokioInstant::now() < retry_not_before)
@@ -248,14 +252,25 @@ impl CodexAppsStartupReconnect {
                     }
                     Err(error) => {
                         state.last_error = Some(error.clone());
-                        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = codex_apps_reconnect_backoff(state.consecutive_failures);
-                        state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                        warn!(
-                            error = %error,
-                            retry_after_ms = retry_after.as_millis(),
-                            "Apps MCP startup reconnect failed; continuing with cached tools"
-                        );
+                        if error.is_authentication_required() {
+                            state.authentication_blocked = true;
+                            state.retry_not_before = None;
+                            warn!(
+                                error = %error,
+                                "Apps MCP startup reconnect stopped after authentication failure; resolver turn is stale"
+                            );
+                        } else {
+                            state.consecutive_failures =
+                                state.consecutive_failures.saturating_add(1);
+                            let retry_after =
+                                codex_apps_reconnect_backoff(state.consecutive_failures);
+                            state.retry_not_before = Some(TokioInstant::now() + retry_after);
+                            warn!(
+                                error = %error,
+                                retry_after_ms = retry_after.as_millis(),
+                                "Apps MCP startup reconnect failed; continuing with cached tools"
+                            );
+                        }
                         false
                     }
                 }
@@ -562,8 +577,16 @@ impl AsyncManagedClient {
         if !self.startup_complete.load(Ordering::Acquire) {
             return;
         }
-        if matches!(self.client().await, Err(StartupOutcomeError::Failed { .. })) {
-            startup_reconnect.reconnect_in_background();
+        if let Err(error) = self.client().await {
+            if error.is_authentication_required() {
+                let mut state = startup_reconnect
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.authentication_blocked = true;
+            } else if matches!(error, StartupOutcomeError::Failed { .. }) {
+                startup_reconnect.reconnect_in_background();
+            }
         }
     }
 

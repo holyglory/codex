@@ -22,6 +22,7 @@ pub(crate) struct CatalogRequestProcessor {
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
+const SKILLS_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn skills_to_info(
     skills: &[codex_skills::SkillMetadata],
@@ -147,8 +148,9 @@ impl CatalogRequestProcessor {
         &self,
         params: SkillsListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.skills_list_response(params)
+        tokio::time::timeout(SKILLS_LIST_TIMEOUT, self.skills_list_response(params))
             .await
+            .map_err(|_| internal_error("skills/list resolver turn became stale after timeout"))?
             .map(|response| Some(response.into()))
     }
 

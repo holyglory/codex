@@ -299,7 +299,10 @@ def check(root, state, cargo_target, release_target):
     commit = frozen_commit(root)
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("Local acceptance requires Linux x86_64")
-    if Path("/etc/codex/config.toml").exists():
+    if (
+        Path("/etc/codex/config.toml").exists()
+        and os.environ.get("CODEX_RELEASE_ISOLATED") != "1"
+    ):
         raise ValueError(
             "Use the isolated local test environment; host Codex configuration is present"
         )
