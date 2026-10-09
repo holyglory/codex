@@ -1,5 +1,6 @@
 mod app_mcp_routing;
 mod artifact_operation;
+mod auth_scope;
 mod catalog;
 mod command_migration;
 mod discoverable;
