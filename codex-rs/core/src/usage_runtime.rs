@@ -319,6 +319,7 @@ impl UsageRuntime {
                     activity,
                     activity_state: ActivityState::ModelActive,
                     attribution_provenance,
+                    work_context: None,
                 })
                 .await,
         )?;
@@ -574,6 +575,7 @@ impl UsageAttempt {
             | ResponseItem::Compaction { .. }
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::Other => {}
         }
     }

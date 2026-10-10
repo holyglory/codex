@@ -28,6 +28,7 @@ use crate::tools::handlers::SendMessageToUserAsyncHandler;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::UsageStatsHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -1154,6 +1155,10 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let stable_environment_tools = features.enabled(Feature::StableEnvironmentTools);
     let advertise_environment_tools =
         stable_environment_tools || environment_mode.has_environment();
+
+    if !turn_context.session_source.is_non_root_agent() {
+        registry.add(UsageStatsHandler);
+    }
     if !advertise_environment_tools
         || !features.enabled(Feature::ShellTool)
         || matches!(context.model_info.shell_type, ConfigShellToolType::Disabled)

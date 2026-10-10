@@ -9,6 +9,7 @@ mod apply_patch;
 mod apps;
 mod client;
 mod client_common;
+mod model_context_estimate;
 mod model_request;
 mod realtime_context;
 mod realtime_conversation;
@@ -137,6 +138,7 @@ pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;
 pub mod test_support;
 mod unified_exec;
+mod usage_runtime;
 pub mod windows_sandbox;
 #[cfg(windows)]
 mod windows_system_config;

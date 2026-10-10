@@ -246,6 +246,7 @@ impl UsageRuntime {
                     activity,
                     activity_state: context.descriptor.activity_state,
                     attribution_provenance: provenance,
+                    work_context: None,
                 })
                 .await,
         )?;
@@ -916,6 +917,7 @@ impl UsageAttempt {
                     activity,
                     activity_state: ActivityState::ToolActive,
                     attribution_provenance: self.attribution_provenance,
+                    work_context: None,
                 })
                 .await?;
             self.runtime

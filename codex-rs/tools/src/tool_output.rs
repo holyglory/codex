@@ -8,6 +8,32 @@ use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
 
+/// Content-free terminal status exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalStatus {
+    Completed,
+    Failed,
+    Denied,
+    TimedOut,
+    Cancelled,
+}
+
+/// Content-free terminal error category exposed to local usage accounting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTerminalErrorCategory {
+    Tool,
+    Timeout,
+    Cancelled,
+    Provider,
+}
+
+/// Typed terminal outcome for tool execution, without payload or error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsageTerminalOutcome {
+    pub status: UsageTerminalStatus,
+    pub error_category: Option<UsageTerminalErrorCategory>,
+}
+
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
     /// Returns a deliberately lossy diagnostic representation, before telemetry size limits.
