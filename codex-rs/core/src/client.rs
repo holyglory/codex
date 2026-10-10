@@ -84,6 +84,9 @@ use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
+use codex_usage::AccountProfileRef;
+use codex_usage::ErrorCategory as UsageErrorCategory;
+use codex_usage::TerminalStatus as UsageTerminalStatus;
 
 use crate::usage_runtime::ModelAttemptContext;
 use crate::usage_runtime::UsageAttempt;
@@ -140,6 +143,7 @@ use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
+use crate::model_context_estimate::model_context_estimate;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
@@ -284,6 +288,7 @@ pub struct ModelClient {
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
     usage_runtime: Option<Arc<UsageRuntime>>,
+    usage_account_profile_ref: Option<AccountProfileRef>,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -554,6 +559,7 @@ impl ModelClient {
             api_key_cyber_access_programs:
                 cyber_access_program::ApiKeyCyberAccessPrograms::UnsupportedProvider,
             usage_runtime: None,
+            usage_account_profile_ref: None,
         }
     }
 
@@ -564,6 +570,11 @@ impl ModelClient {
 
     pub(crate) fn with_usage_runtime(mut self, usage_runtime: Arc<UsageRuntime>) -> Self {
         self.usage_runtime = Some(usage_runtime);
+        self
+    }
+
+    pub(crate) fn with_account_profile_ref(mut self, profile: AccountProfileRef) -> Self {
+        self.usage_account_profile_ref = Some(profile);
         self
     }
 
@@ -637,6 +648,68 @@ impl ModelClient {
 
     pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.state.provider.auth_manager()
+    }
+
+    /// Clones the session settings while replacing the account owner for one turn.
+    ///
+    /// Authentication-sensitive WebSocket state is deliberately reset when the owner changes;
+    /// all request contributors, usage attribution, routing, and session flags remain intact.
+    pub(crate) fn for_auth_manager(&self, auth_manager: Arc<AuthManager>) -> Self {
+        if self
+            .auth_manager()
+            .is_some_and(|current| Arc::ptr_eq(&current, &auth_manager))
+        {
+            return self.clone();
+        }
+        let mut client = Self::new(
+            Some(auth_manager),
+            self.agent_identity_policy.clone(),
+            self.state.thread_id,
+            self.state.provider.info().clone(),
+            self.state.session_source.clone(),
+            self.state.originator.clone(),
+            self.state.model_verbosity,
+            self.state.content_item_kinds_enabled,
+            self.state.reasoning_effort_override_enabled,
+            self.state.enable_request_compression,
+            self.state.include_timing_metrics,
+            self.state.beta_features_header.clone(),
+            self.state.concurrent_reasoning_summaries_enabled,
+            self.state.attestation_provider.clone(),
+            self.http_client_factory.clone(),
+            self.state.workspace_routing.clone(),
+            self.request_contributors.clone(),
+        );
+        if let Some(state) = Arc::get_mut(&mut client.state) {
+            state.disable_websockets.store(
+                self.state.disable_websockets.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            state.agent_identity_session_fallback =
+                self.state.agent_identity_session_fallback.clone();
+            *state
+                .last_inference_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self
+                .state
+                .last_inference_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+        }
+        Self {
+            prompt_cache_key_override: self.prompt_cache_key_override.clone(),
+            codex_responses_headers: self.codex_responses_headers.clone(),
+            event_sender: self.event_sender.clone(),
+            http_client_factory: self.http_client_factory.clone(),
+            restored_history: self.restored_history,
+            request_contributors: self.request_contributors.clone(),
+            executed_tool_calls: self.executed_tool_calls.clone(),
+            api_key_cyber_access_programs: self.api_key_cyber_access_programs,
+            usage_runtime: self.usage_runtime.clone(),
+            usage_account_profile_ref: self.usage_account_profile_ref.clone(),
+            ..client
+        }
     }
 
     fn auth_owner_generation(&self) -> Option<u64> {
@@ -1366,24 +1439,27 @@ impl ModelClientSession {
         model_info: &ModelInfo,
         responses_metadata: &CodexResponsesMetadata,
         transport: &'static str,
+        auth_mode: Option<AuthMode>,
+        usage_chain: &UsageRequestChain,
+        context_estimate: Option<crate::model_context_estimate::ModelContextEstimate>,
     ) -> Option<UsageAttempt> {
         let runtime = self.client.usage_runtime.as_ref()?.clone();
         let provider = provider_kind(&self.client.state.provider.info().name)?;
-        let auth_mode = self
-            .client
-            .state
-            .provider
-            .auth_manager()
-            .and_then(|manager| manager.auth_cached())
-            .map(|auth| auth.auth_mode());
-        let account = usage_account_snapshot(None, auth_mode).ok()?;
-        let request_attempt = UsageRequestChain::new().next_attempt().ok()?;
+        let account = usage_account_snapshot(
+            self.client
+                .usage_account_profile_ref
+                .as_ref()
+                .map(AccountProfileRef::as_str),
+            auth_mode,
+        );
+        let request_attempt = usage_chain.next_attempt().ok()?;
         let parent_thread_id = responses_metadata
             .parent_thread_id
             .as_ref()
             .map(ToString::to_string);
-        runtime
-            .begin_model_attempt(ModelAttemptContext {
+        Some(
+            runtime
+                .begin_model_attempt(ModelAttemptContext {
                 thread_id: &responses_metadata.thread_id,
                 parent_thread_id: parent_thread_id.as_deref(),
                 turn_id: responses_metadata.turn_id.as_deref(),
@@ -1391,16 +1467,17 @@ impl ModelClientSession {
                 provider,
                 model: &model_info.slug,
                 transport,
-                client_origin: &self.client.state.originator,
+                client_origin: usage_client_origin(&self.client.state.session_source),
                 account,
-                repositories: Vec::new(),
+                repositories: crate::usage_runtime::model_repository_candidates(responses_metadata)
+                    .await,
                 attempt_number: request_attempt.attempt_number,
                 retry_of_operation_id: request_attempt.retry_of_operation_id,
                 retry_slot: request_attempt.retry_slot,
-                context_estimate: None,
+                context_estimate,
             })
             .await
-            .ok()
+        )
     }
 
     pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {
@@ -1725,6 +1802,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
+        usage_chain: &UsageRequestChain,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1835,13 +1913,20 @@ impl ModelClientSession {
                 client_setup.api_auth,
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let usage_attempt = self
+                .begin_usage_attempt(
+                    model_info,
+                    responses_metadata,
+                    "responses_http",
+                    client_setup.auth.as_ref().map(CodexAuth::api_auth_mode),
+                    usage_chain,
+                    model_context_estimate(&request),
+                )
+                .await;
             let stream_result = client.stream_request(request, options).await;
 
             match stream_result {
                 Ok(stream) => {
-                    let usage_attempt = self
-                        .begin_usage_attempt(model_info, responses_metadata, "responses_http")
-                        .await;
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
@@ -1859,6 +1944,14 @@ impl ModelClientSession {
                         .provider
                         .is_recoverable_auth_error(&unauthorized_transport) =>
                 {
+                    if let Some(attempt) = &usage_attempt {
+                        attempt
+                            .finish(
+                                UsageTerminalStatus::Failed,
+                                Some(UsageErrorCategory::Authentication),
+                            )
+                            .await;
+                    }
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
                     inference_trace_attempt.record_failed(
@@ -1881,6 +1974,10 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
+                    if let Some(attempt) = &usage_attempt {
+                        let (status, category) = usage_api_error_outcome(&err);
+                        attempt.finish(status, Some(category)).await;
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -1922,6 +2019,7 @@ impl ModelClientSession {
         warmup: bool,
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
+        usage_chain: &UsageRequestChain,
     ) -> Result<WebsocketStreamOutcome> {
         let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
         let provider = Arc::clone(&self.client.state.provider);
@@ -2149,6 +2247,19 @@ impl ModelClientSession {
                     ),
                 ],
             );
+            let usage_attempt = if warmup {
+                None
+            } else {
+                self.begin_usage_attempt(
+                    model_info,
+                    responses_metadata,
+                    "responses_websocket",
+                    client_setup.auth.as_ref().map(CodexAuth::api_auth_mode),
+                    usage_chain,
+                    model_context_estimate(&request),
+                )
+                .await
+            };
             let stream_result = websocket_connection
                 .stream_request(
                     ws_request,
@@ -2163,28 +2274,30 @@ impl ModelClientSession {
             }
             self.websocket_session.last_request = Some(request);
             self.websocket_session.last_response_from_untraced_warmup = warmup;
-            let stream_result = stream_result.map_err(|err| {
-                let response_debug_context = extract_response_debug_context_from_api_error(&err);
-                let err = self.client.state.provider.map_api_error(err);
-                inference_trace_attempt.record_failed(
-                    &err,
-                    response_debug_context.request_id.as_deref(),
-                    /*output_items*/ &[],
-                );
-                err
-            })?;
+            let stream_result = match stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    if let Some(attempt) = &usage_attempt {
+                        let (status, category) = usage_api_error_outcome(&err);
+                        attempt.finish(status, Some(category)).await;
+                    }
+                    let response_debug_context = extract_response_debug_context_from_api_error(&err);
+                    let err = self.client.state.provider.map_api_error(err);
+                    inference_trace_attempt.record_failed(
+                        &err,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    return Err(err);
+                }
+            };
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
                 interceptors,
-                if warmup {
-                    None
-                } else {
-                    self.begin_usage_attempt(model_info, responses_metadata, "responses_websocket")
-                        .await
-                },
+                usage_attempt,
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2269,6 +2382,7 @@ impl ModelClientSession {
                 /*warmup*/ true,
                 current_span_w3c_trace_context(),
                 &disabled_trace,
+                &UsageRequestChain::new(),
             )
             .await
         {
@@ -2311,6 +2425,34 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        let usage_chain = UsageRequestChain::new();
+        self.stream_with_usage_chain(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+            &usage_chain,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_with_usage_chain(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+        usage_chain: &UsageRequestChain,
+    ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
@@ -2328,6 +2470,7 @@ impl ModelClientSession {
                             /*warmup*/ false,
                             request_trace,
                             inference_trace,
+                            usage_chain,
                         )
                         .await?
                     {
@@ -2347,6 +2490,7 @@ impl ModelClientSession {
                     service_tier,
                     responses_metadata,
                     inference_trace,
+                    usage_chain,
                 )
                 .await
             }
@@ -2369,6 +2513,26 @@ impl ModelClientSession {
             .force_http_fallback(session_telemetry, model_info);
         self.websocket_session = WebsocketSession::default();
         activated
+    }
+}
+
+fn usage_client_origin(source: &SessionSource) -> &'static str {
+    if source.is_non_root_agent() {
+        "delegated"
+    } else if matches!(source, SessionSource::Internal(_)) {
+        "internal"
+    } else {
+        "root"
+    }
+}
+
+fn usage_api_error_outcome(error: &ApiError) -> (UsageTerminalStatus, UsageErrorCategory) {
+    if matches!(error, ApiError::Transport(TransportError::Timeout)) {
+        (UsageTerminalStatus::TimedOut, UsageErrorCategory::Timeout)
+    } else if matches!(error, ApiError::Transport(_)) {
+        (UsageTerminalStatus::Failed, UsageErrorCategory::Transport)
+    } else {
+        (UsageTerminalStatus::Failed, UsageErrorCategory::Provider)
     }
 }
 
@@ -2523,6 +2687,14 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Some(attempt) = &usage_attempt {
+                            attempt
+                                .finish(
+                                    UsageTerminalStatus::Cancelled,
+                                    Some(UsageErrorCategory::Cancelled),
+                                )
+                                .await;
+                        }
                         return;
                     }
                 }
@@ -2586,6 +2758,14 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Some(attempt) = &usage_attempt {
+                            attempt
+                                .finish(
+                                    UsageTerminalStatus::Cancelled,
+                                    Some(UsageErrorCategory::Cancelled),
+                                )
+                                .await;
+                        }
                         return;
                     }
                 }
@@ -2608,6 +2788,14 @@ where
                         logged_error = true;
                     }
                     if tx_event.send(Err(mapped)).await.is_err() {
+                        if let Some(attempt) = &usage_attempt {
+                            attempt
+                                .finish(
+                                    UsageTerminalStatus::Cancelled,
+                                    Some(UsageErrorCategory::Cancelled),
+                                )
+                                .await;
+                        }
                         return;
                     }
                     if let Some(attempt) = &usage_attempt {

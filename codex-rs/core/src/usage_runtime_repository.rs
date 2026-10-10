@@ -250,3 +250,29 @@ fn canonical_path(value: &str) -> Option<CanonicalRepositoryPath> {
         .unwrap_or_else(|| value.to_string());
     CanonicalRepositoryPath::new(canonical).ok()
 }
+
+pub(crate) async fn model_repository_candidates(
+    metadata: &crate::responses_metadata::CodexResponsesMetadata,
+) -> Vec<crate::usage_runtime::RepositoryCandidate> {
+    metadata
+        .workspaces
+        .iter()
+        .map(|(workspace, details)| {
+            let origin = details
+                .associated_remote_urls
+                .as_ref()
+                .and_then(|remotes| {
+                    remotes
+                        .get("origin")
+                        .or_else(|| remotes.values().next())
+                        .cloned()
+                })
+                .map(String::from);
+            crate::usage_runtime::RepositoryCandidate::new(
+                workspace.clone(),
+                origin,
+                crate::usage_runtime::repository_safe_label(workspace),
+            )
+        })
+        .collect()
+}
