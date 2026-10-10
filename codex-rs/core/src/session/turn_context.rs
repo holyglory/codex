@@ -1456,10 +1456,17 @@ impl Session {
             Some(Arc::clone(&turn_auth_manager)),
         );
         let turn_models_manager = if account_lease.is_some() {
-            let models_manager = turn_provider.models_manager(
-                per_turn_config.codex_home.to_path_buf(),
-                per_turn_config.model_catalog.clone(),
-            );
+            let models_codex_home = account_lease
+                .as_ref()
+                .map(|lease| {
+                    per_turn_config
+                        .codex_home
+                        .join("accounts")
+                        .join(lease.account_id().as_str())
+                })
+                .unwrap_or_else(|| per_turn_config.codex_home.to_path_buf());
+            let models_manager = turn_provider
+                .models_manager(models_codex_home, per_turn_config.model_catalog.clone());
             let refresh_strategy = if session_configuration.session_source.is_non_root_agent() {
                 RefreshStrategy::Offline
             } else {
