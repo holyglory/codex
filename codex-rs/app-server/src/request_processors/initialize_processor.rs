@@ -211,7 +211,9 @@ impl InitializeRequestProcessor {
 
         let user_agent = get_codex_user_agent();
         let response = InitializeResponse {
-            local_usage_accounting: None,
+            local_usage_accounting: Some(
+                codex_app_server_protocol::LocalUsageAccountingCapability { version: 1 },
+            ),
             multi_account: None,
             user_agent,
             codex_home,
