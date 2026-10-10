@@ -13,9 +13,7 @@ impl UsageRuntime {
         let work_context = codex_usage::OperationWorkContext::default();
         self.flush_pending_usage().await;
         if !self.faulted.load(Ordering::Acquire)
-            && let Ok(model_attempt) = self
-                .begin_model_attempt_once(&context, &work_context)
-                .await
+            && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
         {
             return model_attempt;
         }
