@@ -96,6 +96,11 @@ the authority for release outcomes and verification receipts.
   package version metadata before spending time on the full suite. Resolve
   upstream interface changes at the current extension point instead of keeping
   an old compatibility shim.
+- **Update test doubles when upstream traits gain context parameters.** The
+  stable refresh changed workspace-routing resolution to receive the selected
+  auth manager. Search every test-only resolver implementation after a trait
+  merge; otherwise the release suite can fail at compile time long after the
+  product implementation itself builds.
 - **Keep profile auth and MCP resource authority on the captured turn.** MCP
   plugin discovery, recommendations, runtime refreshes, failover step capture,
   and widget `originCallId` reads must use the turn's account lease and binding.
