@@ -249,10 +249,14 @@ impl McpServerView {
         let tools = match self.connection.client.listed_tools().await {
             Ok(tools) => tools,
             Err(error) if error.is_authentication_required() => {
-                self.connection.authentication_blocked.store(true, Ordering::Release);
-                *self.connection.authentication_error.lock().unwrap_or_else(
-                    std::sync::PoisonError::into_inner,
-                ) = Some(error.clone());
+                self.connection
+                    .authentication_blocked
+                    .store(true, Ordering::Release);
+                *self
+                    .connection
+                    .authentication_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
                 return Err(error);
             }
             Err(error) => return Err(error),

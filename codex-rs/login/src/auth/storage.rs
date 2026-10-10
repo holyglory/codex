@@ -460,7 +460,12 @@ impl DirectKeyringAuthStorage {
         keyring_store: Arc<dyn KeyringStore>,
         mode: AuthCredentialsStoreMode,
     ) -> Self {
-        Self::new_with_namespace(codex_home, keyring_store, AuthStorageNamespace::LegacyV0, mode)
+        Self::new_with_namespace(
+            codex_home,
+            keyring_store,
+            AuthStorageNamespace::LegacyV0,
+            mode,
+        )
     }
 
     fn new_with_namespace(
@@ -537,7 +542,9 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
             .keyring_store
             .delete(KEYRING_SERVICE, &key)
             .map_err(std::io::Error::from)
-            .map_err(|error| storage_error::with_context("failed to delete auth from keyring", error))?;
+            .map_err(|error| {
+                storage_error::with_context("failed to delete auth from keyring", error)
+            })?;
         let file_removed = delete_file_if_exists(&self.codex_home)?;
         verify_file_absent(&self.codex_home)?;
         self.repair_durability()?;
@@ -575,7 +582,12 @@ impl SecretsKeyringAuthStorage {
         keyring_store: Arc<dyn KeyringStore>,
         mode: AuthCredentialsStoreMode,
     ) -> Self {
-        Self::new_with_namespace(codex_home, keyring_store, AuthStorageNamespace::LegacyV0, mode)
+        Self::new_with_namespace(
+            codex_home,
+            keyring_store,
+            AuthStorageNamespace::LegacyV0,
+            mode,
+        )
     }
 
     fn new_with_namespace(
@@ -616,8 +628,7 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
             .get(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
             .map_err(|error| {
                 storage_error::with_context("failed to load encrypted CLI auth", error)
-            })?
-        {
+            })? {
             Some(serialized) => serde_json::from_str(&serialized).map(Some).map_err(|err| {
                 storage_error::with_context(
                     "failed to deserialize CLI auth from encrypted auth storage",

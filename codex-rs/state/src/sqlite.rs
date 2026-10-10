@@ -175,7 +175,10 @@ pub enum SqlitePoolProfile {
 }
 
 /// Open a Codex-owned SQLite pool through the centralized constructor policy.
-pub async fn open_sqlite_pool(path: &Path, profile: SqlitePoolProfile) -> Result<SqlitePool, Error> {
+pub async fn open_sqlite_pool(
+    path: &Path,
+    profile: SqlitePoolProfile,
+) -> Result<SqlitePool, Error> {
     let mut options = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
