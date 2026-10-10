@@ -1463,6 +1463,7 @@ impl Session {
                         .codex_home
                         .join("accounts")
                         .join(lease.account_id().as_str())
+                        .to_path_buf()
                 })
                 .unwrap_or_else(|| per_turn_config.codex_home.to_path_buf());
             let models_manager = turn_provider
