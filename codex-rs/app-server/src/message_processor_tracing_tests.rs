@@ -272,6 +272,7 @@ pub(super) async fn build_test_processor(
         state_db: None,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
+        process_account: None,
         user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
             &auth_manager,
         ))),

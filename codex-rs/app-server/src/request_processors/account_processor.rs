@@ -7,9 +7,13 @@ use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
 use crate::outgoing_message::AccountNotification;
 use chrono::DateTime;
+use codex_account_registry::AccountId;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_app_server_protocol::GetAccountRateLimitsParams;
+use codex_login::AccountLease;
 use codex_login::LoginOnboardingEntrypoint;
+use codex_login::ProfileAuthStorage;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::login_with_bedrock_access_keys;
 use codex_mcp::ema_auth_scope;
 use codex_model_provider::is_supported_amazon_bedrock_region;
@@ -102,6 +106,8 @@ pub(crate) struct AccountRequestProcessor {
     config: Arc<Config>,
     config_manager: ConfigManager,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
+    profile_auth_router: SharedProfileAuthRouter,
+    active_profile_id: Option<AccountId>,
     workspace_routing: Arc<Mutex<Option<workspace_routing::CachedWorkspaceRouting>>>,
     workspace_routing_fetches: Arc<Mutex<workspace_routing::WorkspaceRoutingFetches>>,
     workspace_routing_shutdown: CancellationToken,
@@ -118,6 +124,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        profile_auth_router: SharedProfileAuthRouter,
     ) -> Arc<Self> {
         let gateway_notifications = crate::gateway_oauth_notifications::spawn(
             Arc::clone(&auth_manager),
@@ -137,6 +144,8 @@ impl AccountRequestProcessor {
             config,
             config_manager,
             active_login: Arc::new(Mutex::new(None)),
+            profile_auth_router,
+            active_profile_id: None,
             gateway_login: Arc::new(std::sync::Mutex::new(/*t*/ None)),
             gateway_client: Arc::new(std::sync::Mutex::new(/*t*/ None)),
             workspace_routing: Arc::new(Mutex::new(None)),
@@ -160,14 +169,16 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
         params: LoginAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.login_v2(request_id, params).await.map(|()| None)
+        let processor = self.active_profile_management_view().await?;
+        processor.login_v2(request_id, params).await.map(|()| None)
     }
 
     pub(crate) async fn logout_account(
         &self,
         request_id: ConnectionRequestId,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.logout_v2(request_id).await.map(|()| None)
+        let processor = self.active_profile_management_view().await?;
+        processor.logout_v2(request_id).await.map(|()| None)
     }
 
     pub(crate) async fn cancel_login_account(
@@ -183,7 +194,9 @@ impl AccountRequestProcessor {
         &self,
         params: GetAuthStatusParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_auth_status_response(params)
+        let (processor, _lease) = self.active_profile_view().await?;
+        processor
+            .get_auth_status_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -230,6 +243,62 @@ impl AccountRequestProcessor {
         if let Some(active_login) = guard.take() {
             drop(active_login);
         }
+    }
+
+    async fn active_profile_view(&self) -> Result<(Self, Option<AccountLease>), JSONRPCErrorError> {
+        let Some(router) = self
+            .profile_auth_router
+            .router_if_configured()
+            .await
+            .map_err(super::account_profile_processor::router_error)?
+        else {
+            return Ok((self.clone(), None));
+        };
+        let lease = router
+            .lease_for_turn()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        let mut processor = self.clone();
+        processor.auth_manager = Arc::clone(lease.auth_manager());
+        processor.active_profile_id = Some(lease.account_id().clone());
+        Ok((processor, Some(lease)))
+    }
+
+    async fn active_profile_management_view(&self) -> Result<Self, JSONRPCErrorError> {
+        let Some(router) = self
+            .profile_auth_router
+            .router_if_configured()
+            .await
+            .map_err(super::account_profile_processor::router_error)?
+        else {
+            return Ok(self.clone());
+        };
+        let (account_id, auth_manager) = router
+            .active_manager_for_management()
+            .await
+            .map_err(super::account_profile_processor::router_error)?;
+        router
+            .check_credential_management_allowed(&account_id)
+            .map_err(super::account_profile_processor::router_error)?;
+        let mut processor = self.clone();
+        processor.auth_manager = auth_manager;
+        processor.active_profile_id = Some(account_id);
+        Ok(processor)
+    }
+
+    fn active_profile_storage(&self) -> Result<Option<ProfileAuthStorage>, JSONRPCErrorError> {
+        self.active_profile_id
+            .as_ref()
+            .map(|account_id| {
+                ProfileAuthStorage::new(
+                    &self.config.codex_home,
+                    account_id.clone(),
+                    self.config.cli_auth_credentials_store_mode,
+                    self.config.auth_keyring_backend_kind(),
+                )
+                .map_err(|_| internal_error("account profile credential backend is unavailable"))
+            })
+            .transpose()
     }
 
     pub(crate) fn clear_external_auth(&self) {
@@ -857,6 +926,17 @@ impl AccountRequestProcessor {
         chatgpt_account_id: String,
         chatgpt_plan_type: Option<String>,
     ) -> Result<LoginAccountResponse, JSONRPCErrorError> {
+        if self
+            .profile_auth_router
+            .router_if_configured()
+            .await
+            .map_err(super::account_profile_processor::router_error)?
+            .is_some()
+        {
+            return Err(invalid_request(
+                "external auth tokens cannot be attached to an account profile",
+            ));
+        }
         if !self
             .auth_manager
             .is_login_method_allowed(ForcedLoginMethod::Chatgpt)

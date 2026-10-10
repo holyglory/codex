@@ -24,6 +24,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::plugin_config_reload;
 use crate::plugin_config_reload::PluginStartupConfig;
+use crate::request_processors::AccountProfileRequestProcessor;
 use crate::request_processors::AccountRequestProcessor;
 use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
@@ -85,6 +86,8 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
+use codex_login::RouterExternalAuthState;
+use codex_login::SharedProfileAuthRouter;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -157,6 +160,7 @@ pub(crate) struct MessageProcessor {
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
     local_usage_processor: LocalUsageRequestProcessor,
+    account_profile_processor: AccountProfileRequestProcessor,
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
@@ -260,6 +264,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
+    pub(crate) process_account: Option<String>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) user_verification: Arc<crate::user_verification::Service>,
     pub(crate) installation_id: String,
@@ -268,6 +273,40 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
+}
+
+fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
+    let provider = &config.model_provider;
+    let is_auth_header = |name: &str| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "api-key" | "x-api-key" | "x-goog-api-key"
+        )
+    };
+    let direct_header = provider
+        .http_headers
+        .as_ref()
+        .is_some_and(|headers| headers.keys().any(|name| is_auth_header(name)));
+    let environment_header = provider.env_http_headers.as_ref().is_some_and(|headers| {
+        headers.iter().any(|(name, environment_variable)| {
+            is_auth_header(name)
+                && std::env::var_os(environment_variable).is_some_and(|value| !value.is_empty())
+        })
+    });
+    let environment_key = provider
+        .env_key
+        .as_ref()
+        .is_some_and(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    RouterExternalAuthState {
+        header_or_host: !provider.requires_openai_auth
+            || provider.experimental_bearer_token.is_some()
+            || provider.auth.is_some()
+            || provider.aws.is_some()
+            || direct_header
+            || environment_header
+            || environment_key,
+        ..Default::default()
+    }
 }
 
 impl MessageProcessor {
@@ -286,6 +325,7 @@ impl MessageProcessor {
             state_db,
             config_warnings,
             session_source,
+            process_account,
             auth_manager,
             user_verification,
             installation_id,
@@ -300,6 +340,20 @@ impl MessageProcessor {
         gateway_login_control.require_explicit_login();
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
+        let external_auth = router_external_auth_state(&config);
+        let profile_auth_router = match process_account {
+            Some(process_account) => SharedProfileAuthRouter::new_pinned(
+                config.auth_config(),
+                process_account,
+                external_auth,
+                Arc::clone(&auth_manager),
+            ),
+            None => SharedProfileAuthRouter::new_with_external_auth(
+                config.auth_config(),
+                external_auth,
+                Arc::clone(&auth_manager),
+            ),
+        };
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
@@ -422,6 +476,7 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            profile_auth_router.clone(),
         );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
@@ -459,6 +514,11 @@ impl MessageProcessor {
         );
         let local_usage_processor =
             LocalUsageRequestProcessor::new(config.codex_home.to_path_buf(), outgoing.clone());
+        let account_profile_processor = AccountProfileRequestProcessor::new(
+            Arc::clone(&config),
+            profile_auth_router.clone(),
+            outgoing.clone(),
+        );
         let git_processor = GitRequestProcessor::new();
         let initialize_processor = InitializeRequestProcessor::new(
             gateway_login_control,
@@ -606,6 +666,7 @@ impl MessageProcessor {
             external_agent_config_processor,
             feedback_processor,
             local_usage_processor,
+            account_profile_processor,
             fs_processor,
             git_processor,
             initialize_processor,
@@ -1927,18 +1988,36 @@ impl MessageProcessor {
             ClientRequest::LocalUsageExportCreate { params, .. } => {
                 self.local_usage_processor.export_create(params).await
             }
-            ClientRequest::AccountProfileList { .. }
-            | ClientRequest::AccountProfileRead { .. }
-            | ClientRequest::AccountProfileActivate { .. }
-            | ClientRequest::AccountProfileUpdate { .. }
-            | ClientRequest::AccountProfileRemove { .. }
-            | ClientRequest::AccountProfileLoginStart { .. }
-            | ClientRequest::AccountProfileLoginCancel { .. }
-            | ClientRequest::AccountProfileRateLimitRead { .. }
-            | ClientRequest::AccountAutoSelectionRead { .. }
-            | ClientRequest::AccountAutoSelectionWrite { .. } => Err(invalid_request(
-                "account profile APIs are unavailable in this release candidate",
-            )),
+            ClientRequest::AccountProfileList { params, .. } => {
+                self.account_profile_processor.list(params).await
+            }
+            ClientRequest::AccountProfileRead { params, .. } => {
+                self.account_profile_processor.read(params).await
+            }
+            ClientRequest::AccountProfileActivate { params, .. } => {
+                self.account_profile_processor.activate(params).await
+            }
+            ClientRequest::AccountProfileUpdate { params, .. } => {
+                self.account_profile_processor.update(params).await
+            }
+            ClientRequest::AccountProfileRemove { params, .. } => {
+                self.account_profile_processor.remove(params).await
+            }
+            ClientRequest::AccountProfileLoginStart { params, .. } => {
+                self.account_profile_processor.login_start(params).await
+            }
+            ClientRequest::AccountProfileLoginCancel { params, .. } => {
+                self.account_profile_processor.login_cancel(params).await
+            }
+            ClientRequest::AccountProfileRateLimitRead { params, .. } => {
+                self.account_profile_processor.rate_limits(params).await
+            }
+            ClientRequest::AccountAutoSelectionRead { params, .. } => {
+                self.account_profile_processor.auto_read(params).await
+            }
+            ClientRequest::AccountAutoSelectionWrite { params, .. } => {
+                self.account_profile_processor.auto_write(params).await
+            }
         };
 
         match result {

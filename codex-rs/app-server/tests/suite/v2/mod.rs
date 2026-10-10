@@ -1,4 +1,5 @@
 mod account;
+mod account_profile;
 #[path = "account_system_proxy_tests.rs"]
 mod account_system_proxy;
 mod account_thread_usage;

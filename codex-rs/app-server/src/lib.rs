@@ -478,6 +478,8 @@ pub struct AppServerRuntimeOptions {
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
     pub managed_daemon: bool,
+    /// Optional account alias or id pinned to this app-server process.
+    pub process_account: Option<String>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -488,6 +490,7 @@ impl Default for AppServerRuntimeOptions {
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
             managed_daemon: false,
+            process_account: None,
         }
     }
 }
@@ -990,6 +993,7 @@ pub async fn run_main_with_transport_options(
             state_db: state_db.clone(),
             config_warnings,
             session_source,
+            process_account: runtime_options.process_account.clone(),
             user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
                 &auth_manager,
             ))),
