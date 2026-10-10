@@ -119,6 +119,7 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
         classifications,
         repository_participation,
         formulas,
+        ..
     } = StructuredUsageSummary::new(summary, account);
     LocalUsageReport {
         schema_version,

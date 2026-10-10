@@ -34,6 +34,7 @@ use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
 use crate::request_processors::GitRequestProcessor;
 use crate::request_processors::InitializeRequestProcessor;
+use crate::request_processors::LocalUsageRequestProcessor;
 use crate::request_processors::MarketplaceRequestProcessor;
 use crate::request_processors::McpEventStreamReady;
 use crate::request_processors::McpEventStreams;
@@ -155,6 +156,7 @@ pub(crate) struct MessageProcessor {
     environment_processor: EnvironmentRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
+    local_usage_processor: LocalUsageRequestProcessor,
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
@@ -455,6 +457,8 @@ impl MessageProcessor {
             log_db.clone(),
             state_db.clone(),
         );
+        let local_usage_processor =
+            LocalUsageRequestProcessor::new(config.codex_home.to_path_buf(), outgoing.clone());
         let git_processor = GitRequestProcessor::new();
         let initialize_processor = InitializeRequestProcessor::new(
             gateway_login_control,
@@ -601,6 +605,7 @@ impl MessageProcessor {
             environment_processor,
             external_agent_config_processor,
             feedback_processor,
+            local_usage_processor,
             fs_processor,
             git_processor,
             initialize_processor,
@@ -1887,6 +1892,53 @@ impl MessageProcessor {
             ClientRequest::FeedbackUpload { params, .. } => {
                 self.feedback_processor.feedback_upload(params).await
             }
+            ClientRequest::LocalUsageSummary { params, .. } => {
+                self.local_usage_processor.summary(params).await
+            }
+            ClientRequest::LocalUsageThreadRead { params, .. } => {
+                self.local_usage_processor.thread_read(params).await
+            }
+            ClientRequest::LocalUsageRepositoryList { params, .. } => {
+                self.local_usage_processor.repository_list(params).await
+            }
+            ClientRequest::LocalUsageRepositoryRead { params, .. } => {
+                self.local_usage_processor.repository_read(params).await
+            }
+            ClientRequest::LocalUsageRepositoryUpdate { params, .. } => {
+                self.local_usage_processor.repository_update(params).await
+            }
+            ClientRequest::LocalUsageRepositoryMerge { params, .. } => {
+                self.local_usage_processor.repository_merge(params).await
+            }
+            ClientRequest::LocalUsageToolList { params, .. } => {
+                self.local_usage_processor.tool_list(params).await
+            }
+            ClientRequest::LocalUsageActivityList { params, .. } => {
+                self.local_usage_processor.activity_list(params).await
+            }
+            ClientRequest::LocalUsageEventList { params, .. } => {
+                self.local_usage_processor.event_list(params).await
+            }
+            ClientRequest::LocalUsageClassificationCorrect { params, .. } => {
+                self.local_usage_processor
+                    .classification_correct(params)
+                    .await
+            }
+            ClientRequest::LocalUsageExportCreate { params, .. } => {
+                self.local_usage_processor.export_create(params).await
+            }
+            ClientRequest::AccountProfileList { .. }
+            | ClientRequest::AccountProfileRead { .. }
+            | ClientRequest::AccountProfileActivate { .. }
+            | ClientRequest::AccountProfileUpdate { .. }
+            | ClientRequest::AccountProfileRemove { .. }
+            | ClientRequest::AccountProfileLoginStart { .. }
+            | ClientRequest::AccountProfileLoginCancel { .. }
+            | ClientRequest::AccountProfileRateLimitRead { .. }
+            | ClientRequest::AccountAutoSelectionRead { .. }
+            | ClientRequest::AccountAutoSelectionWrite { .. } => Err(invalid_request(
+                "account profile APIs are unavailable in this release candidate",
+            )),
         };
 
         match result {
