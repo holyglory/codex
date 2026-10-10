@@ -22,6 +22,7 @@ fn account(alias: &str, priority: u32) -> ManagedAccountSummary {
         enabled: true,
         authenticated: true,
         priority,
+        credit_usage_enabled: false,
         is_default: alias == "alpha",
     }
 }
