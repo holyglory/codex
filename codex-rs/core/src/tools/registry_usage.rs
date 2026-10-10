@@ -1,14 +1,14 @@
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::registry::CoreToolRuntime;
-use codex_usage::ToolExecutionGroupId;
-use codex_usage::ToolExecutionRole;
 use crate::usage_runtime::RepositoryCandidate;
 use crate::usage_runtime::ToolAttemptContext;
 use crate::usage_runtime::UsageToolDescriptor;
 use crate::usage_runtime::repository_safe_label;
 use crate::usage_runtime::usage_account_snapshot;
 use codex_tools::ToolName;
+use codex_usage::ToolExecutionGroupId;
+use codex_usage::ToolExecutionRole;
 use std::sync::Arc;
 
 pub(crate) fn usage_tool_descriptor(
@@ -159,7 +159,10 @@ async fn execution_group(
                     invocation.tool_name.name.as_str(),
                     crate::tools::code_mode::PUBLIC_TOOL_NAME
                         | crate::tools::code_mode::WAIT_TOOL_NAME
-                ) => ToolExecutionRole::Wrapper,
+                ) =>
+        {
+            ToolExecutionRole::Wrapper
+        }
         ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
             ToolExecutionRole::Standalone
         }
