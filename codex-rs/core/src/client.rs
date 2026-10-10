@@ -1440,6 +1440,14 @@ impl ModelClientSession {
             .is_some_and(|current| Arc::ptr_eq(&current, auth_manager))
     }
 
+    pub(crate) fn account_profile_matches(&self, account_id: Option<&str>) -> bool {
+        self.client
+            .usage_account_profile_ref
+            .as_ref()
+            .map(AccountProfileRef::as_str)
+            == account_id
+    }
+
     async fn begin_usage_attempt(
         &self,
         model_info: &ModelInfo,
