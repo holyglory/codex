@@ -10,7 +10,13 @@ impl UsageRuntime {
         self: &Arc<Self>,
         context: ModelAttemptContext<'_>,
     ) -> UsageAttempt {
-        let work_context = codex_usage::OperationWorkContext::default();
+        let work_context = self
+            .work_contexts
+            .lock()
+            .await
+            .get(context.thread_id)
+            .cloned()
+            .unwrap_or_default();
         self.flush_pending_usage().await;
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
@@ -26,7 +32,13 @@ impl UsageRuntime {
         self: &Arc<Self>,
         context: ToolAttemptContext<'_>,
     ) -> UsageToolAttempt {
-        let work_context = codex_usage::OperationWorkContext::default();
+        let work_context = self
+            .work_contexts
+            .lock()
+            .await
+            .get(context.thread_id)
+            .cloned()
+            .unwrap_or_default();
         self.flush_pending_usage().await;
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(tool_attempt) = self.begin_tool_attempt_once(&context, &work_context).await
