@@ -79,6 +79,12 @@ the authority for release outcomes and verification receipts.
   when the shell and governed runner both select the pinned channel; changing
   `PATH`, `HOME`, `TMPDIR`, or Cargo target/cache settings later creates a new
   environment and requires a fresh validation receipt.
+- **Pin native inputs in the release runner too.** This line's voice-host
+  crates require GStreamer 1.28; the system package is older. Use the retained
+  `model-capacity-voice-tests` native/pkg-config and ALSA inputs, with their
+  matching `PKG_CONFIG`, `PKG_CONFIG_LIBDIR`, and `LD_LIBRARY_PATH`, in every
+  full release graph. A plain shell compile can fail before tests even start
+  while the established native fixture is already sufficient.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve
