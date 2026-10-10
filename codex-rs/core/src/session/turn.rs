@@ -197,16 +197,9 @@ pub(crate) async fn run_turn(
         })
         .unwrap_or_else(|| sess.services.model_client.clone());
     let turn_auth_manager = turn_context.auth_manager.as_ref();
-    let turn_account_id = turn_context
-        .account_lease
-        .as_ref()
-        .map(|lease| lease.account_id().as_str());
     let mut client_session = prewarmed_client_session
         .filter(|session| {
-            turn_auth_manager.is_none_or(|auth_manager| {
-                session.auth_manager_matches(auth_manager)
-                    || session.account_profile_matches(turn_account_id)
-            })
+            turn_auth_manager.is_none_or(|auth_manager| session.auth_manager_matches(auth_manager))
         })
         .unwrap_or_else(|| turn_model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
