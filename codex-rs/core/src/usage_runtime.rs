@@ -941,5 +941,6 @@ pub(crate) use repository::RepositoryCandidate;
 pub(crate) use repository::model_repository_candidates;
 pub(crate) use repository::repository_safe_label;
 pub(crate) use tool::ToolAttemptContext;
+pub(crate) use tool::UsageToolAttempt;
 pub(crate) use tool::UsageActivityRelation;
 pub(crate) use tool::UsageToolDescriptor;

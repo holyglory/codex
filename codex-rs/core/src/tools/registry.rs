@@ -44,6 +44,11 @@ use indexmap::IndexMap;
 use indexmap::map::Entry;
 use serde_json::Value;
 
+#[path = "registry_usage.rs"]
+mod registry_usage;
+use registry_usage::begin_tool_attempt;
+use registry_usage::usage_terminal_status;
+
 pub(crate) type ToolTelemetryTags = Vec<(&'static str, String)>;
 
 pub use codex_tools::ToolExecutor;
@@ -577,6 +582,7 @@ impl ToolRegistry {
                 return Err(err);
             }
         };
+        let usage_attempt = begin_tool_attempt(&invocation, &tool).await;
         let telemetry_tags = tool.telemetry_tags(&invocation);
         let mut tool_result_tags = Vec::with_capacity(2 + telemetry_tags.len() + 1);
         let mut extra_trace_fields = Vec::new();
@@ -602,6 +608,12 @@ impl ToolRegistry {
                 &extra_trace_fields,
             );
             let err = FunctionCallError::Fatal(message);
+            usage_attempt
+                .finish(
+                    codex_usage::TerminalStatus::Failed,
+                    Some(codex_usage::ErrorCategory::Tool),
+                )
+                .await;
             dispatch_trace.record_failed(&err);
             return Err(err);
         }
@@ -622,6 +634,12 @@ impl ToolRegistry {
                         analytics.finish(ControlToolCallStatus::Rejected);
                     }
                     let err = FunctionCallError::RespondToModel(message);
+                    usage_attempt
+                        .finish(
+                            codex_usage::TerminalStatus::Denied,
+                            Some(codex_usage::ErrorCategory::Tool),
+                        )
+                        .await;
                     dispatch_trace.record_failed(&err);
                     notify_tool_finish_if_unclaimed(
                         &invocation,
@@ -642,6 +660,12 @@ impl ToolRegistry {
                             let mut analytics = ControlToolCallGuard::new(&invocation);
                             analytics.finish(ControlToolCallStatus::Failed);
                         }
+                        usage_attempt
+                            .finish(
+                                codex_usage::TerminalStatus::Failed,
+                                Some(codex_usage::ErrorCategory::Tool),
+                            )
+                            .await;
                         dispatch_trace.record_failed(&err);
                         notify_tool_finish_if_unclaimed(
                             &invocation,
@@ -701,6 +725,25 @@ impl ToolRegistry {
                 },
             )
             .await;
+        let provider_usage = result
+            .as_ref()
+            .ok()
+            .and_then(|result| result.result.provider_usage().cloned());
+        let usage_outcome = result
+            .as_ref()
+            .ok()
+            .map(|result| result.result.usage_terminal_outcome());
+        if let Some(provider_usage) = provider_usage {
+            usage_attempt.record_provider_usage(&provider_usage).await;
+        }
+        if let Some(usage_outcome) = usage_outcome {
+            let (status, error) = usage_terminal_status(usage_outcome);
+            usage_attempt.finish(status, error).await;
+        } else {
+            usage_attempt
+                .finish_error(invocation.cancellation_token.is_cancelled(), None)
+                .await;
+        }
         let success = match &result {
             Ok(result) => result.result.success_for_logging(),
             Err(_) => false,

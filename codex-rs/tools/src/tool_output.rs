@@ -4,6 +4,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::provider_usage::ProviderUsage;
 use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
@@ -43,6 +44,26 @@ pub trait ToolOutput: Send {
     fn log_output(&self) -> String;
 
     fn success_for_logging(&self) -> bool;
+
+    /// Returns the content-free terminal outcome for this tool result.
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        if self.success_for_logging() {
+            UsageTerminalOutcome {
+                status: UsageTerminalStatus::Completed,
+                error_category: None,
+            }
+        } else {
+            UsageTerminalOutcome {
+                status: UsageTerminalStatus::Failed,
+                error_category: Some(UsageTerminalErrorCategory::Tool),
+            }
+        }
+    }
+
+    /// Returns the provider-reported token usage for a nested tool request, when available.
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        None
+    }
 
     /// Finalizes output using the same completed handler duration reported in tool-call logs.
     /// Called before recording model-visible history; implementations must not measure time here.
@@ -103,6 +124,14 @@ where
 
     fn success_for_logging(&self) -> bool {
         (**self).success_for_logging()
+    }
+
+    fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
+        (**self).usage_terminal_outcome()
+    }
+
+    fn provider_usage(&self) -> Option<&ProviderUsage> {
+        (**self).provider_usage()
     }
 
     fn set_handler_duration_ms(&mut self, handler_duration_ms: u64) {
