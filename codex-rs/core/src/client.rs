@@ -1434,10 +1434,6 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
-    pub(crate) fn responses_websocket_enabled(&self) -> bool {
-        self.client.responses_websocket_enabled()
-    }
-
     pub(crate) fn auth_manager_matches(&self, auth_manager: &Arc<AuthManager>) -> bool {
         self.client
             .auth_manager()

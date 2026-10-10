@@ -197,9 +197,16 @@ pub(crate) async fn run_turn(
         })
         .unwrap_or_else(|| sess.services.model_client.clone());
     let turn_auth_manager = turn_context.auth_manager.as_ref();
+    let turn_account_id = turn_context
+        .account_lease
+        .as_ref()
+        .map(|lease| lease.account_id().as_str());
     let mut client_session = prewarmed_client_session
         .filter(|session| {
-            turn_auth_manager.is_none_or(|auth_manager| session.auth_manager_matches(auth_manager))
+            turn_auth_manager.is_none_or(|auth_manager| {
+                session.auth_manager_matches(auth_manager)
+                    || session.account_profile_matches(turn_account_id)
+            })
         })
         .unwrap_or_else(|| turn_model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -594,7 +601,7 @@ pub(crate) async fn run_turn(
                 else {
                     break result;
                 };
-                let next_model_client = sess
+                client_session = sess
                     .services
                     .model_client
                     .for_auth_manager(Arc::clone(
@@ -614,14 +621,8 @@ pub(crate) async fn run_turn(
                                 .as_str(),
                         )
                         .expect("account id is a valid usage profile reference"),
-                    );
-                if !client_session.responses_websocket_enabled() {
-                    next_model_client.force_http_fallback(
-                        &sess.services.session_telemetry,
-                        &step_context.settings.model_info,
-                    );
-                }
-                client_session = next_model_client.new_session();
+                    )
+                    .new_session();
                 turn_context = next_turn_context;
                 step_context = Arc::new(StepContext {
                     turn: Arc::clone(&turn_context),
