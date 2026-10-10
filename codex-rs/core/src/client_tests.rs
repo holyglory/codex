@@ -152,6 +152,7 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
     impl WorkspaceRoutingResolver for Routing {
         fn resolve(
             &self,
+            _auth_manager: Arc<codex_login::AuthManager>,
             _request: WorkspaceRoutingRequest,
         ) -> Pin<
             Box<

@@ -226,6 +226,7 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
             activity: Activity::Coding,
             activity_state: ActivityState::ModelActive,
             attribution_provenance: AttributionProvenance::AgentDeclared,
+            work_context: None,
         })
         .await
         .expect("operation");
