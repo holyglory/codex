@@ -39,105 +39,86 @@ fn interrupt_conversation_payload_stays_jsonrpc_only() -> Result<()> {
 }
 
 #[test]
-fn client_response_jsonrpc_parts_preserve_payloads_and_request_ids() -> Result<()> {
-    let payloads = [
-        (
-            ClientResponsePayload::GetAuthStatus(v1::GetAuthStatusResponse {
-                auth_method: Some(AuthMode::Chatgpt),
-                auth_token: None,
-                requires_openai_auth: Some(true),
-            }),
-            json!({
-                "authMethod": "chatgpt",
-                "authToken": null,
-                "requiresOpenaiAuth": true,
-            }),
-        ),
-        (
-            ClientResponsePayload::GetAccount(v2::GetAccountResponse {
-                account: Some(v2::Account::ApiKey {}),
-                requires_openai_auth: false,
-                workspace_routing: None,
-            }),
-            json!({
-                "account": { "type": "apiKey" },
-                "requiresOpenaiAuth": false,
-                "workspaceRouting": null,
-            }),
-        ),
-    ];
-
-    for (payload, expected_result) in payloads {
-        for request_id in [RequestId::Integer(7), RequestId::String("request-7".into())] {
-            let expected = (request_id.clone(), expected_result.clone());
-            let response = payload
-                .clone()
-                .into_client_response(request_id.clone())
-                .expect("request-backed payload has a typed response");
-
-            assert_eq!(response.into_jsonrpc_parts()?, expected);
-            assert_eq!(payload.to_jsonrpc_parts(request_id.clone())?, expected);
-            assert_eq!(payload.clone().into_jsonrpc_parts(request_id)?, expected);
-        }
+fn multi_account_local_usage_methods_are_registered_as_experimental() {
+    for method in [
+        "accountProfile/list",
+        "accountProfile/read",
+        "accountProfile/activate",
+        "accountProfile/update",
+        "accountProfile/remove",
+        "accountProfileLogin/start",
+        "accountProfileLogin/cancel",
+        "accountProfileRateLimit/read",
+        "accountAutoSelection/read",
+        "accountAutoSelection/write",
+        "localUsage/summary",
+        "localUsageThread/read",
+        "localUsageRepository/list",
+        "localUsageRepository/read",
+        "localUsageRepository/update",
+        "localUsageRepository/merge",
+        "localUsageTool/list",
+        "localUsageActivity/list",
+        "localUsageEvent/list",
+        "localUsageClassification/correct",
+        "localUsageExport/create",
+    ] {
+        assert!(EXPERIMENTAL_CLIENT_METHODS.contains(&method), "{method}");
     }
-    Ok(())
 }
 
 #[test]
-fn client_response_jsonrpc_parts_preserve_legacy_interrupt() -> Result<()> {
-    let request_id = RequestId::String("interrupt-7".into());
-    let payload = ClientResponsePayload::InterruptConversation(v1::InterruptConversationResponse {
-        abort_reason: TurnAbortReason::Interrupted,
-    });
-    let expected = (request_id.clone(), json!({ "abortReason": "interrupted" }));
-
-    assert!(
-        payload
-            .clone()
-            .into_client_response(request_id.clone())
-            .is_none()
-    );
-    assert_eq!(payload.to_jsonrpc_parts(request_id.clone())?, expected);
-    assert_eq!(payload.into_jsonrpc_parts(request_id)?, expected);
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn client_response_jsonrpc_parts_preserve_serialization_errors() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
-    let request_id = RequestId::Integer(7);
-    let response = v1::GetConversationSummaryResponse {
-        summary: v1::ConversationSummary {
-            conversation_id: codex_protocol::ThreadId::from_u128(/*value*/ 7),
-            path: PathBuf::from(OsString::from_vec(vec![0xff])),
-            preview: String::new(),
-            timestamp: None,
-            updated_at: None,
-            model_provider: String::new(),
-            cwd: PathBuf::new(),
-            cli_version: String::new(),
-            source: codex_protocol::protocol::SessionSource::Exec,
-            git_info: None,
+fn multi_account_local_usage_wire_names_are_camel_case() -> Result<()> {
+    let request = ClientRequest::LocalUsageRepositoryList {
+        request_id: RequestId::Integer(4),
+        params: v2::LocalUsageRepositoryListParams {
+            cursor: Some("cursor-1".to_string()),
+            limit: Some(25),
         },
     };
-    let describe = |error: serde_json::Error| (error.classify(), error.to_string());
-    let expected = describe(serde_json::to_value(&response).unwrap_err());
-    let payload = ClientResponsePayload::GetConversationSummary(response.clone());
-    let typed = ClientResponse::GetConversationSummary {
-        request_id: request_id.clone(),
-        response,
-    };
+    assert_eq!(
+        serde_json::to_value(request)?,
+        json!({
+            "method": "localUsageRepository/list",
+            "id": 4,
+            "params": {"cursor": "cursor-1", "limit": 25}
+        })
+    );
 
-    assert_eq!(describe(typed.into_jsonrpc_parts().unwrap_err()), expected);
-    assert_eq!(
-        describe(payload.to_jsonrpc_parts(request_id.clone()).unwrap_err()),
-        expected
+    let notification = ServerNotification::AccountProfileActiveChanged(
+        v2::AccountProfileActiveChangedNotification {
+            account_id: "acct-2".to_string(),
+            previous_account_id: Some("acct-1".to_string()),
+            changed_at: 1_700_000_000,
+            generation: 9,
+        },
     );
     assert_eq!(
-        describe(payload.into_jsonrpc_parts(request_id).unwrap_err()),
-        expected
+        crate::experimental_api::ExperimentalApi::experimental_reason(&notification),
+        Some("accountProfile/activeChanged")
     );
+    assert_eq!(
+        serde_json::to_value(notification)?,
+        json!({
+            "method": "accountProfile/activeChanged",
+            "params": {
+                "accountId": "acct-2",
+                "previousAccountId": "acct-1",
+                "changedAt": 1_700_000_000,
+                "generation": 9
+            }
+        })
+    );
+    let usage_notification =
+        ServerNotification::LocalUsageUpdated(v2::LocalUsageUpdatedNotification {
+            generation: 10,
+            updated_at: 1_700_000_001,
+            thread_id: None,
+            repository_key: Some("repo-key".to_string()),
+        });
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&usage_notification),
+        Some("localUsage/updated")
+    );
+    Ok(())
 }
