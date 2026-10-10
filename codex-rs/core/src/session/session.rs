@@ -1708,8 +1708,10 @@ impl Session {
             );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            let usage_runtime =
+                crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf());
             let services = SessionServices {
-                usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
+                usage_runtime: Arc::clone(&usage_runtime),
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,
@@ -1786,6 +1788,7 @@ impl Session {
                     workspace_routing.as_ref().clone(),
                     extensions.model_request_contributors().to_vec(),
                 )
+                .with_usage_runtime(Arc::clone(&usage_runtime))
                 .with_executed_tool_calls(executed_tool_calls.clone())
                 .with_restored_history(matches!(
                     &initial_history,

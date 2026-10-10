@@ -78,7 +78,7 @@ pub(crate) struct UsageRuntime {
     entity_times: Mutex<HashMap<String, i64>>,
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
-    turn_operations: Mutex<HashMap<TurnId, (OperationId, Instant)>>,
+    turn_starts: Mutex<HashMap<TurnId, Instant>>,
 }
 
 impl fmt::Debug for UsageRuntime {
@@ -181,7 +181,7 @@ impl UsageRuntime {
             entity_times: Mutex::new(HashMap::new()),
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
-            turn_operations: Mutex::new(HashMap::new()),
+            turn_starts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -238,33 +238,7 @@ impl UsageRuntime {
             },
         )
         .await?;
-        let operation_id = OperationId::new();
-        self.write_required_for(
-            operation_id,
-            store
-                .begin_operation(&NewOperation {
-                    work_context: None,
-                    id: operation_id,
-                    process_id: self.process_id,
-                    thread_id: Some(thread),
-                    turn_id: Some(turn.clone()),
-                    agent_id: None,
-                    parent_operation_id: None,
-                    retry_of_operation_id: None,
-                    rework_of_operation_id: None,
-                    kind: OperationKind::ModelRequest,
-                    started_at_ms: created_at_ms,
-                    phase: Phase::Implementation,
-                    activity: Activity::Coding,
-                    activity_state: ActivityState::ModelActive,
-                    attribution_provenance: AttributionProvenance::DeterministicClassification,
-                })
-                .await,
-        )?;
-        self.turn_operations
-            .lock()
-            .await
-            .insert(turn, (operation_id, Instant::now()));
+        self.turn_starts.lock().await.insert(turn, Instant::now());
         Ok(())
     }
 
@@ -274,23 +248,8 @@ impl UsageRuntime {
         status: TerminalStatus,
     ) -> Result<(), CodexErr> {
         let turn_id = TurnId::new(turn_id).map_err(|_| self.reject_invalid_metadata())?;
-        let Some((operation_id, started)) = self.turn_operations.lock().await.remove(&turn_id)
-        else {
-            return Ok(());
-        };
-        let store = self.store().await?;
-        self.write_required_for(
-            operation_id,
-            store
-                .finish_operation(&TerminalOperation {
-                    operation_id,
-                    status,
-                    occurred_at_ms: now_ms(),
-                    duration_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
-                    error_category: None,
-                })
-                .await,
-        )?;
+        let _ = status;
+        self.turn_starts.lock().await.remove(&turn_id);
         Ok(())
     }
 
@@ -394,6 +353,7 @@ impl UsageRuntime {
                 },
             )
             .await?;
+            self.turn_starts.lock().await.remove(turn_id);
         }
 
         let operation_id = OperationId::new();

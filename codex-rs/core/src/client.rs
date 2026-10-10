@@ -46,6 +46,7 @@ use codex_api::MemoriesClient as ApiMemoriesClient;
 use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
 use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
 use codex_api::Provider as ApiProvider;
+use codex_api::ProviderResponseStatus;
 use codex_api::RawMemory as ApiRawMemory;
 use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
 use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
@@ -84,6 +85,12 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
 
+use crate::usage_runtime::ModelAttemptContext;
+use crate::usage_runtime::UsageAttempt;
+use crate::usage_runtime::UsageRequestChain;
+use crate::usage_runtime::UsageRuntime;
+use crate::usage_runtime::provider_kind;
+use crate::usage_runtime::usage_account_snapshot;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
@@ -276,6 +283,7 @@ pub struct ModelClient {
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
+    usage_runtime: Option<Arc<UsageRuntime>>,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -545,11 +553,17 @@ impl ModelClient {
             executed_tool_calls: None,
             api_key_cyber_access_programs:
                 cyber_access_program::ApiKeyCyberAccessPrograms::UnsupportedProvider,
+            usage_runtime: None,
         }
     }
 
     pub(crate) fn with_executed_tool_calls(mut self, recorder: ExecutedToolCalls) -> Self {
         self.executed_tool_calls = Some(recorder);
+        self
+    }
+
+    pub(crate) fn with_usage_runtime(mut self, usage_runtime: Arc<UsageRuntime>) -> Self {
+        self.usage_runtime = Some(usage_runtime);
         self
     }
 
@@ -1347,6 +1361,48 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    async fn begin_usage_attempt(
+        &self,
+        model_info: &ModelInfo,
+        responses_metadata: &CodexResponsesMetadata,
+        transport: &'static str,
+    ) -> Option<UsageAttempt> {
+        let runtime = self.client.usage_runtime.as_ref()?.clone();
+        let provider = provider_kind(&self.client.state.provider.info().name)?;
+        let auth_mode = self
+            .client
+            .state
+            .provider
+            .auth_manager()
+            .and_then(|manager| manager.auth_cached())
+            .map(|auth| auth.auth_mode());
+        let account = usage_account_snapshot(None, auth_mode).ok()?;
+        let request_attempt = UsageRequestChain::new().next_attempt().ok()?;
+        let parent_thread_id = responses_metadata
+            .parent_thread_id
+            .as_ref()
+            .map(ToString::to_string);
+        runtime
+            .begin_model_attempt(ModelAttemptContext {
+                thread_id: &responses_metadata.thread_id,
+                parent_thread_id: parent_thread_id.as_deref(),
+                turn_id: responses_metadata.turn_id.as_deref(),
+                delegated: self.client.state.session_source.is_non_root_agent(),
+                provider,
+                model: &model_info.slug,
+                transport,
+                client_origin: &self.client.state.originator,
+                account,
+                repositories: Vec::new(),
+                attempt_number: request_attempt.attempt_number,
+                retry_of_operation_id: request_attempt.retry_of_operation_id,
+                retry_slot: request_attempt.retry_slot,
+                context_estimate: None,
+            })
+            .await
+            .ok()
+    }
+
     pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {
         let previous = self
             .client
@@ -1783,12 +1839,16 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
+                    let usage_attempt = self
+                        .begin_usage_attempt(model_info, responses_metadata, "responses_http")
+                        .await;
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
                         interceptors,
+                        usage_attempt,
                     );
                     return Ok(stream);
                 }
@@ -2119,6 +2179,12 @@ impl ModelClientSession {
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
                 interceptors,
+                if warmup {
+                    None
+                } else {
+                    self.begin_usage_attempt(model_info, responses_metadata, "responses_websocket")
+                        .await
+                },
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2371,6 +2437,7 @@ fn map_response_stream(
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
     interceptors: Vec<Box<dyn codex_extension_api::ModelResponseInterceptor>>,
+    usage_attempt: Option<UsageAttempt>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let upstream_request_id = api_stream.upstream_request_id.take();
     let interrupt = api_stream.interrupt.take();
@@ -2380,6 +2447,7 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        usage_attempt,
     );
     stream.interrupt = interrupt;
     (stream, last_response)
@@ -2391,6 +2459,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    usage_attempt: Option<UsageAttempt>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2406,6 +2475,7 @@ where
 
     tokio::spawn(async move {
         let mut logged_error = false;
+        let usage_attempt = usage_attempt;
         let mut tx_last_response = Some(tx_last_response);
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let (request_start, mut ttft_ms) = (Instant::now(), None);
@@ -2422,6 +2492,14 @@ where
                         upstream_request_id,
                         &items_added,
                     );
+                    if let Some(attempt) = &usage_attempt {
+                        attempt
+                            .finish(
+                                codex_usage::TerminalStatus::Cancelled,
+                                Some(codex_usage::ErrorCategory::Cancelled),
+                            )
+                            .await;
+                    }
                     return;
                 }
                 event = api_stream.next() => event,
@@ -2432,6 +2510,9 @@ where
             match event {
                 Ok(ResponseEvent::OutputItemDone(item)) => {
                     items_added.push(item.clone());
+                    if let Some(attempt) = &usage_attempt {
+                        attempt.observe_response_item(&item).await;
+                    }
                     if tx_event
                         .send(Ok(ResponseEvent::OutputItemDone(item)))
                         .await
@@ -2451,6 +2532,11 @@ where
                     usage_metadata,
                     end_turn,
                 }) => {
+                    if let Some(attempt) = &usage_attempt {
+                        attempt
+                            .finish_provider(ProviderResponseStatus::Completed)
+                            .await;
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);
@@ -2481,6 +2567,14 @@ where
                     }
                 }
                 Ok(event) => {
+                    if let Some(attempt) = &usage_attempt {
+                        if let ResponseEvent::ProviderUsage(observation) = &event {
+                            attempt.record_provider_usage(observation).await;
+                        }
+                        if let ResponseEvent::OutputItemAdded(item) = &event {
+                            attempt.observe_response_item(item).await;
+                        }
+                    }
                     if matches!(&event, ResponseEvent::OutputItemAdded(_)) && ttft_ms.is_none() {
                         ttft_ms = Some(
                             i64::try_from(request_start.elapsed().as_millis()).unwrap_or(i64::MAX),
@@ -2516,8 +2610,19 @@ where
                     if tx_event.send(Err(mapped)).await.is_err() {
                         return;
                     }
+                    if let Some(attempt) = &usage_attempt {
+                        attempt
+                            .finish_provider(ProviderResponseStatus::Failed)
+                            .await;
+                    }
+                    return;
                 }
             }
+        }
+        if let Some(attempt) = &usage_attempt {
+            attempt
+                .finish_provider(ProviderResponseStatus::Incomplete)
+                .await;
         }
         inference_trace_attempt.record_failed(
             "stream closed before response.completed",

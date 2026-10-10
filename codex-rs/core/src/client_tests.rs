@@ -1566,6 +1566,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     let observed = stream
@@ -1617,6 +1618,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        None,
     );
 
     while stream.next().await.is_some() {}
@@ -1840,6 +1842,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -2137,6 +2140,7 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
         attempt,
         test_model_provider(),
         vec![Box::new(ReplaceOutput)],
+        None,
     );
     let mut delivered = Vec::new();
     while let Some(event) = stream.next().await {
