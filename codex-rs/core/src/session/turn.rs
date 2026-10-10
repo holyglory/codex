@@ -2943,6 +2943,7 @@ async fn try_run_sampling_request(
                     .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
                     .await;
             }
+            ResponseEvent::ProviderUsage(_) => {}
             ResponseEvent::Completed {
                 response_id,
                 token_usage,

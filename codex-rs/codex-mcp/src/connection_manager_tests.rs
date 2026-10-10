@@ -142,6 +142,8 @@ impl McpConnectionSet {
                     client,
                     startup_timeout: DEFAULT_STARTUP_TIMEOUT,
                     startup_trigger: None,
+                    authentication_blocked: std::sync::atomic::AtomicBool::new(false),
+                    authentication_error: std::sync::Mutex::new(None),
                     _diagnostics_guard: LIVE_CONNECTIONS.track(),
                 }),
                 metadata: McpServerMetadata {
@@ -719,6 +721,46 @@ async fn authentication_failure_stales_apps_startup_without_reconnect_loop() {
     client.reconnect_failed_startup().await;
 
     assert_eq!(attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn regular_authentication_failure_is_quarantined_for_the_connection_generation() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_client = Arc::clone(&attempts);
+    let client = AsyncManagedClient {
+        client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>({
+            attempts_for_client.fetch_add(1, Ordering::SeqCst);
+            Err(StartupOutcomeError::Failed {
+                error: "invalid_token".to_string(),
+                is_authentication_required: true,
+            })
+        })
+        .boxed()
+        .shared(),
+        is_codex_apps_mcp_server: false,
+        server_capabilities: Arc::new(std::sync::Mutex::new(None)),
+        cached_server_info: None,
+        codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
+        startup_complete: Arc::new(AtomicBool::new(true)),
+        startup_reconnect: None,
+        cancel_token: CancellationToken::new(),
+    };
+    let connection = McpServerConnection {
+        identity: None,
+        client,
+        startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+        startup_trigger: None,
+        authentication_blocked: AtomicBool::new(false),
+        authentication_error: std::sync::Mutex::new(None),
+        _diagnostics_guard: LIVE_CONNECTIONS.track(),
+    };
+
+    let first = connection.client().await;
+    assert!(matches!(first, Err(ref error) if error.is_authentication_required()));
+    let second = connection.client().await;
+    assert!(matches!(second, Err(ref error) if error.is_authentication_required()));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
 fn create_gated_async_managed_client(
@@ -5184,6 +5226,8 @@ async fn manager_with_reusable_ready_server(
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
+                authentication_blocked: std::sync::atomic::AtomicBool::new(false),
+                authentication_error: std::sync::Mutex::new(None),
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
@@ -5620,6 +5664,8 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
+                authentication_blocked: std::sync::atomic::AtomicBool::new(false),
+                authentication_error: std::sync::Mutex::new(None),
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
@@ -6325,6 +6371,8 @@ async fn reconciliation_replaces_closed_connections() -> anyhow::Result<()> {
             .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
         startup_trigger: None,
+        authentication_blocked: std::sync::atomic::AtomicBool::new(false),
+        authentication_error: std::sync::Mutex::new(None),
         _diagnostics_guard: LIVE_CONNECTIONS.track(),
     });
 

@@ -28,7 +28,9 @@ pub use tool_catalog::tool_is_model_visible;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -90,6 +92,8 @@ pub(crate) struct McpServerConnection {
     // Startup-only budget; changing it must not replace a ready connection.
     startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
+    authentication_blocked: AtomicBool,
+    authentication_error: Mutex<Option<StartupOutcomeError>>,
     _diagnostics_guard: GaugeGuard,
 }
 
@@ -132,10 +136,47 @@ impl McpServerConnection {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
+        if self.authentication_blocked.load(Ordering::Acquire) {
+            return Err(self
+                .authentication_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or_else(|| StartupOutcomeError::Failed {
+                    error: "MCP authentication is quarantined".to_string(),
+                    is_authentication_required: true,
+                }));
+        }
         if let Some(startup_trigger) = &self.startup_trigger {
             startup_trigger.send_replace(true);
         }
-        self.client.client().await
+        match self.client.client().await {
+            Ok(client) => Ok(client),
+            Err(error) if error.is_authentication_required() => {
+                self.authentication_blocked.store(true, Ordering::Release);
+                *self
+                    .authentication_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn is_authentication_blocked(&self) -> bool {
+        self.authentication_blocked.load(Ordering::Acquire)
+    }
+
+    fn authentication_blocked_error(&self) -> StartupOutcomeError {
+        self.authentication_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| StartupOutcomeError::Failed {
+                error: "MCP authentication is quarantined".to_string(),
+                is_authentication_required: true,
+            })
     }
 
     async fn shutdown(&self) {
@@ -179,6 +220,9 @@ impl McpServerView {
     }
 
     fn cached_startup_tools(&self, fallback: Option<Vec<ToolInfo>>) -> Option<Vec<ToolInfo>> {
+        if self.connection.is_authentication_blocked() {
+            return None;
+        }
         self.connection
             .client
             .cached_tools_or(fallback)
@@ -199,7 +243,20 @@ impl McpServerView {
         &self,
         tool_plugin_context: &ToolPluginContext,
     ) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
-        let tools = self.connection.client.listed_tools().await?;
+        if self.connection.is_authentication_blocked() {
+            return Err(self.connection.authentication_blocked_error());
+        }
+        let tools = match self.connection.client.listed_tools().await {
+            Ok(tools) => tools,
+            Err(error) if error.is_authentication_required() => {
+                self.connection.authentication_blocked.store(true, Ordering::Release);
+                *self.connection.authentication_error.lock().unwrap_or_else(
+                    std::sync::PoisonError::into_inner,
+                ) = Some(error.clone());
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let tools = filter_tools(tools, &self.tool_filter);
         Ok(if self.connection.client.is_codex_apps_mcp_server {
             prepare_codex_apps_tools_for_model(tools, tool_plugin_context)
@@ -658,6 +715,8 @@ impl McpConnectionSet {
                         client: async_managed_client.clone(),
                         startup_timeout,
                         startup_trigger,
+                        authentication_blocked: AtomicBool::new(false),
+                        authentication_error: Mutex::new(None),
                         _diagnostics_guard: LIVE_CONNECTIONS.track(),
                     }),
                     protocol_mode,
