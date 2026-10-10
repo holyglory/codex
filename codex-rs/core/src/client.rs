@@ -1434,6 +1434,12 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    pub(crate) fn auth_manager_matches(&self, auth_manager: &Arc<AuthManager>) -> bool {
+        self.client
+            .auth_manager()
+            .is_some_and(|current| Arc::ptr_eq(&current, auth_manager))
+    }
+
     async fn begin_usage_attempt(
         &self,
         model_info: &ModelInfo,

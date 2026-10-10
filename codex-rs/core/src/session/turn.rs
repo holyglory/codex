@@ -196,11 +196,12 @@ pub(crate) async fn run_turn(
                 })
         })
         .unwrap_or_else(|| sess.services.model_client.clone());
-    let mut client_session = if turn_context.account_lease.is_some() {
-        turn_model_client.new_session()
-    } else {
-        prewarmed_client_session.unwrap_or_else(|| turn_model_client.new_session())
-    };
+    let turn_auth_manager = turn_context.auth_manager.as_ref();
+    let mut client_session = prewarmed_client_session
+        .filter(|session| {
+            turn_auth_manager.is_none_or(|auth_manager| session.auth_manager_matches(auth_manager))
+        })
+        .unwrap_or_else(|| turn_model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
