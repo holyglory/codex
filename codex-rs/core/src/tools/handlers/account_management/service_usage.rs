@@ -1,4 +1,5 @@
 use chrono::Utc;
+use codex_backend_client::next_codex_limit_reset;
 use codex_protocol::protocol::RateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
@@ -32,7 +33,11 @@ pub(super) struct ServiceUsageOutput {
     pub(super) state: &'static str,
     pub(super) reason: Option<&'static str>,
     pub(super) observed_at: Option<i64>,
+    pub(super) next_reset_at: Option<i64>,
+    pub(super) next_reset_at_utc: Option<String>,
+    pub(super) next_reset_scope: Option<&'static str>,
     pub(super) buckets: Vec<ServiceUsageBucket>,
+    pub(super) credits: Option<codex_protocol::protocol::CreditsSnapshot>,
 }
 
 #[derive(Clone, Serialize)]
@@ -109,13 +114,34 @@ async fn refresh_service_usage(
         return unavailable_usage("invalidResponse");
     }
     let observed_at = Utc::now().timestamp();
+    let next_reset = next_codex_limit_reset(&snapshots, observed_at).filter(|reset| {
+        chrono::DateTime::from_timestamp(reset.resets_at, /*nsecs*/ 0).is_some()
+    });
+    let next_reset_at = next_reset.as_ref().map(|reset| reset.resets_at);
     if let Some(account_id) = account_id {
         let _ = router.record_rate_limits(account_id, observed_at, snapshots.clone());
     }
     ServiceUsageOutput {
+        credits: snapshots
+            .iter()
+            .find(|snapshot| snapshot.limit_id.as_deref() == Some("codex"))
+            .and_then(|snapshot| snapshot.credits.clone())
+            .map(|mut credits| {
+                credits.balance = credits.balance.filter(|value| {
+                    !value.trim().is_empty()
+                        && value.len() <= 128
+                        && !value.chars().any(char::is_control)
+                });
+                credits
+            }),
         state: "observed",
         reason: None,
         observed_at: Some(observed_at),
+        next_reset_at,
+        next_reset_scope: next_reset.map(|reset| reset.scope),
+        next_reset_at_utc: next_reset_at
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, /*nsecs*/ 0))
+            .map(|reset| reset.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
         buckets: snapshots
             .iter()
             .enumerate()
@@ -182,9 +208,13 @@ fn invalid_window(window: &RateLimitWindow) -> bool {
 
 fn unavailable_usage(reason: &'static str) -> ServiceUsageOutput {
     ServiceUsageOutput {
+        credits: None,
         state: "unavailable",
         reason: Some(reason),
         observed_at: None,
+        next_reset_at: None,
+        next_reset_at_utc: None,
+        next_reset_scope: None,
         buckets: Vec::new(),
     }
 }
@@ -204,9 +234,17 @@ fn reached_type_label(reached_type: RateLimitReachedType) -> &'static str {
 #[cfg(test)]
 pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
     ServiceUsageOutput {
+        credits: Some(codex_protocol::protocol::CreditsSnapshot {
+            has_credits: true,
+            unlimited: true,
+            balance: Some("9".repeat(128)),
+        }),
         state: "observed",
         reason: None,
         observed_at: Some(i64::MAX),
+        next_reset_at: Some(i64::MAX),
+        next_reset_at_utc: Some("9999-12-31 23:59:59 UTC".into()),
+        next_reset_scope: Some("codex.individual"),
         buckets: (0..MAX_SERVICE_BUCKETS)
             .map(|index| {
                 ServiceUsageBucket(

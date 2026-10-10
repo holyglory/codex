@@ -6,6 +6,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::effective_tool_mode;
+use crate::tools::handlers::AccountManagementHandler;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -1160,6 +1161,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     if !turn_context.session_source.is_non_root_agent() {
         registry.add(UsageStatsHandler);
         registry.add(UsageActivityHandler);
+        registry.add(AccountManagementHandler);
     }
     if !advertise_environment_tools
         || !features.enabled(Feature::ShellTool)

@@ -555,6 +555,7 @@ pub(crate) async fn run_turn(
             .await;
 
             let mut excluded_account_ids = HashSet::new();
+            let usage_chain = UsageRequestChain::new();
             loop {
                 let result = run_sampling_request(
                     Arc::clone(&sess),
@@ -564,6 +565,7 @@ pub(crate) async fn run_turn(
                     &mut client_session,
                     sampling_request_input.clone(),
                     cancellation_token.child_token(),
+                    &usage_chain,
                 )
                 .await;
                 let should_failover = result.as_ref().is_err_and(|error| {
@@ -1717,6 +1719,7 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
+    usage_chain: &UsageRequestChain,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
@@ -1744,7 +1747,6 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
-    let usage_chain = UsageRequestChain::new();
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
