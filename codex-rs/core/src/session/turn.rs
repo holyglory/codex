@@ -623,23 +623,14 @@ pub(crate) async fn run_turn(
                 }
                 client_session = next_model_client.new_session();
                 turn_context = next_turn_context;
-                step_context = Arc::new(StepContext {
-                    turn: Arc::clone(&turn_context),
-                    preempt: step_context.preempt.clone(),
-                    realtime: step_context.realtime.clone(),
-                    settings: Arc::clone(&step_context.settings),
-                    token_budget: step_context.token_budget.clone(),
-                    session_telemetry: step_context.session_telemetry.clone(),
-                    environments: step_context.environments.clone(),
-                    selected_capability_roots: step_context.selected_capability_roots.clone(),
-                    executor_capability_discovery: step_context
-                        .executor_capability_discovery
-                        .clone(),
-                    extension_data: ExtensionData::new(turn_context.sub_id.clone()),
-                    mcp: Arc::clone(&step_context.mcp),
-                    tool_router: Arc::clone(&step_context.tool_router),
-                    loaded_agents_md: step_context.loaded_agents_md.clone(),
-                });
+                step_context = sess
+                    .capture_step_context_with_required_mcp_servers(
+                        Arc::clone(&turn_context),
+                        &cancellation_token,
+                        required_servers,
+                        required_plugins,
+                    )
+                    .await?;
             }
         }
         .await;
@@ -1054,11 +1045,15 @@ async fn required_mcp_servers_for_input(
 
     // Plugin capabilities depend on authentication, so project them only after
     // the runtime has aligned the plugin manager with its current account.
-    sess.refresh_mcp_if_dirty().await;
+    sess.refresh_mcp_for_turn(turn_context).await;
+    let turn_auth = turn_context.plugin_auth_cached();
     let loaded_plugins = sess
         .services
         .plugins_manager
-        .plugins_for_config(&turn_context.config.plugins_config_input())
+        .plugins_for_config_with_auth(
+            &turn_context.config.plugins_config_input(),
+            turn_auth.as_ref(),
+        )
         .await
         .without_plugins(&turn_context.disabled_plugin_ids);
     let current_config = sess.services.mcp_runtime.current_config();
@@ -1861,18 +1856,21 @@ pub(crate) async fn prepare_tool_recommendations(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> PreparedToolRecommendations {
-    let loaded_plugins = sess
-        .services
-        .plugins_manager
-        .plugins_for_config(&turn_context.config.plugins_config_input())
-        .await
-        .without_plugins(&turn_context.disabled_plugin_ids);
     let tool_suggest_is_enabled = tool_suggest_enabled(turn_context);
     let auth = if tool_suggest_is_enabled {
-        sess.services.auth_manager.auth().await
+        match turn_context.auth_manager.as_ref() {
+            Some(auth_manager) => auth_manager.auth().await,
+            None => None,
+        }
     } else {
         None
     };
+    let loaded_plugins = sess
+        .services
+        .plugins_manager
+        .plugins_for_config_with_auth(&turn_context.config.plugins_config_input(), auth.as_ref())
+        .await
+        .without_plugins(&turn_context.disabled_plugin_ids);
     let endpoint_candidates = if tool_suggest_is_enabled {
         let plugins_config = turn_context.config.plugins_config_input();
         sess.services

@@ -141,6 +141,13 @@ pub(crate) async fn handle_mcp_tool_call(
     arguments: String,
 ) -> HandledMcpToolCall {
     let turn_context = &step_context.turn;
+    if let Some(auth_lease) = turn_context.auth_lease() {
+        sess.services.mcp_runtime.bind_resource_origin_call(
+            &call_id,
+            Arc::clone(&step_context.mcp),
+            (*auth_lease).clone(),
+        );
+    }
     let server = tool_info.server_name.clone();
     let tool_name = tool_info.tool.name.to_string();
     // Parse the `arguments` as JSON. An empty string is OK, but invalid JSON
@@ -453,6 +460,13 @@ async fn handle_approved_mcp_tool_call(
     approval_application: McpToolApprovalApplication,
 ) -> HandledMcpToolCall {
     let turn_context = step_context.turn.as_ref();
+    if let Some(auth_lease) = turn_context.auth_lease() {
+        sess.services.mcp_runtime.bind_resource_origin_call(
+            call_id,
+            Arc::clone(&step_context.mcp),
+            (*auth_lease).clone(),
+        );
+    }
     let server = invocation.server.clone();
     let tool_name = invocation.tool.clone();
     let arguments_value = invocation.arguments.clone();

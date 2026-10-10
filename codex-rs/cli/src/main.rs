@@ -569,6 +569,10 @@ struct LogoutCommand {
 
 #[derive(Debug, Parser)]
 struct AppServerCommand {
+    /// Account alias or id pinned to this app-server process.
+    #[arg(long)]
+    account: Option<String>,
+
     /// Omit to run the app server; specify a subcommand for tooling.
     #[command(subcommand)]
     subcommand: Option<AppServerSubcommand>,
@@ -1236,6 +1240,7 @@ async fn cli_main(
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
+                account,
                 subcommand,
                 code_mode_host,
                 strict_config: app_server_strict_config,
@@ -1262,6 +1267,7 @@ async fn cli_main(
                     };
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
+                        process_account: account,
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)

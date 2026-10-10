@@ -553,7 +553,10 @@ fn api_profile(
         id: account.id.to_string(),
         alias: account.alias.to_string(),
         auth_mode: auth_mode_to_api(account.auth_mode),
-        email: account.email.clone(),
+        email: account
+            .email
+            .as_deref()
+            .map(|email| bounded_metadata(email, 512)),
         plan_type: account.plan_type.clone().map(Into::into),
         enabled: account.enabled,
         authenticated: is_authenticated(config, account)?,
@@ -561,10 +564,21 @@ fn api_profile(
         credit_usage_enabled: account.credit_usage_enabled,
         created_at: account.created_at.timestamp(),
         last_used_at: account.last_used_at.map(|time| time.timestamp()),
-        note: account.note.clone(),
+        note: account
+            .note
+            .as_deref()
+            .map(|note| bounded_metadata(note, 1024)),
         is_default: registry.default_account_id.as_ref() == Some(&account.id),
         is_active: active_account_id == Some(&account.id),
     })
+}
+
+fn bounded_metadata(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect()
 }
 
 fn api_auto_selection(registry: &AccountRegistry) -> AccountAutoSelection {

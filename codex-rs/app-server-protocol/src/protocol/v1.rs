@@ -83,9 +83,11 @@ pub struct InitializeResponse {
     pub platform_os: String,
     /// Advertises the additive multi-account profile extension.
     #[serde(default)]
+    #[ts(optional)]
     pub multi_account: Option<crate::protocol::v2::MultiAccountCapability>,
     /// Advertises the additive local usage-accounting extension.
     #[serde(default)]
+    #[ts(optional)]
     pub local_usage_accounting: Option<crate::protocol::v2::LocalUsageAccountingCapability>,
 }
 

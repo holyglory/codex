@@ -4241,10 +4241,14 @@ impl Session {
             developer_sections
                 .push(DeveloperInstructions::new(developer_instructions).render_fragment());
         }
+        let turn_auth = turn_context.plugin_auth_cached();
         let loaded_plugins = self
             .services
             .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
+            .plugins_for_config_with_auth(
+                &turn_context.config.plugins_config_input(),
+                turn_auth.as_ref(),
+            )
             .await
             .without_plugins(&turn_context.disabled_plugin_ids);
         let recommended_plugin_candidates = if turn_context
@@ -4252,7 +4256,7 @@ impl Session {
             .features
             .plugin_recommendations_enabled()
         {
-            let auth = self.services.auth_manager.auth().await;
+            let auth = turn_context.plugin_auth_cached();
             let plugins_config = turn_context.config.plugins_config_input();
             self.services
                 .plugins_manager

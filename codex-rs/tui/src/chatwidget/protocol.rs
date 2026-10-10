@@ -355,8 +355,10 @@ impl ChatWidget {
             }
             ServerNotification::ServerRequestResolved(_)
             | ServerNotification::AccountUpdated(_)
+            | ServerNotification::AccountProfileActiveChanged(_)
             | ServerNotification::GatewayOAuthChanged(_)
             | ServerNotification::AccountRateLimitsUpdated(_)
+            | ServerNotification::LocalUsageUpdated(_)
             | ServerNotification::ThreadStarted(_)
             | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::ThreadReverted(_)

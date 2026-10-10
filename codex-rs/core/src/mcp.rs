@@ -369,20 +369,41 @@ impl McpManager {
             }
         }
 
-        let loaded_plugins = self
-            .plugins_manager
-            .plugins_for_config(&config.plugins_config_input())
-            .await;
+        let auth_lease = context
+            .thread_store()
+            .and_then(|store| store.get::<codex_login::AuthManagerLease>());
+        let auth = auth_lease
+            .as_ref()
+            .and_then(|lease| lease.auth_manager().auth_cached());
+        let plugins_input = config.plugins_config_input();
+        let loaded_plugins = if auth_lease.is_some() {
+            self.plugins_manager
+                .plugins_for_config_with_auth(&plugins_input, auth.as_ref())
+                .await
+        } else {
+            self.plugins_manager
+                .plugins_for_config(&plugins_input)
+                .await
+        };
         let host_plugin_connector_sources = loaded_plugins
             .capability_summaries()
             .iter()
             .map(PluginConnectorSource::from);
         let connector_snapshot = if config.features.enabled(Feature::Plugins) {
-            self.plugins_manager.connector_snapshot(
-                host_plugin_connector_sources.chain(selected_plugin_connector_sources),
-                disabled_plugin_ids,
-                &config.plugins_config_input(),
-            )
+            if auth_lease.is_some() {
+                self.plugins_manager.connector_snapshot_with_auth(
+                    host_plugin_connector_sources.chain(selected_plugin_connector_sources),
+                    disabled_plugin_ids,
+                    &plugins_input,
+                    auth.as_ref(),
+                )
+            } else {
+                self.plugins_manager.connector_snapshot(
+                    host_plugin_connector_sources.chain(selected_plugin_connector_sources),
+                    disabled_plugin_ids,
+                    &plugins_input,
+                )
+            }
         } else {
             Default::default()
         };

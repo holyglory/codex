@@ -1240,6 +1240,13 @@ impl Session {
             session_configuration.turn_extension_init.clone(),
         ));
         extension_data.insert(skills_snapshot);
+        if profile_auth_error.is_none() {
+            if let Some(lease) = account_lease.as_ref() {
+                extension_data.insert(codex_login::AuthManagerLease::profile(lease.clone()));
+            } else if let Some(manager) = auth_manager.as_ref() {
+                extension_data.insert(codex_login::AuthManagerLease::legacy(Arc::clone(manager)));
+            }
+        }
         TurnContext {
             sub_id,
             trace_id: current_span_trace_id(),

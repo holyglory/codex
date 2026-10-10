@@ -2412,7 +2412,12 @@ mod tests {
                     || (path == Path::new("v2/McpServerOauthLoginCompletedNotification.ts")
                         && field_prefix.trim() == "loginId?")
                     || (path == Path::new("v2/MisalignmentErrorDetails.ts")
-                        && field_prefix.trim() == "reviewTarget?");
+                        && field_prefix.trim() == "reviewTarget?")
+                    || (path == Path::new("InitializeResponse.ts")
+                        && matches!(
+                            field_prefix.trim(),
+                            "multiAccount?" | "localUsageAccounting?"
+                        ));
                 if field_prefix.chars().rev().find(|c| !c.is_whitespace()) == Some('?')
                     && !allow_optional_nullable
                     && !legacy_optional_nullable_field

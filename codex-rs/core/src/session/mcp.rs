@@ -194,6 +194,13 @@ impl Session {
             return;
         };
         loop {
+            let auth_manager = self
+                .services
+                .thread_extension_data
+                .get::<codex_login::AuthManagerLease>()
+                .map(|lease| Arc::clone(lease.auth_manager()))
+                .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+            let auth = auth_manager.auth().await;
             // Compare and rebuild from current environments, not choices saved for a future turn.
             let environments = self.services.turn_environments.snapshot().await;
             let environment_selections = environments.all_selections();
@@ -203,7 +210,6 @@ impl Session {
             ) {
                 self.mark_mcp_runtime_dirty();
             }
-            let auth = self.services.auth_manager.auth_cached();
             if !self
                 .services
                 .mcp_runtime
@@ -219,8 +225,10 @@ impl Session {
                 refresh: &self.mcp_refresh,
                 published: false,
             };
-            let auth = self.services.auth_manager.auth().await;
-            let desired = self.latest_mcp_desired_state(auth, environments).await;
+            let mut desired = self
+                .latest_mcp_desired_state(auth.clone(), environments)
+                .await;
+            desired.auth_manager = Arc::clone(&auth_manager);
             let selected_capability_roots = self
                 .resolve_selected_capability_roots_for_step(&desired.environments)
                 .await;
@@ -352,6 +360,14 @@ impl Session {
         refreshed
     }
 
+    /// Uses the turn's retained account for plugin discovery and MCP connections.
+    pub(crate) async fn refresh_mcp_for_turn(self: &Arc<Self>, turn_context: &TurnContext) {
+        if let Some(lease) = turn_context.auth_lease() {
+            self.services.thread_extension_data.insert((*lease).clone());
+        }
+        self.refresh_mcp_if_dirty().await;
+    }
+
     pub(super) fn mark_mcp_runtime_dirty(&self) {
         self.mcp_refresh.invalidate();
     }
@@ -397,7 +413,7 @@ impl Session {
         {
             self.mark_mcp_runtime_dirty();
         }
-        self.refresh_mcp_if_dirty().await;
+        self.refresh_mcp_for_turn(turn_context).await;
         let required_servers = required_servers
             .iter()
             .chain(&recovered_oauth_servers)

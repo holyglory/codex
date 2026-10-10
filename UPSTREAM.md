@@ -84,6 +84,17 @@ the authority for release outcomes and verification receipts.
   package version metadata before spending time on the full suite. Resolve
   upstream interface changes at the current extension point instead of keeping
   an old compatibility shim.
+- **Keep profile auth and MCP resource authority on the captured turn.** MCP
+  plugin discovery, recommendations, runtime refreshes, failover step capture,
+  and widget `originCallId` reads must use the turn's account lease and binding.
+  A compile-only pass will miss this: run the profile/failover and widget
+  integration journeys, and bind the exact step client before recording the
+  successful tool-call origin.
+- **Regenerate stable and experimental protocol artifacts separately.** The
+  normal schema command refreshes checked-in TypeScript/JSON and the stable
+  compressed export; append `--experimental` to refresh the experimental
+  compressed export. Run the protocol fixture suite after both commands so a
+  stale binary export cannot survive a source API change.
 - **Account routing must be resolved before auth is paired.** When a request can
   select a profile or workspace, clone the current request config, apply the
   current-account routing policy, and only then construct connector auth. Pairing

@@ -24,6 +24,7 @@ use std::collections::HashSet;
 pub(super) struct McpDesiredState {
     pub(super) config: Arc<Config>,
     pub(super) auth: Option<CodexAuth>,
+    pub(super) auth_manager: Arc<AuthManager>,
     pub(super) submit_id: String,
     pub(super) originator: String,
     pub(super) session_source: SessionSource,
@@ -96,6 +97,7 @@ impl Session {
         McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager: Arc::clone(&self.services.auth_manager),
             submit_id: self.next_internal_sub_id(),
             originator: session_configuration.originator,
             session_source: session_configuration.session_source,
@@ -127,6 +129,7 @@ impl Session {
         let desired = McpDesiredState {
             config: Arc::new(config),
             auth,
+            auth_manager: Arc::clone(&self.services.auth_manager),
             submit_id: INITIAL_SUBMIT_ID.to_owned(),
             originator: session_configuration.originator.clone(),
             session_source: session_configuration.session_source.clone(),
@@ -395,7 +398,7 @@ impl Session {
             codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
-            auth_manager: Some(Arc::clone(&self.services.auth_manager)),
+            auth_manager: Some(Arc::clone(&desired.auth_manager)),
             elicitation_reviewer,
             elicitation_lifecycle: Some(self.mcp_elicitation_lifecycle()),
         }
