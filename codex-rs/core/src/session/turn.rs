@@ -601,7 +601,7 @@ pub(crate) async fn run_turn(
                 else {
                     break result;
                 };
-                client_session = sess
+                let mut next_model_client = sess
                     .services
                     .model_client
                     .for_auth_manager(Arc::clone(
@@ -621,8 +621,14 @@ pub(crate) async fn run_turn(
                                 .as_str(),
                         )
                         .expect("account id is a valid usage profile reference"),
-                    )
-                    .new_session();
+                    );
+                if !client_session.responses_websocket_enabled() {
+                    next_model_client.force_http_fallback(
+                        &sess.services.session_telemetry,
+                        &step_context.settings.model_info,
+                    );
+                }
+                client_session = next_model_client.new_session();
                 turn_context = next_turn_context;
                 step_context = Arc::new(StepContext {
                     turn: Arc::clone(&turn_context),
