@@ -125,14 +125,14 @@ async fn http_retry_deadline_survives_mapping_and_respects_terminal_errors() {
 }
 
 #[test]
-fn map_api_error_distinguishes_capacity_from_slow_down() {
+fn map_api_error_distinguishes_capacity_from_generic_service_unavailable() {
     for (code, expected, retryable) in [
         (
             "server_is_overloaded",
             CodexErrorInfo::ServerOverloaded,
             false,
         ),
-        ("slow_down", CodexErrorInfo::RateLimitExceeded, true),
+        ("slow_down", CodexErrorInfo::ServerOverloaded, false),
         (
             "unknown_error",
             CodexErrorInfo::HttpConnectionFailed {

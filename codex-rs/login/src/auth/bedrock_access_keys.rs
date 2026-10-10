@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::manager::save_auth;
+use super::profile::ProfileAuthStorage;
 use super::storage::AuthDotJson;
 use super::storage::AuthKeyringBackendKind;
 
@@ -40,7 +41,34 @@ pub fn login_with_bedrock_access_keys(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let auth_dot_json = AuthDotJson {
+    let auth_dot_json = bedrock_access_keys_auth(access_key_id, secret_access_key, session_token);
+    save_auth(
+        codex_home,
+        &auth_dot_json,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+pub fn login_with_bedrock_access_keys_to_profile(
+    profile: &ProfileAuthStorage,
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+) -> std::io::Result<()> {
+    profile.save(&bedrock_access_keys_auth(
+        access_key_id,
+        secret_access_key,
+        session_token,
+    ))
+}
+
+fn bedrock_access_keys_auth(
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+) -> AuthDotJson {
+    AuthDotJson {
         auth_mode: Some(AuthMode::BedrockAccessKeys),
         openai_api_key: None,
         tokens: None,
@@ -53,11 +81,5 @@ pub fn login_with_bedrock_access_keys(
             secret_access_key: secret_access_key.to_string(),
             session_token: session_token.map(str::to_string),
         }),
-    };
-    save_auth(
-        codex_home,
-        &auth_dot_json,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    )
+    }
 }

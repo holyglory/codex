@@ -1,0 +1,72 @@
+//! Provider-neutral, durable event subscriptions and shared-deadline scheduling.
+
+mod alarm;
+mod project;
+pub use alarm::Alarm;
+pub use alarm::AlarmPage;
+pub use alarm::AlarmSpec;
+pub use alarm::AlarmState;
+pub use alarm::AlarmWorkEvent;
+pub use alarm::OperationOutcome;
+pub use alarm::OperationResult;
+mod service;
+mod types;
+mod wake_policy;
+
+pub use wake_policy::ScopedWakePolicy;
+pub use wake_policy::SubscriptionRunState;
+pub use wake_policy::SubscriptionWorkOrigin;
+pub use wake_policy::ThreadWakePolicy;
+pub use wake_policy::UserStartedSubscriptionWork;
+pub use wake_policy::WakeLifecycle;
+pub use wake_policy::WakePolicy;
+pub use wake_policy::WakePolicyChange;
+pub use wake_policy::WakeScope;
+
+pub use project::AutomationJob;
+pub use project::AutomationJobKind;
+pub use project::DeliveryObligation;
+pub use project::ProjectAutomation;
+pub use project::ProjectAutomationCommand;
+pub use project::ProjectIdentityCandidate;
+pub use project::ProjectIdentityCandidates;
+pub use project::ProjectIdentityKind;
+pub use project::ProjectMode;
+pub use project::WorkPurpose;
+
+pub use service::Clock;
+pub use service::EventSubscriptionService;
+pub use service::EventSubscriptionStore;
+pub use service::ServiceError;
+pub use service::StoreError;
+pub use service::SystemClock;
+pub use service::WakeDisposition;
+pub use service::WakeSink;
+pub use types::EventFilter;
+pub use types::EventMetadata;
+pub use types::HeartbeatSpec;
+pub use types::ListSubscriptionsQuery;
+pub use types::NewSubscription;
+pub use types::PendingWakeBatch;
+pub use types::PublishEventOutcome;
+pub use types::PublishedEvent;
+pub use types::SourceCursor;
+pub use types::Subscription;
+pub use types::SubscriptionPage;
+pub use types::TriggerOutcome;
+pub use types::ValidationError;
+pub use types::WakeBatch;
+pub use types::WakeItem;
+pub use types::WakeReason;
+
+pub const MAX_EVENT_TYPES: usize = 32;
+pub const MAX_LABELS: usize = 16;
+pub const MAX_LIST_LIMIT: usize = 100;
+pub const MAX_SUBSCRIPTIONS_PER_THREAD: usize = 128;
+pub const MAX_TOTAL_SUBSCRIPTIONS: usize = 4_096;
+pub const MAX_TRIGGER_SUBSCRIPTIONS: usize = 128;
+
+/// Internal source used for durable retries after a terminal model-capacity error.
+pub const CAPACITY_RETRY_SOURCE: &str = "codex.capacity_retry";
+/// Event type stored with capacity-retry subscriptions for identification.
+pub const CAPACITY_RETRY_EVENT_TYPE: &str = "capacity_retry";

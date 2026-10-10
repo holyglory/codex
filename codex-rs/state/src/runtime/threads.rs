@@ -1176,6 +1176,7 @@ ON CONFLICT(id) DO UPDATE SET
                 .execute(self.logs_pool.as_ref())
                 .await?;
             self.thread_queue.delete_thread_queue(*thread_id).await?;
+            self.event_subscriptions.delete_thread(*thread_id).await?;
             self.delete_versioned_thread_memory(*thread_id).await?;
             self.thread_goals.delete_thread_goal(*thread_id).await?;
         }

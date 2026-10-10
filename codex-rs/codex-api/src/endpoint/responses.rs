@@ -1,3 +1,4 @@
+use crate::api_bridge::is_server_overloaded_transport_error;
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
@@ -26,6 +27,7 @@ use tracing::instrument;
 pub struct ResponsesClient<T: HttpTransport> {
     session: EndpointSession<T>,
     sse_telemetry: Option<Arc<dyn SseTelemetry>>,
+    defer_server_overloaded_retries: bool,
 }
 
 #[derive(Default)]
@@ -43,6 +45,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: EndpointSession::new(transport, provider, auth),
             sse_telemetry: None,
+            defer_server_overloaded_retries: false,
         }
     }
 
@@ -54,7 +57,14 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: self.session.with_request_telemetry(request),
             sse_telemetry: sse,
+            defer_server_overloaded_retries: self.defer_server_overloaded_retries,
         }
+    }
+
+    /// Return capacity-coded 503s to the turn loop's slower retry policy.
+    pub fn defer_server_overload_retries(mut self) -> Self {
+        self.defer_server_overloaded_retries = true;
+        self
     }
 
     #[instrument(
@@ -139,6 +149,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
                 "/responses",
                 extra_headers,
                 Some(body),
+                |err| {
+                    !self.defer_server_overloaded_retries
+                        || !is_server_overloaded_transport_error(err)
+                },
                 |req| {
                     req.headers.insert(
                         http::header::ACCEPT,

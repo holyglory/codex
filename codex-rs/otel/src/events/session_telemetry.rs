@@ -578,7 +578,7 @@ impl SessionTelemetry {
             originator: self.metadata.originator.as_str(),
             service_name: self.metadata.service_name.as_deref(),
             model: self.metadata.model.as_str(),
-            app_version: self.metadata.app_version,
+            app_version: crate::metrics::metrics_app_version(),
         }
         .into_tags()
     }
@@ -1001,6 +1001,19 @@ impl SessionTelemetry {
         let tags = [("kind", kind_str), ("success", success_str)];
         self.counter(WEBSOCKET_EVENT_COUNT_METRIC, /*inc*/ 1, &tags);
         self.record_duration(WEBSOCKET_EVENT_DURATION_METRIC, duration, &tags);
+        if !success {
+            let error = match result {
+                Ok(Some(Err(error))) => {
+                    codex_secrets::redact_network_diagnostic(&error.to_string())
+                }
+                Ok(None) => "stream ended before response.completed".to_string(),
+                Err(_) => "websocket poll failed or timed out".to_string(),
+                Ok(Some(Ok(_))) => "unexpected or failed websocket event".to_string(),
+            };
+            trace_event!(self, event.name = "codex.websocket_error",
+                event.kind = kind_str, duration_ms = %duration.as_millis(), error.message = error,
+            );
+        }
     }
 
     pub fn log_sse_event<E>(
@@ -1043,7 +1056,13 @@ impl SessionTelemetry {
             Ok(Some(Err(error))) => {
                 self.sse_event_failed(/*kind*/ None, duration, error);
             }
-            Ok(None) => {}
+            Ok(None) => {
+                self.sse_event_failed(
+                    /*kind*/ None,
+                    duration,
+                    &"stream ended before response.completed",
+                );
+            }
             Err(_) => {
                 self.sse_event_failed(
                     /*kind*/ None,
@@ -1398,6 +1417,7 @@ impl SessionTelemetry {
                 SessionTelemetry::responses_item_type(item)
             }
             ResponseEvent::Completed { .. } => "completed".into(),
+            ResponseEvent::ProviderUsage(_) => "provider_usage".into(),
             ResponseEvent::OutputTextDelta(_) => "text_delta".into(),
             ResponseEvent::ToolCallInputDelta { .. } => "tool_input_delta".into(),
             ResponseEvent::ReasoningSummaryDelta { .. } => "reasoning_summary_delta".into(),

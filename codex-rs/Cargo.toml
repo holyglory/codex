@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "account-registry",
+    "account-selection",
     "aws-auth",
     "analytics",
     "agent-graph-store",
@@ -60,6 +62,7 @@ members = [
     "exec-server",
     "exec-server/tests/support",
     "execpolicy",
+    "event-subscriptions",
     "ext/agent",
     "ext/agent-message-board",
     "ext/connectors",
@@ -95,6 +98,7 @@ members = [
     "process-hardening",
     "realtime-webrtc",
     "voice-host",
+    "private-storage",
     "protocol",
     "prompts",
     "rollout",
@@ -110,6 +114,7 @@ members = [
     "tui",
     "user-verification",
     "tools",
+    "usage",
     "v8-poc",
     "websocket-auth",
     "websocket-client",
@@ -160,7 +165,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.162.1"
+version = "0.159.1+multi.3"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -172,6 +177,8 @@ license = "Apache-2.0"
 # Internal
 codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
+codex-account-registry = { path = "account-registry" }
+codex-account-selection = { path = "account-selection" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
@@ -208,8 +215,8 @@ codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-agent-extension = { path = "ext/agent" }
-codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-agent-message-board-extension = { path = "ext/agent-message-board" }
+codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
@@ -223,6 +230,7 @@ codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
+codex-event-subscriptions = { path = "event-subscriptions" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-goal-extension = { path = "ext/goal" }
@@ -264,6 +272,7 @@ codex-otel-trace-websocket = { path = "otel-trace-websocket" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
+codex-private-storage = { path = "private-storage" }
 codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
 codex-queue-extension = { path = "ext/queue" }
@@ -286,6 +295,7 @@ codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tcp-tunnel = { path = "tcp-tunnel" }
 codex-tui = { path = "tui" }
+codex-usage = { path = "usage" }
 codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
@@ -483,10 +493,11 @@ symphonia = { version = "0.6.0", default-features = false, features = [
     "wav",
 ] }
 socket2 = "0.6.1"
-# Keep SQLx versions in sync; when bumping, audit the SQLite constructor deny list in clippy.toml.
-sqlx = { version = "=0.9.0", default-features = false, features = [
+# When bumping sqlx, audit the SQLite constructor deny list in clippy.toml.
+sqlx = { version = "0.9.0", default-features = false, features = [
     "chrono",
     "json",
+    "macros",
     "migrate",
     "runtime-tokio",
     "tls-rustls",
@@ -494,9 +505,8 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
     "time",
     "uuid",
 ] }
-# Derives and migration embedding do not need query macros or a host SQLite driver.
+# Workspace crates use these offline macro/driver declarations.
 sqlx-macros = { version = "=0.9.0", default-features = false, features = ["derive", "migrate"] }
-# Preserve the target driver's query-description support without building it on the host.
 sqlx-sqlite = { version = "=0.9.0", default-features = false, features = ["offline"] }
 starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
@@ -643,7 +653,7 @@ opt-level = 0
 [patch.crates-io]
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
-crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "ed1cdab335221515706178d68495bba2aed1924f" }
+crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
 

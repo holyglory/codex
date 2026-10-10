@@ -107,6 +107,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                     transport.execute(req).await
                 }
             },
+            |_| true,
         )
         .await?;
 
@@ -125,6 +126,7 @@ impl<T: HttpTransport> EndpointSession<T> {
         path: &str,
         extra_headers: HeaderMap,
         body: Option<EncodedJsonBody>,
+        retry_if: impl Fn(&TransportError) -> bool,
         configure: C,
     ) -> Result<StreamResponse, ApiError>
     where
@@ -148,6 +150,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                     transport.stream(req).await
                 }
             },
+            retry_if,
         )
         .await?;
 

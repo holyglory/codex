@@ -5,6 +5,10 @@ use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
 use crate::error::parse_flex_unavailable;
+use crate::provider_usage::ProviderResponseStatus;
+use crate::provider_usage::ProviderSourceEventKey;
+use crate::provider_usage::ProviderUsage;
+use crate::provider_usage::ProviderUsageObservation;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::telemetry::SseTelemetry;
@@ -60,6 +64,12 @@ pub fn spawn_response_stream(
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    tracing::info!(target: "codex.network_diagnostics",
+        event = "http_response_headers", transport = "http",
+        request_id = upstream_request_id.as_deref(),
+        http_status = stream_response.status.as_u16(),
+        model = server_model.as_deref(),
+    );
     let safety_buffering_treatment =
         treatment_from_headers(&stream_response.headers).unwrap_or_default();
     if let Some(turn_state) = turn_state.as_ref()
@@ -71,6 +81,8 @@ pub fn spawn_response_stream(
         let _ = turn_state.set(header_value.to_string());
     }
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
+    let parent_span = tracing::Span::current();
+    let diagnostic_request_id = upstream_request_id.clone();
     tokio::spawn(async move {
         if let Some(model) = server_model {
             let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
@@ -92,6 +104,8 @@ pub fn spawn_response_stream(
             idle_timeout,
             telemetry,
             safety_buffering_treatment,
+            parent_span,
+            diagnostic_request_id,
         )
         .await;
     });
@@ -184,6 +198,30 @@ where
 impl ResponsesStreamEvent {
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    pub(crate) fn provider_usage_observation(&self) -> Option<ProviderUsageObservation> {
+        let status = match self.kind() {
+            "response.completed" => ProviderResponseStatus::Completed,
+            "response.failed" => ProviderResponseStatus::Failed,
+            "response.incomplete" => ProviderResponseStatus::Incomplete,
+            _ => return None,
+        };
+        let response = self.response.as_ref()?;
+        let usage = response.get("usage")?;
+        if usage.is_null() {
+            return None;
+        }
+        let source_event_key = response
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(ProviderSourceEventKey::from_provider_response_id);
+
+        Some(ProviderUsageObservation::new(
+            status,
+            source_event_key,
+            ProviderUsage::from_json_value(usage),
+        ))
     }
 
     /// Returns the effective model reported by the server, if present.
@@ -411,6 +449,14 @@ pub fn process_responses_event(
             }
         }
         "response.failed" => {
+            if let Some(response) = event.response.as_ref()
+                && let Some(error) = response.get("error")
+            {
+                tracing::warn!(target: "codex.network_diagnostics", event = "provider_stream_error",
+                    error_code = error.get("code").and_then(serde_json::Value::as_str).and_then(crate::diagnostics::error_code),
+                    response_id = response.get("id").and_then(serde_json::Value::as_str),
+                );
+            }
             return Err(ResponsesEventError::Api(parse_failed_response(
                 event.response,
             )));
@@ -517,16 +563,22 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
+        tracing::Span::current(),
+        /*request_id*/ None,
     )
     .await;
 }
 
+#[tracing::instrument(name = "responses_sse.stream", skip_all, parent = &parent_span,
+    fields(transport = "http", request_id = request_id.as_deref()))]
 async fn process_sse_with_treatment(
     stream: ByteStream,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
+    parent_span: tracing::Span,
+    request_id: Option<String>,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
@@ -545,6 +597,12 @@ async fn process_sse_with_treatment(
         let sse = match response {
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
+                let kind = match &e {
+                    eventsource_stream::EventStreamError::Utf8(_) => "invalid_utf8",
+                    eventsource_stream::EventStreamError::Parser(_) => "invalid_event_stream",
+                    eventsource_stream::EventStreamError::Transport(_) => "transport_read_error",
+                };
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind);
                 debug!("SSE Error: {e:#}");
                 let error = match e {
                     eventsource_stream::EventStreamError::Transport(
@@ -556,6 +614,9 @@ async fn process_sse_with_treatment(
                 return;
             }
             Ok(None) => {
+                if response_error.is_none() {
+                    tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "closed_before_completion");
+                }
                 let error = response_error.unwrap_or(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
@@ -563,6 +624,7 @@ async fn process_sse_with_treatment(
                 return;
             }
             Err(_) => {
+                tracing::warn!(target: "codex.network_diagnostics", event = "http_stream_failed", kind = "idle_timeout");
                 let _ = tx_event
                     .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
                     .await;
@@ -588,6 +650,7 @@ async fn process_sse_with_treatment(
         let model_verifications = event.model_verifications();
         let turn_moderation_metadata = event.turn_moderation_metadata();
         let safety_buffering = event.safety_buffering(&safety_buffering_treatment);
+        let provider_usage = event.provider_usage_observation();
 
         if let Some(model) = event.response_model()
             && last_server_model.as_deref() != Some(model.as_str())
@@ -620,6 +683,14 @@ async fn process_sse_with_treatment(
         if let Some(buffering) = safety_buffering
             && tx_event
                 .send(Ok(ResponseEvent::SafetyBuffering(buffering)))
+                .await
+                .is_err()
+        {
+            return;
+        }
+        if let Some(provider_usage) = provider_usage
+            && tx_event
+                .send(Ok(ResponseEvent::ProviderUsage(provider_usage)))
                 .await
                 .is_err()
         {
@@ -725,7 +796,10 @@ mod tests {
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {
-            out.push(ev.expect("channel closed"));
+            let event = ev.expect("channel closed");
+            if !matches!(event, ResponseEvent::ProviderUsage(_)) {
+                out.push(event);
+            }
         }
         out
     }
@@ -1086,15 +1160,18 @@ mod tests {
             let events = collect_events(&[sse.as_bytes()]).await;
             match (code, events.as_slice()) {
                 (
-                    "rate_limit_exceeded" | "slow_down",
+                    "rate_limit_exceeded",
                     [
                         Err(ApiError::RateLimitExceeded {
                             message: actual,
                             retry_after,
                         }),
                     ],
-                )
-                | (
+                ) => assert_eq!((actual.as_str(), *retry_after), (message, None)),
+                ("slow_down", [Err(ApiError::ServerOverloaded { retry_after })]) => {
+                    assert_eq!(*retry_after, None);
+                }
+                (
                     "unknown_error",
                     [
                         Err(ApiError::Retryable {
@@ -1102,9 +1179,7 @@ mod tests {
                             retry_after,
                         }),
                     ],
-                ) => {
-                    assert_eq!((actual.as_str(), *retry_after), (message, None));
-                }
+                ) => assert_eq!((actual.as_str(), *retry_after), (message, None)),
                 _ => panic!("unexpected events for {code}: {events:?}"),
             }
         }
@@ -2033,3 +2108,7 @@ mod tests {
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";
 }
+
+#[cfg(test)]
+#[path = "responses_usage_tests.rs"]
+mod usage_tests;

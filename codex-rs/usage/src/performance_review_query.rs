@@ -1,0 +1,315 @@
+use super::LONG_LIVED_DECLARATION_THRESHOLD_MS;
+use super::PerformanceReviewQuery;
+use sqlx::QueryBuilder;
+use sqlx::Sqlite;
+
+#[derive(Clone, Copy)]
+pub(crate) enum ClassificationSource {
+    Cache,
+    Canonical,
+}
+
+pub(crate) struct Selection {
+    pub classification: ClassificationSource,
+    pub operation_ids: Option<Vec<String>>,
+    pub scope_materialized: bool,
+    pub materialized: bool,
+}
+
+pub(crate) async fn long_lived_declaration_count(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+    now_ms: i64,
+) -> Result<u64, crate::UsageStoreError> {
+    let cutoff_ms = now_ms.saturating_sub(LONG_LIVED_DECLARATION_THRESHOLD_MS);
+    let count = if query.thread_id.is_none()
+        && query.repository_id.is_none()
+        && source.operation_ids.is_none()
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM activity_declarations
+             WHERE active_phase IS NOT NULL AND active_activity IS NOT NULL
+               AND updated_at_ms <= ?",
+        )
+        .bind(cutoff_ms)
+        .fetch_one(connection)
+        .await
+        .map_err(crate::UsageStoreError::Database)?
+    } else {
+        let mut builder = selection(query, source);
+        builder.push(
+            " SELECT COUNT(*) FROM activity_declarations declaration
+              WHERE declaration.active_phase IS NOT NULL
+                AND declaration.active_activity IS NOT NULL
+                AND declaration.updated_at_ms <= ",
+        );
+        builder.push_bind(cutoff_ms);
+        builder.push(
+            " AND EXISTS (SELECT 1 FROM scoped operation
+                         WHERE operation.thread_id = declaration.thread_id)",
+        );
+        builder
+            .build_query_scalar::<i64>()
+            .fetch_one(connection)
+            .await
+            .map_err(crate::UsageStoreError::Database)?
+    };
+    count
+        .try_into()
+        .map_err(|_| crate::UsageStoreError::DatabaseValueOutOfRange)
+}
+
+// Freeze the relevant operation identities once per read transaction. This avoids
+// repeatedly joining years of history while preserving late token/coverage facts.
+pub(crate) async fn window_operation_ids(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+) -> Result<Option<Vec<String>>, crate::UsageStoreError> {
+    if query.time_range.is_none() {
+        return Ok(None);
+    }
+    // Put bounds first so SQLite can seek time indexes before reading collector rows.
+    let mut builder = selection(query, source);
+    builder.push(", candidates(id) AS (");
+    builder.push(match source.classification {
+        // Apply the requested scope before walking historical interval indexes;
+        // otherwise every repository report scans the entire collector first.
+        ClassificationSource::Cache => "SELECT operation.id FROM bounds CROSS JOIN scoped operation WHERE operation.started_at_ms >= lower_ms AND operation.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms > lower_ms AND cached.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms IS NULL AND cached.started_at_ms < upper_ms",
+        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
+    });
+    builder.push(
+        " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
+        FROM bounds CROSS JOIN token_observations token
+        LEFT JOIN model_requests request ON request.id = token.model_request_id
+        LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
+        LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
+        JOIN scoped operation ON operation.id = COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
+        WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
+          AND token.category_path NOT GLOB 'attribution.items.*'
+        UNION SELECT coverage.operation_id FROM bounds CROSS JOIN coverage_events coverage
+          JOIN scoped operation ON operation.id = coverage.operation_id
+          WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms)
+        SELECT id FROM candidates ORDER BY id LIMIT 200001",
+    );
+    let ids = builder
+        .build_query_scalar::<String>()
+        .fetch_all(connection)
+        .await
+        .map_err(crate::UsageStoreError::Database)?;
+    if ids.len() > 200_000 {
+        return Err(crate::UsageStoreError::TaskTreeTooLarge);
+    }
+    Ok(Some(ids))
+}
+
+pub(crate) fn selection(
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+) -> QueryBuilder<Sqlite> {
+    selection_with_prefix(query, source, "")
+}
+
+fn selection_with_prefix(
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+    prefix: &'static str,
+) -> QueryBuilder<Sqlite> {
+    if source.materialized {
+        let mut builder = QueryBuilder::new(prefix);
+        builder.push("WITH scoped AS NOT MATERIALIZED (SELECT * FROM temp._review_scoped), selected AS NOT MATERIALIZED (SELECT * FROM temp._review_selected), effective AS NOT MATERIALIZED (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
+            .push_bind(query.time_range.map_or(i64::MIN, crate::UtcTimeRange::start_ms))
+            .push(" AS lower_ms, ")
+            .push_bind(query.time_range.map_or(i64::MAX, crate::UtcTimeRange::end_ms))
+            .push(" AS upper_ms)");
+        return builder;
+    }
+    let mut builder = QueryBuilder::new(prefix);
+    builder.push("WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ");
+    builder.push_bind(query.thread_id.as_ref().map(crate::ThreadId::as_str));
+    builder.push(" UNION SELECT child.id FROM threads child JOIN review_threads parent ON child.parent_thread_id = parent.id WHERE ")
+        .push_bind(query.include_descendants).push("), repository_family(id) AS (SELECT ")
+        .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
+        .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
+            JOIN repository_family family ON merge.target_repository_id = family.id),
+            scoped AS MATERIALIZED (SELECT operation.* FROM ");
+    builder.push(if source.scope_materialized {
+        "temp._review_scoped"
+    } else {
+        "operations"
+    });
+    builder.push(" operation WHERE 1=1");
+    if let Some(ids) = &source.operation_ids {
+        builder
+            .push(" AND operation.id IN (SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(ids))
+            .push("))");
+    }
+    if query.thread_id.is_some() {
+        builder.push(" AND operation.thread_id IN (SELECT id FROM review_threads)");
+    }
+    if query.repository_id.is_some() {
+        builder.push(" AND operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution
+            WHERE attribution.repository_id IN (SELECT id FROM repository_family))");
+    }
+    builder.push("), bounds AS (SELECT ")
+        .push_bind(query.time_range.map_or(i64::MIN, super::super::report_math::UtcTimeRange::start_ms))
+        .push(" AS lower_ms, ")
+        .push_bind(query.time_range.map_or(i64::MAX, super::super::report_math::UtcTimeRange::end_ms))
+        .push(" AS upper_ms), selected AS (SELECT operation.*, terminal.occurred_at_ms ended_at_ms, terminal.event_kind terminal_status,
+            COALESCE(effective.phase, operation.phase) effective_phase,
+            COALESCE(effective.activity, operation.activity) effective_activity,
+            COALESCE(effective.activity_state, operation.activity_state) effective_state,");
+    builder.push(match source.classification {
+        ClassificationSource::Cache => {
+            "COALESCE(effective.attribution_provenance, operation.attribution_provenance)"
+        }
+        ClassificationSource::Canonical => {
+            "COALESCE(effective.provenance, operation.attribution_provenance)"
+        }
+    });
+    builder.push(" effective_provenance, tool.execution_role, tool.execution_group_id,
+            CASE WHEN terminal.occurred_at_ms IS NOT NULL AND terminal.duration_ns IS NOT NULL THEN
+              MAX(0, MIN(terminal.occurred_at_ms, upper_ms) - MAX(operation.started_at_ms, lower_ms)) END interval_ms
+            FROM scoped operation CROSS JOIN bounds
+            LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1
+            LEFT JOIN tool_invocations tool ON tool.operation_id = operation.id ");
+    builder.push(match source.classification {
+        ClassificationSource::Cache => "LEFT JOIN _usage_report_operations effective ON effective.operation_id = operation.id ",
+        ClassificationSource::Canonical => "LEFT JOIN effective_classification_events effective ON effective.operation_id = operation.id ",
+    });
+    builder.push("WHERE operation.started_at_ms < upper_ms AND
+        (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR
+         (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))),
+        effective AS (SELECT selected.* FROM selected WHERE NOT (
+          COALESCE(execution_role, 'standalone') = 'wrapper' AND execution_group_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM selected nested WHERE nested.execution_group_id = selected.execution_group_id
+            AND nested.execution_role = 'nested')))");
+    builder
+}
+
+// Resolve each token's effective owner from the scoped operations so the owner indexes
+// bound the read. Covered tool observations still deduplicate with their model request.
+pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
+    SELECT token.*, owner.id AS operation_id FROM scoped owner
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN token_observations token ON token.model_request_id = request.id
+    UNION ALL
+    SELECT token.*, owner.id AS operation_id FROM scoped owner
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
+    UNION ALL
+    SELECT token.*, owner.id AS operation_id FROM scoped owner
+    CROSS JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
+), token_facts AS (
+    SELECT token.operation_id,
+           token.source_event_id, token.category_path, token.measurement_provenance,
+           MAX(token.token_count) token_count, COUNT(*) raw_count,
+           MAX(token.token_count IS NULL) unknown_count,
+           MAX(token.coverage_state <> 'complete') incomplete,
+           (MIN(token.token_count) <> MAX(token.token_count) OR
+            (COUNT(token.token_count) > 0 AND COUNT(token.token_count) < COUNT(*))) conflict
+    FROM owned_tokens token
+    CROSS JOIN bounds
+    WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
+      AND token.category_path NOT GLOB 'attribution.items.*'
+    GROUP BY token.operation_id, token.source_event_id, token.category_path, token.measurement_provenance
+)";
+
+pub(super) const OPERATION_COVERAGE: &str = "SELECT
+    (SELECT COUNT(*) FROM selected) raw_operations,
+    COUNT(*) deduplicated_operations,
+    COALESCE(SUM(interval_ms IS NULL), 0) unknown_operation_intervals,
+    COALESCE(SUM(effective_provenance = 'unknown'), 0) unclassified_operations,
+    COALESCE(SUM(NOT EXISTS (SELECT 1 FROM repository_attributions attribution
+      WHERE attribution.operation_id = effective.id AND attribution.repository_id IS NOT NULL)), 0) operations_without_repository,
+    COALESCE(SUM(execution_role IN ('wrapper', 'nested') AND execution_group_id IS NULL), 0) unlinked_tool_operations,
+    COALESCE(SUM(operation_kind = 'model_request' AND NOT EXISTS (
+      SELECT 1 FROM token_facts token WHERE token.operation_id = effective.id
+        AND token.category_path = 'total_tokens' AND token.measurement_provenance = 'provider_reported'
+        AND token.token_count IS NOT NULL AND COALESCE(token.conflict, 0) = 0)), 0) model_requests_without_provider_total,
+    COALESCE(SUM(retry_of_operation_id IS NOT NULL), 0) retry_operations,
+    COALESCE(SUM(rework_of_operation_id IS NOT NULL), 0) rework_operations,
+    COALESCE(SUM(retry_of_operation_id IS NOT NULL OR rework_of_operation_id IS NOT NULL), 0) linked_operations,
+    (SELECT COALESCE(SUM(raw_count), 0) FROM token_facts) raw_token_observations,
+    (SELECT COUNT(*) FROM token_facts) deduplicated_token_observations,
+    (SELECT COALESCE(SUM(unknown_count), 0) FROM token_facts) unknown_token_observations,
+    (SELECT COALESCE(SUM(incomplete), 0) FROM token_facts) incomplete_token_observations,
+    (SELECT COALESCE(SUM(conflict), 0) FROM token_facts) conflicting_token_observations,
+    (SELECT COUNT(*) FROM coverage_events coverage CROSS JOIN bounds WHERE coverage.operation_id IS NULL
+      AND coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms) unattributed_coverage_events_in_window
+    FROM effective";
+
+pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
+    SELECT effective_state category, interval_ms FROM effective
+      WHERE effective_state IN ('user_wait', 'external_wait', 'blocked_wait')
+    UNION ALL
+    SELECT span.activity_state, CASE WHEN ended.occurred_at_ms IS NOT NULL THEN
+      MAX(0, MIN(ended.occurred_at_ms, upper_ms) - MAX(span.started_at_ms, lower_ms)) END
+    FROM effective CROSS JOIN activity_spans span ON span.operation_id = effective.id CROSS JOIN bounds
+    LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
+    WHERE effective.effective_state NOT IN ('user_wait', 'external_wait', 'blocked_wait')
+      AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
+) SELECT category, COUNT(*) count, COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms,
+    SUM(interval_ms IS NULL) unknown_intervals FROM waits GROUP BY category ORDER BY category";
+
+pub(crate) fn token_facts(source: &Selection) -> &'static str {
+    if source.materialized {
+        ", token_facts AS NOT MATERIALIZED (SELECT * FROM temp._review_tokens)"
+    } else {
+        TOKEN_FACTS
+    }
+}
+
+pub(crate) async fn materialize(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &mut Selection,
+) -> Result<(), crate::UsageStoreError> {
+    use crate::UsageStoreError;
+    tracing::debug!(stage = "materialize_scoped", "usage report progress");
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_scoped AS ");
+    builder
+        .push(" SELECT * FROM scoped")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE UNIQUE INDEX temp._review_scoped_id ON _review_scoped(id)")
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_selected", "usage report progress");
+    source.scope_materialized = true;
+    let mut builder =
+        selection_with_prefix(query, source, "CREATE TEMP TABLE _review_selected AS ");
+    builder
+        .push(" SELECT * FROM selected")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::raw_sql("CREATE INDEX temp._review_selected_group ON _review_selected(execution_group_id, execution_role);
+        CREATE TEMP TABLE _review_effective AS SELECT selected.* FROM _review_selected selected
+        WHERE NOT (COALESCE(execution_role, 'standalone') = 'wrapper' AND execution_group_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM _review_selected nested WHERE nested.execution_group_id = selected.execution_group_id AND nested.execution_role = 'nested'));
+        CREATE UNIQUE INDEX temp._review_effective_id ON _review_effective(id);")
+        .execute(&mut *connection).await.map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_tokens", "usage report progress");
+    source.materialized = true;
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_tokens AS ");
+    builder
+        .push(TOKEN_FACTS)
+        .push(" SELECT * FROM token_facts")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE INDEX temp._review_tokens_owner ON _review_tokens(operation_id,category_path,measurement_provenance)").execute(connection).await.map_err(UsageStoreError::Database)?;
+    Ok(())
+}

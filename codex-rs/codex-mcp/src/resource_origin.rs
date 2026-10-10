@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use anyhow::Context;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
+use codex_login::AuthManagerLease;
 use codex_protocol::ThreadId;
 use codex_protocol::items::McpToolCallStatus;
 use codex_protocol::items::TurnItem;
@@ -13,6 +14,7 @@ use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::protocol::EventMsg;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
+use std::sync::Arc;
 
 use crate::CODEX_APPS_MCP_SERVER_NAME;
 use crate::McpBinding;
@@ -23,6 +25,7 @@ const MAX_ORIGIN_BYTES: usize = 1024;
 #[derive(Default)]
 pub(crate) struct ResourceOrigins {
     origins: VecDeque<ResourceOrigin>,
+    authorities: VecDeque<ResourceOriginAuthority>,
     turns: VecDeque<String>,
     current_turn_id: Option<String>,
 }
@@ -31,11 +34,19 @@ pub(crate) struct ResourceOrigins {
 pub(crate) struct ResourceOrigin {
     call_id: String,
     turn_id: Option<String>,
+    account_id: Option<String>,
     tool: String,
     connector_id: String,
     link_id: Option<String>,
     uri: String,
     ambiguous_account: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ResourceOriginAuthority {
+    call_id: String,
+    binding: Arc<McpBinding>,
+    auth_lease: AuthManagerLease,
 }
 
 impl ResourceOrigins {
@@ -47,6 +58,7 @@ impl ResourceOrigins {
                 .map(|origin| McpResourceOrigin {
                     call_id: origin.call_id.clone(),
                     turn_id: origin.turn_id.clone(),
+                    account_id: origin.account_id.clone(),
                     tool: origin.tool.clone(),
                     connector_id: origin.connector_id.clone(),
                     link_id: origin.link_id.clone(),
@@ -81,6 +93,7 @@ impl ResourceOrigins {
             .map(|origin| ResourceOrigin {
                 call_id: origin.call_id.clone(),
                 turn_id: origin.turn_id.clone(),
+                account_id: origin.account_id.clone(),
                 tool: origin.tool.clone(),
                 connector_id: origin.connector_id.clone(),
                 link_id: origin.link_id.clone(),
@@ -97,6 +110,7 @@ impl ResourceOrigins {
 
         *self = Self {
             origins,
+            authorities: VecDeque::new(),
             turns: checkpoint.turns.iter().cloned().collect(),
             current_turn_id: checkpoint.current_turn_id.clone(),
         };
@@ -162,6 +176,11 @@ impl ResourceOrigins {
                         origin.turn_id.is_some()
                             && origin.turn_id.as_deref() != Some(turn_id.as_str())
                     });
+                    self.authorities.retain(|authority| {
+                        self.origins
+                            .iter()
+                            .any(|origin| origin.call_id == authority.call_id)
+                    });
                 }
                 self.current_turn_id = self.turns.back().cloned();
             }
@@ -176,6 +195,55 @@ impl ResourceOrigins {
             .find(|origin| origin.call_id == call_id)
             .cloned()
             .context("originating MCP tool call was not found or did not complete successfully")
+    }
+
+    pub(crate) fn account_id(&self, call_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.find(call_id)?.account_id)
+    }
+
+    pub(crate) fn bound_authority(
+        &self,
+        call_id: &str,
+    ) -> anyhow::Result<Option<(ResourceOrigin, Arc<McpBinding>, AuthManagerLease)>> {
+        let origin = self.find(call_id)?;
+        Ok(self
+            .authorities
+            .iter()
+            .rev()
+            .find(|authority| authority.call_id == call_id)
+            .map(|authority| {
+                (
+                    origin,
+                    Arc::clone(&authority.binding),
+                    authority.auth_lease.clone(),
+                )
+            }))
+    }
+
+    pub(crate) fn bind_call(
+        &mut self,
+        call_id: &str,
+        binding: Arc<McpBinding>,
+        auth_lease: AuthManagerLease,
+    ) {
+        if call_id.len() > MAX_ORIGIN_BYTES {
+            return;
+        }
+        if let Some(index) = self
+            .authorities
+            .iter()
+            .position(|authority| authority.call_id == call_id)
+        {
+            self.authorities.remove(index);
+        }
+        if self.authorities.len() >= MAX_ORIGINS {
+            self.authorities.pop_front();
+        }
+        self.authorities.push_back(ResourceOriginAuthority {
+            call_id: call_id.to_owned(),
+            binding,
+            auth_lease,
+        });
     }
 
     #[expect(
@@ -211,6 +279,13 @@ impl ResourceOrigins {
         let origin = ResourceOrigin {
             call_id: call_id.to_owned(),
             turn_id: turn_id.map(str::to_owned),
+            account_id: self
+                .authorities
+                .iter()
+                .rev()
+                .find(|authority| authority.call_id == call_id)
+                .and_then(|authority| authority.auth_lease.account_id())
+                .map(ToString::to_string),
             tool: tool.to_owned(),
             connector_id: connector_id.to_owned(),
             link_id: link_id.map(str::to_owned),
@@ -239,6 +314,7 @@ impl ResourceOrigin {
     fn byte_len(&self) -> usize {
         self.call_id.len()
             + self.turn_id.as_ref().map_or(0, String::len)
+            + self.account_id.as_ref().map_or(0, String::len)
             + self.tool.len()
             + self.connector_id.len()
             + self.link_id.as_ref().map_or(0, String::len)
@@ -314,3 +390,7 @@ impl ResourceOrigin {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "resource_origin_tests.rs"]
+mod tests;

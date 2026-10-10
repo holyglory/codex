@@ -28,10 +28,12 @@ use std::time::Duration;
 
 use crate::auth::AuthDotJson;
 use crate::auth::AuthKeyringBackendKind;
+use crate::auth::ProfileAuthStorage;
 use crate::auth::save_auth;
 use crate::callback_params::LIFE_SCIENCES_OAUTH_STATE_SUFFIX;
 use crate::callback_params::LoginCallbackResult;
 use crate::callback_params::LoginOnboardingEntrypoint;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use crate::default_client::originator;
 use crate::oauth::AuthorizationCodeGrant;
 use crate::oauth::AuthorizationRequest;
@@ -61,7 +63,6 @@ use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::auth::AuthMode;
 use codex_utils_template::Template;
 use serde_json::Value as JsonValue;
@@ -97,6 +98,7 @@ pub struct ServerOptions {
     pub login_success_page: LoginSuccessPage,
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
     pub auth_keyring_backend_kind: AuthKeyringBackendKind,
+    pub profile_auth_storage: Option<ProfileAuthStorage>,
     pub auth_route_config: AuthRouteConfig,
 }
 
@@ -122,8 +124,16 @@ impl ServerOptions {
             login_success_page: LoginSuccessPage::default(),
             cli_auth_credentials_store_mode,
             auth_keyring_backend_kind,
+            profile_auth_storage: None,
             auth_route_config,
         }
+    }
+
+    /// Directs successful authorization into a profile's versioned credential namespace instead
+    /// of legacy singular storage.
+    pub fn with_profile_auth_storage(mut self, storage: ProfileAuthStorage) -> Self {
+        self.profile_auth_storage = Some(storage);
+        self
     }
 }
 
@@ -401,7 +411,13 @@ async fn process_request(
                     );
                     return login_error_response(
                         &message,
-                        io::ErrorKind::PermissionDenied,
+                        if error_code == "access_denied"
+                            && !is_missing_codex_entitlement_error(error_code, error_description)
+                        {
+                            io::ErrorKind::Interrupted
+                        } else {
+                            io::ErrorKind::PermissionDenied
+                        },
                         Some(error_code),
                         error_description,
                     );
@@ -447,11 +463,14 @@ async fn process_request(
                     if let Err(err) = persist_tokens_async(
                         &opts.codex_home,
                         api_key.clone(),
-                        tokens.id_token.clone(),
-                        tokens.access_token.clone(),
-                        tokens.refresh_token.clone(),
+                        ExchangedTokens {
+                            id_token: tokens.id_token.clone(),
+                            access_token: tokens.access_token.clone(),
+                            refresh_token: tokens.refresh_token.clone(),
+                        },
                         opts.cli_auth_credentials_store_mode,
                         opts.auth_keyring_backend_kind,
+                        opts.profile_auth_storage.clone(),
                     )
                     .await
                     {
@@ -833,54 +852,53 @@ async fn send_code_exchange_request(
 pub(crate) async fn persist_tokens_async(
     codex_home: &Path,
     api_key: Option<String>,
-    id_token: String,
-    access_token: String,
-    refresh_token: String,
+    tokens: ExchangedTokens,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    profile_auth_storage: Option<ProfileAuthStorage>,
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
-    // Blocking tasks don't inherit task-local context.
-    // Preserve the initiating client for credential-storage metrics.
-    let originator = AuthStorageOriginator::current();
-
-    let persist_task = tokio::task::spawn_blocking(move || {
-        originator.sync_scope(|| {
-            let mut tokens = TokenData {
-                id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
-                access_token,
-                refresh_token,
-                account_id: None,
-            };
-            if let Some(acc) = jwt_auth_claims(&id_token)
-                .get("chatgpt_account_id")
-                .and_then(|v| v.as_str())
-            {
-                tokens.account_id = Some(acc.to_string());
-            }
-            let auth = AuthDotJson {
-                auth_mode: Some(AuthMode::Chatgpt),
-                openai_api_key: api_key,
-                tokens: Some(tokens),
-                last_refresh: Some(Utc::now()),
-                agent_identity: None,
-                personal_access_token: None,
-                bedrock_api_key: None,
-                bedrock_access_keys: None,
-            };
-            save_auth(
+    tokio::task::spawn_blocking(move || {
+        let ExchangedTokens {
+            id_token,
+            access_token,
+            refresh_token,
+        } = tokens;
+        let mut tokens = TokenData {
+            id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
+            access_token,
+            refresh_token,
+            account_id: None,
+        };
+        if let Some(acc) = jwt_auth_claims(&id_token)
+            .get("chatgpt_account_id")
+            .and_then(|v| v.as_str())
+        {
+            tokens.account_id = Some(acc.to_string());
+        }
+        let auth = AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: api_key,
+            tokens: Some(tokens),
+            last_refresh: Some(Utc::now()),
+            agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
+            bedrock_access_keys: None,
+        };
+        match profile_auth_storage {
+            Some(profile) => profile.save(&auth),
+            None => save_auth(
                 &codex_home,
                 &auth,
                 auth_credentials_store_mode,
                 keyring_backend_kind,
-            )
-        })
-    });
-
-    persist_task
-        .await
-        .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?
+            ),
+        }
+    })
+    .await
+    .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?
 }
 
 /// Validates the ID token against an optional workspace restriction.
@@ -914,10 +932,7 @@ pub(crate) fn ensure_workspace_account_allowed(
     if expected.iter().any(|workspace_id| workspace_id == actual) {
         Ok(())
     } else {
-        Err(format!(
-            "Login is restricted to workspace id(s) {}.",
-            expected.join(", ")
-        ))
+        Err("Login credentials do not satisfy the configured workspace restriction.".to_string())
     }
 }
 

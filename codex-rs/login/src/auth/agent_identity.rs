@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -114,12 +115,20 @@ impl RetryableAgentIdentityRegistrationError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AgentIdentityAuth {
     record: Arc<AgentIdentityAuthRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for AgentIdentityAuth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentIdentityAuth")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct ManagedChatGptAgentIdentityBinding {
     pub(super) account_id: String,
     pub(super) chatgpt_user_id: String,
@@ -127,6 +136,23 @@ pub(super) struct ManagedChatGptAgentIdentityBinding {
     pub(super) plan_type: AccountPlanType,
     pub(super) chatgpt_account_is_fedramp: bool,
     pub(super) access_token: String,
+}
+
+impl fmt::Debug for ManagedChatGptAgentIdentityBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedChatGptAgentIdentityBinding")
+            .field("account_id", &"<redacted>")
+            .field("chatgpt_user_id", &"<redacted>")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("plan_type", &self.plan_type)
+            .field(
+                "chatgpt_account_is_fedramp",
+                &self.chatgpt_account_is_fedramp,
+            )
+            .field("access_token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl AgentIdentityAuth {

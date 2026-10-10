@@ -88,6 +88,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             message,
             misalignment,
         }),
+        ApiError::Transport(ref transport) if is_server_overloaded_transport_error(transport) => {
+            CodexErr::ServerOverloaded
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -97,25 +100,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 ..
             } => {
                 let body_text = body.unwrap_or_default();
-
-                if status == http::StatusCode::SERVICE_UNAVAILABLE
-                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
-                    && let Some(error) = value.get("error")
-                {
-                    match error.get("code").and_then(Value::as_str) {
-                        Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
-                        Some("slow_down") => {
-                            return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
-                                error
-                                    .get("message")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
 
                 if (status == http::StatusCode::BAD_REQUEST
                     || status == http::StatusCode::FORBIDDEN)
@@ -259,11 +243,11 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 request_id: None,
             }),
             TransportError::Timeout => CodexErr::RequestTimeout,
-            TransportError::Policy(denied) => CodexErr::Fatal(denied.to_string()),
             TransportError::Connection(source) => {
                 CodexErr::ConnectionFailed(ConnectionFailedError { source })
             }
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
+            TransportError::Policy(error) => CodexErr::Stream(error.to_string()),
             error @ TransportError::ResponseTooLarge { .. } => {
                 CodexErr::InvalidRequest(error.to_string())
             }
@@ -272,17 +256,39 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
     }
 }
 
+pub(crate) fn is_server_overloaded_transport_error(err: &TransportError) -> bool {
+    let TransportError::Http {
+        status,
+        body: Some(body),
+        ..
+    } = err
+    else {
+        return false;
+    };
+    *status == http::StatusCode::SERVICE_UNAVAILABLE
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value
+                        .pointer("/error/code")
+                        .and_then(serde_json::Value::as_str),
+                    Some("server_is_overloaded" | "slow_down")
+                )
+            })
+}
+
 const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";
 const CF_RAY_HEADER: &str = "cf-ray";
 const X_OPENAI_AUTHORIZATION_ERROR_HEADER: &str = "x-openai-authorization-error";
 const X_ERROR_JSON_HEADER: &str = "x-error-json";
-const INVALID_PROMPT_ERROR_CODE: &str = "invalid_prompt";
-const INVALID_PROMPT_FALLBACK_MESSAGE: &str = "Invalid request.";
 const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
 const CYBER_POLICY_FALLBACK_MESSAGE: &str =
     "This request has been flagged for possible cybersecurity risk.";
+const INVALID_PROMPT_ERROR_CODE: &str = "invalid_prompt";
+const INVALID_PROMPT_FALLBACK_MESSAGE: &str = "Invalid request.";
 const BIO_POLICY_ERROR_CODE: &str = "bio_policy";
 const BIO_POLICY_FALLBACK_MESSAGE: &str = "This content was flagged for possible biological risk.";
 const MISALIGNMENT_POLICY_VIOLATION_ERROR_CODE: &str = "misalignment_policy_violation";

@@ -17,7 +17,9 @@ use sqlx::ConnectOptions;
 use sqlx::Error;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
+use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
 use std::path::Path;
@@ -164,6 +166,35 @@ impl PartialEq for SqliteConfig {
 }
 
 impl Eq for SqliteConfig {}
+
+/// Reviewed SQLite connection policies shared by Codex-owned databases.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlitePoolProfile {
+    Runtime,
+    DurableEvents,
+}
+
+/// Open a Codex-owned SQLite pool through the centralized constructor policy.
+pub async fn open_sqlite_pool(path: &Path, profile: SqlitePoolProfile) -> Result<SqlitePool, Error> {
+    let mut options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .log_statements(LevelFilter::Off);
+    options = match profile {
+        SqlitePoolProfile::Runtime => options
+            .synchronous(SqliteSynchronous::Normal)
+            .auto_vacuum(SqliteAutoVacuum::Incremental),
+        SqlitePoolProfile::DurableEvents => options
+            .synchronous(SqliteSynchronous::Full)
+            .foreign_keys(true),
+    };
+    SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+}
 
 impl SqliteConfig {
     pub fn from_sqlite_home(sqlite_home: AbsolutePathBuf) -> Self {

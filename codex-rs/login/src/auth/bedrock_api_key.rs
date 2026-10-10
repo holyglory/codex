@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::manager::save_auth;
+use super::profile::ProfileAuthStorage;
 use super::storage::AuthDotJson;
 use super::storage::AuthKeyringBackendKind;
 use codex_protocol::auth::AuthMode;
@@ -18,8 +19,9 @@ pub struct BedrockApiKeyAuth {
 }
 
 impl fmt::Debug for BedrockApiKeyAuth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BedrockApiKeyAuth")
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BedrockApiKeyAuth")
             .field("api_key", &"<redacted>")
             .field("region", &self.region)
             .finish()
@@ -34,7 +36,25 @@ pub fn login_with_bedrock_api_key(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let auth_dot_json = AuthDotJson {
+    let auth_dot_json = bedrock_auth(api_key, region);
+    save_auth(
+        codex_home,
+        &auth_dot_json,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+pub fn login_with_bedrock_api_key_to_profile(
+    profile: &ProfileAuthStorage,
+    api_key: &str,
+    region: &str,
+) -> std::io::Result<()> {
+    profile.save(&bedrock_auth(api_key, region))
+}
+
+fn bedrock_auth(api_key: &str, region: &str) -> AuthDotJson {
+    AuthDotJson {
         auth_mode: Some(AuthMode::BedrockApiKey),
         openai_api_key: None,
         tokens: None,
@@ -46,13 +66,7 @@ pub fn login_with_bedrock_api_key(
             region: region.to_string(),
         }),
         bedrock_access_keys: None,
-    };
-    save_auth(
-        codex_home,
-        &auth_dot_json,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    )
+    }
 }
 
 #[cfg(test)]

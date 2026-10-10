@@ -1,0 +1,967 @@
+use super::*;
+use codex_event_subscriptions::EventSubscriptionStore;
+use codex_event_subscriptions::ProjectIdentityCandidate;
+use codex_event_subscriptions::ProjectIdentityCandidates;
+use codex_event_subscriptions::ProjectIdentityKind;
+use codex_event_subscriptions::ProjectMode;
+use codex_event_subscriptions::WorkPurpose;
+use pretty_assertions::assert_eq;
+
+async fn store() -> (SqliteEventSubscriptionStore, tempfile::TempDir) {
+    let directory = tempfile::tempdir().unwrap();
+    let pool = crate::sqlite::open_sqlite_pool(
+        &directory.path().join("queue.sqlite"),
+        crate::sqlite::SqlitePoolProfile::Runtime,
+    )
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0003_event_subscriptions.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0004_project_automation.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0005_wake_permissions.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0006_project_identity_aliases.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../queue_migrations/0007_generic_alarms.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    (
+        SqliteEventSubscriptionStore::new(std::sync::Arc::new(pool)),
+        directory,
+    )
+}
+
+#[tokio::test]
+async fn project_identity_resolution_renames_foreign_key_children() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let provisional = store
+        .project_command(
+            "project-workspace",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    let worker = ThreadId::new();
+    let job_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO project_review_workers
+         (project_id, job_id, worker_thread_id, claimed_at_ms)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind("project-workspace")
+    .bind(job_id.to_string())
+    .bind(worker.to_string())
+    .bind(101_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_identity_aliases
+         (alias_id, canonical_project_id, alias_kind, canonical_identity_id,
+          created_at_ms, last_seen_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind("project-workspace")
+    .bind("project-workspace")
+    .bind("workspace_path")
+    .bind("project-workspace")
+    .bind(101_i64)
+    .bind(101_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+
+    let resolved = store
+        .resolve_project_identity(
+            &ProjectIdentityCandidates {
+                canonical: ProjectIdentityCandidate {
+                    project_id: "project-git".into(),
+                    kind: ProjectIdentityKind::GitCommonDirectory,
+                },
+                aliases: vec![ProjectIdentityCandidate {
+                    project_id: "project-workspace".into(),
+                    kind: ProjectIdentityKind::WorkspacePath,
+                }],
+            },
+            200,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, "project-git");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT project_id FROM project_review_workers WHERE job_id = ?",
+        )
+        .bind(job_id.to_string())
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT canonical_project_id FROM project_identity_aliases
+             WHERE alias_id = ?",
+        )
+        .bind("project-workspace")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
+    assert_eq!(
+        store
+            .project_status("project-git")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        provisional.revision
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn project_identity_resolution_enrolls_new_canonical_with_workspace_alias() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let candidates = ProjectIdentityCandidates {
+        canonical: ProjectIdentityCandidate {
+            project_id: "project-git".into(),
+            kind: ProjectIdentityKind::GitCommonDirectory,
+        },
+        aliases: vec![ProjectIdentityCandidate {
+            project_id: "project-workspace".into(),
+            kind: ProjectIdentityKind::WorkspacePath,
+        }],
+    };
+
+    assert_eq!(
+        store
+            .resolve_project_identity(&candidates, 100)
+            .await
+            .unwrap(),
+        "project-git"
+    );
+    let project = store
+        .project_enroll_thread("project-git", owner, None, 101)
+        .await
+        .unwrap();
+    store
+        .register_project_identity_aliases(&candidates, "project-git", 101)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .project_status("project-workspace")
+            .await
+            .unwrap()
+            .unwrap(),
+        project
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subscription() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let identities = ProjectIdentityCandidates {
+        canonical: ProjectIdentityCandidate {
+            project_id: "project-git".into(),
+            kind: ProjectIdentityKind::GitCommonDirectory,
+        },
+        aliases: vec![ProjectIdentityCandidate {
+            project_id: "project-provisional".into(),
+            kind: ProjectIdentityKind::WorkspacePath,
+        }],
+    };
+    assert_eq!(
+        store
+            .resolve_project_identity(&identities, 1)
+            .await
+            .unwrap(),
+        "project-git"
+    );
+    assert!(store.project_status("project-git").await.unwrap().is_none());
+    let provisional = store
+        .project_command(
+            "project-provisional",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: Some("review".into()),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store
+        .project_command(
+            "project-provisional",
+            owner,
+            Some(provisional.revision),
+            ProjectAutomationCommand::RequestReview {
+                evidence_ref: "usage-operation:provisional".into(),
+            },
+            101,
+        )
+        .await
+        .unwrap();
+    store.collect_due_heartbeats(500).await.unwrap();
+    let worker = ThreadId::new();
+    let job_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO project_review_workers
+         (project_id, job_id, worker_thread_id, claimed_at_ms)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind("project-provisional")
+    .bind(job_id.to_string())
+    .bind(worker.to_string())
+    .bind(500_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_identity_aliases
+         (alias_id, canonical_project_id, alias_kind, canonical_identity_id,
+          created_at_ms, last_seen_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind("project-provisional")
+    .bind("project-provisional")
+    .bind("workspace_path")
+    .bind("project-provisional")
+    .bind(500_i64)
+    .bind(500_i64)
+    .execute(store.pool.as_ref())
+    .await
+    .unwrap();
+    let canonical = store
+        .project_command(
+            "project-git",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: Some("review".into()),
+            },
+            200,
+        )
+        .await
+        .unwrap();
+    store
+        .project_command(
+            "project-git",
+            owner,
+            Some(canonical.revision),
+            ProjectAutomationCommand::RequestReview {
+                evidence_ref: "usage-operation:canonical".into(),
+            },
+            201,
+        )
+        .await
+        .unwrap();
+    let resolved = store
+        .resolve_project_identity(&identities, 300)
+        .await
+        .unwrap();
+    assert_eq!(resolved, "project-git");
+    let merged = store.project_status("project-git").await.unwrap().unwrap();
+    assert_eq!(
+        merged.threads.get(&owner.to_string()),
+        Some(&WorkPurpose::Analysis)
+    );
+    assert_eq!(
+        store
+            .project_status("project-provisional")
+            .await
+            .unwrap()
+            .unwrap()
+            .project_id,
+        "project-git"
+    );
+    let project_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_automations")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(project_count, 1);
+    let subscription_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM event_subscriptions WHERE source = 'codex.project'",
+    )
+    .fetch_one(store.pool.as_ref())
+    .await
+    .unwrap();
+    assert_eq!(subscription_count, 1);
+    let alias_target: String = sqlx::query_scalar(
+        "SELECT canonical_project_id FROM project_identity_aliases WHERE alias_id = ?",
+    )
+    .bind("project-provisional")
+    .fetch_one(store.pool.as_ref())
+    .await
+    .unwrap();
+    assert_eq!(alias_target, "project-git");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT project_id FROM project_review_workers WHERE job_id = ?",
+        )
+        .bind(job_id.to_string())
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap(),
+        "project-git"
+    );
+    assert!(merged.review.is_some());
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(store.pool.as_ref())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn automatic_enrollment_inherits_concurrent_children_without_reopening_completed_work() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let project = store
+        .project_command(
+            "inherited",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Implementation,
+                workstream: Some("delivery".into()),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    let project = store
+        .project_command(
+            "inherited",
+            owner,
+            Some(project.revision),
+            ProjectAutomationCommand::LinkWork {
+                outcome_id: Some("outcome".into()),
+                experiment_ref: Some("review@1".into()),
+                clear_outcome: false,
+                clear_experiment: false,
+            },
+            101,
+        )
+        .await
+        .unwrap();
+    let first = ThreadId::new();
+    let second = ThreadId::new();
+    let (first_result, second_result) = tokio::join!(
+        store.project_enroll_thread("inherited", first, Some(owner), 102),
+        store.project_enroll_thread("inherited", second, Some(owner), 102),
+    );
+    first_result.unwrap();
+    second_result.unwrap();
+    let inherited = store.project_status("inherited").await.unwrap().unwrap();
+    for child in [first, second] {
+        assert_eq!(
+            inherited.threads[&child.to_string()],
+            WorkPurpose::Implementation
+        );
+        assert_eq!(inherited.thread_workstreams[&child.to_string()], "delivery");
+        assert_eq!(inherited.thread_outcomes[&child.to_string()], "outcome");
+        assert_eq!(inherited.thread_experiments[&child.to_string()], "review@1");
+    }
+    assert_eq!(
+        inherited.implementation_starts,
+        project.implementation_starts
+    );
+    let completed = store
+        .project_command(
+            "inherited",
+            owner,
+            Some(inherited.revision),
+            ProjectAutomationCommand::Complete {
+                outcome_ref: "outcome".into(),
+            },
+            103,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .project_enroll_thread("inherited", ThreadId::new(), Some(owner), 104)
+            .await
+            .unwrap(),
+        completed
+    );
+    assert_eq!(
+        store
+            .project_enroll_thread("inherited", first, Some(owner), 105)
+            .await
+            .unwrap(),
+        completed
+    );
+    assert_eq!(store.next_heartbeat_deadline().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn delivery_metadata_persists_without_a_project_local_scheduler() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let project = store
+        .project_command(
+            "project-alpha",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Implementation,
+                workstream: None,
+            },
+            1_000_000,
+        )
+        .await
+        .unwrap();
+    let project = store
+        .project_command(
+            "project-alpha",
+            owner,
+            Some(project.revision),
+            ProjectAutomationCommand::ActivateDelivery {
+                target: "linux-cli".into(),
+                surface: "executable".into(),
+                acceptance: "smoke".into(),
+                delivery_interval_ms: Some(1000),
+                hard_stop_interval_ms: Some(2000),
+            },
+            1_000_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.next_heartbeat_deadline().await.unwrap(), None);
+    assert!(
+        store
+            .collect_due_heartbeats(1_001_000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let persisted = store
+        .project_status("project-alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.mode(1_001_000), ProjectMode::DeliveryDue);
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
+    assert!(
+        store
+            .collect_due_heartbeats(1_002_000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .project_status("project-alpha")
+            .await
+            .unwrap()
+            .unwrap()
+            .mode(1_002_000),
+        ProjectMode::RecoveryOnly
+    );
+    assert!(
+        store
+            .project_command(
+                "project-alpha",
+                owner,
+                Some(project.revision - 1),
+                ProjectAutomationCommand::Resume { target: None },
+                1_002_000
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn specification_has_no_delivery_or_project_local_scheduler() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let project = store
+        .project_command(
+            "spec",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Specification,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store.project_activity("spec", owner, 101).await.unwrap();
+    assert!(
+        store
+            .collect_due_heartbeats(7 * 86_400_000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let restored = store.project_status("spec").await.unwrap().unwrap();
+    assert_eq!(restored.mode(7 * 86_400_000), ProjectMode::PerformanceOnly);
+    assert!(restored.delivery.is_empty());
+    assert_eq!(restored.started_at_ms, project.started_at_ms);
+    assert!(
+        store
+            .project_command(
+                "spec",
+                owner,
+                None,
+                ProjectAutomationCommand::Pause {
+                    target: None,
+                    authorization_ref: "owner".into()
+                },
+                7 * 86_400_000
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn delivery_metadata_survives_restart_without_local_project_jobs() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let project = store
+        .project_command(
+            "recover",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Implementation,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    let project = store
+        .project_command(
+            "recover",
+            owner,
+            Some(project.revision),
+            ProjectAutomationCommand::ActivateDelivery {
+                target: "cli".into(),
+                surface: "binary".into(),
+                acceptance: "launches".into(),
+                delivery_interval_ms: Some(1000),
+                hard_stop_interval_ms: Some(2000),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store.restore_unfinished_project_jobs().await.unwrap();
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
+    store.restore_unfinished_project_jobs().await.unwrap();
+    assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
+    assert!(store.collect_due_heartbeats(2100).await.unwrap().is_empty());
+    store
+        .project_command(
+            "recover",
+            owner,
+            Some(project.revision),
+            ProjectAutomationCommand::Postpone {
+                target: "cli".into(),
+                delivery_due_at_ms: 3100,
+                hard_stop_at_ms: 4100,
+                authorization_ref: "owner postponed".into(),
+            },
+            2200,
+        )
+        .await
+        .unwrap();
+    assert!(store.pending_wake(owner).await.unwrap().is_none());
+    assert!(store.collect_due_heartbeats(2500).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn event_wait_returns_only_its_matching_subscription_and_cancels_cleanly() {
+    use codex_event_subscriptions::EventFilter;
+    use codex_event_subscriptions::NewSubscription;
+    use std::collections::BTreeSet;
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let subscription = store
+        .create(
+            NewSubscription {
+                thread_id: owner,
+                filter: Some(EventFilter {
+                    source: "build".into(),
+                    event_types: BTreeSet::from(["completed".into()]),
+                    labels: BTreeMap::from([("run".into(), "actual-run".into())]),
+                }),
+                source_cursor: None,
+                heartbeat: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    let waiting_store = store.clone();
+    let waiting = tokio::spawn(async move {
+        waiting_store
+            .await_subscription(owner, subscription.id)
+            .await
+    });
+    store
+        .publish(
+            PublishedEvent {
+                id: "unrelated".into(),
+                source: "build".into(),
+                event_type: "completed".into(),
+                cursor: SourceCursor {
+                    sequence: 1,
+                    value: None,
+                },
+                labels: BTreeMap::from([("run".into(), "other-run".into())]),
+                occurred_at_ms: 101,
+            },
+            101,
+        )
+        .await
+        .unwrap();
+    assert!(!waiting.is_finished());
+    store
+        .publish(
+            PublishedEvent {
+                id: "matching".into(),
+                source: "build".into(),
+                event_type: "completed".into(),
+                cursor: SourceCursor {
+                    sequence: 2,
+                    value: None,
+                },
+                labels: BTreeMap::from([("run".into(), "actual-run".into())]),
+                occurred_at_ms: 102,
+            },
+            102,
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.event.unwrap().cursor.sequence, 2);
+    store.cancel(subscription.id).await.unwrap();
+    assert!(
+        store
+            .await_subscription(owner, subscription.id)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn event_wait_replays_completion_between_status_read_and_subscription() {
+    use codex_event_subscriptions::EventFilter;
+    use codex_event_subscriptions::NewSubscription;
+    use std::collections::BTreeSet;
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    store
+        .publish(
+            PublishedEvent {
+                id: "before-subscribe".into(),
+                source: "build".into(),
+                event_type: "completed".into(),
+                cursor: SourceCursor {
+                    sequence: 2,
+                    value: None,
+                },
+                labels: BTreeMap::new(),
+                occurred_at_ms: 102,
+            },
+            102,
+        )
+        .await
+        .unwrap();
+    let subscription = store
+        .create(
+            NewSubscription {
+                thread_id: owner,
+                filter: Some(EventFilter {
+                    source: "build".into(),
+                    event_types: BTreeSet::from(["completed".into()]),
+                    labels: BTreeMap::new(),
+                }),
+                source_cursor: Some(SourceCursor {
+                    sequence: 1,
+                    value: None,
+                }),
+                heartbeat: None,
+            },
+            103,
+        )
+        .await
+        .unwrap();
+    store
+        .replay_subscription_events(subscription.id, 103)
+        .await
+        .unwrap();
+    let result = store
+        .await_subscription(owner, subscription.id)
+        .await
+        .unwrap();
+    assert_eq!(result.event.unwrap().cursor.sequence, 2);
+    store.cancel(subscription.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_owner_preserves_deadlines_and_pauses_or_transfers() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    store
+        .project_command(
+            "owned",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store.delete_thread(owner).await.unwrap();
+    let project = store.project_status("owned").await.unwrap().unwrap();
+    assert!(project.paused);
+    assert_eq!(project.started_at_ms, 100);
+    assert!(store.next_heartbeat_deadline().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn review_worker_claim_is_idempotent_and_does_not_review_itself() {
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let project = store
+        .project_command(
+            "reviewed",
+            owner,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store
+        .project_activity("reviewed", owner, 101)
+        .await
+        .unwrap();
+    let project = store
+        .project_command(
+            "reviewed",
+            owner,
+            Some(project.revision),
+            ProjectAutomationCommand::RequestReview {
+                evidence_ref: "usage-operation:measured".into(),
+            },
+            200,
+        )
+        .await
+        .unwrap();
+    let job = project.review.as_ref().unwrap();
+    let worker = ThreadId::new();
+    assert_eq!(
+        store
+            .claim_project_review_worker("reviewed", job.id, worker, 200)
+            .await
+            .unwrap(),
+        Some(worker)
+    );
+    assert_eq!(
+        store
+            .claim_project_review_worker("reviewed", job.id, ThreadId::new(), 201)
+            .await
+            .unwrap(),
+        Some(worker)
+    );
+    assert_eq!(
+        store
+            .claim_project_review_worker("reviewed", Uuid::now_v7(), ThreadId::new(), 201)
+            .await
+            .unwrap(),
+        None
+    );
+    store
+        .project_command(
+            "reviewed",
+            worker,
+            None,
+            ProjectAutomationCommand::Bind {
+                purpose: WorkPurpose::Analysis,
+                workstream: None,
+            },
+            202,
+        )
+        .await
+        .unwrap();
+    store
+        .project_activity("reviewed", worker, 203)
+        .await
+        .unwrap();
+    let current = store.project_status("reviewed").await.unwrap().unwrap();
+    assert_eq!(current.last_activity_at_ms, 101);
+}
+
+#[tokio::test]
+async fn source_attention_preserves_cursor_and_cannot_replace_real_completion() {
+    use codex_event_subscriptions::EventFilter;
+    use codex_event_subscriptions::NewSubscription;
+    use std::collections::BTreeSet;
+    let (store, _directory) = store().await;
+    let owner = ThreadId::new();
+    let subscription = store
+        .create(
+            NewSubscription {
+                thread_id: owner,
+                filter: Some(EventFilter {
+                    source: "devcoordinator".into(),
+                    event_types: BTreeSet::from([
+                        "test.finished".into(),
+                        "source.unavailable".into(),
+                    ]),
+                    labels: BTreeMap::new(),
+                }),
+                source_cursor: Some(SourceCursor {
+                    sequence: 10,
+                    value: None,
+                }),
+                heartbeat: None,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+    store
+        .publish(
+            PublishedEvent {
+                id: "outage".into(),
+                source: "devcoordinator".into(),
+                event_type: "source.unavailable".into(),
+                cursor: SourceCursor {
+                    sequence: 999,
+                    value: None,
+                },
+                labels: BTreeMap::new(),
+                occurred_at_ms: 101,
+            },
+            101,
+        )
+        .await
+        .unwrap();
+    let attention = store.pending_wake(owner).await.unwrap().unwrap();
+    assert_eq!(
+        attention.wake.items[0]
+            .event
+            .as_ref()
+            .unwrap()
+            .cursor
+            .sequence,
+        10
+    );
+    store
+        .publish(
+            PublishedEvent {
+                id: "finished".into(),
+                source: "devcoordinator".into(),
+                event_type: "test.finished".into(),
+                cursor: SourceCursor {
+                    sequence: 11,
+                    value: None,
+                },
+                labels: BTreeMap::new(),
+                occurred_at_ms: 102,
+            },
+            102,
+        )
+        .await
+        .unwrap();
+    store
+        .publish(
+            PublishedEvent {
+                id: "later-outage".into(),
+                source: "devcoordinator".into(),
+                event_type: "source.unavailable".into(),
+                cursor: SourceCursor {
+                    sequence: 999,
+                    value: None,
+                },
+                labels: BTreeMap::new(),
+                occurred_at_ms: 103,
+            },
+            103,
+        )
+        .await
+        .unwrap();
+    let completed = store
+        .await_subscription(owner, subscription.id)
+        .await
+        .unwrap();
+    assert_eq!(completed.event.unwrap().event_type, "test.finished");
+    let journal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_event_observations")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(journal_count, 1);
+}

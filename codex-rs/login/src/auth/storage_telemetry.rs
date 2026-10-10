@@ -71,6 +71,10 @@ impl ObservedStorage {
 }
 
 impl AuthStorageBackend for ObservedStorage {
+    fn backend_kind(&self) -> super::PersistentAuthBackendKind {
+        self.inner.backend_kind()
+    }
+
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
         let mut telemetry = telemetry(self.mode, self.kind, Operation::Load);
         let result = self.inner.load();

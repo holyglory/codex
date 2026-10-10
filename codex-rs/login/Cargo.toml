@@ -12,6 +12,8 @@ codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+codex-account-registry = { workspace = true }
+codex-account-selection = { workspace = true }
 codex-agent-identity = { workspace = true }
 codex-http-client = { workspace = true }
 codex-config = { workspace = true }
@@ -19,6 +21,7 @@ codex-keyring-store = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
+codex-private-storage = { workspace = true }
 codex-secrets = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-utils-template = { workspace = true }
@@ -43,6 +46,13 @@ tracing = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
 
 [dev-dependencies]
 codex-utils-cargo-bin = { workspace = true }

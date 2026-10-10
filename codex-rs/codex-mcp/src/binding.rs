@@ -73,6 +73,10 @@ impl McpBinding {
         &self.config
     }
 
+    pub(crate) fn connections(&self) -> Arc<McpConnectionSet> {
+        Arc::clone(&self.connections)
+    }
+
     pub fn plugins_available(&self) -> bool {
         self.plugins_available
     }
@@ -153,6 +157,33 @@ impl McpBinding {
         } else {
             self.connections.read_resource(server, params).await
         }
+    }
+
+    /// Invokes a tool through the exact connection set captured by this binding.
+    // This intentionally mirrors `McpConnectionSet::call_tool` so no authority-sensitive call
+    // parameters are reconstructed after the binding is captured.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn call_tool(
+        &self,
+        server: &str,
+        tool: &str,
+        environment_id: Option<&str>,
+        arguments: Option<JsonValue>,
+        meta: Option<JsonValue>,
+        requested_timeout: Option<Duration>,
+        wait_for_server: bool,
+    ) -> Result<CallToolResult> {
+        self.connections
+            .call_tool(
+                server,
+                tool,
+                environment_id,
+                arguments,
+                meta,
+                requested_timeout,
+                wait_for_server,
+            )
+            .await
     }
 }
 
