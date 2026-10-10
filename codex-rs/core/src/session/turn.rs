@@ -174,7 +174,7 @@ pub(crate) async fn run_turn(
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
     if let Some(error) = turn_context.profile_auth_error.as_deref() {
-        return Err(CodexErr::Fatal(format!("Fatal error: {error}")));
+        return Err(CodexErr::Fatal(error.to_owned()));
     }
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
@@ -388,6 +388,7 @@ pub(crate) async fn run_turn(
         .await?;
     }
     let mut can_drain_pending_input = input.is_empty();
+    let mut account_switch_warning_sent = false;
     if run_hooks_and_record_inputs(
         &sess,
         &turn_context,
@@ -636,20 +637,25 @@ pub(crate) async fn run_turn(
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
                 guardian_budget_compacted = false;
-                if turn_context.automatic_account_switched() {
-                    sess.send_event(
-                        &turn_context,
-                        EventMsg::Warning(WarningEvent {
-                            message: "Automatically selected another eligible account for this turn."
-                                .to_string(),
-                        }),
-                    )
-                    .await;
-                }
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
+                if !model_needs_follow_up
+                    && !account_switch_warning_sent
+                    && turn_context.automatic_account_switched()
+                {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::Warning(WarningEvent {
+                            message:
+                                "Automatically selected another eligible account for this turn."
+                                    .to_string(),
+                        }),
+                    )
+                    .await;
+                    account_switch_warning_sent = true;
+                }
                 if model_needs_follow_up {
                     sess.input_queue
                         .accept_mailbox_delivery_for_current_turn(
