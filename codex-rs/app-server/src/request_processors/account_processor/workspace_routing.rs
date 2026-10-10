@@ -9,6 +9,7 @@ use codex_backend_client::AccountEntry;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
+use codex_login::AuthManager;
 use codex_model_provider::ProviderAccount;
 use codex_model_provider::ProviderAccountError;
 use codex_model_provider::ProviderAccountState;
@@ -16,6 +17,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Weak;
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 use url::Url;
 
@@ -106,6 +108,7 @@ pub(super) enum WorkspaceRoutingError {
 impl WorkspaceRoutingResolver for AccountRequestProcessor {
     fn resolve(
         &self,
+        _auth_manager: Arc<AuthManager>,
         request: WorkspaceRoutingRequest,
     ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>> {
         Box::pin(async move {
