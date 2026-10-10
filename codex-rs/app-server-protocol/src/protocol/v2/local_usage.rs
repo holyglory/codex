@@ -147,6 +147,32 @@ pub struct LocalUsageReport {
     pub classifications: Vec<LocalUsageReportClassificationCount>,
     pub repository_participation: LocalUsageReportRepositoryParticipation,
     pub formulas: LocalUsageReportFormulas,
+    pub cost: Option<LocalUsageReportCost>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportCost {
+    pub basis: String,
+    pub currency: String,
+    pub status: String,
+    pub processing_tier: String,
+    pub estimated_usd_micros: Option<u64>,
+    pub input_usd_micros: Option<u64>,
+    pub cached_input_usd_micros: Option<u64>,
+    pub cache_write_usd_micros: Option<u64>,
+    pub output_usd_micros: Option<u64>,
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub provider_total_tokens: u64,
+    pub priced_observations: u64,
+    pub unknown_observations: u64,
+    pub rate_card_refs: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -175,6 +201,18 @@ pub struct LocalUsageReportCoverage {
     pub has_gaps: bool,
     pub events: Vec<LocalUsageReportCoverageCount>,
     pub token_observations: Vec<LocalUsageReportCoverageCount>,
+    pub dimensions: LocalUsageReportCoverageDimensions,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportCoverageDimensions {
+    pub recorded_tokens: String,
+    pub unfinished_operations: u64,
+    pub timing_unknown_intervals: u64,
+    pub activity_unattributed_operations: u64,
+    pub context: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

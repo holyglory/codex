@@ -4,6 +4,40 @@
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
+    },
+    "LocalUsageAccountingCapability": {
+      "properties": {
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "type": "object"
+    },
+    "MultiAccountCapability": {
+      "properties": {
+        "supportsAutoSelection": {
+          "type": "boolean"
+        },
+        "supportsManagedLogin": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsAutoSelection",
+        "supportsManagedLogin",
+        "version"
+      ],
+      "type": "object"
     }
   },
   "properties": {
@@ -14,6 +48,30 @@
         }
       ],
       "description": "Absolute path to the server's $CODEX_HOME directory."
+    },
+    "localUsageAccounting": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LocalUsageAccountingCapability"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Advertises the additive local usage-accounting extension."
+    },
+    "multiAccount": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MultiAccountCapability"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Advertises the additive multi-account profile extension."
     },
     "platformFamily": {
       "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",

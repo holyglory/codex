@@ -118,8 +118,8 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
         time,
         classifications,
         repository_participation,
+        cost,
         formulas,
-        ..
     } = StructuredUsageSummary::new(summary, account);
     LocalUsageReport {
         schema_version,
@@ -151,6 +151,31 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
             .collect(),
         repository_participation: report_repository_participation(repository_participation),
         formulas: report_formulas(formulas),
+        cost: cost.map(report_cost),
+    }
+}
+
+fn report_cost(value: codex_usage::UsageApiEquivalentCost) -> protocol::LocalUsageReportCost {
+    protocol::LocalUsageReportCost {
+        basis: value.basis.to_string(),
+        currency: value.currency.to_string(),
+        status: value.status.to_string(),
+        processing_tier: value.processing_tier.to_string(),
+        estimated_usd_micros: value.estimated_usd_micros,
+        input_usd_micros: value.input_usd_micros,
+        cached_input_usd_micros: value.cached_input_usd_micros,
+        cache_write_usd_micros: value.cache_write_usd_micros,
+        output_usd_micros: value.output_usd_micros,
+        input_tokens: value.input_tokens,
+        uncached_input_tokens: value.uncached_input_tokens,
+        cached_input_tokens: value.cached_input_tokens,
+        cache_write_tokens: value.cache_write_tokens,
+        output_tokens: value.output_tokens,
+        reasoning_tokens: value.reasoning_tokens,
+        provider_total_tokens: value.provider_total_tokens,
+        priced_observations: value.priced_observations,
+        unknown_observations: value.unknown_observations,
+        rate_card_refs: value.rate_card_refs,
     }
 }
 
@@ -182,6 +207,13 @@ fn report_coverage(value: StructuredCoverage) -> protocol::LocalUsageReportCover
             .into_iter()
             .map(report_coverage_count)
             .collect(),
+        dimensions: protocol::LocalUsageReportCoverageDimensions {
+            recorded_tokens: value.dimensions.recorded_tokens.to_string(),
+            unfinished_operations: value.dimensions.unfinished_operations,
+            timing_unknown_intervals: value.dimensions.timing_unknown_intervals,
+            activity_unattributed_operations: value.dimensions.activity_unattributed_operations,
+            context: value.dimensions.context.to_string(),
+        },
     }
 }
 

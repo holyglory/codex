@@ -43,6 +43,113 @@ class AmazonBedrockAccount(BaseModel):
     ] = False
 
 
+class AccountAutoSelectionPolicy(RootModel[Literal["priority"]]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Literal["priority"]
+
+
+class AccountPriorityOrder(RootModel[Literal["higherFirst"]]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Literal["higherFirst"]
+
+
+class AccountProfileActiveChangedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str, Field(alias="accountId")]
+    changed_at: Annotated[int, Field(alias="changedAt")]
+    generation: Annotated[int, Field(ge=0)]
+    previous_account_id: Annotated[str | None, Field(alias="previousAccountId")] = None
+
+
+class ApiKeyAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginType")]
+
+
+class ChatgptAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    auth_url: Annotated[str, Field(alias="authUrl")]
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginType")]
+
+
+class ChatgptDeviceCodeAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[
+        Literal["chatgptDeviceCode"], Field(title="ChatgptDeviceCodeAccountProfileLoginType")
+    ]
+    user_code: Annotated[str, Field(alias="userCode")]
+    verification_url: Annotated[str, Field(alias="verificationUrl")]
+
+
+class AmazonBedrockAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginType")]
+
+
+class AccountProfileLogin(
+    RootModel[
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: (
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    )
+
+
+class ApiKeyAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginMethodParamsType")]
+
+
+class ChatgptDeviceCodeAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[
+        Literal["chatgptDeviceCode"],
+        Field(title="ChatgptDeviceCodeAccountProfileLoginMethodParamsType"),
+    ]
+
+
+class AmazonBedrockAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    region: str
+    type: Annotated[
+        Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginMethodParamsType")
+    ]
+
+
 class AccountRoutingOverride(Enum):
     no_constraint = "NO_CONSTRAINT"
     us = "us"
@@ -2231,6 +2338,299 @@ class LocalShellStatus(Enum):
     completed = "completed"
     in_progress = "in_progress"
     incomplete = "incomplete"
+
+
+class LocalUsageActivityKind(Enum):
+    requirements = "requirements"
+    specification = "specification"
+    repository_analysis = "repositoryAnalysis"
+    research = "research"
+    diagnosis = "diagnosis"
+    architecture_design = "architectureDesign"
+    work_planning = "workPlanning"
+    coding = "coding"
+    configuration = "configuration"
+    refactoring = "refactoring"
+    dependency_or_build_change = "dependencyOrBuildChange"
+    test_authoring = "testAuthoring"
+    documentation_authoring = "documentationAuthoring"
+    data_or_schema_change = "dataOrSchemaChange"
+    build_validation = "buildValidation"
+    unit_testing = "unitTesting"
+    integration_testing = "integrationTesting"
+    browser_qa = "browserQa"
+    compatibility_testing = "compatibilityTesting"
+    migration_rehearsal = "migrationRehearsal"
+    verification_review = "verificationReview"
+    packaging = "packaging"
+    deployment = "deployment"
+    rollback = "rollback"
+    runtime_operations = "runtimeOperations"
+    monitoring = "monitoring"
+    user_elaboration = "userElaboration"
+    status_update = "statusUpdate"
+    completion_handoff = "completionHandoff"
+    review_feedback = "reviewFeedback"
+    coordination = "coordination"
+    accounting_overhead = "accountingOverhead"
+    mixed = "mixed"
+    unknown = "unknown"
+
+
+class LocalUsageActivityState(Enum):
+    model_active = "modelActive"
+    tool_active = "toolActive"
+    external_wait = "externalWait"
+    user_wait = "userWait"
+    blocked_wait = "blockedWait"
+
+
+class LocalUsageCoverage(Enum):
+    complete = "complete"
+    partial = "partial"
+    unknown = "unknown"
+
+
+class LocalUsageEventKind(Enum):
+    model_request_started = "modelRequestStarted"
+    model_request_completed = "modelRequestCompleted"
+    tool_started = "toolStarted"
+    tool_completed = "toolCompleted"
+    activity_changed = "activityChanged"
+    classification_corrected = "classificationCorrected"
+    coverage_gap = "coverageGap"
+
+
+class LocalUsageExportFormat(Enum):
+    json = "json"
+    jsonl = "jsonl"
+    csv = "csv"
+
+
+class LocalUsagePhase(Enum):
+    planning = "planning"
+    implementation = "implementation"
+    testing = "testing"
+    deployment = "deployment"
+    reporting = "reporting"
+    unattributed = "unattributed"
+
+
+class LocalUsageProvenance(Enum):
+    provider_reported = "providerReported"
+    runtime_observed = "runtimeObserved"
+    agent_declared = "agentDeclared"
+    deterministic_classification = "deterministicClassification"
+    inferred_classification = "inferredClassification"
+    user_corrected = "userCorrected"
+    imported = "imported"
+    unknown = "unknown"
+
+
+class LocalUsageReportActivityTokenAggregate(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    activity: str
+    attribution_provenance: Annotated[str, Field(alias="attributionProvenance")]
+    exact_tokens: Annotated[int | None, Field(alias="exactTokens")] = None
+    measured_tokens: Annotated[int, Field(alias="measuredTokens")]
+    phase: str
+    unknown_observations: Annotated[int, Field(alias="unknownObservations", ge=0)]
+
+
+class LocalUsageReportClassificationCount(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    activity: str
+    count: Annotated[int, Field(ge=0)]
+    phase: str
+    provenance: str
+
+
+class LocalUsageReportCost(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    basis: str
+    cache_write_tokens: Annotated[int, Field(alias="cacheWriteTokens", ge=0)]
+    cache_write_usd_micros: Annotated[int | None, Field(alias="cacheWriteUsdMicros", ge=0)] = None
+    cached_input_tokens: Annotated[int, Field(alias="cachedInputTokens", ge=0)]
+    cached_input_usd_micros: Annotated[int | None, Field(alias="cachedInputUsdMicros", ge=0)] = None
+    currency: str
+    estimated_usd_micros: Annotated[int | None, Field(alias="estimatedUsdMicros", ge=0)] = None
+    input_tokens: Annotated[int, Field(alias="inputTokens", ge=0)]
+    input_usd_micros: Annotated[int | None, Field(alias="inputUsdMicros", ge=0)] = None
+    output_tokens: Annotated[int, Field(alias="outputTokens", ge=0)]
+    output_usd_micros: Annotated[int | None, Field(alias="outputUsdMicros", ge=0)] = None
+    priced_observations: Annotated[int, Field(alias="pricedObservations", ge=0)]
+    processing_tier: Annotated[str, Field(alias="processingTier")]
+    provider_total_tokens: Annotated[int, Field(alias="providerTotalTokens", ge=0)]
+    rate_card_refs: Annotated[list[str], Field(alias="rateCardRefs")]
+    reasoning_tokens: Annotated[int, Field(alias="reasoningTokens", ge=0)]
+    status: str
+    uncached_input_tokens: Annotated[int, Field(alias="uncachedInputTokens", ge=0)]
+    unknown_observations: Annotated[int, Field(alias="unknownObservations", ge=0)]
+
+
+class LocalUsageReportCounts(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    model_requests: Annotated[int, Field(alias="modelRequests", ge=0)]
+    operations: Annotated[int, Field(ge=0)]
+    tools: Annotated[int, Field(ge=0)]
+
+
+class LocalUsageReportCoverageCount(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    state: str
+
+
+class LocalUsageReportCoverageDimensions(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    activity_unattributed_operations: Annotated[
+        int, Field(alias="activityUnattributedOperations", ge=0)
+    ]
+    context: str
+    recorded_tokens: Annotated[str, Field(alias="recordedTokens")]
+    timing_unknown_intervals: Annotated[int, Field(alias="timingUnknownIntervals", ge=0)]
+    unfinished_operations: Annotated[int, Field(alias="unfinishedOperations", ge=0)]
+
+
+class LocalUsageReportDuration(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    exact_ns: Annotated[int | None, Field(alias="exactNs", ge=0)] = None
+    measured_ns: Annotated[int, Field(alias="measuredNs", ge=0)]
+    unknown_intervals: Annotated[int, Field(alias="unknownIntervals", ge=0)]
+
+
+class LocalUsageReportFormulas(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    concurrency: str
+    repository: str
+    tokens: str
+    wall_time: Annotated[str, Field(alias="wallTime")]
+
+
+class LocalUsageReportNamedDuration(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    duration: LocalUsageReportDuration
+    name: str
+
+
+class LocalUsageReportRepositoryParticipation(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    additive: bool
+    label: str
+    operation_count: Annotated[int, Field(alias="operationCount", ge=0)]
+    tool_count: Annotated[int, Field(alias="toolCount", ge=0)]
+
+
+class LocalUsageReportScope(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: str | None = None
+    type: str
+
+
+class LocalUsageReportTimeMetrics(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    activity_state_interval_unions: Annotated[
+        list[LocalUsageReportNamedDuration], Field(alias="activityStateIntervalUnions")
+    ]
+    execution_wall_union: Annotated[LocalUsageReportDuration, Field(alias="executionWallUnion")]
+    phase_interval_unions: Annotated[
+        list[LocalUsageReportNamedDuration], Field(alias="phaseIntervalUnions")
+    ]
+    request_to_delivery_wall: Annotated[
+        LocalUsageReportDuration, Field(alias="requestToDeliveryWall")
+    ]
+    summed_per_agent_active: Annotated[
+        LocalUsageReportDuration, Field(alias="summedPerAgentActive")
+    ]
+
+
+class LocalUsageReportTimeRange(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    end_ms: Annotated[int, Field(alias="endMs")]
+    start_ms: Annotated[int, Field(alias="startMs")]
+
+
+class LocalUsageReportTokenAggregate(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    category: str
+    exact_tokens: Annotated[int | None, Field(alias="exactTokens")] = None
+    measured_tokens: Annotated[int, Field(alias="measuredTokens")]
+    measurement_provenance: Annotated[str, Field(alias="measurementProvenance")]
+    observation_count: Annotated[int, Field(alias="observationCount", ge=0)]
+    repository_bucket: Annotated[str, Field(alias="repositoryBucket")]
+    repository_label: Annotated[
+        str | None,
+        Field(
+            alias="repositoryLabel",
+            description="Safe display label resolved at read time. Machine clients can continue to use `repository_bucket` as the stable privacy-preserving key.",
+        ),
+    ] = None
+    unknown_observations: Annotated[int, Field(alias="unknownObservations", ge=0)]
+
+
+class LocalUsageReportToolOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    outcome: str
+
+
+class LocalUsageTokenCategory(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    category_key: Annotated[str, Field(alias="categoryKey")]
+    count: int | None = None
+    coverage: LocalUsageCoverage
+    provenance: LocalUsageProvenance
+
+
+class LocalUsageToolStatus(Enum):
+    completed = "completed"
+    failed = "failed"
+    interrupted = "interrupted"
+    rejected = "rejected"
+    unsupported = "unsupported"
+    unknown = "unknown"
+
+
+class LocalUsageUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    generation: Annotated[int, Field(ge=0)]
+    repository_key: Annotated[str | None, Field(alias="repositoryKey")] = None
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    updated_at: Annotated[int, Field(alias="updatedAt")]
 
 
 class ApiKeyLoginAccountParams(BaseModel):
@@ -4556,6 +4956,41 @@ class McpServerEventStreamNotificationServerNotification(BaseModel):
     params: McpServerEventStreamNotification
 
 
+class AccountProfileActiveChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["accountProfile/activeChanged"],
+        Field(title="AccountProfile/activeChangedNotificationMethod"),
+    ]
+    params: AccountProfileActiveChangedNotification
+
+
+class LocalUsageUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["localUsage/updated"], Field(title="LocalUsage/updatedNotificationMethod")
+    ]
+    params: LocalUsageUpdatedNotification
+
+
 class RemoteControlStatusChangedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6725,6 +7160,15 @@ class Account(RootModel[ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount]):
     root: ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount
 
 
+class AccountAutoSelection(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    enabled: bool
+    policy: AccountAutoSelectionPolicy
+    priority_order: Annotated[AccountPriorityOrder, Field(alias="priorityOrder")]
+
+
 class AccountLoginCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6735,6 +7179,61 @@ class AccountLoginCompletedNotification(BaseModel):
         DesktopOnboardingEntrypoint | None, Field(alias="onboardingEntrypoint")
     ] = None
     success: bool
+
+
+class AccountProfile(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    alias: str
+    auth_mode: Annotated[AuthMode, Field(alias="authMode")]
+    authenticated: Annotated[
+        bool,
+        Field(
+            description="Whether this profile currently has locally managed credentials. Credential values are never returned."
+        ),
+    ]
+    created_at: Annotated[int, Field(alias="createdAt")]
+    email: str | None = None
+    enabled: bool
+    id: str
+    is_active: Annotated[bool, Field(alias="isActive")]
+    is_default: Annotated[bool, Field(alias="isDefault")]
+    last_used_at: Annotated[int | None, Field(alias="lastUsedAt")] = None
+    note: str | None = None
+    plan_type: Annotated[PlanType | None, Field(alias="planType")] = None
+    priority: Annotated[int, Field(ge=0)]
+
+
+class ChatgptAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    app_brand: Annotated[LoginAppBrand | None, Field(alias="appBrand")] = None
+    codex_streamlined_login: Annotated[bool | None, Field(alias="codexStreamlinedLogin")] = None
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginMethodParamsType")]
+    use_hosted_login_success_page: Annotated[
+        bool | None, Field(alias="useHostedLoginSuccessPage")
+    ] = None
+
+
+class AccountProfileLoginMethodParams(
+    RootModel[
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: (
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    )
 
 
 class AccountUpdatedNotification(BaseModel):
@@ -8623,6 +9122,111 @@ class ListMcpServerStatusParams(BaseModel):
         ),
     ] = None
     thread_id: Annotated[str | None, Field(alias="threadId")] = None
+
+
+class LocalUsageActivity(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    activity: LocalUsageActivityKind
+    activity_id: Annotated[str, Field(alias="activityId")]
+    agent_id: Annotated[str, Field(alias="agentId")]
+    ended_at: Annotated[int | None, Field(alias="endedAt")] = None
+    phase: LocalUsagePhase
+    provenance: LocalUsageProvenance
+    started_at: Annotated[int, Field(alias="startedAt")]
+    state: LocalUsageActivityState
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class LocalUsageAggregate(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    cache_write_input_tokens: Annotated[int | None, Field(alias="cacheWriteInputTokens")] = None
+    cached_input_tokens: Annotated[int | None, Field(alias="cachedInputTokens")] = None
+    coverage: LocalUsageCoverage
+    duration_ms: Annotated[int, Field(alias="durationMs")]
+    input_tokens: Annotated[int | None, Field(alias="inputTokens")] = None
+    model_requests: Annotated[int, Field(alias="modelRequests")]
+    output_tokens: Annotated[int | None, Field(alias="outputTokens")] = None
+    reasoning_output_tokens: Annotated[int | None, Field(alias="reasoningOutputTokens")] = None
+    tool_calls: Annotated[int, Field(alias="toolCalls")]
+    total_tokens: Annotated[int | None, Field(alias="totalTokens")] = None
+
+
+class LocalUsageEvent(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    coverage: LocalUsageCoverage
+    event_id: Annotated[str, Field(alias="eventId")]
+    kind: LocalUsageEventKind
+    occurred_at: Annotated[int, Field(alias="occurredAt")]
+    provenance: LocalUsageProvenance
+    repository_key: Annotated[str | None, Field(alias="repositoryKey")] = None
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+
+
+class LocalUsageReportCoverage(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    dimensions: LocalUsageReportCoverageDimensions
+    events: list[LocalUsageReportCoverageCount]
+    has_gaps: Annotated[bool, Field(alias="hasGaps")]
+    state: str
+    token_observations: Annotated[
+        list[LocalUsageReportCoverageCount], Field(alias="tokenObservations")
+    ]
+
+
+class LocalUsageReportToolMetrics(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    duration: LocalUsageReportDuration
+    duration_basis: Annotated[str, Field(alias="durationBasis")]
+    outcomes: list[LocalUsageReportToolOutcome]
+
+
+class LocalUsageRepository(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    aggregate: LocalUsageAggregate
+    created_at: Annotated[int, Field(alias="createdAt")]
+    label: str
+    repository_key: Annotated[str, Field(alias="repositoryKey")]
+    updated_at: Annotated[int, Field(alias="updatedAt")]
+
+
+class LocalUsageThread(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str | None, Field(alias="accountId")] = None
+    aggregate: LocalUsageAggregate
+    repository_keys: Annotated[list[str], Field(alias="repositoryKeys")]
+    started_at: Annotated[int, Field(alias="startedAt")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    updated_at: Annotated[int, Field(alias="updatedAt")]
+
+
+class LocalUsageTool(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed_at: Annotated[int | None, Field(alias="completedAt")] = None
+    operation_family: Annotated[str, Field(alias="operationFamily")]
+    provenance: LocalUsageProvenance
+    repository_key: Annotated[str | None, Field(alias="repositoryKey")] = None
+    started_at: Annotated[int, Field(alias="startedAt")]
+    status: LocalUsageToolStatus
+    thread_id: Annotated[str, Field(alias="threadId")]
+    tool_call_id: Annotated[str, Field(alias="toolCallId")]
+    tool_name: Annotated[str, Field(alias="toolName")]
 
 
 class ChatgptLoginAccountParams(BaseModel):
@@ -11063,6 +11667,33 @@ class ListMcpServerStatusResponse(BaseModel):
     ] = None
 
 
+class LocalUsageReport(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account: str | None = None
+    classifications: list[LocalUsageReportClassificationCount]
+    cost: LocalUsageReportCost | None = None
+    counts: LocalUsageReportCounts
+    coverage: LocalUsageReportCoverage
+    database_schema_version: Annotated[int, Field(alias="databaseSchemaVersion", ge=0)]
+    formulas: LocalUsageReportFormulas
+    kind: str
+    provider_tokens: Annotated[list[LocalUsageReportTokenAggregate], Field(alias="providerTokens")]
+    provider_tokens_by_activity: Annotated[
+        list[LocalUsageReportActivityTokenAggregate], Field(alias="providerTokensByActivity")
+    ]
+    repository_participation: Annotated[
+        LocalUsageReportRepositoryParticipation, Field(alias="repositoryParticipation")
+    ]
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    scope: LocalUsageReportScope
+    taxonomy_version: Annotated[int, Field(alias="taxonomyVersion")]
+    time: LocalUsageReportTimeMetrics
+    time_range: Annotated[LocalUsageReportTimeRange | None, Field(alias="timeRange")] = None
+    tools: LocalUsageReportToolMetrics
+
+
 class ModelsRequirements(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13108,6 +13739,8 @@ class ServerNotification(
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
+        | LocalUsageUpdatedServerNotification
         | AppListUpdatedServerNotification
         | RemoteControlStatusChangedServerNotification
         | ExternalAgentConfigImportProgressServerNotification
@@ -13198,6 +13831,8 @@ class ServerNotification(
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
+        | LocalUsageUpdatedServerNotification
         | AppListUpdatedServerNotification
         | RemoteControlStatusChangedServerNotification
         | ExternalAgentConfigImportProgressServerNotification
