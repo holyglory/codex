@@ -35,6 +35,7 @@ use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
 use codex_extension_api::McpToolContext;
 use codex_features::Feature;
+use codex_login::AuthManagerLease;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::McpPermissionPromptAutoApproveContext;
@@ -141,11 +142,20 @@ pub(crate) async fn handle_mcp_tool_call(
     arguments: String,
 ) -> HandledMcpToolCall {
     let turn_context = &step_context.turn;
-    if let Some(auth_lease) = turn_context.auth_lease() {
+    let auth_lease = turn_context
+        .auth_lease()
+        .map(|lease| (*lease).clone())
+        .or_else(|| {
+            turn_context
+                .auth_manager
+                .as_ref()
+                .map(|manager| AuthManagerLease::legacy(Arc::clone(manager)))
+        });
+    if let Some(auth_lease) = auth_lease {
         sess.services.mcp_runtime.bind_resource_origin_call(
             &call_id,
             Arc::clone(&step_context.mcp),
-            (*auth_lease).clone(),
+            auth_lease,
         );
     }
     let server = tool_info.server_name.clone();
