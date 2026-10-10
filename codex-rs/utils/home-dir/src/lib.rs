@@ -2,6 +2,25 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use dirs::home_dir;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+fn effective_home_dir() -> Option<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    if uid != 0 {
+        return home_dir();
+    }
+    let passwd = unsafe { libc::getpwuid(uid) };
+    if passwd.is_null() || (*passwd).pw_dir.is_null() {
+        return None;
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr((*passwd).pw_dir) };
+    Some(PathBuf::from(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(not(unix))]
+fn effective_home_dir() -> Option<PathBuf> {
+    home_dir()
+}
+
 /// Returns the path to the Codex configuration directory, which can be
 /// specified by the `CODEX_HOME` environment variable. If not set, defaults to
 /// `~/.codex`.
@@ -50,7 +69,7 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
             }
         }
         None => {
-            let mut p = home_dir().ok_or_else(|| {
+            let mut p = effective_home_dir().ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "Could not find home directory",

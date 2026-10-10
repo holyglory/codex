@@ -6,18 +6,18 @@
 use super::*;
 use codex_app_server_protocol::AccountRoutingOverride;
 use codex_backend_client::AccountEntry;
+use codex_login::AuthManager;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
-use codex_login::AuthManager;
 use codex_model_provider::ProviderAccount;
 use codex_model_provider::ProviderAccountError;
 use codex_model_provider::ProviderAccountState;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::sync::Weak;
 use std::sync::Arc;
+use std::sync::Weak;
 use tokio::sync::Semaphore;
 use url::Url;
 
