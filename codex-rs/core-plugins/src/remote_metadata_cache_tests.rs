@@ -88,7 +88,9 @@ enabled = true
             .remote_installed_plugins_cache
             .read()
             .unwrap()
-            .plugins,
+            .values()
+            .next()
+            .and_then(|cache| cache.plugins.clone()),
         Some(vec![remote.clone()])
     );
     assert_eq!(manager.loaded_plugins_cache_generation(), loaded_generation);
