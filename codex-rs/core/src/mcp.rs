@@ -381,6 +381,7 @@ impl McpManager {
             self.plugins_manager.connector_snapshot(
                 host_plugin_connector_sources.chain(selected_plugin_connector_sources),
                 disabled_plugin_ids,
+                &config.plugins_config_input(),
             )
         } else {
             Default::default()

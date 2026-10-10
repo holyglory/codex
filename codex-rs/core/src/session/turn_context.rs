@@ -1455,6 +1455,23 @@ impl Session {
             session_configuration.provider.info().clone(),
             Some(Arc::clone(&turn_auth_manager)),
         );
+        let turn_models_manager = if account_lease.is_some() {
+            let models_manager = turn_provider.models_manager(
+                per_turn_config.codex_home.to_path_buf(),
+                per_turn_config.model_catalog.clone(),
+            );
+            let refresh_strategy = if session_configuration.session_source.is_non_root_agent() {
+                RefreshStrategy::Offline
+            } else {
+                RefreshStrategy::OnlineIfUncached
+            };
+            let _ = models_manager
+                .raw_model_catalog(refresh_strategy, per_turn_config.http_client_factory())
+                .await;
+            models_manager
+        } else {
+            Arc::clone(&self.services.models_manager)
+        };
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()
@@ -1462,7 +1479,7 @@ impl Session {
         let model_info = session_configuration
             .step_settings
             .resolve_model_info(
-                self.services.models_manager.as_ref(),
+                turn_models_manager.as_ref(),
                 &session_configuration.model_info_overrides,
             )
             .await;
@@ -1482,10 +1499,11 @@ impl Session {
             }
         };
         let plugins_input = per_turn_config.plugins_config_input();
+        let turn_auth = turn_auth_manager.auth().await;
         let plugin_outcome = self
             .services
             .plugins_manager
-            .plugins_for_config(&plugins_input)
+            .plugins_for_config_with_auth(&plugins_input, turn_auth.as_ref())
             .await
             .without_plugins(&session_configuration.disabled_plugin_ids);
         let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
@@ -1506,7 +1524,7 @@ impl Session {
             let plugin_skill_snapshots = self
                 .services
                 .plugins_manager
-                .plugin_skill_snapshots_for_config(&plugins_input);
+                .plugin_skill_snapshots_for_config_with_auth(&plugins_input, turn_auth.as_ref());
             let skills_input =
                 skills_load_input_from_config(&per_turn_config, effective_skill_roots)
                     .with_plugin_skill_snapshots(plugin_skill_snapshots);
@@ -1538,7 +1556,7 @@ impl Session {
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             step_settings,
-            &self.services.models_manager,
+            &turn_models_manager,
             self.services
                 .network_proxy
                 .load_full()
