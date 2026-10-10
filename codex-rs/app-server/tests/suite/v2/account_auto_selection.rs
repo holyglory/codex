@@ -596,6 +596,7 @@ async fn write_test_config(codex_home: &Path, backend_uri: &str) -> Result<()> {
             "chatgpt_base_url = \"{backend_uri}\"\ncli_auth_credentials_store = \"file\""
         ))
         .with_provider_config("requires_openai_auth = true\nsupports_websockets = true")
+        .with_extra_config("[tools.update_plan]\nenabled = true")
         .write(codex_home)?;
     write_models_cache(codex_home).await?;
     Ok(())
