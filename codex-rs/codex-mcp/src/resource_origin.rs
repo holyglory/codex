@@ -334,39 +334,58 @@ impl ResourceOrigin {
             anyhow::bail!("originating MCP tool call has ambiguous account selection");
         }
 
-        let tool_info = binding
-            .tool_info(CODEX_APPS_MCP_SERVER_NAME, &self.tool)
-            .context("originating MCP tool is unavailable")?;
-        if tool_info.connector_id.as_deref() != Some(self.connector_id.as_str()) {
-            anyhow::bail!("originating MCP tool connector does not match its app context");
-        }
-        let tool_meta = tool_info.tool.meta.as_ref().map(|meta| &meta.0);
-        let current_link_id = tool_meta
-            .and_then(|meta| meta.get("link_id"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty());
-        if current_link_id != self.link_id.as_deref() {
-            anyhow::bail!("originating MCP tool link does not match its app context");
-        }
-        if self.link_id.is_none()
-            && tool_meta
-                .and_then(|meta| meta.get("_codex_apps"))
-                .and_then(|meta| meta.get("requires_explicit_link_id"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-        {
-            anyhow::bail!("originating MCP tool requires an explicit account link");
-        }
-
-        let annotations = tool_info.tool.annotations.as_ref();
+        let tool_info = binding.tool_info(CODEX_APPS_MCP_SERVER_NAME, &self.tool);
+        let (tool_name, tool_title, destructive_hint, open_world_hint) =
+            if let Some(tool_info) = tool_info {
+                if tool_info.connector_id.as_deref() != Some(self.connector_id.as_str()) {
+                    anyhow::bail!("originating MCP tool connector does not match its app context");
+                }
+                let tool_meta = tool_info.tool.meta.as_ref().map(|meta| &meta.0);
+                let current_link_id = tool_meta
+                    .and_then(|meta| meta.get("link_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                if current_link_id != self.link_id.as_deref() {
+                    anyhow::bail!("originating MCP tool link does not match its app context");
+                }
+                if self.link_id.is_none()
+                    && tool_meta
+                        .and_then(|meta| meta.get("_codex_apps"))
+                        .and_then(|meta| meta.get("requires_explicit_link_id"))
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                {
+                    anyhow::bail!("originating MCP tool requires an explicit account link");
+                }
+                (
+                    tool_info.tool.name.as_ref(),
+                    tool_info.tool.title.as_deref(),
+                    tool_info
+                        .tool
+                        .annotations
+                        .as_ref()
+                        .and_then(|value| value.destructive_hint),
+                    tool_info
+                        .tool
+                        .annotations
+                        .as_ref()
+                        .and_then(|value| value.open_world_hint),
+                )
+            } else {
+                anyhow::ensure!(
+                    binding.has_server(CODEX_APPS_MCP_SERVER_NAME),
+                    "originating MCP tool is unavailable"
+                );
+                (self.tool.as_str(), None, None, None)
+            };
         if !AppToolPolicyEvaluator::new(&binding.config().config_layer_stack)
             .policy(AppToolPolicyInput {
                 connector_id: Some(&self.connector_id),
                 link_id: None,
-                tool_name: tool_info.tool.name.as_ref(),
-                tool_title: tool_info.tool.title.as_deref(),
-                destructive_hint: annotations.and_then(|value| value.destructive_hint),
-                open_world_hint: annotations.and_then(|value| value.open_world_hint),
+                tool_name,
+                tool_title,
+                destructive_hint,
+                open_world_hint,
             })
             .enabled
         {

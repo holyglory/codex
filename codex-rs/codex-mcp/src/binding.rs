@@ -105,6 +105,10 @@ impl McpBinding {
         self.connections.has_servers()
     }
 
+    pub fn has_server(&self, server: &str) -> bool {
+        self.connections.contains_server(server)
+    }
+
     pub async fn list_resources(
         &self,
         server: &str,
