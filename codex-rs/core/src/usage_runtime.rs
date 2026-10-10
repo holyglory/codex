@@ -78,6 +78,7 @@ pub(crate) struct UsageRuntime {
     entity_times: Mutex<HashMap<String, i64>>,
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
+    turn_operations: Mutex<HashMap<TurnId, (OperationId, Instant)>>,
 }
 
 impl fmt::Debug for UsageRuntime {
@@ -180,6 +181,7 @@ impl UsageRuntime {
             entity_times: Mutex::new(HashMap::new()),
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
+            turn_operations: Mutex::new(HashMap::new()),
         })
     }
 
@@ -229,13 +231,67 @@ impl UsageRuntime {
         self.ensure_turn(
             &store,
             NewTurn {
-                id: turn,
-                thread_id: thread,
+                id: turn.clone(),
+                thread_id: thread.clone(),
                 account: AccountAttributionSnapshot::default(),
                 created_at_ms,
             },
         )
-        .await
+        .await?;
+        let operation_id = OperationId::new();
+        self.write_required_for(
+            operation_id,
+            store
+                .begin_operation(&NewOperation {
+                    work_context: None,
+                    id: operation_id,
+                    process_id: self.process_id,
+                    thread_id: Some(thread),
+                    turn_id: Some(turn.clone()),
+                    agent_id: None,
+                    parent_operation_id: None,
+                    retry_of_operation_id: None,
+                    rework_of_operation_id: None,
+                    kind: OperationKind::ModelRequest,
+                    started_at_ms: created_at_ms,
+                    phase: Phase::Implementation,
+                    activity: Activity::Coding,
+                    activity_state: ActivityState::ModelActive,
+                    attribution_provenance: AttributionProvenance::DeterministicClassification,
+                })
+                .await,
+        )?;
+        self.turn_operations
+            .lock()
+            .await
+            .insert(turn, (operation_id, Instant::now()));
+        Ok(())
+    }
+
+    pub(crate) async fn record_turn_finished(
+        &self,
+        turn_id: &str,
+        status: TerminalStatus,
+    ) -> Result<(), CodexErr> {
+        let turn_id = TurnId::new(turn_id).map_err(|_| self.reject_invalid_metadata())?;
+        let Some((operation_id, started)) = self.turn_operations.lock().await.remove(&turn_id)
+        else {
+            return Ok(());
+        };
+        let store = self.store().await?;
+        self.write_required_for(
+            operation_id,
+            store
+                .finish_operation(&TerminalOperation {
+                    operation_id,
+                    status,
+                    occurred_at_ms: now_ms(),
+                    duration_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                    error_category: None,
+                })
+                .await,
+        )?;
+        Ok(())
     }
 
     async fn begin_model_attempt_once(

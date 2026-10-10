@@ -393,6 +393,16 @@ impl Session {
                 .instrument(trace_span!("session_task.run"))
                 .await;
             let sess = Arc::clone(&session);
+            let terminal_status = if task_result.is_ok() {
+                codex_usage::TerminalStatus::Completed
+            } else {
+                codex_usage::TerminalStatus::Failed
+            };
+            let _ = sess
+                .services
+                .usage_runtime
+                .record_turn_finished(&ctx_for_finish.sub_id, terminal_status)
+                .await;
             // Private reviewers save their transcript together with the terminal event.
             // Errors and cancellation retain their existing save path.
             if (!sess.is_private_guardian_reviewer().await
