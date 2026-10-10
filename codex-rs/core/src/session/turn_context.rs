@@ -1374,12 +1374,12 @@ impl Session {
         .await
     }
 
-    async fn new_startup_prewarm_turn_from_configuration(
+    pub(crate) async fn new_startup_prewarm_turn_from_configuration(
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
+        turn_environments: TurnEnvironmentSnapshot,
     ) -> Arc<TurnContext> {
-        let turn_environments = self.services.turn_environments.snapshot().await;
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
@@ -1688,8 +1688,13 @@ impl Session {
         sub_id: String,
     ) -> Arc<TurnContext> {
         let session_configuration = self.default_turn_configuration().await;
-        self.new_startup_prewarm_turn_from_configuration(sub_id, session_configuration)
-            .await
+        let turn_environments = self.services.turn_environments.snapshot().await;
+        self.new_startup_prewarm_turn_from_configuration(
+            sub_id,
+            session_configuration,
+            turn_environments,
+        )
+        .await
     }
 
     async fn default_turn_configuration(&self) -> SessionConfiguration {
