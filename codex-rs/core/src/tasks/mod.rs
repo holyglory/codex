@@ -304,6 +304,20 @@ impl Session {
             .turn_timing_state
             .mark_turn_started(started_at)
             .await;
+        let parent_thread_id = turn_context
+            .parent_thread_id
+            .as_ref()
+            .map(ToString::to_string);
+        let _ = self
+            .services
+            .usage_runtime
+            .record_turn_started(
+                &self.thread_id().to_string(),
+                &turn_context.sub_id,
+                parent_thread_id.as_deref(),
+                turn_started_at_unix_ms,
+            )
+            .await;
         turn_context
             .turn_metadata_state
             .set_turn_started_at_unix_ms(turn_started_at_unix_ms);

@@ -183,6 +183,61 @@ impl UsageRuntime {
         })
     }
 
+    /// Records the durable thread and turn boundary before work begins.
+    ///
+    /// This boundary is intentionally independent of model transport details so reporting can
+    /// account for turns even when a provider request is never started.
+    pub(crate) async fn record_turn_started(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        parent_thread_id: Option<&str>,
+        created_at_ms: i64,
+    ) -> Result<(), CodexErr> {
+        let store = self.store().await?;
+        let thread = ThreadId::new(thread_id).map_err(|_| self.reject_invalid_metadata())?;
+        let parent_thread = parent_thread_id
+            .map(ThreadId::new)
+            .transpose()
+            .map_err(|_| self.reject_invalid_metadata())?;
+        let parent_thread = match parent_thread {
+            Some(parent)
+                if self
+                    .write_required(store.thread_created_at(&parent).await)?
+                    .is_some() =>
+            {
+                Some(parent)
+            }
+            Some(_) | None => None,
+        };
+        self.ensure_thread(
+            &store,
+            NewThread {
+                id: thread.clone(),
+                parent_thread_id: parent_thread,
+                source_kind: ThreadSourceKind::new(if parent_thread_id.is_some() {
+                    "delegated"
+                } else {
+                    "root"
+                })
+                .map_err(|_| self.reject_invalid_metadata())?,
+                created_at_ms,
+            },
+        )
+        .await?;
+        let turn = TurnId::new(turn_id).map_err(|_| self.reject_invalid_metadata())?;
+        self.ensure_turn(
+            &store,
+            NewTurn {
+                id: turn,
+                thread_id: thread,
+                account: AccountAttributionSnapshot::default(),
+                created_at_ms,
+            },
+        )
+        .await
+    }
+
     async fn begin_model_attempt_once(
         self: &Arc<Self>,
         context: &ModelAttemptContext<'_>,
