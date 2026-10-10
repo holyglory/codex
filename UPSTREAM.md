@@ -71,6 +71,14 @@ the authority for release outcomes and verification receipts.
   appear to be a source regression. Put the pinned toolchain first in `PATH`
   (or use the governed environment) before changing code or interpreting test
   failures.
+- Treat an installed toolchain as availability, not selection. Before each
+  diagnostic or broad validation pass, retain the selected executable identity
+  and versions with `command -v rustc`, `command -v cargo`, `rustc --version`
+  and `cargo --version`, then compare them with `rust-toolchain.toml` and the
+  governed check's declared `PATH`. A candidate is toolchain-verified only
+  when the shell and governed runner both select the pinned channel; changing
+  `PATH`, `HOME`, `TMPDIR`, or Cargo target/cache settings later creates a new
+  environment and requires a fresh validation receipt.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve
