@@ -85,6 +85,12 @@ the authority for release outcomes and verification receipts.
   matching `PKG_CONFIG`, `PKG_CONFIG_LIBDIR`, and `LD_LIBRARY_PATH`, in every
   full release graph. A plain shell compile can fail before tests even start
   while the established native fixture is already sufficient.
+- **Pin the V8 archive and generated binding.** The V8 crate may request a
+  release asset URL that no longer exists for the target even though the
+  verified archive is already retained locally. Set both `RUSTY_V8_ARCHIVE`
+  and `RUSTY_V8_SRC_BINDING_PATH` from the retained `rusty-v8-150.4.0` fixture
+  before full Rust or package validation; do not treat the download 404 as a
+  product failure.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve
