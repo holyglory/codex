@@ -1709,6 +1709,7 @@ impl Session {
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
             let services = SessionServices {
+                usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,

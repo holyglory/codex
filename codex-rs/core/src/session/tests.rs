@@ -6971,6 +6971,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     )
     .expect("initialize test hooks");
     let services = SessionServices {
+        usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         mcp_runtime,
         mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -9239,6 +9240,7 @@ where
     )
     .expect("initialize test hooks");
     let services = SessionServices {
+        usage_runtime: crate::usage_runtime::UsageRuntime::new(config.codex_home.to_path_buf()),
         mcp_runtime,
         mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(

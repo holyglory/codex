@@ -28,6 +28,7 @@ use crate::tools::handlers::SendMessageToUserAsyncHandler;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::UsageActivityHandler;
 use crate::tools::handlers::UsageStatsHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
@@ -1158,6 +1159,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
 
     if !turn_context.session_source.is_non_root_agent() {
         registry.add(UsageStatsHandler);
+        registry.add(UsageActivityHandler);
     }
     if !advertise_environment_tools
         || !features.enabled(Feature::ShellTool)

@@ -189,10 +189,6 @@ impl CoreToolRuntime for UsageActivityHandler {
     fn is_builtin_control_tool(&self) -> bool {
         true
     }
-
-    fn bypasses_tool_hooks(&self) -> bool {
-        true
-    }
 }
 
 fn usage_activity_spec() -> ToolSpec {
