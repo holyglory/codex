@@ -20,6 +20,7 @@ use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
@@ -1163,12 +1164,35 @@ impl CodexThread {
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
         self.session.refresh_mcp_if_dirty().await;
-        let result = self
+        let result = match self
             .session
             .services
             .mcp_runtime
             .read_resource_for_call(self.session.thread_id, call_id, uri)
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) if error.to_string() == "MCP resource authority is unavailable" => {
+                let binding = self
+                    .session
+                    .services
+                    .mcp_runtime
+                    .current_binding_for_call(CODEX_APPS_MCP_SERVER_NAME)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("MCP resource authority is unavailable"))?;
+                self.session
+                    .services
+                    .mcp_runtime
+                    .read_resource_for_call_with_binding(
+                        &binding,
+                        self.session.thread_id,
+                        call_id,
+                        uri,
+                    )
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
 
         Ok(serde_json::to_value(result)?)
     }
