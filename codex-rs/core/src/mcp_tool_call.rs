@@ -150,6 +150,11 @@ pub(crate) async fn handle_mcp_tool_call(
                 .auth_manager
                 .as_ref()
                 .map(|manager| AuthManagerLease::legacy(Arc::clone(manager)))
+        })
+        .or_else(|| {
+            Some(AuthManagerLease::legacy(Arc::clone(
+                &sess.services.auth_manager,
+            )))
         });
     if let Some(auth_lease) = auth_lease {
         sess.services.mcp_runtime.bind_resource_origin_call(
