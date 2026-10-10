@@ -9,7 +9,7 @@ fn effective_home_dir() -> Option<PathBuf> {
         return home_dir();
     }
     let passwd = unsafe { libc::getpwuid(uid) };
-    if passwd.is_null() || (*passwd).pw_dir.is_null() {
+    if passwd.is_null() || unsafe { (*passwd).pw_dir.is_null() } {
         return None;
     }
     let path = unsafe { std::ffi::CStr::from_ptr((*passwd).pw_dir) };
