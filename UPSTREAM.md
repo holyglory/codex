@@ -63,6 +63,14 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Verify the toolchain before diagnosing compile failures.** Read
+  `codex-rs/rust-toolchain.toml`, resolve the actual `rustc` and `cargo` selected
+  by the shell, and compare them with the toolchain used by DevCoordinator's
+  governed checks. On this rebase the shell selected Rust 1.94.1 while the
+  repository requires 1.95.0; that mismatch made a stable `cfg_select!` test
+  appear to be a source regression. Put the pinned toolchain first in `PATH`
+  (or use the governed environment) before changing code or interpreting test
+  failures.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve

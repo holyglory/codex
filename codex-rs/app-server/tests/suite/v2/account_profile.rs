@@ -103,12 +103,14 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
                 alias: Some("secondary-renamed".to_string()),
                 enabled: None,
                 priority: Some(7),
+                credit_usage_enabled: Some(true),
                 note: Some("backup".to_string()),
                 clear_note: false,
             },
         })
         .await?;
     assert_eq!(updated.profile.alias, "secondary-renamed");
+    assert!(updated.profile.credit_usage_enabled);
     assert_eq!(updated.profile.note.as_deref(), Some("backup"));
 
     let activated: AccountProfileActivateResponse = server
@@ -162,6 +164,7 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         })
         .await?;
     assert!(read.profile.is_active);
+    assert!(read.profile.credit_usage_enabled);
     assert_eq!(read.profile.alias, "secondary-renamed");
     let _: AccountProfileActivateResponse = server
         .request(|request_id| ClientRequest::AccountProfileActivate {

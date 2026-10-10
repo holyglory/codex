@@ -89,6 +89,7 @@ use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntime;
@@ -236,6 +237,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod account_failover;
 mod code_mode_warning;
 mod config_refresh;
 pub(crate) mod context_window;
@@ -448,6 +450,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) instructions: SessionInstructions,
     pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) profile_auth_router: Option<SharedProfileAuthRouter>,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
@@ -561,6 +564,7 @@ impl Session {
             instructions,
             installation_id,
             auth_manager,
+            profile_auth_router,
             models_manager,
             git_root_discovery,
             environment_manager,
@@ -915,6 +919,7 @@ impl Session {
             instructions,
             installation_id,
             auth_manager.clone(),
+            profile_auth_router,
             models_manager.clone(),
             git_root_discovery,
             model_info,

@@ -21,6 +21,9 @@ use codex_extension_api::SelectedPluginSnapshot;
 use codex_file_system::EnvironmentAccess;
 use codex_file_system::FileSystemEnvironmentAccessor;
 use codex_file_system::FileSystemSandboxContext;
+use codex_login::AccountLease;
+use codex_login::CodexAuth;
+use codex_login::RouterExternalAuthState;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -332,6 +335,8 @@ pub struct TurnContext {
     /// Captured once so later steps do not re-read config layers to detect user preferences.
     pub(crate) use_model_token_budget_defaults: bool,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
+    pub(crate) account_lease: Option<AccountLease>,
+    pub(crate) profile_auth_error: Option<String>,
     /// Frozen settings used to construct this context. Legacy turn consumers
     /// keep this view even when later steps use different settings.
     pub(crate) initial_settings: Arc<ResolvedStepSettings>,
@@ -372,6 +377,7 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
+    pub(crate) automatic_account_switch_occurred: Arc<AtomicBool>,
     /// Shares the session-owned store; session approvals remain live across turns.
     session_grants: Arc<StdMutex<HashMap<String, AdditionalPermissionProfile>>>,
     /// Retained by background cells so a later active turn cannot replace their grants.
@@ -399,6 +405,96 @@ enum TurnContextBuildMode {
 }
 
 impl TurnContext {
+    pub(crate) fn automatic_account_switched(&self) -> bool {
+        self.account_lease
+            .as_ref()
+            .is_some_and(AccountLease::automatic_switched)
+            || self
+                .automatic_account_switch_occurred
+                .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_automatic_account_switch(&self) {
+        self.automatic_account_switch_occurred
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn auth_lease(&self) -> Option<Arc<codex_login::AuthManagerLease>> {
+        if self.profile_auth_error.is_some() {
+            return None;
+        }
+        self.extension_data.get::<codex_login::AuthManagerLease>()
+    }
+
+    pub(crate) fn plugin_auth_cached(&self) -> Option<CodexAuth> {
+        if self.profile_auth_error.is_some() {
+            return None;
+        }
+        self.auth_manager
+            .as_ref()
+            .and_then(|auth_manager| auth_manager.auth_cached())
+    }
+
+    pub(crate) fn with_account_lease(&self, account_lease: AccountLease) -> Self {
+        let auth_manager = Arc::clone(account_lease.auth_manager());
+        let extension_data = Arc::clone(&self.extension_data);
+        extension_data.insert(codex_login::AuthManagerLease::profile(
+            account_lease.clone(),
+        ));
+        Self {
+            sub_id: self.sub_id.clone(),
+            trace_id: self.trace_id.clone(),
+            realtime_active: self.realtime_active,
+            code_mode_available: self.code_mode_available,
+            config: Arc::clone(&self.config),
+            configured_token_budget: self.configured_token_budget.clone(),
+            use_model_token_budget_defaults: self.use_model_token_budget_defaults,
+            auth_manager: Some(Arc::clone(&auth_manager)),
+            account_lease: Some(account_lease),
+            profile_auth_error: None,
+            initial_settings: Arc::clone(&self.initial_settings),
+            disabled_plugin_ids: self.disabled_plugin_ids.clone(),
+            active_host_plugin_identities: self.active_host_plugin_identities.clone(),
+            next_step_settings: ArcSwap::from(self.next_step_settings.load_full()),
+            session_telemetry: self.session_telemetry.clone(),
+            provider: codex_model_provider::create_model_provider(
+                self.provider.info().clone(),
+                Some(auth_manager),
+            ),
+            session_source: self.session_source.clone(),
+            history_mode: self.history_mode,
+            parent_thread_id: self.parent_thread_id,
+            originator: self.originator.clone(),
+            initial_environments: self.initial_environments.clone(),
+            #[allow(deprecated)]
+            cwd: self.cwd.clone(),
+            current_date: self.current_date.clone(),
+            timezone: self.timezone.clone(),
+            app_server_client_name: self.app_server_client_name.clone(),
+            developer_instructions: self.developer_instructions.clone(),
+            multi_agent_version: self.multi_agent_version,
+            network: self.network.clone(),
+            windows_sandbox_level: self.windows_sandbox_level,
+            available_models: self.available_models.clone(),
+            unified_exec_shell_mode: self.unified_exec_shell_mode.clone(),
+            final_output_json_schema: self.final_output_json_schema.clone(),
+            dynamic_tools: self.dynamic_tools.clone(),
+            turn_metadata_state: Arc::clone(&self.turn_metadata_state),
+            extension_data,
+            turn_timing_state: Arc::clone(&self.turn_timing_state),
+            terminal_error: Arc::clone(&self.terminal_error),
+            session_grants: Arc::clone(&self.session_grants),
+            turn_grants: Arc::clone(&self.turn_grants),
+            automatic_account_switch_occurred: Arc::clone(&self.automatic_account_switch_occurred),
+            server_model_warning_emitted: AtomicBool::new(
+                self.server_model_warning_emitted.load(Ordering::Relaxed),
+            ),
+            model_verification_emitted: AtomicBool::new(
+                self.model_verification_emitted.load(Ordering::Relaxed),
+            ),
+            cyber_access_program: self.cyber_access_program,
+        }
+    }
     /// Returns the resolved causal root for this admitted turn.
     pub(crate) fn root_turn_id(&self) -> String {
         self.turn_metadata_state
@@ -430,6 +526,8 @@ impl TurnContext {
                 && !has_explicit_settings(&config),
             config,
             auth_manager: self.auth_manager.clone(),
+            account_lease: self.account_lease.clone(),
+            profile_auth_error: self.profile_auth_error.clone(),
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
@@ -458,6 +556,7 @@ impl TurnContext {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            automatic_account_switch_occurred: Arc::new(AtomicBool::new(false)),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),
@@ -830,6 +929,8 @@ impl TurnContext {
             configured_token_budget: self.configured_token_budget.clone(),
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: self.auth_manager.clone(),
+            account_lease: self.account_lease.clone(),
+            profile_auth_error: self.profile_auth_error.clone(),
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),
@@ -858,6 +959,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             terminal_error: Arc::clone(&self.terminal_error),
+            automatic_account_switch_occurred: Arc::clone(&self.automatic_account_switch_occurred),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::clone(&self.turn_grants),
             server_model_warning_emitted: AtomicBool::new(
@@ -933,6 +1035,40 @@ fn local_time_context() -> (String, String) {
             Utc::now().format("%Y-%m-%d").to_string(),
             "Etc/UTC".to_string(),
         ),
+    }
+}
+
+pub(crate) fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
+    let provider = &config.model_provider;
+    let is_auth_header = |name: &str| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "api-key" | "x-api-key" | "x-goog-api-key"
+        )
+    };
+    let direct_header = provider
+        .http_headers
+        .as_ref()
+        .is_some_and(|headers| headers.keys().any(|name| is_auth_header(name)));
+    let environment_header = provider.env_http_headers.as_ref().is_some_and(|headers| {
+        headers.iter().any(|(name, environment_variable)| {
+            is_auth_header(name)
+                && std::env::var_os(environment_variable).is_some_and(|value| !value.is_empty())
+        })
+    });
+    let environment_key = provider
+        .env_key
+        .as_ref()
+        .is_some_and(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    RouterExternalAuthState {
+        header_or_host: !provider.requires_openai_auth
+            || provider.experimental_bearer_token.is_some()
+            || provider.auth.is_some()
+            || provider.aws.is_some()
+            || direct_header
+            || environment_header
+            || environment_key,
+        ..Default::default()
     }
 }
 
@@ -1017,6 +1153,8 @@ impl Session {
         session_id: SessionId,
         session_grants: Arc<StdMutex<HashMap<String, AdditionalPermissionProfile>>>,
         auth_manager: Option<Arc<AuthManager>>,
+        account_lease: Option<AccountLease>,
+        profile_auth_error: Option<String>,
         session_telemetry: &SessionTelemetry,
         provider: SharedModelProvider,
         session_configuration: &SessionConfiguration,
@@ -1111,6 +1249,8 @@ impl Session {
             configured_token_budget,
             use_model_token_budget_defaults,
             auth_manager,
+            account_lease,
+            profile_auth_error,
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
@@ -1139,6 +1279,7 @@ impl Session {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            automatic_account_switch_occurred: Arc::new(AtomicBool::new(false)),
             session_grants,
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),
@@ -1272,6 +1413,48 @@ impl Session {
             cwd.clone(),
             turn_environments.primary_workspace_roots(),
         );
+        let (account_lease, profile_auth_error) = match &self.services.profile_auth_router {
+            Some(router) => {
+                let chatgpt_base_url = per_turn_config.chatgpt_base_url.clone();
+                let http_client_factory = per_turn_config.http_client_factory();
+                let external_auth = router_external_auth_state(&per_turn_config);
+                let probe = move |lease| {
+                    codex_backend_client::fetch_profile_rate_limits(
+                        lease,
+                        chatgpt_base_url.clone(),
+                        http_client_factory.clone(),
+                    )
+                };
+                let result = match build_mode {
+                    TurnContextBuildMode::StartupPrewarm => {
+                        router
+                            .lease_for_startup_prewarm_with_external_auth_and_probe(
+                                external_auth,
+                                probe,
+                            )
+                            .await
+                    }
+                    TurnContextBuildMode::Full | TurnContextBuildMode::InjectItems => {
+                        router
+                            .lease_for_turn_with_external_auth_and_probe(external_auth, probe)
+                            .await
+                    }
+                };
+                match result {
+                    Ok(lease) => (lease, None),
+                    Err(error) => (None, Some(error.safe_message())),
+                }
+            }
+            None => (None, None),
+        };
+        let turn_auth_manager = account_lease
+            .as_ref()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+        let turn_provider = codex_model_provider::create_model_provider(
+            session_configuration.provider.info().clone(),
+            Some(Arc::clone(&turn_auth_manager)),
+        );
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()
@@ -1343,9 +1526,11 @@ impl Session {
             self.thread_id(),
             self.session_id(),
             Arc::clone(&self.services.granted_permissions_by_environment_id),
-            Some(Arc::clone(&self.services.auth_manager)),
+            Some(turn_auth_manager),
+            account_lease,
+            profile_auth_error,
             &self.services.session_telemetry,
-            session_configuration.provider.clone(),
+            turn_provider,
             &session_configuration,
             multi_agent_version,
             self.services.user_shell.as_ref(),

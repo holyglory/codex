@@ -60,6 +60,7 @@ use crate::tools::spec_plan::build_tool_router;
 use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::record_turn_ttft_metric;
+use crate::usage_runtime::UsageRequestChain;
 use crate::util::error_or_panic;
 use codex_analytics::AppInvocation;
 use codex_analytics::CompactionPhase;
@@ -119,6 +120,7 @@ use codex_thread_store::PersistContext;
 use codex_tools::DiscoverableTool;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
+use codex_usage::AccountProfileRef;
 use codex_utils_path_uri::PathUri;
 use codex_utils_stream_parser::AssistantTextChunk;
 use codex_utils_stream_parser::AssistantTextStreamParser;
@@ -138,6 +140,9 @@ use tracing::trace_span;
 use tracing::warn;
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
+
+#[derive(Debug)]
+struct SamplingResponseStarted;
 
 /// Explicit MCP startup requirements retained across restarts within one user turn.
 #[derive(Default)]
@@ -162,20 +167,40 @@ pub(crate) struct McpStartupRequirements {
 ///
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     mut input: Vec<TurnInput>,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    if let Some(error) = turn_context.profile_auth_error.as_deref() {
+        return Err(CodexErr::Fatal(format!("Fatal error: {error}")));
+    }
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
     }
     // Record results from hooks that finished after the previous turn before this turn's user prompt.
     drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
 
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let turn_model_client = turn_context
+        .account_lease
+        .as_ref()
+        .and_then(|lease| {
+            AccountProfileRef::new(lease.account_id().as_str())
+                .ok()
+                .map(|profile| {
+                    sess.services
+                        .model_client
+                        .for_auth_manager(Arc::clone(lease.auth_manager()))
+                        .with_account_profile_ref(profile)
+                })
+        })
+        .unwrap_or_else(|| sess.services.model_client.clone());
+    let mut client_session = if turn_context.account_lease.is_some() {
+        turn_model_client.new_session()
+    } else {
+        prewarmed_client_session.unwrap_or_else(|| turn_model_client.new_session())
+    };
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
@@ -457,7 +482,7 @@ pub(crate) async fn run_turn(
         .await;
 
         // Capture once so context, advertised tools, and tool calls share one request view.
-        let step_context = match next_step_context.take() {
+        let mut step_context = match next_step_context.take() {
             Some(step_context) if pending_input.is_empty() => step_context,
             None if pending_input.is_empty() => {
                 sess.capture_step_context_with_required_mcp_servers(
@@ -528,21 +553,99 @@ pub(crate) async fn run_turn(
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
 
-            run_sampling_request(
-                Arc::clone(&sess),
-                Arc::clone(&step_context),
-                Arc::clone(&turn_context.extension_data),
-                Arc::clone(&turn_diff_tracker),
-                &mut client_session,
-                sampling_request_input,
-                cancellation_token.child_token(),
-            )
-            .await
+            let mut excluded_account_ids = HashSet::new();
+            loop {
+                let result = run_sampling_request(
+                    Arc::clone(&sess),
+                    Arc::clone(&step_context),
+                    Arc::clone(&turn_context.extension_data),
+                    Arc::clone(&turn_diff_tracker),
+                    &mut client_session,
+                    sampling_request_input.clone(),
+                    cancellation_token.child_token(),
+                )
+                .await;
+                let should_failover = result.as_ref().is_err_and(|error| {
+                    matches!(error.details(), CodexErrorDetails::UsageLimitReached(_))
+                        && turn_context.account_lease.is_some()
+                        && turn_context
+                            .extension_data
+                            .get::<SamplingResponseStarted>()
+                            .is_none()
+                });
+                if !should_failover {
+                    break result;
+                }
+                let Some(current_account_id) = turn_context
+                    .account_lease
+                    .as_ref()
+                    .map(|lease| lease.account_id().clone())
+                else {
+                    break result;
+                };
+                excluded_account_ids.insert(current_account_id);
+                let Some(next_turn_context) = sess
+                    .failover_turn_context_after_usage_limit(&turn_context, &excluded_account_ids)
+                    .await
+                else {
+                    break result;
+                };
+                client_session = sess
+                    .services
+                    .model_client
+                    .for_auth_manager(Arc::clone(
+                        next_turn_context
+                            .account_lease
+                            .as_ref()
+                            .expect("failover context has a profile lease")
+                            .auth_manager(),
+                    ))
+                    .with_account_profile_ref(
+                        codex_usage::AccountProfileRef::new(
+                            next_turn_context
+                                .account_lease
+                                .as_ref()
+                                .expect("failover context has a profile lease")
+                                .account_id()
+                                .as_str(),
+                        )
+                        .expect("account id is a valid usage profile reference"),
+                    )
+                    .new_session();
+                turn_context = next_turn_context;
+                step_context = Arc::new(StepContext {
+                    turn: Arc::clone(&turn_context),
+                    preempt: step_context.preempt.clone(),
+                    realtime: step_context.realtime.clone(),
+                    settings: Arc::clone(&step_context.settings),
+                    token_budget: step_context.token_budget.clone(),
+                    session_telemetry: step_context.session_telemetry.clone(),
+                    environments: step_context.environments.clone(),
+                    selected_capability_roots: step_context.selected_capability_roots.clone(),
+                    executor_capability_discovery: step_context
+                        .executor_capability_discovery
+                        .clone(),
+                    extension_data: ExtensionData::new(turn_context.sub_id.clone()),
+                    mcp: Arc::clone(&step_context.mcp),
+                    tool_router: Arc::clone(&step_context.tool_router),
+                    loaded_agents_md: step_context.loaded_agents_md.clone(),
+                });
+            }
         }
         .await;
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
                 guardian_budget_compacted = false;
+                if turn_context.automatic_account_switched() {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::Warning(WarningEvent {
+                            message: "Automatically selected another eligible account for this turn."
+                                .to_string(),
+                        }),
+                    )
+                    .await;
+                }
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -1635,6 +1738,7 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
+    let usage_chain = UsageRequestChain::new();
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
@@ -1678,6 +1782,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
+            &usage_chain,
         )
         .await
         {
@@ -2519,8 +2624,12 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
+    usage_chain: &UsageRequestChain,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
+    turn_context
+        .extension_data
+        .remove::<SamplingResponseStarted>();
     feedback_tags!(
         model = step_context.settings.model_info.slug.clone(),
         approval_policy = turn_context.approval_policy(),
@@ -2560,7 +2669,7 @@ async fn try_run_sampling_request(
         .reasoning_effort_for_request(&step_context.settings, super::RequestEffortUsage::Sampling)
         .await;
     let mut stream = client_session
-        .stream(
+        .stream_with_usage_chain(
             prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
@@ -2569,6 +2678,7 @@ async fn try_run_sampling_request(
             step_context.settings.service_tier.clone(),
             responses_metadata,
             &inference_trace,
+            &usage_chain,
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
@@ -2676,6 +2786,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemDone(mut item) => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
@@ -2809,6 +2920,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(mut item) => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;

@@ -60,6 +60,7 @@ use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::SharedProfileAuthRouter;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use codex_login::default_client::originator;
 use codex_model_provider::create_model_provider;
@@ -332,6 +333,7 @@ struct ThreadSpawnRequest {
     startup: Option<Arc<crate::session::startup::SessionStartup>>,
     options: StartThreadOptions,
     auth_manager: Arc<AuthManager>,
+    profile_auth_router: Option<SharedProfileAuthRouter>,
     agent_control: AgentControlInit,
     parent_thread_id: Option<ThreadId>,
     parent_originator: Option<String>,
@@ -353,6 +355,7 @@ impl ThreadSpawnRequest {
             startup: None,
             options,
             auth_manager,
+            profile_auth_router: None,
             agent_control: agent_control.into(),
             parent_thread_id: None,
             parent_originator: None,
@@ -420,6 +423,7 @@ pub(crate) struct ThreadManagerState {
     thread_id_generator: ThreadIdGenerator,
     agent_control_factory: Option<AgentControlFactory>,
     auth_manager: Arc<AuthManager>,
+    profile_auth_router: Option<SharedProfileAuthRouter>,
     models_manager: SharedModelsManager,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
@@ -598,6 +602,7 @@ impl ThreadManager {
                 attestation_provider,
                 external_time_provider,
                 auth_manager,
+                profile_auth_router: None,
                 session_source,
                 installation_id,
                 analytics_events_client,
@@ -639,6 +644,15 @@ impl ThreadManager {
             unreachable!("agent controller factory must be set before thread manager is shared");
         };
         state.agent_control_factory = Some(Arc::new(move |thread_id| Box::pin(factory(thread_id))));
+        self
+    }
+
+    /// Installs the shared managed-account router before sessions are created.
+    pub fn with_profile_auth_router(mut self, router: SharedProfileAuthRouter) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("profile auth router must be set before thread manager is shared");
+        };
+        state.profile_auth_router = Some(router);
         self
     }
 
@@ -773,6 +787,7 @@ impl ThreadManager {
                 attestation_provider: None,
                 external_time_provider: None,
                 auth_manager,
+                profile_auth_router: None,
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
@@ -2070,6 +2085,9 @@ impl ThreadManagerState {
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        if request.profile_auth_router.is_none() {
+            request.profile_auth_router = self.profile_auth_router.clone();
+        }
         let runtime = request.agent_control.runtime().clone();
         let membership = runtime.admit_start()?;
         let owns_startup = request.startup.is_none();
@@ -2094,6 +2112,7 @@ impl ThreadManagerState {
             inherited_instructions,
             inherited_exec_policy,
             user_shell_override,
+            profile_auth_router,
         } = request;
         let StartThreadOptions {
             mut config,
@@ -2324,6 +2343,7 @@ impl ThreadManagerState {
             instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
+            profile_auth_router,
             models_manager: Arc::clone(&self.models_manager),
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),

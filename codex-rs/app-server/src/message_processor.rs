@@ -428,10 +428,11 @@ impl MessageProcessor {
                     time_provider
                 }),
             );
-            match code_mode_session_provider {
+            let manager = match code_mode_session_provider {
                 Some(provider) => manager.with_code_mode_session_provider(provider),
                 None => manager,
-            }
+            };
+            manager.with_profile_auth_router(profile_auth_router.clone())
         });
         let model_catalog = Arc::new(crate::model_catalog::ModelCatalog::new(
             config_manager.clone(),

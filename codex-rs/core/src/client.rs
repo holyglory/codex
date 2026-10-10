@@ -141,9 +141,9 @@ use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
+use crate::model_context_estimate::model_context_estimate;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
-use crate::model_context_estimate::model_context_estimate;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
@@ -1460,23 +1460,25 @@ impl ModelClientSession {
         Some(
             runtime
                 .begin_model_attempt(ModelAttemptContext {
-                thread_id: &responses_metadata.thread_id,
-                parent_thread_id: parent_thread_id.as_deref(),
-                turn_id: responses_metadata.turn_id.as_deref(),
-                delegated: self.client.state.session_source.is_non_root_agent(),
-                provider,
-                model: &model_info.slug,
-                transport,
-                client_origin: usage_client_origin(&self.client.state.session_source),
-                account,
-                repositories: crate::usage_runtime::model_repository_candidates(responses_metadata)
+                    thread_id: &responses_metadata.thread_id,
+                    parent_thread_id: parent_thread_id.as_deref(),
+                    turn_id: responses_metadata.turn_id.as_deref(),
+                    delegated: self.client.state.session_source.is_non_root_agent(),
+                    provider,
+                    model: &model_info.slug,
+                    transport,
+                    client_origin: usage_client_origin(&self.client.state.session_source),
+                    account,
+                    repositories: crate::usage_runtime::model_repository_candidates(
+                        responses_metadata,
+                    )
                     .await,
-                attempt_number: request_attempt.attempt_number,
-                retry_of_operation_id: request_attempt.retry_of_operation_id,
-                retry_slot: request_attempt.retry_slot,
-                context_estimate,
-            })
-            .await
+                    attempt_number: request_attempt.attempt_number,
+                    retry_of_operation_id: request_attempt.retry_of_operation_id,
+                    retry_slot: request_attempt.retry_slot,
+                    context_estimate,
+                })
+                .await,
         )
     }
 
@@ -2281,7 +2283,8 @@ impl ModelClientSession {
                         let (status, category) = usage_api_error_outcome(&err);
                         attempt.finish(status, Some(category)).await;
                     }
-                    let response_debug_context = extract_response_debug_context_from_api_error(&err);
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
