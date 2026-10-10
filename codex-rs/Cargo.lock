@@ -5135,6 +5135,7 @@ version = "0.162.1+multi.1"
 dependencies = [
  "codex-utils-absolute-path",
  "dirs",
+ "libc",
  "pretty_assertions",
  "tempfile",
 ]
