@@ -594,7 +594,7 @@ pub(crate) async fn run_turn(
                 else {
                     break result;
                 };
-                let mut next_model_client = sess
+                let next_model_client = sess
                     .services
                     .model_client
                     .for_auth_manager(Arc::clone(
@@ -1792,7 +1792,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
-            &usage_chain,
+            usage_chain,
         )
         .await
         {
@@ -2691,7 +2691,7 @@ async fn try_run_sampling_request(
             step_context.settings.service_tier.clone(),
             responses_metadata,
             &inference_trace,
-            &usage_chain,
+            usage_chain,
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)

@@ -663,7 +663,7 @@ impl ModelClient {
         }
         let mut client = Self::new(
             Some(auth_manager),
-            self.agent_identity_policy.clone(),
+            self.agent_identity_policy,
             self.state.thread_id,
             self.state.provider.info().clone(),
             self.state.session_source.clone(),

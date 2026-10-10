@@ -371,7 +371,7 @@ impl McpManager {
 
         let auth_lease = context
             .thread_store()
-            .and_then(|store| store.get::<codex_login::AuthManagerLease>());
+            .and_then(codex_extension_api::ExtensionData::get::<codex_login::AuthManagerLease>);
         let auth = auth_lease
             .as_ref()
             .and_then(|lease| lease.auth_manager().auth_cached());

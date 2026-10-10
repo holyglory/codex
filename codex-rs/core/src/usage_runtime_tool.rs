@@ -921,7 +921,7 @@ impl UsageWaitSpan {
     }
 
     async fn record_event(&self, kind: codex_usage::ActivitySpanEventKind) {
-        if matches!(kind, codex_usage::ActivitySpanEventKind::Ended) {}
+        matches!(kind, codex_usage::ActivitySpanEventKind::Ended);
         if !self.record_detail {
             return;
         }
