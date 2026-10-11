@@ -98,6 +98,15 @@ pub(crate) struct McpServerConnection {
 }
 
 impl McpServerConnection {
+    fn quarantine_authentication(&self, error: &StartupOutcomeError) {
+        self.authentication_blocked.store(true, Ordering::Release);
+        *self
+            .authentication_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+        self.client.cancel_token.cancel();
+    }
+
     async fn reusable_client(
         &self,
         desired: &McpServerConnectionIdentity,
@@ -153,11 +162,7 @@ impl McpServerConnection {
         match self.client.client().await {
             Ok(client) => Ok(client),
             Err(error) if error.is_authentication_required() => {
-                self.authentication_blocked.store(true, Ordering::Release);
-                *self
-                    .authentication_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+                self.quarantine_authentication(&error);
                 Err(error)
             }
             Err(error) => Err(error),
@@ -249,14 +254,7 @@ impl McpServerView {
         let tools = match self.connection.client.listed_tools().await {
             Ok(tools) => tools,
             Err(error) if error.is_authentication_required() => {
-                self.connection
-                    .authentication_blocked
-                    .store(true, Ordering::Release);
-                *self
-                    .connection
-                    .authentication_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+                self.connection.quarantine_authentication(&error);
                 return Err(error);
             }
             Err(error) => return Err(error),
@@ -711,18 +709,19 @@ impl McpConnectionSet {
             } else {
                 (None, None)
             };
+            let connection = Arc::new(McpServerConnection {
+                identity: Some(connection_identity),
+                client: async_managed_client.clone(),
+                startup_timeout,
+                startup_trigger,
+                authentication_blocked: AtomicBool::new(false),
+                authentication_error: Mutex::new(None),
+                _diagnostics_guard: LIVE_CONNECTIONS.track(),
+            });
             servers.insert(
                 server_name.clone(),
                 McpServerView {
-                    connection: Arc::new(McpServerConnection {
-                        identity: Some(connection_identity),
-                        client: async_managed_client.clone(),
-                        startup_timeout,
-                        startup_trigger,
-                        authentication_blocked: AtomicBool::new(false),
-                        authentication_error: Mutex::new(None),
-                        _diagnostics_guard: LIVE_CONNECTIONS.track(),
-                    }),
+                    connection: Arc::clone(&connection),
                     protocol_mode,
                     startup_readiness: configured_config.startup_readiness,
                     metadata,
@@ -734,6 +733,7 @@ impl McpConnectionSet {
             let tx_event = tx_event.clone();
             let submit_id = startup_submit_id.clone();
             let publication_gate = publication_gate.clone();
+            let connection_for_startup = Arc::clone(&connection);
             let startup = async move {
                 if let Some(mut startup_receiver) = startup_receiver
                     && tokio::select! {
@@ -830,6 +830,12 @@ impl McpConnectionSet {
                 }
                 if cancel_token.is_cancelled() {
                     outcome = Err(StartupOutcomeError::Cancelled);
+                }
+
+                if let Err(error) = &outcome
+                    && error.is_authentication_required()
+                {
+                    connection_for_startup.quarantine_authentication(error);
                 }
 
                 if matches!(&outcome, Err(StartupOutcomeError::Failed { .. })) {

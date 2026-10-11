@@ -758,6 +758,7 @@ async fn regular_authentication_failure_is_quarantined_for_the_connection_genera
 
     let first = connection.client().await;
     assert!(matches!(first, Err(ref error) if error.is_authentication_required()));
+    assert!(connection.client.cancel_token.is_cancelled());
     let second = connection.client().await;
     assert!(matches!(second, Err(ref error) if error.is_authentication_required()));
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
