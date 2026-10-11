@@ -85,11 +85,13 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 .unwrap_or_else(|| "Invalid request.".to_string()),
         },
         Some("server_is_overloaded" | "slow_down") => {
-            let retry_after = try_parse_retry_delay(&error).and_then(RetryAfter::from_delay);
+            let retry_after = retry_after_header
+                .or_else(|| try_parse_retry_delay(&error).and_then(RetryAfter::from_delay));
             ApiError::ServerOverloaded { retry_after }
         }
         Some("rate_limit_exceeded") => {
-            let retry_after = try_parse_retry_delay(&error).and_then(RetryAfter::from_delay);
+            let retry_after = retry_after_header
+                .or_else(|| try_parse_retry_delay(&error).and_then(RetryAfter::from_delay));
             ApiError::RateLimitExceeded {
                 message: error.message.unwrap_or_default(),
                 retry_after,
