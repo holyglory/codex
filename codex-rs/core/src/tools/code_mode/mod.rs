@@ -271,13 +271,37 @@ impl CodeModeService {
     }
 }
 
-fn handle_runtime_response(
+async fn handle_runtime_response(
+    exec: &ExecContext,
     model_info: &codex_protocol::openai_models::ModelInfo,
-    response: RuntimeResponse,
+    mut response: RuntimeResponse,
     max_output_tokens: Option<usize>,
     wall_time: Duration,
     experimental_show_cell_overhead: bool,
-) -> CodeModeToolOutput {
+) -> Result<CodeModeToolOutput, String> {
+    let parked_at = std::time::Instant::now();
+    while exec
+        .session
+        .services
+        .code_mode_service
+        .event_waits
+        .coalesces(&response)
+    {
+        let RuntimeResponse::Yielded { cell_id, .. } = &response else {
+            break;
+        };
+        response = match exec.session.services.code_mode_service.wait(
+            codex_code_mode::WaitRequest {
+                cell_id: cell_id.clone(),
+                yield_time_ms: DEFAULT_WAIT_YIELD_TIME_MS,
+            },
+            /*preempt*/ None,
+        ).await? {
+            codex_code_mode::WaitOutcome::LiveCell(response) => response,
+            codex_code_mode::WaitOutcome::MissingCell(_) => return Err("the code cell for this event wait is no longer available; inspect the persisted wait before retrying".into()),
+        };
+    }
+    let wall_time = wall_time.saturating_add(parked_at.elapsed());
     let script_status = format_script_status(&response);
     let supports_original = can_request_original_image_detail(model_info);
     let host_duration = response
@@ -302,12 +326,12 @@ fn handle_runtime_response(
         });
     }
     content_items = truncate_code_mode_result(content_items, max_output_tokens);
-    CodeModeToolOutput::new(
+    Ok(CodeModeToolOutput::new(
         FunctionToolOutput::from_content(content_items, Some(success)),
         script_status,
         wall_time,
         host_duration,
-    )
+    ))
 }
 
 fn format_script_status(response: &RuntimeResponse) -> String {

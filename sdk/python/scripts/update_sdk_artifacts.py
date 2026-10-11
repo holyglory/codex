@@ -298,7 +298,7 @@ def _normalize_open_ended_enum(definition: dict[str, Any]) -> None:
         definition["anyOf"].append(object_fallback)
 
 
-DISCRIMINATOR_KEYS = ("type", "method", "mode", "state", "status", "role", "reason")
+DISCRIMINATOR_KEYS = ("type", "method", "mode", "state", "status", "role", "reason", "action")
 
 
 def _to_pascal_case(value: str) -> str:

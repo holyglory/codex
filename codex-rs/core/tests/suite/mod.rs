@@ -94,6 +94,7 @@ mod guardian_cached_score;
 #[path = "guardian_checkpoint_migration_tests.rs"]
 mod guardian_checkpoint_migration;
 // Uses the same command-approval harness as guardian_review below.
+mod account_management;
 mod await_work;
 mod canonical_plugin_connectors;
 mod gateway_auth;
@@ -242,6 +243,8 @@ mod unified_exec_stdin_review_size;
 #[cfg(unix)]
 mod unified_exec_zsh_fork_approvals;
 mod unstable_features_warning;
+mod usage_accounting_recovery;
+mod usage_stats;
 mod user_notification;
 mod user_shell_cmd;
 mod view_image;

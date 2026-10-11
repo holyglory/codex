@@ -1,0 +1,362 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ProjectAutomationCommand": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "linkWork"
+              ],
+              "type": "string"
+            },
+            "clearExperiment": {
+              "type": "boolean"
+            },
+            "clearOutcome": {
+              "type": "boolean"
+            },
+            "experimentRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "outcomeId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationLinkWorkCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationStatusCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "bind"
+              ],
+              "type": "string"
+            },
+            "purpose": {
+              "$ref": "#/definitions/ProjectWorkPurpose"
+            },
+            "workstream": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "purpose"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "acceptance": {
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "activateDelivery"
+              ],
+              "type": "string"
+            },
+            "deliveryIntervalMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hardStopIntervalMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "surface": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "acceptance",
+            "action",
+            "surface",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "postpone"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "deliveryDueAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "hardStopAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "deliveryDueAtMs",
+            "hardStopAtMs",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "pause"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "resume"
+              ],
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationResumeCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "recordDelivery"
+              ],
+              "type": "string"
+            },
+            "deliveredAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "evidenceRef": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "deliveredAtMs",
+            "evidenceRef",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "completeReview"
+              ],
+              "type": "string"
+            },
+            "decisionRef": {
+              "type": "string"
+            },
+            "jobId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "decisionRef",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "requestReview"
+              ],
+              "type": "string"
+            },
+            "evidenceRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "evidenceRef"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "transfer"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "ownerThreadId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "ownerThreadId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "complete"
+              ],
+              "type": "string"
+            },
+            "outcomeRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcomeRef"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProjectWorkPurpose": {
+      "enum": [
+        "discussion",
+        "specification",
+        "analysis",
+        "implementation",
+        "recovery"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "command": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ProjectAutomationCommand"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expectedRevision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "projectId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ProjectAutomationCommandParams",
+  "type": "object"
+}

@@ -615,6 +615,8 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
     // initialize shell snapshot storage. Neither is thread persistence.
     entries.remove(".sandbox_migration");
     entries.remove("shell_snapshots");
+    // Content-free usage accounting remains local even when thread history is remote.
+    entries.remove("usage");
     assert_eq!(
         entries,
         BTreeSet::from([

@@ -985,6 +985,221 @@
       },
       "type": "object"
     },
+    "EventSourceCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionFilter": {
+      "additionalProperties": false,
+      "properties": {
+        "eventTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventTypes",
+        "labels",
+        "source"
+      ],
+      "type": "object"
+    },
+    "EventSubscriptionHeartbeat": {
+      "additionalProperties": false,
+      "properties": {
+        "firstDeadlineAt": {
+          "description": "Nullable first deadline as whole Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intervalSeconds": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intervalSeconds"
+      ],
+      "type": "object"
+    },
+    "EventWakePolicy": {
+      "enum": [
+        "runningOnly",
+        "allowBackground"
+      ],
+      "type": "string"
+    },
+    "EventWakePolicyCommand": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "read"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ReadEventWakePolicyCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "set"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "expectedRevision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "policy": {
+              "$ref": "#/definitions/EventWakePolicy"
+            },
+            "scope": {
+              "$ref": "#/definitions/EventWakeScope"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "expectedRevision",
+            "policy",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EventWakeScope": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "thread"
+              ],
+              "title": "ThreadEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ThreadEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "subscriptionId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "subscription"
+              ],
+              "title": "SubscriptionEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "subscriptionId",
+            "type"
+          ],
+          "title": "SubscriptionEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "projectId": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "projectDelivery"
+              ],
+              "title": "ProjectDeliveryEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "projectId",
+            "target",
+            "type"
+          ],
+          "title": "ProjectDeliveryEventWakeScope",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "projectId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "projectReview"
+              ],
+              "title": "ProjectReviewEventWakeScopeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "projectId",
+            "type"
+          ],
+          "title": "ProjectReviewEventWakeScope",
+          "type": "object"
+        }
+      ]
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {
@@ -1743,6 +1958,44 @@
         "original"
       ],
       "type": "string"
+    },
+    "IngressEvent": {
+      "additionalProperties": false,
+      "description": "Security boundary from `security-assumptions.md`: only these bounded metadata fields cross ingress; unknown publisher payload fields are rejected rather than retained or injected.",
+      "properties": {
+        "cursor": {
+          "$ref": "#/definitions/EventSourceCursor"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "occurredAt": {
+          "description": "Event occurrence time as whole Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "eventType",
+        "id",
+        "labels",
+        "occurredAt",
+        "source"
+      ],
+      "type": "object"
     },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
@@ -2927,6 +3180,354 @@
       ],
       "type": "object"
     },
+    "ProjectAutomationCommand": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "linkWork"
+              ],
+              "type": "string"
+            },
+            "clearExperiment": {
+              "type": "boolean"
+            },
+            "clearOutcome": {
+              "type": "boolean"
+            },
+            "experimentRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "outcomeId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationLinkWorkCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationStatusCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "bind"
+              ],
+              "type": "string"
+            },
+            "purpose": {
+              "$ref": "#/definitions/ProjectWorkPurpose"
+            },
+            "workstream": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "purpose"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "acceptance": {
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "activateDelivery"
+              ],
+              "type": "string"
+            },
+            "deliveryIntervalMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hardStopIntervalMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "surface": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "acceptance",
+            "action",
+            "surface",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "postpone"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "deliveryDueAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "hardStopAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "deliveryDueAtMs",
+            "hardStopAtMs",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "pause"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "resume"
+              ],
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "ProjectAutomationResumeCommand",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "recordDelivery"
+              ],
+              "type": "string"
+            },
+            "deliveredAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "evidenceRef": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "deliveredAtMs",
+            "evidenceRef",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "completeReview"
+              ],
+              "type": "string"
+            },
+            "decisionRef": {
+              "type": "string"
+            },
+            "jobId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "decisionRef",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "requestReview"
+              ],
+              "type": "string"
+            },
+            "evidenceRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "evidenceRef"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "transfer"
+              ],
+              "type": "string"
+            },
+            "authorizationRef": {
+              "type": "string"
+            },
+            "ownerThreadId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "authorizationRef",
+            "ownerThreadId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "complete"
+              ],
+              "type": "string"
+            },
+            "outcomeRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcomeRef"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProjectAutomationCommandParams": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectAutomationCommand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedRevision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "projectId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ProjectRoot": {
       "properties": {
         "path": {
@@ -2942,6 +3543,16 @@
       "enum": [
         "position",
         "recencyAt"
+      ],
+      "type": "string"
+    },
+    "ProjectWorkPurpose": {
+      "enum": [
+        "discussion",
+        "specification",
+        "analysis",
+        "implementation",
+        "recovery"
       ],
       "type": "string"
     },
@@ -6545,6 +7156,30 @@
         "params"
       ],
       "title": "Thread/goal/clearRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "projectAutomation/command"
+          ],
+          "title": "ProjectAutomation/commandRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectAutomationCommandParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ProjectAutomation/commandRequest",
       "type": "object"
     },
     {

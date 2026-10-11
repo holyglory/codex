@@ -1403,6 +1403,107 @@ class EnvironmentSkillsParams(BaseModel):
     ] = None
 
 
+class EventSourceCursor(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    sequence: Annotated[int, Field(ge=0)]
+    value: str | None = None
+
+
+class EventSubscriptionFilter(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    event_types: Annotated[list[str], Field(alias="eventTypes")]
+    labels: dict[str, str]
+    source: str
+
+
+class EventSubscriptionHeartbeat(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    first_deadline_at: Annotated[
+        int | None,
+        Field(
+            alias="firstDeadlineAt", description="Nullable first deadline as whole Unix seconds."
+        ),
+    ] = None
+    interval_seconds: Annotated[int, Field(alias="intervalSeconds", ge=0)]
+
+
+class EventWakePolicy(Enum):
+    running_only = "runningOnly"
+    allow_background = "allowBackground"
+
+
+class ReadEventWakePolicyCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["read"], Field(title="ReadEventWakePolicyCommandAction")]
+
+
+class ThreadEventWakeScope(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["thread"], Field(title="ThreadEventWakeScopeType")]
+
+
+class SubscriptionEventWakeScope(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    subscription_id: Annotated[str, Field(alias="subscriptionId")]
+    type: Annotated[Literal["subscription"], Field(title="SubscriptionEventWakeScopeType")]
+
+
+class ProjectDeliveryEventWakeScope(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    project_id: Annotated[str, Field(alias="projectId")]
+    target: str
+    type: Annotated[Literal["projectDelivery"], Field(title="ProjectDeliveryEventWakeScopeType")]
+
+
+class ProjectReviewEventWakeScope(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    project_id: Annotated[str, Field(alias="projectId")]
+    type: Annotated[Literal["projectReview"], Field(title="ProjectReviewEventWakeScopeType")]
+
+
+class EventWakeScope(
+    RootModel[
+        ThreadEventWakeScope
+        | SubscriptionEventWakeScope
+        | ProjectDeliveryEventWakeScope
+        | ProjectReviewEventWakeScope
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: (
+        ThreadEventWakeScope
+        | SubscriptionEventWakeScope
+        | ProjectDeliveryEventWakeScope
+        | ProjectReviewEventWakeScope
+    )
+
+
 class ExperimentalFeatureEnablementSetParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -2216,6 +2317,21 @@ class InAppBrowserRequirements(BaseModel):
     ] = None
 
 
+class IngressEvent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    cursor: EventSourceCursor
+    event_type: Annotated[str, Field(alias="eventType")]
+    id: str
+    labels: dict[str, str]
+    occurred_at: Annotated[
+        int, Field(alias="occurredAt", description="Event occurrence time as whole Unix seconds.")
+    ]
+    source: str
+
+
 class InitializeCapabilities(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -2602,6 +2718,34 @@ class LocalUsageReportToolOutcome(BaseModel):
     )
     count: Annotated[int, Field(ge=0)]
     outcome: str
+
+
+class LocalUsageReportWorktree(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    label: str
+    model_request_count: Annotated[int, Field(alias="modelRequestCount", ge=0)]
+    operation_count: Annotated[int, Field(alias="operationCount", ge=0)]
+    repository_key: Annotated[str, Field(alias="repositoryKey")]
+    tool_count: Annotated[int, Field(alias="toolCount", ge=0)]
+    total_tokens: Annotated[int | None, Field(alias="totalTokens")] = None
+    unknown_token_observations: Annotated[int, Field(alias="unknownTokenObservations", ge=0)]
+    worktree_key: Annotated[str, Field(alias="worktreeKey")]
+
+
+class LocalUsageReportWorktreeCoverage(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    assigned_operation_count: Annotated[int, Field(alias="assignedOperationCount", ge=0)]
+    assigned_token_observation_count: Annotated[
+        int, Field(alias="assignedTokenObservationCount", ge=0)
+    ]
+    unassigned_operation_count: Annotated[int, Field(alias="unassignedOperationCount", ge=0)]
+    unassigned_token_observation_count: Annotated[
+        int, Field(alias="unassignedTokenObservationCount", ge=0)
+    ]
 
 
 class LocalUsageTokenCategory(BaseModel):
@@ -4010,6 +4154,148 @@ class ProcessTerminalSize(BaseModel):
     rows: Annotated[int, Field(description="Terminal height in character cells.", ge=0)]
 
 
+class ProjectAutomationCapability(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    version: Annotated[int, Field(ge=0)]
+
+
+class LinkWorkProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["linkWork"], Field(title="LinkWorkProjectAutomationCommandAction")]
+    clear_experiment: Annotated[bool | None, Field(alias="clearExperiment")] = None
+    clear_outcome: Annotated[bool | None, Field(alias="clearOutcome")] = None
+    experiment_ref: Annotated[str | None, Field(alias="experimentRef")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+
+
+class StatusProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["status"], Field(title="StatusProjectAutomationCommandAction")]
+
+
+class ActivateDeliveryProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    acceptance: str
+    action: Annotated[
+        Literal["activateDelivery"], Field(title="ActivateDeliveryProjectAutomationCommandAction")
+    ]
+    delivery_interval_ms: Annotated[int | None, Field(alias="deliveryIntervalMs")] = None
+    hard_stop_interval_ms: Annotated[int | None, Field(alias="hardStopIntervalMs")] = None
+    surface: str
+    target: str
+
+
+class PostponeProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["postpone"], Field(title="PostponeProjectAutomationCommandAction")]
+    authorization_ref: Annotated[str, Field(alias="authorizationRef")]
+    delivery_due_at_ms: Annotated[int, Field(alias="deliveryDueAtMs")]
+    hard_stop_at_ms: Annotated[int, Field(alias="hardStopAtMs")]
+    target: str
+
+
+class PauseProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["pause"], Field(title="PauseProjectAutomationCommandAction")]
+    authorization_ref: Annotated[str, Field(alias="authorizationRef")]
+    target: str | None = None
+
+
+class ResumeProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["resume"], Field(title="ResumeProjectAutomationCommandAction")]
+    target: str | None = None
+
+
+class RecordDeliveryProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[
+        Literal["recordDelivery"], Field(title="RecordDeliveryProjectAutomationCommandAction")
+    ]
+    delivered_at_ms: Annotated[int, Field(alias="deliveredAtMs")]
+    evidence_ref: Annotated[str, Field(alias="evidenceRef")]
+    target: str
+
+
+class CompleteReviewProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[
+        Literal["completeReview"], Field(title="CompleteReviewProjectAutomationCommandAction")
+    ]
+    decision_ref: Annotated[str, Field(alias="decisionRef")]
+    job_id: Annotated[str, Field(alias="jobId")]
+
+
+class RequestReviewProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[
+        Literal["requestReview"], Field(title="RequestReviewProjectAutomationCommandAction")
+    ]
+    evidence_ref: Annotated[str, Field(alias="evidenceRef")]
+
+
+class TransferProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["transfer"], Field(title="TransferProjectAutomationCommandAction")]
+    authorization_ref: Annotated[str, Field(alias="authorizationRef")]
+    owner_thread_id: Annotated[str, Field(alias="ownerThreadId")]
+
+
+class CompleteProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["complete"], Field(title="CompleteProjectAutomationCommandAction")]
+    outcome_ref: Annotated[str, Field(alias="outcomeRef")]
+
+
+class ProjectAutomationJobKind(Enum):
+    performance_review = "performanceReview"
+    delivery = "delivery"
+    delivery_recovery = "deliveryRecovery"
+
+
+class ProjectAutomationMode(Enum):
+    performance_only = "performanceOnly"
+    normal = "normal"
+    delivery_due = "deliveryDue"
+    recovery_only = "recoveryOnly"
+    paused = "paused"
+
+
 class ProjectChangeType(Enum):
     created = "created"
     updated = "updated"
@@ -4034,6 +4320,14 @@ class ProjectRoot(BaseModel):
 class ProjectSortKey(Enum):
     position = "position"
     recency_at = "recencyAt"
+
+
+class ProjectWorkPurpose(Enum):
+    discussion = "discussion"
+    specification = "specification"
+    analysis = "analysis"
+    implementation = "implementation"
+    recovery = "recovery"
 
 
 class RateLimitReachedType(Enum):
@@ -8603,6 +8897,51 @@ class ContentItem(
     )
 
 
+class EventSubscription(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    created_at: Annotated[int, Field(alias="createdAt")]
+    filter: EventSubscriptionFilter | None = None
+    heartbeat_interval_seconds: Annotated[
+        int | None, Field(alias="heartbeatIntervalSeconds", ge=0)
+    ] = None
+    id: str
+    next_heartbeat_at: Annotated[int | None, Field(alias="nextHeartbeatAt")] = None
+    source_cursor: Annotated[EventSourceCursor | None, Field(alias="sourceCursor")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    updated_at: Annotated[int, Field(alias="updatedAt")]
+
+
+class SetEventWakePolicyCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["set"], Field(title="SetEventWakePolicyCommandAction")]
+    authorization_ref: Annotated[str, Field(alias="authorizationRef")]
+    expected_revision: Annotated[int, Field(alias="expectedRevision")]
+    policy: EventWakePolicy
+    scope: EventWakeScope
+
+
+class EventWakePolicyCommand(RootModel[ReadEventWakePolicyCommand | SetEventWakePolicyCommand]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: ReadEventWakePolicyCommand | SetEventWakePolicyCommand
+
+
+class EventWakePolicyEntry(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authorization_ref: Annotated[str, Field(alias="authorizationRef")]
+    policy: EventWakePolicy
+    scope: EventWakeScope
+    suspended: bool
+
+
 class ExperimentalFeature(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9588,6 +9927,95 @@ class Project(BaseModel):
     ] = None
     roots: list[ProjectRoot]
     updated_at: Annotated[int, Field(alias="updatedAt")]
+
+
+class BindProjectAutomationCommand(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    action: Annotated[Literal["bind"], Field(title="BindProjectAutomationCommandAction")]
+    purpose: ProjectWorkPurpose
+    workstream: str | None = None
+
+
+class ProjectAutomationCommand(
+    RootModel[
+        LinkWorkProjectAutomationCommand
+        | StatusProjectAutomationCommand
+        | BindProjectAutomationCommand
+        | ActivateDeliveryProjectAutomationCommand
+        | PostponeProjectAutomationCommand
+        | PauseProjectAutomationCommand
+        | ResumeProjectAutomationCommand
+        | RecordDeliveryProjectAutomationCommand
+        | CompleteReviewProjectAutomationCommand
+        | RequestReviewProjectAutomationCommand
+        | TransferProjectAutomationCommand
+        | CompleteProjectAutomationCommand
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: (
+        LinkWorkProjectAutomationCommand
+        | StatusProjectAutomationCommand
+        | BindProjectAutomationCommand
+        | ActivateDeliveryProjectAutomationCommand
+        | PostponeProjectAutomationCommand
+        | PauseProjectAutomationCommand
+        | ResumeProjectAutomationCommand
+        | RecordDeliveryProjectAutomationCommand
+        | CompleteReviewProjectAutomationCommand
+        | RequestReviewProjectAutomationCommand
+        | TransferProjectAutomationCommand
+        | CompleteProjectAutomationCommand
+    )
+
+
+class ProjectAutomationCommandParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    command: ProjectAutomationCommand | None = None
+    expected_revision: Annotated[int | None, Field(alias="expectedRevision", ge=0)] = None
+    project_id: Annotated[str | None, Field(alias="projectId")] = None
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+
+
+class ProjectAutomationJob(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    decision_ref: Annotated[str | None, Field(alias="decisionRef")] = None
+    due_at_ms: Annotated[int, Field(alias="dueAtMs")]
+    id: str
+    kind: ProjectAutomationJobKind
+    notification_delivered: Annotated[bool | None, Field(alias="notificationDelivered")] = False
+    notified: bool
+    revision: Annotated[int, Field(ge=0)]
+
+
+class ProjectDeliveryObligation(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    acceptance: str
+    delivered_at_ms: Annotated[int | None, Field(alias="deliveredAtMs")] = None
+    delivery_due_at_ms: Annotated[int, Field(alias="deliveryDueAtMs")]
+    delivery_interval_ms: Annotated[int, Field(alias="deliveryIntervalMs")]
+    evidence_ref: Annotated[str | None, Field(alias="evidenceRef")] = None
+    hard_stop_at_ms: Annotated[int, Field(alias="hardStopAtMs")]
+    hard_stop_interval_ms: Annotated[int, Field(alias="hardStopIntervalMs")]
+    job: ProjectAutomationJob | None = None
+    paused: bool
+    revision: Annotated[int, Field(ge=0)]
+    started_at_ms: Annotated[int, Field(alias="startedAtMs")]
+    surface: str
+    target: str
+    workstream: str
 
 
 class QueuedSubmission(BaseModel):
@@ -11264,6 +11692,17 @@ class ThreadGoalClearRequest(BaseModel):
     params: ThreadGoalClearParams
 
 
+class ProjectAutomationCommandRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["projectAutomation/command"], Field(title="ProjectAutomation/commandRequestMethod")
+    ]
+    params: ProjectAutomationCommandParams
+
+
 class ThreadListRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11699,6 +12138,8 @@ class LocalUsageReport(BaseModel):
     time: LocalUsageReportTimeMetrics
     time_range: Annotated[LocalUsageReportTimeRange | None, Field(alias="timeRange")] = None
     tools: LocalUsageReportToolMetrics
+    worktree_coverage: Annotated[LocalUsageReportWorktreeCoverage, Field(alias="worktreeCoverage")]
+    worktrees: list[LocalUsageReportWorktree]
 
 
 class ModelsRequirements(BaseModel):
@@ -11808,6 +12249,38 @@ class PluginSummary(BaseModel):
         str | None,
         Field(description="Version advertised by the remote marketplace backend when available."),
     ] = None
+
+
+class ProjectAutomation(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed: bool
+    delivery: dict[str, ProjectDeliveryObligation]
+    last_activity_at_ms: Annotated[int, Field(alias="lastActivityAtMs")]
+    last_review_ref: Annotated[str | None, Field(alias="lastReviewRef")] = None
+    mode: ProjectAutomationMode
+    next_review_at_ms: Annotated[int, Field(alias="nextReviewAtMs")]
+    owner_thread_id: Annotated[str, Field(alias="ownerThreadId")]
+    paused: bool
+    project_id: Annotated[str, Field(alias="projectId")]
+    review: ProjectAutomationJob | None = None
+    review_interval_ms: Annotated[int, Field(alias="reviewIntervalMs")]
+    review_window_start_ms: Annotated[int, Field(alias="reviewWindowStartMs")]
+    revision: Annotated[int, Field(ge=0)]
+    started_at_ms: Annotated[int, Field(alias="startedAtMs")]
+    thread_experiments: Annotated[dict[str, str] | None, Field(alias="threadExperiments")] = {}
+    thread_outcomes: Annotated[dict[str, str] | None, Field(alias="threadOutcomes")] = {}
+    thread_workstreams: Annotated[dict[str, str], Field(alias="threadWorkstreams")]
+    threads: dict[str, ProjectWorkPurpose]
+
+
+class ProjectAutomationCommandResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    capability: ProjectAutomationCapability | None = None
+    project: ProjectAutomation | None = None
 
 
 class FunctionCallOutputResponseItem(BaseModel):
@@ -13315,6 +13788,7 @@ class ClientRequest(
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
+        | ProjectAutomationCommandRequest
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest
         | ThreadAttachmentListRequest
@@ -13426,6 +13900,7 @@ class ClientRequest(
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
+        | ProjectAutomationCommandRequest
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest
         | ThreadAttachmentListRequest
