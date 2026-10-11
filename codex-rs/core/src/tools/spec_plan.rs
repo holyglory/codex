@@ -7,7 +7,9 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::effective_tool_mode;
 use crate::tools::handlers::AccountManagementHandler;
+use crate::tools::handlers::AlarmHandler;
 use crate::tools::handlers::ApplyPatchHandler;
+use crate::tools::handlers::AwaitWorkHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -20,6 +22,7 @@ use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
+use crate::tools::handlers::ProjectAutomationHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
@@ -1157,6 +1160,20 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let stable_environment_tools = features.enabled(Feature::StableEnvironmentTools);
     let advertise_environment_tools =
         stable_environment_tools || environment_mode.has_environment();
+
+    if turn_context.config.local_control_tools_enabled {
+        registry.add(ProjectAutomationHandler);
+        for name in [
+            "alarm_set",
+            "alarm_list",
+            "alarm_status",
+            "alarm_ack",
+            "alarm_cancel",
+        ] {
+            registry.add(AlarmHandler(name));
+        }
+        registry.add(AwaitWorkHandler);
+    }
 
     if !turn_context.session_source.is_non_root_agent() {
         registry.add(UsageStatsHandler);

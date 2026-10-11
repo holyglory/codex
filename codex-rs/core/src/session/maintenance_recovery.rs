@@ -191,6 +191,18 @@ impl Session {
             }
             return Ok(());
         }
+        self.stop_subscription_work().await;
+        if self.state_db().is_some()
+            && self
+                .services
+                .thread_extension_data
+                .get::<codex_event_subscriptions::SubscriptionRunState>()
+                .is_some_and(|run| run.stop_pending.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(codex_protocol::error::CodexErr::Fatal(
+                "failed to persist suspended wake permissions".into(),
+            ));
+        }
         self.emit_turn_abort_lifecycle(
             TurnAbortReason::Interrupted,
             &codex_extension_api::ExtensionData::new(turn_id.clone()),

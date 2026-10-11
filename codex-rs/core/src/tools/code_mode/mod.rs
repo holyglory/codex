@@ -1,4 +1,5 @@
 mod delegate;
+mod event_wait;
 mod execute_handler;
 pub(crate) mod execute_spec;
 mod output;
@@ -74,6 +75,7 @@ pub(crate) struct ExecContext {
 }
 
 pub(crate) struct CodeModeService {
+    event_waits: event_wait::EventWaitRegistry,
     session: OnceCell<Arc<dyn CodeModeSession>>,
     session_provider: Arc<dyn CodeModeSessionProvider>,
     availability: Result<(), String>,
@@ -93,6 +95,7 @@ impl CodeModeService {
         let dispatch_broker = Arc::new(CodeModeDispatchBroker::new(thread_id, executed_tool_calls));
         let availability = session_provider.availability();
         Self {
+            event_waits: event_wait::EventWaitRegistry::default(),
             session: OnceCell::new(),
             session_provider,
             availability,
@@ -105,6 +108,10 @@ impl CodeModeService {
 
     pub(crate) fn is_available(&self) -> bool {
         self.availability.is_ok()
+    }
+
+    pub(crate) fn begin_event_wait(&self, cell_id: String) -> event_wait::EventWaitGuard {
+        self.event_waits.begin(cell_id)
     }
 
     pub(crate) fn take_unavailable_warning(&self, tool_mode: ToolMode) -> Option<String> {

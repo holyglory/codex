@@ -20,6 +20,7 @@ use crate::context::world_state::MultiAgentUsageHintState;
 use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PersistentModeState;
 use crate::context::world_state::PluginsInstructionsState;
+use crate::context::world_state::ProjectAutomationInstructionsState;
 use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::TopLevelToolsState;
@@ -141,6 +142,13 @@ impl Session {
             String::new()
         };
         let mut world_state = WorldState::default();
+        match crate::project_automation::ensure_project_enrollment(self, step_context).await {
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "project alarm context is unavailable"),
+        }
+        world_state.add_section(ProjectAutomationInstructionsState(
+            turn_context.config.local_control_tools_enabled && !turn_context.config.ephemeral,
+        ));
         if incremental_tools {
             let specs = step_context.tool_router.model_visible_specs();
             let definitions = codex_tools::create_tools_json_for_responses_lite(&specs)?;

@@ -2,6 +2,27 @@ use super::tool::UsageToolAttempt;
 use super::*;
 
 impl UsageRuntime {
+    pub(crate) async fn restore_work_context(
+        &self,
+        project: Option<&codex_event_subscriptions::ProjectAutomation>,
+        thread_id: codex_protocol::ThreadId,
+    ) {
+        let thread = thread_id.to_string();
+        let context = if let Some(project) =
+            project.filter(|project| project.threads.contains_key(&thread))
+        {
+            codex_usage::OperationWorkContext {
+                native_project_id: Some(project.project_id.clone()),
+                workstream_id: project.thread_workstreams.get(&thread).cloned(),
+                outcome_id: project.thread_outcomes.get(&thread).cloned(),
+                experiment_ref: project.thread_experiments.get(&thread).cloned(),
+            }
+        } else {
+            codex_usage::OperationWorkContext::default()
+        };
+        self.work_contexts.lock().await.insert(thread, context);
+    }
+
     /// Starts a model attempt without making accounting availability a prerequisite for work.
     ///
     /// A healthy store is used directly. If opening or writing it fails, the attempt is created
@@ -21,10 +42,16 @@ impl UsageRuntime {
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
         {
+            self.start_alarm_work(model_attempt.operation_id, context.thread_id, true)
+                .await;
             return model_attempt;
         }
-        self.begin_buffered_model_attempt(&context, &work_context)
-            .await
+        let attempt = self
+            .begin_buffered_model_attempt(&context, &work_context)
+            .await;
+        self.start_alarm_work(attempt.operation_id, context.thread_id, true)
+            .await;
+        attempt
     }
 
     /// Starts a tool attempt without making accounting availability a prerequisite for work.
@@ -43,10 +70,14 @@ impl UsageRuntime {
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(tool_attempt) = self.begin_tool_attempt_once(&context, &work_context).await
         {
+            self.start_alarm_tool(&tool_attempt, &context).await;
             return tool_attempt;
         }
-        self.begin_buffered_tool_attempt(&context, &work_context)
-            .await
+        let attempt = self
+            .begin_buffered_tool_attempt(&context, &work_context)
+            .await;
+        self.start_alarm_tool(&attempt, &context).await;
+        attempt
     }
 
     pub(super) async fn recover_after_write_failure(&self) -> Result<(), CodexErr> {

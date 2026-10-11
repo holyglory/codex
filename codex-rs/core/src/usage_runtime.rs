@@ -84,6 +84,7 @@ pub(crate) struct UsageRuntime {
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
     work_contexts: Mutex<HashMap<String, codex_usage::OperationWorkContext>>,
+    alarm_store: StdOnceLock<codex_state::SqliteEventSubscriptionStore>,
 }
 
 impl fmt::Debug for UsageRuntime {
@@ -192,6 +193,7 @@ impl UsageRuntime {
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
             work_contexts: Mutex::new(HashMap::new()),
+            alarm_store: StdOnceLock::new(),
         })
     }
 
@@ -929,6 +931,8 @@ pub(crate) fn usage_account_snapshot(
 #[path = "usage_runtime_tests.rs"]
 mod tests;
 
+#[path = "usage_runtime_alarm.rs"]
+mod alarm;
 #[path = "usage_runtime_buffer.rs"]
 mod buffer;
 #[path = "usage_runtime_recovery.rs"]

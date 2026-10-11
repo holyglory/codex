@@ -2990,6 +2990,7 @@ dependencies = [
  "codex-context-fragments",
  "codex-core-plugins",
  "codex-diagnostics",
+ "codex-event-subscriptions",
  "codex-exec-server",
  "codex-exec-server-test-support",
  "codex-execpolicy",
