@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -6,6 +8,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::selection_popup_common::GenericDisplayRow;
 use crate::line_truncation::line_width;
 use crate::width::display_width;
+use crate::wrapping::RtOptions;
+use crate::wrapping::word_wrap_line;
 
 /// Controls whether selection-row descriptions remain visible when their column is narrow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -13,6 +17,9 @@ pub(crate) enum SelectionDescriptionLayout {
     #[default]
     Columns,
     HideWhenNarrow {
+        min_description_width: u16,
+    },
+    StackBelowWhenNarrow {
         min_description_width: u16,
     },
 }
@@ -41,6 +48,7 @@ fn combined_description(
             if matches!(
                 description_layout,
                 SelectionDescriptionLayout::HideWhenNarrow { .. }
+                    | SelectionDescriptionLayout::StackBelowWhenNarrow { .. }
             ) =>
         {
             Some(reason.clone())
@@ -162,4 +170,58 @@ pub(super) fn build_full_line(
         spans.push(description.dim());
     }
     Line::from(spans)
+}
+
+pub(super) fn line_to_owned(line: Line<'_>) -> Line<'static> {
+    Line {
+        style: line.style,
+        alignment: line.alignment,
+        spans: line
+            .spans
+            .into_iter()
+            .map(|span| Span {
+                style: span.style,
+                content: Cow::Owned(span.content.into_owned()),
+            })
+            .collect(),
+    }
+}
+
+/// Keep factual descriptions visible below a label when the description column
+/// is too narrow to display useful values.
+pub(super) fn wrap_stacked_row(row: &GenericDisplayRow, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let prefix_width = line_width(&Line::from(row.name_prefix_spans.clone()))
+        .min(usize::from(width.saturating_sub(1)));
+    let indent = " ".repeat(prefix_width);
+    let mut label = row.name_prefix_spans.clone();
+    label.extend(build_name_spans(row, usize::MAX));
+    append_shortcut(row, &mut label);
+    if let Some(tag) = row.category_tag.as_deref().filter(|tag| !tag.is_empty()) {
+        label.push("  ".into());
+        label.push(tag.to_owned().dim());
+    }
+    let label_options = RtOptions::new(usize::from(width))
+        .initial_indent(Line::from(""))
+        .subsequent_indent(Line::from(indent.clone()));
+    let mut lines = word_wrap_line(&Line::from(label), label_options)
+        .into_iter()
+        .map(line_to_owned)
+        .collect::<Vec<_>>();
+    if let Some(description) = combined_description(
+        row,
+        SelectionDescriptionLayout::StackBelowWhenNarrow {
+            min_description_width: width,
+        },
+    ) {
+        let options = RtOptions::new(usize::from(width))
+            .initial_indent(Line::from(indent.clone()))
+            .subsequent_indent(Line::from(indent));
+        lines.extend(
+            word_wrap_line(&Line::from(description.dim()), options)
+                .into_iter()
+                .map(line_to_owned),
+        );
+    }
+    lines
 }

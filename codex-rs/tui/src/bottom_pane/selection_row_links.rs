@@ -5,6 +5,7 @@ use super::SelectionDescriptionLayout;
 use super::build_full_line;
 use super::should_wrap_name_in_column;
 use super::wrap_indent;
+use crate::bottom_pane::selection_row_layout::wrap_stacked_row;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::width::display_width;
 use ratatui::style::Stylize;
@@ -165,6 +166,16 @@ pub(super) fn wrap_row_lines(
     width: u16,
     description_layout: SelectionDescriptionLayout,
 ) -> Vec<HyperlinkLine> {
+    if let SelectionDescriptionLayout::StackBelowWhenNarrow {
+        min_description_width,
+    } = description_layout
+        && usize::from(width).saturating_sub(desc_col) < usize::from(min_description_width)
+    {
+        return wrap_stacked_row(row, width)
+            .into_iter()
+            .map(|line| full_hyperlink_row(row, line))
+            .collect();
+    }
     if desc_col > 0 && should_wrap_name_in_column(row) {
         let wrapped = wrap_two_column_row(row, desc_col, width);
         if !wrapped.is_empty() {

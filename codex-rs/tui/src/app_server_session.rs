@@ -417,6 +417,16 @@ pub(crate) enum TurnPermissionsOverride {
 pub(crate) struct UnsupportedLegacyPermissionProfile;
 
 impl AppServerSession {
+    pub(crate) fn supports_local_usage_accounting(&self) -> bool {
+        self.client
+            .server_capabilities()
+            .supports_local_usage_accounting()
+    }
+
+    pub(crate) fn supports_multi_account(&self) -> bool {
+        self.client.server_capabilities().supports_multi_account()
+    }
+
     /// Platform of the app-server process, not necessarily its executor.
     pub(crate) fn app_server_platform_family(&self) -> Option<&str> {
         self.client.platform_family()

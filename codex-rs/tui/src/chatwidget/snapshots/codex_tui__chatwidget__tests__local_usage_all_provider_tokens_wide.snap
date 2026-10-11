@@ -6,16 +6,16 @@ expression: "render_bottom_popup(&chat, 72)"
   All local statistics
 
 ↑
-  4. Time range
-  5. Coverage
       Coverage events:
   6. capture_started
+     2
       Token observations:
   7. complete
+     1
       Provider tokens (provenance first):
 › 8. input_tokens
+     provenance provider_reported · repository CodexMulti · measured 120
+     · exact 120 · unknown 0 · observations 1
   9. Counts
-      Provider tokens by activity (provenance first):
-  10. implementation/coding
 ↓
   enter select · esc back

@@ -17,6 +17,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::time::Duration;
 
+use crate::AppServerCapabilities;
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
@@ -163,6 +164,7 @@ pub struct RemoteAppServerClient {
     event_rx: mpsc::UnboundedReceiver<AppServerEvent>,
     pending_events: VecDeque<AppServerEvent>,
     metadata: RemoteServerMetadata,
+    server_capabilities: AppServerCapabilities,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -236,6 +238,10 @@ impl RemoteAppServerClient {
         self.metadata.platform_os.as_deref()
     }
 
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        &self.server_capabilities
+    }
+
     async fn connect_with_stream<S>(
         channel_capacity: usize,
         endpoint: String,
@@ -246,7 +252,7 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
-        let (pending_events, metadata) = initialize_remote_connection(
+        let (pending_events, metadata, server_capabilities) = initialize_remote_connection(
             &mut stream,
             &endpoint,
             initialize_params,
@@ -523,6 +529,7 @@ impl RemoteAppServerClient {
             event_rx,
             pending_events: pending_events.into(),
             metadata,
+            server_capabilities,
             worker_handle,
         })
     }
@@ -635,6 +642,7 @@ impl RemoteAppServerClient {
             event_rx,
             pending_events: _pending_events,
             metadata: _,
+            server_capabilities: _server_capabilities,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -822,13 +830,18 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
-) -> IoResult<(Vec<AppServerEvent>, RemoteServerMetadata)>
+) -> IoResult<(
+    Vec<AppServerEvent>,
+    RemoteServerMetadata,
+    AppServerCapabilities,
+)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let initialize_request_id = RequestId::String("initialize".to_string());
     let mut pending_events = Vec::new();
     let mut metadata = RemoteServerMetadata::default();
+    let mut server_capabilities = AppServerCapabilities::default();
     write_jsonrpc_message(
         stream,
         JSONRPCMessage::Request(jsonrpc_request_from_client_request(
@@ -852,6 +865,8 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
+                            server_capabilities =
+                                AppServerCapabilities::from_initialize_result(&response.result);
                             metadata.server_version = response
                                 .result
                                 .get("userAgent")
@@ -962,7 +977,7 @@ where
     )
     .await?;
 
-    Ok((pending_events, metadata))
+    Ok((pending_events, metadata, server_capabilities))
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
@@ -1053,6 +1068,7 @@ mod tests {
             event_rx,
             pending_events: VecDeque::new(),
             metadata: RemoteServerMetadata::default(),
+            server_capabilities: AppServerCapabilities::default(),
             worker_handle,
         };
 

@@ -40,12 +40,23 @@ expression: narrow
 
 
      Account status
+     noted@example.com · Plus · logged
+     out · enabled · priority 10 ·
+     limits unknown
      Use for next turn (disabled)
+     Sign in before selecting this
+     account.
 › 1. Edit alias
   2. Edit priority
+     Higher numbers drain first; smaller
+     numbers drain last.
   3. Edit note
+     Prefer this profile for long-
+     running review and documentation
+     tasks when limits permit.
   4. Clear note
   5. Disable
      View limits (disabled)
+     Sign in to read limits.
 ↓
   enter confirm · esc back

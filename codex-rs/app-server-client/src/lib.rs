@@ -16,6 +16,7 @@
 //! runtime remain bounded; the local consumer event queue is unbounded so
 //! unread notifications cannot prevent request responses from being delivered.
 
+mod capabilities;
 mod path;
 mod remote;
 
@@ -63,6 +64,7 @@ use tokio::time::timeout;
 use toml::Value as TomlValue;
 use tracing::warn;
 
+pub use crate::capabilities::AppServerCapabilities;
 pub use crate::path::AppServerPath;
 pub use crate::remote::RemoteAppServerClient;
 pub use crate::remote::RemoteAppServerConnectArgs;
@@ -329,6 +331,7 @@ pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::UnboundedReceiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
+    server_capabilities: AppServerCapabilities,
 }
 
 #[derive(Clone)]
@@ -463,7 +466,12 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         })
+    }
+
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        &self.server_capabilities
     }
 
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
@@ -611,6 +619,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: _server_capabilities,
         } = self;
         let mut worker_handle = worker_handle;
         // Stop forwarding caller-facing events before asking the worker to shut down.
@@ -690,6 +699,13 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        match self {
+            Self::InProcess(client) => client.server_capabilities(),
+            Self::Remote(client) => client.server_capabilities(),
+        }
+    }
+
     /// App-server platform family, which can differ from the executor's platform.
     /// Older remote servers may omit this metadata.
     pub fn platform_family(&self) -> Option<&str> {
@@ -996,6 +1012,31 @@ mod tests {
             panic!("expected initialized notification");
         };
         assert_eq!(notification.method, "initialized");
+    }
+
+    async fn expect_remote_initialize_capabilities<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        multi_account_version: Option<u32>,
+        local_usage_version: Option<u32>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut metadata = serde_json::json!({
+            "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+            "codexHome": "/server/.codex",
+        });
+        if let Some(version) = multi_account_version {
+            metadata["multiAccount"] = serde_json::json!({
+                "version": version,
+                "supportsManagedLogin": true,
+                "supportsAutoSelection": true,
+                "supportsCreditUsage": true,
+            });
+        }
+        if let Some(version) = local_usage_version {
+            metadata["localUsageAccounting"] = serde_json::json!({"version": version});
+        }
+        expect_remote_initialize_with_metadata(websocket, metadata).await;
     }
 
     async fn read_websocket_message<S>(
@@ -1374,6 +1415,37 @@ mod tests {
             assert_eq!(
                 (client.platform_family(), client.platform_os()),
                 (family, os)
+            );
+            client.shutdown().await.expect("shutdown should complete");
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_capabilities_require_supported_advertised_versions() {
+        for (multi_version, usage_version, expected_multi, expected_usage) in [
+            (None, None, false, false),
+            (Some(2), Some(2), true, true),
+            (Some(1), Some(1), false, false),
+            (Some(99), Some(99), false, false),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                expect_remote_initialize_capabilities(&mut websocket, multi_version, usage_version)
+                    .await;
+                websocket.close(None).await.expect("close should succeed");
+            })
+            .await;
+            let client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+                .await
+                .expect("remote client should connect");
+            assert_eq!(
+                client.server_capabilities().supports_multi_account(),
+                expected_multi
+            );
+            assert_eq!(
+                client
+                    .server_capabilities()
+                    .supports_local_usage_accounting(),
+                expected_usage
             );
             client.shutdown().await.expect("shutdown should complete");
         }
@@ -2062,6 +2134,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         };
 
         let event = timeout(Duration::from_secs(2), client.next_event())
@@ -2169,6 +2242,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            server_capabilities: AppServerCapabilities::advertised_v1(),
         };
 
         client.shutdown().await.expect("shutdown should complete");
