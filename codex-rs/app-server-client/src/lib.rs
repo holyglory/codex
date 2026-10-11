@@ -137,6 +137,16 @@ pub enum TypedRequestError {
     },
 }
 
+impl TypedRequestError {
+    /// Returns true only when the server explicitly rejected the request while
+    /// draining for a cooperative handover, before applying request effects.
+    pub fn is_server_switching(&self) -> bool {
+        matches!(self, Self::Server { source, .. } if source.code == -32600
+            && (source.data.as_ref().is_some_and(|data| data.get("reason").and_then(serde_json::Value::as_str) == Some("serverSwitching"))
+                || source.message == "Server is draining; retry after reconnecting"))
+    }
+}
+
 impl fmt::Display for TypedRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
