@@ -505,7 +505,9 @@ impl DirectKeyringAuthStorage {
                     "failed to write OAuth tokens to keyring",
                     std::io::Error::from(error),
                 );
-                warn!("{error}");
+                if self.mode == AuthCredentialsStoreMode::Keyring {
+                    warn!("{error}");
+                }
                 Err(error)
             }
         }
@@ -648,7 +650,9 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                     "failed to write OAuth tokens to encrypted auth storage",
                     error,
                 );
-                warn!("{error}");
+                if self.mode == AuthCredentialsStoreMode::Keyring {
+                    warn!("{error}");
+                }
                 error
             })?;
         let mut telemetry = storage_telemetry::telemetry(
