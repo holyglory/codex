@@ -833,6 +833,43 @@ async fn regular_authentication_failure_is_quarantined_for_the_connection_genera
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn quarantining_a_ready_connection_shuts_down_its_transport() {
+    let managed = create_test_managed_client(Vec::new()).await;
+    let transport = Arc::clone(&managed.client);
+    let client = AsyncManagedClient {
+        client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(managed))
+            .boxed()
+            .shared(),
+        is_codex_apps_mcp_server: false,
+        server_capabilities: Arc::new(std::sync::Mutex::new(None)),
+        cached_server_info: None,
+        codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
+        startup_complete: Arc::new(AtomicBool::new(true)),
+        startup_reconnect: None,
+        cancel_token: CancellationToken::new(),
+    };
+    let connection = McpServerConnection {
+        identity: None,
+        client,
+        startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+        startup_trigger: None,
+        quarantined: AtomicBool::new(false),
+        latest_error: std::sync::Mutex::new(None),
+        _diagnostics_guard: LIVE_CONNECTIONS.track(),
+    };
+
+    connection
+        .quarantine(&StartupOutcomeError::Failed {
+            error: "auth rejected".to_string(),
+            is_authentication_required: true,
+        })
+        .await;
+
+    assert!(transport.is_closed().await);
+}
+
 fn create_gated_async_managed_client(
     client: ManagedClient,
 ) -> (
