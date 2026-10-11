@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_core::CapacityRetryContext;
 use codex_core::ThreadManager;
 use codex_core::TurnStartOptions;
 use codex_extension_api::ConfigContributor;
@@ -399,6 +400,15 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+
+            if matches!(input.error, CodexErrorInfo::ServerOverloaded)
+                && input
+                    .turn_store
+                    .get::<CapacityRetryContext>()
+                    .is_some_and(|retry| retry.retryable_before_response && !retry.guardian_review)
+            {
+                return;
+            }
 
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,

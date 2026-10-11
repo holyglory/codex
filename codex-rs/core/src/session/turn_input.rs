@@ -365,6 +365,8 @@ async fn start_or_steer(
             ));
         }
     };
+    let resumes_user_work =
+        matches!(&input, SubmittedTurnInput::UserInput { content, .. } if !content.is_empty());
     let settings = PreparedTurnInputSettings::prepare(
         session,
         WithTurnExtensionData {
@@ -387,6 +389,9 @@ async fn start_or_steer(
     {
         Ok((turn_id, root_turn_id)) => {
             settings.apply_steered(session, submission_id).await?;
+            if resumes_user_work {
+                session.resume_subscription_work().await;
+            }
             Ok(TurnInputSubmission::Steered {
                 turn_id,
                 root_turn_id,
@@ -655,6 +660,7 @@ async fn steer(
     {
         Ok((turn_id, root_turn_id)) => {
             settings.apply_steered(session, submission_id).await?;
+            session.resume_subscription_work().await;
             Ok(TurnInputSubmission::Steered {
                 turn_id,
                 root_turn_id,

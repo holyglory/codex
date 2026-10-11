@@ -9,6 +9,7 @@ use codex_core::NotSubmittedReason;
 use codex_core::ThreadManager;
 use codex_event_subscriptions::CAPACITY_RETRY_EVENT_TYPE;
 use codex_event_subscriptions::CAPACITY_RETRY_SOURCE;
+use codex_event_subscriptions::CapacityRetryContext;
 use codex_event_subscriptions::EventFilter;
 use codex_event_subscriptions::EventSubscriptionService;
 use codex_event_subscriptions::EventSubscriptionStore;
@@ -29,9 +30,6 @@ use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::CodexErrorInfo;
-use codex_protocol::protocol::InternalSessionSource;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use uuid::Uuid;
 
 use crate::request_processors::ThreadRequestProcessor;
@@ -42,16 +40,6 @@ const CAPACITY_RETRY_JITTER_SECONDS: i64 = 60;
 fn capacity_retry_delay_seconds() -> i64 {
     CAPACITY_RETRY_MIN_DELAY_SECONDS
         + i64::from(Uuid::now_v7().as_bytes()[15]) % CAPACITY_RETRY_JITTER_SECONDS
-}
-
-fn is_guardian_review_source(source: &SessionSource) -> bool {
-    matches!(
-        source,
-        SessionSource::Internal(InternalSessionSource::Guardian)
-    ) || matches!(
-        source,
-        SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "guardian"
-    )
 }
 
 #[derive(Clone)]
@@ -376,7 +364,13 @@ impl TurnLifecycleContributor for EventSubscriptionLifecycle {
 
     fn on_turn_error<'a>(&'a self, input: TurnErrorInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            if !matches!(input.error, CodexErrorInfo::ServerOverloaded) {
+            let Some(retry) = input.turn_store.get::<CapacityRetryContext>() else {
+                return;
+            };
+            if !matches!(input.error, CodexErrorInfo::ServerOverloaded)
+                || !retry.retryable_before_response
+                || retry.guardian_review
+            {
                 return;
             }
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {

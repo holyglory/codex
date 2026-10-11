@@ -131,6 +131,29 @@ impl Session {
         error: CodexErrorInfo,
         error_details: &CodexErrorDetails,
     ) {
+        if matches!(&error, CodexErrorInfo::ServerOverloaded)
+            && matches!(error_details, CodexErrorDetails::ServerOverloaded)
+        {
+            turn_context
+                .extension_data
+                .insert(codex_event_subscriptions::CapacityRetryContext {
+                    retryable_before_response: turn_context
+                        .extension_data
+                        .get::<codex_api::ResponseId>()
+                        .is_none(),
+                    guardian_review: matches!(
+                        &turn_context.session_source,
+                        codex_protocol::protocol::SessionSource::Internal(
+                            codex_protocol::protocol::InternalSessionSource::Guardian
+                        )
+                    ) || matches!(
+                        &turn_context.session_source,
+                        codex_protocol::protocol::SessionSource::SubAgent(
+                            codex_protocol::protocol::SubAgentSource::Other(label)
+                        ) if label == "guardian"
+                    ),
+                });
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {

@@ -126,6 +126,17 @@ pub struct SubscriptionRunState {
     pub stop_pending: std::sync::atomic::AtomicBool,
 }
 
+/// Turn-scoped admission facts used by host extensions for capacity recovery.
+///
+/// Core attaches this marker immediately before turn-error contributors run. A
+/// retry is safe only when the failed request produced no response and the turn
+/// is not an internal Guardian review.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapacityRetryContext {
+    pub retryable_before_response: bool,
+    pub guardian_review: bool,
+}
+
 impl Default for SubscriptionRunState {
     fn default() -> Self {
         Self {
