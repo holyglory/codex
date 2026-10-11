@@ -79,6 +79,15 @@ the authority for release outcomes and verification receipts.
   when the shell and governed runner both select the pinned channel; changing
   `PATH`, `HOME`, `TMPDIR`, or Cargo target/cache settings later creates a new
   environment and requires a fresh validation receipt.
+- **Make the toolchain check a hard preflight, not a remembered instruction.**
+  The release runner must print the resolved `rustc`/`cargo` paths and versions,
+  compare both binaries with `rust-toolchain.toml`, and stop before compiling
+  when they differ. This rebase had Rust 1.95.0 installed but the shell still
+  selected `/usr/bin/rustc` and `/usr/bin/cargo` 1.94.1; because the canonical
+  runner and its preflight were omitted from the replay, the same mismatch was
+  rediscovered during testing. Keep the preflight and its mismatched-toolchain
+  fixture in the release workflow, and use the canonical isolated runner rather
+  than a hand-written substitute test graph.
 - **Pin native inputs in the release runner too.** This line's voice-host
   crates require GStreamer 1.28; the system package is older. Use the retained
   `model-capacity-voice-tests` native/pkg-config and ALSA inputs, with their
