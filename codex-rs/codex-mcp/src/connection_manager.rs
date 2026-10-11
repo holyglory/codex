@@ -105,6 +105,10 @@ impl McpServerConnection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
         self.client.cancel_token.cancel();
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            client.shutdown().await;
+        });
     }
 
     async fn reusable_client(
@@ -551,7 +555,6 @@ impl McpConnectionSet {
                     && previous_view.protocol_mode == protocol_mode;
                 let unchanged_auth_failure = if connection.identity.as_ref()
                     == Some(&connection_identity)
-                    && connection_identity.oauth_store_was_contended
                     && previous_view.protocol_mode == protocol_mode
                     && connection.client.startup_complete.load(Ordering::Acquire)
                 {

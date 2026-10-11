@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -12,6 +13,8 @@ use codex_connectors::ConnectorRuntimeFetchSource;
 use futures::future::join_all;
 use tracing::Instrument;
 use tracing::instrument;
+
+const MCP_TOOL_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 use tracing::trace;
 use tracing::trace_span;
 
@@ -30,6 +33,7 @@ use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::rmcp_client::CODEX_APPS_REFRESH_DURATION_METRIC;
 use crate::rmcp_client::MCP_TOOLS_LIST_DURATION_METRIC;
 use crate::rmcp_client::ManagedClient;
+use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::list_tools_for_client_uncached;
 use crate::rmcp_client::prepare_codex_apps_tools_for_model;
 use crate::runtime::emit_duration;
@@ -206,15 +210,25 @@ impl McpConnectionSet {
                         .client
                         .startup_complete
                         .load(Ordering::Acquire);
-                    let server_tools = view
-                        .listed_tools(&self.tool_plugin_context)
-                        .instrument(trace_span!(
+                    let server_tools = tokio::time::timeout(
+                        MCP_TOOL_LIST_TIMEOUT,
+                        view.listed_tools(&self.tool_plugin_context).instrument(trace_span!(
                             "list_tools_for_server",
                             server_name = %server_name,
                             has_cached_tools,
                             startup_complete
-                        ))
-                        .await;
+                        )),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(StartupOutcomeError::Failed {
+                            error: format!(
+                                "MCP server `{server_name}` tool catalog timed out after {} seconds",
+                                MCP_TOOL_LIST_TIMEOUT.as_secs()
+                            ),
+                            is_authentication_required: false,
+                        })
+                    });
                     let result = match server_tools {
                         Ok(server_tools) => Ok(server_tools
                             .into_iter()
