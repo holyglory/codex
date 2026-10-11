@@ -108,6 +108,7 @@ pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) const CODEX_APPS_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const CODEX_APPS_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+const CODEX_APPS_MAX_CONSECUTIVE_RECONNECT_FAILURES: u32 = 3;
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -212,6 +213,13 @@ impl CodexAppsStartupReconnect {
             .clone()
     }
 
+    fn is_quarantined(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .authentication_blocked
+    }
+
     fn reconnect_in_background(self: &Arc<Self>) {
         {
             let mut state = self
@@ -263,14 +271,25 @@ impl CodexAppsStartupReconnect {
                         } else {
                             state.consecutive_failures =
                                 state.consecutive_failures.saturating_add(1);
-                            let retry_after =
-                                codex_apps_reconnect_backoff(state.consecutive_failures);
-                            state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                            warn!(
-                                error = %error,
-                                retry_after_ms = retry_after.as_millis(),
-                                "Apps MCP startup reconnect failed; continuing with cached tools"
-                            );
+                            if state.consecutive_failures
+                                >= CODEX_APPS_MAX_CONSECUTIVE_RECONNECT_FAILURES
+                            {
+                                state.authentication_blocked = true;
+                                state.retry_not_before = None;
+                                warn!(
+                                    error = %error,
+                                    "Apps MCP startup reconnect quarantined after bounded failures"
+                                );
+                            } else {
+                                let retry_after =
+                                    codex_apps_reconnect_backoff(state.consecutive_failures);
+                                state.retry_not_before = Some(TokioInstant::now() + retry_after);
+                                warn!(
+                                    error = %error,
+                                    retry_after_ms = retry_after.as_millis(),
+                                    "Apps MCP startup reconnect failed; continuing with cached tools"
+                                );
+                            }
                         }
                         false
                     }
@@ -592,6 +611,9 @@ impl AsyncManagedClient {
                 state.authentication_blocked = true;
             } else if matches!(error, StartupOutcomeError::Failed { .. }) {
                 startup_reconnect.reconnect_in_background();
+                if startup_reconnect.is_quarantined() {
+                    self.cancel_token.cancel();
+                }
             }
         }
     }
