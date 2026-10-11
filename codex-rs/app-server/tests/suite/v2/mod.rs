@@ -57,6 +57,8 @@ mod executor_mcp;
 mod executor_skills;
 mod experimental_api;
 mod experimental_feature_list;
+mod event_subscriptions;
+mod project_automation;
 mod external_agent_config;
 mod external_agent_import_sync;
 mod feedback;
