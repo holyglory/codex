@@ -1,0 +1,11 @@
+---
+source: tui/src/app/tests/startup.rs
+assertion_line: 1745
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+• Reconnecting to app-server… (0s)
+
+
+› preserve my request
+
+  ctrl+c quit
