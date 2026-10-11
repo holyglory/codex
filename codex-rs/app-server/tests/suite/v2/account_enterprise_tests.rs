@@ -307,6 +307,7 @@ oauth = {{ client_id = "mcp-client", authorization_server_issuer = "{origin}/as"
         embedded_network_policy: Default::default(),
         session_source: SessionSource::Cli,
         enable_codex_api_key_env: false,
+        process_account: None,
         initialize: InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".into(),
@@ -753,6 +754,7 @@ oauth = {{ client_id = "mcp-client", authorization_server_issuer = "{origin}/as"
             embedded_network_policy: Default::default(),
             session_source: SessionSource::Cli,
             enable_codex_api_key_env: false,
+            process_account: None,
             initialize: InitializeParams {
                 client_info: ClientInfo {
                     name: "codex-app-server-tests".into(),
