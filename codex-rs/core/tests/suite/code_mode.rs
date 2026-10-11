@@ -70,6 +70,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolPayload;
 use codex_tools::ToolSpec;
+use codex_usage::UsageStore;
+use codex_usage::UsageSummaryScope;
 use codex_web_search_extension::install as install_web_search_extension;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::AppsTestToolLoading;
@@ -4653,8 +4655,13 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    let (code_mode_session_provider, wait_timer_armed_rx) =
+        super::code_mode_wait_timer::wait_timer_armed_provider(codex_utils_cargo_bin::cargo_bin(
+            "codex-code-mode-host",
+        )?);
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
+        .with_code_mode_session_provider(code_mode_session_provider)
         .with_config(|config| {
             config
                 .features
@@ -4689,7 +4696,11 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
         .expect("initial exec should be returned to the model");
     let first_items = custom_tool_output_items(&first_request, "call-1");
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
-
+    let usage_store = UsageStore::open(test.codex_home_path()).await?;
+    let operations_before_wait = usage_store
+        .usage_summary(UsageSummaryScope::All)
+        .await?
+        .operation_count;
     let timeout_completion = responses::mount_function_call_agent_response(
         &server,
         "call-2",
@@ -4717,25 +4728,48 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
     })
     .await;
 
-    tokio::time::pause();
-    for _ in 0..130 {
-        tokio::time::advance(Duration::from_secs(1)).await;
-        if timeout_completion
-            .function_call_output_text("call-2")
-            .is_some()
-        {
-            break;
+    tokio::time::timeout(Duration::from_secs(10), wait_timer_armed_rx)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the code-mode wait timer to arm"))?
+        .map_err(|_| anyhow::anyhow!("code-mode wait ended before its timer was armed"))?;
+
+    // Mandatory accounting precedes tool execution. Confirm both the second-turn model request
+    // and wait tool are durable before moving virtual time so SQLite deadlines stay on real time.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if usage_store
+                .usage_summary(UsageSummaryScope::All)
+                .await?
+                .operation_count
+                >= operations_before_wait.saturating_add(2)
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::task::yield_now().await;
         }
-    }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for durable wait-tool dispatch"))??;
+    drop(usage_store);
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(130)).await;
     tokio::time::resume();
+    let timeout_output = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(output) = timeout_completion.function_call_output_text("call-2") {
+                return output;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the stalled code-mode wait output"))?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
 
-    let timeout_output = timeout_completion
-        .function_call_output_text("call-2")
-        .expect("timed-out wait should be returned to the model");
     assert!(
         timeout_output.contains("code-mode host timed out waiting for wait response"),
         "unexpected wait output: {timeout_output}"
