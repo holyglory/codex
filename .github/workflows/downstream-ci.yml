@@ -1,0 +1,168 @@
+name: downstream-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  # Match the already-verified full candidate's compact development profiles.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  policy:
+    uses: ./.github/workflows/downstream-policy.yml
+
+  quality:
+    name: Format, lint, schemas, and locks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Check formatting
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Run focused Clippy
+        run: >-
+          cargo clippy --locked --tests
+          -p codex-rollout
+          -p codex-thread-store
+          -p codex-account-registry
+          -p codex-account-selection
+          -p codex-login
+          -p codex-usage
+          -p codex-core
+          -p codex-app-server-protocol
+          -p codex-app-server
+          -p codex-cli
+          -p codex-tui
+          -- -D warnings
+      - name: Check downstream npm packaging helpers
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_stage_verified_npm_release.py'
+      - name: Regenerate schemas
+        run: |
+          just write-config-schema
+          just write-app-server-schema
+          just write-app-server-schema --experimental
+      - name: Check Cargo and Bazel lock agreement
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
+          ./scripts/check-module-bazel-lock.sh
+      - name: Require generated files to be current
+        working-directory: ${{ github.workspace }}
+        run: git diff --exit-code
+
+  downstream-tests:
+    name: Focused downstream tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      # Share the selection so preflight and the suites use the same Cargo features.
+      DOWNSTREAM_TEST_PACKAGES: >-
+        -p codex-rollout
+        -p codex-thread-store
+        -p codex-account-registry
+        -p codex-account-selection
+        -p codex-login
+        -p codex-usage
+        -p codex-event-subscriptions
+        -p codex-state
+        -p codex-core
+        -p codex-app-server-protocol
+        -p codex-app-server
+        -p codex-cli
+        -p codex-tui
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install and verify the Linux sandbox prerequisite
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - name: Verify the test runner before compiling test companions
+        run: cargo nextest --version
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Build required test companions
+        run: cargo build --locked --bin codex-code-mode-host --bin test_stdio_server
+      - name: Verify the MCP test fixture before running downstream suites
+        run: |
+          read -r -a package_args <<< "$DOWNSTREAM_TEST_PACKAGES"
+          just test --locked "${package_args[@]}" --no-tests=fail \
+            -E 'test(=suite::rmcp_client::stdio_server_round_trip::simple_name)'
+      - name: Run downstream suites
+        run: |
+          read -r -a package_args <<< "$DOWNSTREAM_TEST_PACKAGES"
+          just test --locked "${package_args[@]}" --no-tests=fail
+
+  linux-compile:
+    name: Compile Linux product binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Compile product entrypoints
+        run: >-
+          cargo build --locked
+          --bin codex
+          --bin codex-app-server
+          --bin codex-code-mode-host

@@ -1,0 +1,69 @@
+name: Downstream compiler cache
+description: Reuse Rust compiler outputs without caching credentials or runtime homes.
+inputs:
+  backend:
+    description: Use github, or start the persistent backend inside its SSH wrapper.
+    default: github
+runs:
+  using: composite
+  steps:
+    - name: Install pinned compiler cache
+      id: cache
+      continue-on-error: true
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      env:
+        # Inactivity measures incoming requests, not unfinished compilations.
+        # The job timeout still bounds the lifetime of this disposable runner.
+        SCCACHE_IDLE_TIMEOUT: "0"
+      with:
+        version: v0.16.0
+        disable_annotations: ${{ inputs.backend == 'persistent' }}
+    - name: Restore verified retrying compiler-cache tool
+      if: steps.cache.outcome == 'success'
+      id: retrying-tool
+      continue-on-error: true
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ${{ env.CI_BUILD_ROOT }}/retrying-sccache
+        key: retrying-sccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/scripts/install_retrying_sccache.py', '.github/patches/sccache-0.16.0-gha-retry.patch', '.github/patches/sccache-bazel-http.rs') }}
+    - name: Install the pinned cache with bounded storage retries
+      if: steps.cache.outcome == 'success'
+      shell: bash
+      run: |
+        python3 "${GITHUB_WORKSPACE}/.github/scripts/install_retrying_sccache.py" \
+          --install-dir "$CI_BUILD_ROOT/retrying-sccache" \
+          --build-root "$RUNNER_TEMP/retrying-sccache-build"
+    - name: Save the verified compiler-cache tool
+      if: steps.cache.outcome == 'success' && steps.retrying-tool.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ${{ env.CI_BUILD_ROOT }}/retrying-sccache
+        key: ${{ steps.retrying-tool.outputs.cache-primary-key }}
+    - name: Enable compiler cache
+      if: steps.cache.outcome == 'success'
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        config = Path(os.environ["RUNNER_TEMP"]) / "codex-compiler-cache-config.toml"
+        config.write_text("server_startup_timeout_ms = 360000\n")
+        with open(os.environ["GITHUB_ENV"], "a") as output:
+            output.write(f"SCCACHE_CONF={config}\n")
+        PY
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+        echo 'SCCACHE_GHA_ENABLED=true' >> "$GITHUB_ENV"
+        echo 'SCCACHE_GHA_VERSION=codex-downstream-v1' >> "$GITHUB_ENV"
+        echo 'SCCACHE_IGNORE_SERVER_IO_ERROR=1' >> "$GITHUB_ENV"
+        echo 'SCCACHE_IDLE_TIMEOUT=0' >> "$GITHUB_ENV"
+    - name: Wait for the compiler cache to be ready
+      if: steps.cache.outcome == 'success' && inputs.backend != 'persistent'
+      shell: bash
+      run: '"$SCCACHE_PATH" --start-server'
+    - name: Explain cold-build fallback
+      if: steps.cache.outcome != 'success'
+      shell: bash
+      run: echo '::warning::Compiler cache setup failed; compiling without it.'

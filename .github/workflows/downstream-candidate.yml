@@ -1,0 +1,598 @@
+name: downstream-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      local_acceptance:
+        description: Exact-commit successful Linux receipt from scripts/local_candidate.py
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  identity:
+    name: Validate candidate identity
+    runs-on: ubuntu-24.04
+    outputs:
+      source_version: ${{ steps.version.outputs.source_version }}
+      npm_version: ${{ steps.version.outputs.npm_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require local Linux acceptance before hosted compilation
+        env:
+          LOCAL_ACCEPTANCE: ${{ inputs.local_acceptance }}
+        run: python3 scripts/local_candidate.py verify --commit "$GITHUB_SHA"
+      - name: Validate downstream versions
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
+          print(manifest["workspace"]["package"]["version"])
+          PY
+          )"
+          npm_version="${source_version/+multi./-multi.}"
+          if [[ "$source_version" != *+multi.* || "$npm_version" == *+* ]]; then
+            echo "Expected a Rust +multi revision that maps safely to npm: $source_version" >&2
+            exit 1
+          fi
+          echo "source_version=$source_version" >> "$GITHUB_OUTPUT"
+          echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
+          printf 'Candidate `%s` / npm `%s` at `%s`\n' \
+            "$source_version" "$npm_version" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify downstream packaging and publication helpers
+        run: |
+          python3 .github/scripts/test_archive_release_symbols.py -v
+          python3 -m unittest discover -s codex-cli/scripts -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_stage*.py'
+          python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
+          python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_probe_compiler_cache_persistence.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
+
+  preflight:
+    name: Critical producer and consumer regressions
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install and verify Linux test prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+      - name: Check formatting before compilation
+        working-directory: codex-rs
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Verify long-compilation cache survival and reuse
+        run: python3 .github/scripts/probe_compiler_cache.py
+      - name: Require both focused test families
+        run: python3 scripts/run_candidate_preflight.py
+
+  rust-validation:
+    name: Complete Rust validation
+    needs: [identity, preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      NEXTEST_RETRIES: "3"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
+      - name: Verify the Linux sandbox prerequisite
+        run: bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Check formatting
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - uses: ./.github/actions/downstream-compiler-cache
+      - name: Prepare Bazel for pinned native Cargo inputs
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: downstream-candidate-cargo-native
+      - name: Prepare the pinned voice SDK and runtime for Cargo
+        working-directory: ${{ github.workspace }}
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
+            python3 scripts/cargo_native_inputs.py prepare --state "$RUNNER_TEMP/cargo-native"
+      - name: Run complete Clippy
+        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Reclaim Clippy build output
+        run: cargo clean
+      - name: Run complete Rust suite
+        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test
+      - name: Regenerate schemas
+        run: |
+          just write-config-schema
+          just write-app-server-schema
+          just write-app-server-schema --experimental
+      - name: Verify generated files and Cargo lock
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
+          git diff --exit-code
+  bazel-validation:
+    name: Complete Bazel validation
+    needs: [identity, preflight]
+    runs-on: ubuntu-24.04
+    # The measured full graph takes about 4h15m on this standard runner;
+    # reserve time for the required release-only build that follows it.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify and prepare disposable runner storage and short test paths
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_prepare_downstream_bazel.py'
+          python3 .github/scripts/prepare_downstream_bazel.py
+      - name: Prepare Bazel CI
+        id: bazel-setup
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: downstream-candidate-bazel
+      - name: Restore bounded Bazel build results
+        id: bazel-cache
+        continue-on-error: true
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ${{ runner.temp }}/bazel-action-cache/ac
+            ${{ runner.temp }}/bazel-action-cache/cas
+          key: downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-
+      - name: Check Bazel lock and V8 checksums
+        shell: bash
+        run: |
+          python3 .github/scripts/rusty_v8_bazel.py check-module-bazel
+          ./scripts/check-module-bazel-lock.sh
+      - name: Test the complete Bazel graph
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
+          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
+            ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            -- \
+            test \
+            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
+            --test_tmpdir="$CODEX_BAZEL_TEST_TMPDIR" \
+            --sandbox_writable_path=/tmp \
+            --sandbox_tmpfs_path=/tmp \
+            --test_env=TMPDIR=/tmp \
+            --test_env=TEST_TMPDIR=/tmp \
+            --test_env=HOME=/tmp/codex-test-home \
+            --keep_going \
+            --local_test_jobs=2 \
+            --test_env=RUST_TEST_THREADS=1 \
+            --test_env=RUST_MIN_STACK=16777216 \
+            --test_env=INSTA_UPDATE=no \
+            --test_timeout=300,600,1200,3600 \
+            --flaky_test_attempts=3 \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings \
+            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
+            -- \
+            //... \
+            -//third_party/v8:all \
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+      - name: Verify release-only Bazel targets
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          mapfile -t bazel_targets < <(bash ./scripts/list-bazel-release-targets.sh)
+          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
+          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
+            ./.github/scripts/run-bazel-ci.sh \
+            -- \
+            build \
+            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
+            --compilation_mode=fastbuild \
+            --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no \
+            --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no \
+            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
+            -- \
+            "${bazel_targets[@]}"
+      - name: Save reusable Bazel build results even after test failures
+        if: ${{ !cancelled() && steps.bazel-cache.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ${{ runner.temp }}/bazel-action-cache/ac
+            ${{ runner.temp }}/bazel-action-cache/cas
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
+      - name: Save reusable Bazel dependency downloads
+        if: ${{ !cancelled() && steps.bazel-setup.outputs.repository-cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.bazel-setup.outputs.repository-cache-path }}
+          key: ${{ steps.bazel-setup.outputs.repository-cache-key }}
+      - name: Preserve Bazel execution and per-test evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel_validation_${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/bazel-execution-logs
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.xml
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.log
+            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test_attempts/*.log
+          retention-days: 14
+
+  native:
+    name: Build ${{ matrix.target }}
+    # After focused regressions pass, compile alongside complete validation.
+    # Publication still requires every validation and packaging job to succeed.
+    needs: [identity, preflight]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-xlarge
+            target: x86_64-apple-darwin
+            timeout_minutes: 360
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+            timeout_minutes: 360
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Bound Linux release compiler memory use
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo 'CARGO_BUILD_JOBS=1' >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils pkg-config libcap-dev zstd
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - name: Configure MSVC linker
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      - name: Check Windows private-storage bindings before the product build
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo check --locked --tests -p codex-private-storage --target "$TARGET"
+      - uses: ./.github/actions/downstream-compiler-cache
+        with:
+          backend: persistent
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Build and hash bundled bwrap
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-bwrap.json" --defer-health -- \
+            cargo build --locked --target "$TARGET" --release --bin bwrap
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
+      - name: Build product binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
+          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
+          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          args=(
+            cargo build --locked --target "$TARGET" --release
+            --bin codex
+            --bin codex-app-server
+            --bin codex-code-mode-host
+          )
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+            args+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
+            --stats-file "$RUNNER_TEMP/compiler-cache-product.json" --defer-health -- "${args[@]}"
+      - name: Verify the native fork updater without changing any installation
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          suffix=""
+          [[ "$RUNNER_OS" == "Windows" ]] && suffix=".exe"
+          python3 "${GITHUB_WORKSPACE}/scripts/check_fork_update.py" \
+            --codex-binary "${CARGO_TARGET_DIR}/${TARGET}/release/codex${suffix}"
+      - name: Archive symbols and strip product binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
+            --target "$TARGET" \
+            --artifact-name "$TARGET" \
+            --release-dir "${CARGO_TARGET_DIR}/${TARGET}/release" \
+            --archive-dir "native-dist/${TARGET}" \
+            --binaries "codex codex-app-server codex-code-mode-host"
+      - name: Build canonical package archives
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.identity.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
+          dist_dir="${GITHUB_WORKSPACE}/codex-rs/native-dist/${TARGET}"
+          suffix=""
+          [[ "$RUNNER_OS" == "Windows" ]] && suffix=".exe"
+          resources=(
+            --code-mode-host-bin "${release_dir}/codex-code-mode-host${suffix}"
+          )
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            resources+=(--bwrap-bin "${release_dir}/bwrap")
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            resources+=(
+              --codex-command-runner-bin "${release_dir}/codex-command-runner.exe"
+              --codex-windows-sandbox-setup-bin "${release_dir}/codex-windows-sandbox-setup.exe"
+            )
+          fi
+          mkdir -p "$dist_dir"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target "$TARGET" \
+            --variant codex \
+            --package-version "$VERSION" \
+            --entrypoint-bin "${release_dir}/codex${suffix}" \
+            "${resources[@]}" \
+            --archive-output "${dist_dir}/codex-package-${TARGET}.tar.gz" \
+            --archive-output "${dist_dir}/codex-package-${TARGET}.tar.zst"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target "$TARGET" \
+            --variant codex-app-server \
+            --package-version "$VERSION" \
+            --entrypoint-bin "${release_dir}/codex-app-server${suffix}" \
+            "${resources[@]}" \
+            --archive-output "${dist_dir}/codex-app-server-package-${TARGET}.tar.gz" \
+            --archive-output "${dist_dir}/codex-app-server-package-${TARGET}.tar.zst"
+      - name: Write checksums
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          dist = Path("native-dist") / os.environ["TARGET"]
+          lines = []
+          for path in sorted(dist.iterdir()):
+              if path.is_file() and path.name != "SHA256SUMS":
+                  lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          (dist / "SHA256SUMS").write_text("".join(lines))
+          PY
+      - name: Attest candidate artifacts
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: codex-rs/native-dist/${{ matrix.target }}/*
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.target }}
+          path: codex-rs/native-dist/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify compiler-cache writes completed successfully
+        shell: bash
+        run: |
+          cache_check_status=0
+          for receipt in "$RUNNER_TEMP"/compiler-cache-*.json; do
+            python3 "${GITHUB_WORKSPACE}/.github/scripts/compiler_cache_health.py" \
+              --file "$receipt" --backend bazel-http || cache_check_status=1
+          done
+          exit "$cache_check_status"
+
+  npm:
+    name: Build and verify seven npm tarballs
+    needs: [identity, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: "@holyglory"
+      - name: Download native package archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: native-artifacts
+          pattern: "*-*-*"
+      - name: Build npm tarballs
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: |
+          ./scripts/stage_npm_packages.py \
+            --release-version "$VERSION" \
+            --workflow-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --artifacts-dir native-artifacts \
+            --output-dir dist/npm \
+            --package codex
+      - name: Verify exact npm package set
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: |
+          python3 scripts/verify_npm_release.py --version "$VERSION" --dist-dir dist/npm
+          cd dist/npm
+          sha256sum *.tgz > SHA256SUMS
+      - name: Verify isolated npm replacement and fork update
+        shell: bash
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: python3 scripts/check_npm_install.py --version "$VERSION" --dist-dir dist/npm
+      - name: Attest npm candidate tarballs
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: dist/npm/*
+      - name: Upload npm candidate tarballs
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: npm-candidate-${{ needs.identity.outputs.npm_version }}
+          path: dist/npm/*
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-result:
+    name: Candidate checks passed
+    if: always()
+    needs: [identity, preflight, rust-validation, bazel-validation, native, npm]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every candidate job
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          results = {
+              name: job["result"] for name, job in json.loads(os.environ["NEEDS_JSON"]).items()
+          }
+          failures = {name: result for name, result in results.items() if result != "success"}
+          if failures:
+              raise SystemExit(f"Candidate jobs did not all pass: {failures}")
+          print("Every candidate validation and packaging job passed.")
+          PY
