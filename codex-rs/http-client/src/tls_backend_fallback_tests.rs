@@ -19,6 +19,7 @@ fn recognizes_platform_specific_tls_protocol_negotiation_failures() {
             true,
         ),
         ("TLSV1 ALERT PROTOCOL VERSION", true),
+        ("received fatal alert: ProtocolVersion", true),
         (
             "The function requested is not supported. (os error -2146893054)",
             true,
@@ -90,6 +91,16 @@ fn certificate_errors_in_an_error_source_never_enable_fallback() {
 
         assert!(!has_retryable_tls_error(&error), "{message}");
     }
+}
+
+#[test]
+fn nested_io_errors_preserve_protocol_version_fallback_detection() {
+    let error = io::Error::other(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "received fatal alert: ProtocolVersion",
+    ));
+
+    assert!(has_retryable_tls_error(&error));
 }
 
 #[test]

@@ -416,6 +416,10 @@ jobs:
           fi
           python3 "${GITHUB_WORKSPACE}/.github/scripts/run_with_persistent_compiler_cache.py" \
             --stats-file "$RUNNER_TEMP/compiler-cache-product.json" --defer-health -- "${args[@]}"
+      - name: Verify root-owned Codex data access
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/verify_root_data_access.sh "$CARGO_TARGET_DIR/${{ matrix.target }}/release/codex"
       - name: Verify the native fork updater without changing any installation
         shell: bash
         env:

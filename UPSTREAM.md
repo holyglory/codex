@@ -308,7 +308,9 @@ the authority for release outcomes and verification receipts.
   non-root fixture is insufficient: run the packaged binary as UID 0, verify
   open/migrate/reopen and private modes, and ensure the ordinary-user path
   still uses its own home. Keep root data separate; never fix this by
-  broadening permissions or changing ownership.
+  broadening permissions or changing ownership. The release candidate workflow
+  now runs `scripts/verify_root_data_access.sh` against the built Linux binary;
+  a source-only resolver test does not satisfy this gate.
 - **Diagnose SQLite with its WAL attached.** Use a consistent online backup for
   private recovery; independently copied database/sidecar files can miss committed
   facts. Inspect per-source cursors and the failing page. Multiple effective
