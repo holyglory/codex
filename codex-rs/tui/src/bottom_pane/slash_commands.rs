@@ -59,6 +59,7 @@ pub(crate) struct BuiltinCommandFlags {
     pub(crate) connectors_enabled: bool,
     pub(crate) plugins_command_enabled: bool,
     pub(crate) token_activity_command_enabled: bool,
+    pub(crate) account_command_enabled: bool,
     pub(crate) service_tier_commands_enabled: bool,
     pub(crate) daybreak_command_description: Option<&'static str>,
     pub(crate) goal_command_enabled: bool,
@@ -77,6 +78,7 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
         .filter(|(_, cmd)| flags.token_activity_command_enabled || *cmd != SlashCommand::Usage)
+        .filter(|(_, cmd)| flags.account_command_enabled || *cmd != SlashCommand::Account)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
         .filter(|(_, cmd)| flags.worktrees_enabled || *cmd != SlashCommand::Worktree)
         .filter(|(_, cmd)| flags.voice_command_enabled || *cmd != SlashCommand::Voice)
@@ -183,6 +185,7 @@ mod tests {
             connectors_enabled: true,
             plugins_command_enabled: true,
             token_activity_command_enabled: true,
+            account_command_enabled: true,
             service_tier_commands_enabled: true,
             daybreak_command_description: Some(""),
             goal_command_enabled: true,

@@ -816,6 +816,8 @@ impl App {
         if startup_session_cancelled {
             start_in_agents_overview = true;
         }
+        chat_widget.set_local_usage_supported(true);
+        chat_widget.set_account_profiles_supported(true);
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         if pending_startup_thread_start && !start_in_agents_overview {
             chat_widget

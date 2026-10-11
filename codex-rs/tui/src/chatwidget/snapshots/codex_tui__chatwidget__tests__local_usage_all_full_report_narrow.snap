@@ -1,0 +1,18 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+assertion_line: 232
+expression: "render_bottom_popup(&chat, 38)"
+---
+  All local statistics
+
+
+› 1. Report
+  2. Scope
+  3. Account
+  4. Time range
+  5. Coverage
+      Coverage events:
+  6. capture_started
+      Token observations:
+↓
+  enter select · esc back

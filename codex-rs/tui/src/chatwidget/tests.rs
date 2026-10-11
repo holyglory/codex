@@ -226,6 +226,7 @@ fn next_goal_draft(
     }
 }
 
+mod account_profiles;
 mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]
@@ -257,6 +258,8 @@ mod history_projection;
 mod history_replay;
 #[path = "tests/home_cleanup_tests.rs"]
 mod home_cleanup_tests;
+#[path = "tests/local_usage_advanced.rs"]
+mod local_usage_advanced;
 #[path = "tests/luna_reserve_usage_tests.rs"]
 mod luna_reserve_usage_tests;
 mod mcp_startup;

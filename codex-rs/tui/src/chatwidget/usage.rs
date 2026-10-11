@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::reset_credits::reset_credit_options;
 use super::*;
+use crate::bottom_pane::SelectionDescriptionLayout;
 
 const USAGE_MENU_VIEW_ID: &str = "usage-menu";
 const RATE_LIMIT_RESET_VIEW_ID: &str = "rate-limit-reset";
@@ -40,33 +41,89 @@ impl ChatWidget {
                 (true, Some(_)) | (false, _) => (false, "None available".to_string()),
             };
 
+        let mut items = vec![
+            SelectionItem {
+                name: "Show usage".to_string(),
+                description: Some("View recent account token usage.".to_string()),
+                is_disabled: self.local_usage_supported && !self.has_codex_backend_auth,
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::OpenAnalytics { view: None });
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Redeem usage limit reset".to_string(),
+                description: Some(reset_description),
+                is_disabled: !reset_action_enabled,
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::OpenRateLimitResetCredits);
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+        if self.local_usage_supported {
+            let thread_id = self.thread_id.map(|thread_id| thread_id.to_string());
+            items.splice(
+                0..0,
+                [
+                    SelectionItem {
+                        name: "Current chat statistics".to_string(),
+                        description: Some(
+                            "View local token, tool, and activity accounting.".to_string(),
+                        ),
+                        is_disabled: thread_id.is_none(),
+                        actions: vec![Box::new(move |tx| {
+                            if let Some(thread_id) = &thread_id {
+                                tx.send(AppEvent::OpenLocalUsage {
+                                    query: LocalUsageQuery::Chat {
+                                        thread_id: thread_id.clone(),
+                                    },
+                                });
+                            }
+                        })],
+                        dismiss_on_select: true,
+                        ..Default::default()
+                    },
+                    SelectionItem {
+                        name: "All local statistics".to_string(),
+                        description: Some(
+                            "View full collector coverage, provenance, tokens, tools, and time."
+                                .to_string(),
+                        ),
+                        actions: vec![Box::new(|tx| {
+                            tx.send(AppEvent::OpenLocalUsage {
+                                query: LocalUsageQuery::All,
+                            });
+                        })],
+                        dismiss_on_select: true,
+                        ..Default::default()
+                    },
+                    SelectionItem {
+                        name: "Repository statistics".to_string(),
+                        description: Some("Choose a repository report.".to_string()),
+                        actions: vec![Box::new(|tx| {
+                            tx.send(AppEvent::OpenLocalUsage {
+                                query: LocalUsageQuery::Repositories { cursor: None },
+                            });
+                        })],
+                        dismiss_on_select: true,
+                        ..Default::default()
+                    },
+                ],
+            );
+        }
+
         SelectionViewParams {
             view_id: Some(USAGE_MENU_VIEW_ID),
             title: Some("Usage".to_string()),
-            subtitle: Some("Account usage and resets.".to_string()),
             footer_hint: Some(usage_hint_line(&self.bottom_pane.list_keymap(), "open")),
-            items: vec![
-                SelectionItem {
-                    name: "View analytics".to_string(),
-                    description: Some("Usage history".to_string()),
-                    actions: vec![Box::new(|tx| {
-                        tx.send(AppEvent::OpenAnalytics { view: None });
-                    })],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                },
-                SelectionItem {
-                    name: "Redeem reset".to_string(),
-                    description: Some(reset_description),
-                    is_disabled: !reset_action_enabled,
-                    actions: vec![Box::new(|tx| {
-                        tx.send(AppEvent::OpenRateLimitResetCredits);
-                    })],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                },
-            ],
-            ..SelectionViewParams::picker()
+            description_layout: SelectionDescriptionLayout::HideWhenNarrow {
+                min_description_width: 24,
+            },
+            items,
+            ..Default::default()
         }
     }
 

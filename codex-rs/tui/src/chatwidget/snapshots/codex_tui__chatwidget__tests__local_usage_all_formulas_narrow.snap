@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+assertion_line: 252
+expression: "render_bottom_popup(&chat, 38)"
+---
+  All local statistics
+
+↑
+      Classifications (provenance
+      first):
+  18. implementation/coding
+  19. Repository participation
+  20. Formula · wall time
+  21. Formula · tokens
+  22. Formula · concurrency
+  23. Formula · repository
+› 24. Close
+
+  enter select · esc back

@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests/local_usage_advanced.rs
+assertion_line: 243
+expression: "render_bottom_popup(&chat, 38)"
+---
+  All local statistics
+
+↑
+  4. Time range
+  5. Coverage
+      Coverage events:
+  6. capture_started
+      Token observations:
+  7. complete
+      Provider tokens (provenance
+      first):
+› 8. input_tokens
+↓
+  enter select · esc back

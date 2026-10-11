@@ -568,8 +568,11 @@ impl ChatWidget {
                     /*hint*/ None,
                 );
             }
+            SlashCommand::Account => {
+                self.open_account_command("");
+            }
             SlashCommand::Usage => {
-                if self.ensure_usage_command_available() {
+                if self.local_usage_supported() || self.ensure_usage_command_available() {
                     self.open_usage_menu();
                 }
             }
@@ -815,17 +818,31 @@ impl ChatWidget {
                 self.add_error_message("Usage: /pwd".to_string());
             }
             SlashCommand::Usage => {
-                if self.ensure_usage_command_available() {
+                let normalized = trimmed.to_ascii_lowercase();
+                if self.local_usage_supported()
+                    && matches!(
+                        normalized.as_str(),
+                        "all" | "chat" | "repo" | "tools" | "activities" | "events"
+                    )
+                {
+                    self.open_local_usage_command(&normalized);
+                } else if self.ensure_usage_command_available() {
                     match crate::analytics::TokenActivityView::parse(trimmed) {
                         Some(view) => self
                             .app_event_tx
                             .send(AppEvent::OpenAnalytics { view: Some(view) }),
                         None => self.add_error_message(
-                            "Usage: /usage [daily|weekly|cumulative]".to_string(),
+                            if self.local_usage_supported() {
+                                "Usage: /usage [all|chat|repo|tools|activities|events|daily|weekly|cumulative]"
+                            } else {
+                                "Usage: /usage [daily|weekly|cumulative]"
+                            }
+                            .to_string(),
                         ),
                     }
                 }
             }
+            SlashCommand::Account => self.open_account_command(trimmed),
             SlashCommand::Voice => match trimmed.to_ascii_lowercase().as_str() {
                 "settings" => self.app_event_tx.send(AppEvent::OpenRealtimeSettings),
                 "mute" => self.app_event_tx.send(AppEvent::VoiceControl {
@@ -1239,7 +1256,9 @@ impl ChatWidget {
             collaboration_modes_enabled: self.collaboration_modes_enabled(),
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
-            token_activity_command_enabled: self.has_codex_backend_auth,
+            token_activity_command_enabled: self.has_codex_backend_auth
+                || self.local_usage_supported,
+            account_command_enabled: self.account_profiles_supported,
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
             service_tier_commands_enabled: !self.current_model_service_tier_commands().is_empty(),
             daybreak_command_description: self.daybreak_command_description(),
@@ -1269,6 +1288,7 @@ impl ChatWidget {
             | SlashCommand::Daemon
             | SlashCommand::Pwd
             | SlashCommand::Usage
+            | SlashCommand::Account
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
