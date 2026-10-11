@@ -10,6 +10,7 @@ use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_app_server_protocol::WarningNotification;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_event_subscriptions::EventSubscriptionService;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
@@ -44,6 +45,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) http_client_factory: HttpClientFactory,
     /// Process-scoped queue shared by idle dispatch and app-server requests.
     pub(crate) queue_service: Option<Arc<QueuedItemService>>,
+    pub(crate) event_subscription_service: Option<EventSubscriptionService>,
     pub(crate) turn_start_admission: Option<Arc<dyn TurnStartAdmission>>,
 }
 
@@ -62,6 +64,7 @@ pub(crate) fn thread_extensions(
         git_attribution_base_url,
         http_client_factory,
         queue_service,
+        event_subscription_service,
         turn_start_admission,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
@@ -70,6 +73,16 @@ pub(crate) fn thread_extensions(
     }
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
+    }
+    if let Some(service) = event_subscription_service
+        && let Some(state) = state_db.as_ref()
+    {
+        let lifecycle = Arc::new(crate::event_subscriptions::EventSubscriptionLifecycle::new(
+            service,
+            state.event_subscriptions().clone(),
+        ));
+        builder.thread_lifecycle_contributor(lifecycle.clone());
+        builder.turn_lifecycle_contributor(lifecycle);
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     codex_core::install_agent_message_board(&mut builder, thread_manager.clone());

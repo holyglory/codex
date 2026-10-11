@@ -112,6 +112,7 @@ mod daemon_thread_recovery;
 mod dynamic_tools;
 mod effective_plugin_change;
 mod error_code;
+mod event_subscriptions;
 mod extensions;
 mod external_agent_migration;
 mod external_auth;

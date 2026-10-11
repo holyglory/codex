@@ -2125,6 +2125,7 @@ dependencies = [
  "codex-core",
  "codex-core-plugins",
  "codex-diagnostics",
+ "codex-event-subscriptions",
  "codex-exec-server",
  "codex-extension-api",
  "codex-external-agent-migration",

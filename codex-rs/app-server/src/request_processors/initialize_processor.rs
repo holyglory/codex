@@ -27,6 +27,7 @@ pub(crate) struct InitializeRequestProcessor {
     config: Arc<Config>,
     config_warnings: Arc<Vec<ConfigWarningNotification>>,
     rpc_transport: AppServerRpcTransport,
+    event_subscriptions_available: bool,
     user_verification: Arc<crate::user_verification::Service>,
 }
 
@@ -39,6 +40,7 @@ impl InitializeRequestProcessor {
         config: Arc<Config>,
         config_warnings: Vec<ConfigWarningNotification>,
         rpc_transport: AppServerRpcTransport,
+        event_subscriptions_available: bool,
         user_verification: Arc<crate::user_verification::Service>,
     ) -> Self {
         Self {
@@ -49,6 +51,7 @@ impl InitializeRequestProcessor {
             config,
             config_warnings: Arc::new(config_warnings),
             rpc_transport,
+            event_subscriptions_available,
             user_verification,
         }
     }
@@ -221,6 +224,13 @@ impl InitializeRequestProcessor {
                 }),
             local_usage_accounting: Some(
                 codex_app_server_protocol::LocalUsageAccountingCapability { version: 2 },
+            ),
+            event_subscriptions: self.event_subscriptions_available.then_some(
+                codex_app_server_protocol::EventSubscriptionsCapability {
+                    version: 1,
+                    supports_heartbeats: true,
+                    supports_event_ingress: true,
+                },
             ),
             user_agent,
             codex_home,

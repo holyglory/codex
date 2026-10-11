@@ -14,6 +14,7 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use crate::error_code::invalid_request;
 use crate::error_code::method_not_found;
+use crate::event_subscriptions::AppServerSubscriptionWakeSink;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::thread_extensions;
@@ -33,6 +34,7 @@ use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
 use crate::request_processors::EnvironmentRequestProcessor;
+use crate::request_processors::EventSubscriptionRequestProcessor;
 use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
 use crate::request_processors::GitRequestProcessor;
@@ -44,6 +46,7 @@ use crate::request_processors::McpEventStreams;
 use crate::request_processors::McpRequestProcessor;
 use crate::request_processors::PluginRequestProcessor;
 use crate::request_processors::ProcessExecRequestProcessor;
+use crate::request_processors::ProjectAutomationRequestProcessor;
 use crate::request_processors::ProjectRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
@@ -82,6 +85,8 @@ use codex_code_mode::CodeModeSessionProvider;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
+use codex_event_subscriptions::EventSubscriptionService;
+use codex_event_subscriptions::SystemClock;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::TurnStartAdmission;
 use codex_feedback::CodexFeedback;
@@ -159,6 +164,8 @@ pub(crate) struct MessageProcessor {
     process_exec_processor: ProcessExecRequestProcessor,
     config_processor: ConfigRequestProcessor,
     environment_processor: EnvironmentRequestProcessor,
+    event_subscription_processor: EventSubscriptionRequestProcessor,
+    project_automation_processor: ProjectAutomationRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
     local_usage_processor: LocalUsageRequestProcessor,
@@ -368,6 +375,19 @@ impl MessageProcessor {
             }),
             ThreadStoreConfig::InMemory { .. } => None,
         };
+        let public_event_subscriptions_enabled = config
+            .features
+            .enabled(codex_features::Feature::EventSubscriptions);
+        let event_subscription_store = if (public_event_subscriptions_enabled
+            || config.local_control_tools_enabled)
+            && matches!(&config.experimental_thread_store, ThreadStoreConfig::Local)
+        {
+            state_db
+                .as_ref()
+                .map(|state_db| state_db.event_subscriptions().clone())
+        } else {
+            None
+        };
         let environment_manager_for_requests = Arc::clone(&environment_manager);
         let environment_manager_for_extensions = Arc::clone(&environment_manager);
         let restriction_product = session_source.restriction_product();
@@ -383,6 +403,8 @@ impl MessageProcessor {
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
         let mut queue_service = None;
+        let mut event_subscription_service = None;
+        let background_subscription_loader = Arc::new(OnceLock::new());
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             queue_service = queue_store.map(|queue| {
                 Arc::new(QueuedItemService::new(
@@ -390,6 +412,17 @@ impl MessageProcessor {
                     thread_manager.clone(),
                     Arc::clone(&extension_event_sink),
                 ))
+            });
+            event_subscription_service = event_subscription_store.map(|store| {
+                EventSubscriptionService::spawn(
+                    store.clone(),
+                    AppServerSubscriptionWakeSink::new(
+                        thread_manager.clone(),
+                        Arc::clone(&background_subscription_loader),
+                        store,
+                    ),
+                    SystemClock,
+                )
             });
             let manager = ThreadManager::new(
                 config.as_ref(),
@@ -410,6 +443,7 @@ impl MessageProcessor {
                     git_attribution_base_url: config.chatgpt_base_url.clone(),
                     http_client_factory: config.http_client_factory(),
                     queue_service: queue_service.clone(),
+                    event_subscription_service: event_subscription_service.clone(),
                     turn_start_admission: Some(Arc::clone(&turn_start_admission)),
                 }),
                 Arc::new(CodexHomeUserInstructionsProvider::new(
@@ -530,6 +564,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_warnings.clone(),
             rpc_transport,
+            public_event_subscriptions_enabled && event_subscription_service.is_some(),
             Arc::clone(&user_verification),
         );
         let marketplace_processor = MarketplaceRequestProcessor::new(
@@ -575,6 +610,23 @@ impl MessageProcessor {
             Arc::clone(&thread_store),
             outgoing.clone(),
             Arc::clone(&thread_list_state_permit),
+        );
+        let event_subscription_processor = EventSubscriptionRequestProcessor::new(
+            event_subscription_service
+                .clone()
+                .filter(|_| public_event_subscriptions_enabled),
+            Arc::clone(&thread_store),
+            Arc::clone(&thread_manager),
+            state_db.clone(),
+        );
+        let project_automation_processor = ProjectAutomationRequestProcessor::new(
+            config.codex_home.clone(),
+            state_db.clone(),
+            event_subscription_service
+                .clone()
+                .filter(|_| config.local_control_tools_enabled),
+            Arc::clone(&thread_store),
+            Arc::clone(&thread_manager),
         );
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
@@ -666,6 +718,8 @@ impl MessageProcessor {
             process_exec_processor,
             config_processor,
             environment_processor,
+            event_subscription_processor,
+            project_automation_processor,
             external_agent_config_processor,
             feedback_processor,
             local_usage_processor,
@@ -1465,6 +1519,41 @@ impl MessageProcessor {
             ClientRequest::ThreadQueueStart { params, .. } => self
                 .thread_queue_processor
                 .start(&request_id, params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ProjectAutomationCommand { params, .. } => self
+                .project_automation_processor
+                .command(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionCreate { params, .. } => self
+                .event_subscription_processor
+                .create(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionList { params, .. } => self
+                .event_subscription_processor
+                .list(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionWakePolicy { params, .. } => self
+                .event_subscription_processor
+                .wake_policy(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionCancel { params, .. } => self
+                .event_subscription_processor
+                .cancel(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventSubscriptionTrigger { params, .. } => self
+                .event_subscription_processor
+                .trigger(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::EventPublish { params, .. } => self
+                .event_subscription_processor
+                .publish(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
