@@ -7,6 +7,7 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::write_chatgpt_auth;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigEdit;
 use codex_app_server_protocol::ConfigReadParams;
@@ -15,11 +16,14 @@ use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
+use codex_app_server_protocol::McpServerStartupState;
 use codex_app_server_protocol::MergeStrategy;
 use codex_app_server_protocol::PermissionProfileListParams;
 use codex_app_server_protocol::PermissionProfileListResponse;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SkillScope;
 use codex_app_server_protocol::SkillsChangedNotification;
 use codex_app_server_protocol::SkillsExtraRootsSetParams;
@@ -40,6 +44,7 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::skip_if_remote;
 use core_test_support::skip_if_wine_exec;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use tempfile::TempDir;
 use test_case::test_case;
 use tokio::time::timeout;
@@ -54,12 +59,198 @@ use wiremock::matchers::query_param_is_missing;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCHER_TIMEOUT: Duration = Duration::from_secs(20);
+const AUTH_FAILED_MCP_SERVER_NAME: &str = "auth_failed";
 
 fn write_skill(root: &TempDir, name: &str) -> Result<()> {
     let skill_dir = root.path().join("skills").join(name);
     std::fs::create_dir_all(&skill_dir)?;
     let content = format!("---\nname: {name}\ndescription: {name} description\n---\n\n# Body\n");
     std::fs::write(skill_dir.join("SKILL.md"), content)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_list_stays_responsive_while_mcp_auth_failure_is_quarantined() -> Result<()> {
+    let responses_server = create_mock_responses_server_repeating_assistant("Done").await;
+    let mcp_server = MockServer::start().await;
+    let valid_mcp_response = |request: &wiremock::Request| {
+        let request: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("MCP request should be JSON");
+        let result = match request["method"].as_str() {
+            Some("initialize") => serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "serverInfo": {"name": "recovered", "version": "1.0.0"}
+            }),
+            Some("tools/list") => serde_json::json!({"tools": []}),
+            _ => return ResponseTemplate::new(202),
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": result,
+        }))
+    };
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("authorization", "Bearer recovered"))
+        .respond_with(valid_mcp_response)
+        .with_priority(1)
+        .mount(&mcp_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("www-authenticate", "Bearer error=\"invalid_token\""),
+        )
+        .with_priority(2)
+        .mount(&mcp_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    write_skill(&codex_home, "healthy")?;
+    MockResponsesConfig::new(&responses_server.uri()).write(codex_home.path())?;
+    let config_path = codex_home.path().join("config.toml");
+    let base_config = std::fs::read_to_string(&config_path)?;
+    let mcp_url = format!("{}/mcp", mcp_server.uri());
+    let unchanged_mcp_config = format!(
+        "[mcp_servers.{AUTH_FAILED_MCP_SERVER_NAME}]\nurl = \"{mcp_url}\"\nstartup_timeout_sec = 2\n"
+    );
+    std::fs::write(
+        &config_path,
+        format!("{base_config}\n{unchanged_mcp_config}"),
+    )?;
+
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let thread = app
+        .start_thread(ThreadStartParams {
+            cwd: Some(codex_home.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+    let failed = timeout(
+        DEFAULT_TIMEOUT,
+        app.read_stream_until_matching_notification(
+            "auth-failed MCP startup failure",
+            |notification| {
+                notification.method == "mcpServer/startupStatus/updated"
+                    && notification
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("threadId"))
+                        == Some(&serde_json::json!(thread.id))
+                    && notification
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("name"))
+                        .and_then(Value::as_str)
+                        == Some(AUTH_FAILED_MCP_SERVER_NAME)
+                    && notification
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("failed")
+            },
+        ),
+    )
+    .await??;
+    let failed: ServerNotification = failed.try_into()?;
+    let ServerNotification::McpServerStatusUpdated(failed) = failed else {
+        anyhow::bail!("unexpected MCP startup notification");
+    };
+    assert_eq!(failed.status, McpServerStartupState::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("auth_failed"))
+    );
+
+    let before_refresh = mcp_server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .len();
+    let skills_request_id = app
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let SkillsListResponse { data } =
+        timeout(Duration::from_secs(2), app.read_response(skills_request_id)).await??;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(data[0].skills.iter().any(|skill| skill.name == "healthy"));
+
+    let _: McpServerRefreshResponse = app
+        .request(|request_id| ClientRequest::McpServerRefresh {
+            request_id,
+            params: None,
+        })
+        .await?;
+    let after_unchanged_refresh = mcp_server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .len();
+    assert_eq!(
+        after_unchanged_refresh, before_refresh,
+        "unchanged credential refresh must reuse the quarantined MCP generation"
+    );
+
+    let recovered_mcp_config = format!(
+        "[mcp_servers.{AUTH_FAILED_MCP_SERVER_NAME}]\nurl = \"{mcp_url}\"\nhttp_headers = {{ Authorization = \"Bearer recovered\" }}\nstartup_timeout_sec = 2\n"
+    );
+    std::fs::write(
+        &config_path,
+        format!("{base_config}\n{recovered_mcp_config}"),
+    )?;
+    let _: McpServerRefreshResponse = app
+        .request(|request_id| ClientRequest::McpServerRefresh {
+            request_id,
+            params: None,
+        })
+        .await?;
+    let recovered = timeout(
+        DEFAULT_TIMEOUT,
+        app.read_stream_until_matching_notification("auth-failed MCP recovery", |notification| {
+            notification.method == "mcpServer/startupStatus/updated"
+                && notification
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("name"))
+                    .and_then(Value::as_str)
+                    == Some(AUTH_FAILED_MCP_SERVER_NAME)
+                && notification
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("ready")
+        }),
+    )
+    .await??;
+    let recovered: ServerNotification = recovered.try_into()?;
+    let ServerNotification::McpServerStatusUpdated(recovered) = recovered else {
+        anyhow::bail!("unexpected MCP recovery notification");
+    };
+    assert_eq!(recovered.status, McpServerStartupState::Ready);
+    assert!(
+        mcp_server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .len()
+            > after_unchanged_refresh
+    );
     Ok(())
 }
 
