@@ -27,6 +27,8 @@ mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;
 pub use codex_event_subscriptions::CapacityRetryContext;
+pub use codex_event_subscriptions::SubscriptionRunState;
+pub use codex_event_subscriptions::SubscriptionWorkOrigin;
 pub use codex_protocol::turn_input::NotSubmittedReason;
 pub use codex_protocol::turn_input::RecoverTurnRequest;
 pub use codex_protocol::turn_input::StartIfIdleSubmission;

@@ -180,6 +180,13 @@ where
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input
+                .thread_store
+                .get::<codex_core::SubscriptionRunState>()
+                .is_some_and(|run| !run.user_work.load(std::sync::atomic::Ordering::Acquire))
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -232,6 +239,16 @@ where
                 return;
             };
             if !runtime.is_enabled() {
+                return;
+            }
+
+            if input
+                .turn_store
+                .get::<codex_core::SubscriptionWorkOrigin>()
+                .is_some_and(|origin| {
+                    matches!(*origin, codex_core::SubscriptionWorkOrigin::Background)
+                })
+            {
                 return;
             }
 
