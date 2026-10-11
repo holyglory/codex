@@ -155,12 +155,12 @@ impl ThreadRequestProcessor {
                 return Err("workNotPaused");
             }
             let thread_id = ThreadId::from_string(id).map_err(|_| "invalidThread")?;
-            self.thread_store
-                .persist_thread(thread_id, PersistContext::Standard)
-                .await
-                .map_err(|_| "persistenceFailed")?;
             thread
                 .flush_rollout()
+                .await
+                .map_err(|_| "persistenceFailed")?;
+            self.thread_store
+                .persist_thread(thread_id, PersistContext::Standard)
                 .await
                 .map_err(|_| "persistenceFailed")?;
             let mail = thread.maintenance_mailbox().await;

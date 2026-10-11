@@ -2758,6 +2758,15 @@ async fn try_run_sampling_request(
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
     let receiving_span = trace_span!("receiving_stream");
+    let maintenance_pending = || {
+        sess.services.extensions.maintenance_requested()
+            || sess
+                .services
+                .thread_extension_data
+                .get::<crate::maintenance::MaintenanceGate>()
+                .is_some_and(|gate| gate.pending().is_some())
+    };
+    let mut preempt_disabled_for_maintenance = maintenance_pending();
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
@@ -2774,18 +2783,30 @@ async fn try_run_sampling_request(
             codex.usage.total_tokens = field::Empty,
         );
 
-        let event = stream
-            .next()
-            .instrument(trace_span!(parent: &handle_responses, "receiving"))
-            .or_cancel(&preempt)
-            .or_cancel(&cancellation_token)
-            .await;
-        if cancellation_token.is_cancelled() {
-            break Err(CodexErr::TurnAborted);
-        }
+        // A steer normally preempts a response immediately. During cooperative maintenance,
+        // keep the response running so its tool call and output reach the durable checkpoint;
+        // the steer remains queued for the resumed turn.
+        let event = loop {
+            let receiving = stream
+                .next()
+                .instrument(trace_span!(parent: &handle_responses, "receiving"));
+            tokio::pin!(receiving);
+            tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => break Err(CodexErr::TurnAborted),
+                event = &mut receiving => break Ok(event),
+                _ = preempt.cancelled(), if !preempt_disabled_for_maintenance => {
+                    if maintenance_pending() {
+                        preempt_disabled_for_maintenance = true;
+                        continue;
+                    }
+                    break Err(CodexErr::TurnAborted);
+                }
+            }
+        };
         let event = match event {
-            Ok(Ok(event)) => event,
-            Ok(Err(_)) => {
+            Ok(Some(Ok(event))) => event,
+            Ok(Some(Err(_))) => {
                 if let Some(interrupt) = stream.interrupt.take() {
                     if step_context.settings.model_info.use_responses_lite {
                         let _ = interrupt.send(());
@@ -2802,17 +2823,12 @@ async fn try_run_sampling_request(
                     last_agent_message,
                 });
             }
-            Err(_) => break Err(CodexErr::TurnAborted),
-        };
-
-        let event = match event {
-            Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
-            None => {
+            Ok(None) => {
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                 ));
             }
+            Err(err) => break Err(err),
         };
 
         sess.services
