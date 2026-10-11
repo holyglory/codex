@@ -62,7 +62,10 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
         },
     )
     .await?;
-    assert!(!recovery_file.exists());
+    assert!(
+        recovery_file.exists(),
+        "invalid recovery evidence must be retained"
+    );
     let thread = start_thread(
         &mut client,
         /*id*/ 2,
@@ -589,6 +592,7 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
         daemon_recovery::RecoverySnapshot {
             loaded: [id.clone()].into(),
             interrupted: expected,
+            maintenance: None,
         }
     );
     // Existing binaries can still read the candidate array and ignore the metadata entry.
@@ -821,7 +825,7 @@ fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
         )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()?)
 }
@@ -919,3 +923,11 @@ async fn request(
     .await
     .context("timed out waiting for app-server response")?
 }
+
+#[path = "daemon_update_recovery/background_tests.rs"]
+mod background_tests;
+#[path = "daemon_update_recovery/maintenance_tests.rs"]
+mod maintenance_tests;
+
+#[path = "daemon_update_recovery/mailbox_tests.rs"]
+mod mailbox_tests;

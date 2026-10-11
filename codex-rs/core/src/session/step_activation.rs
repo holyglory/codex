@@ -383,7 +383,7 @@ impl Session {
         TurnSettingsUpdateOutcome::Applied
     }
 
-    async fn prepare_step_settings_activation(
+    pub(super) async fn prepare_step_settings_activation(
         &self,
         turn_context: &TurnContext,
         current: &ResolvedStepSettings,
@@ -424,7 +424,7 @@ impl Session {
     /// Rechecks ordinary managed authorization after asynchronous resolution.
     /// Unlike the temporary legacy-turn check, these requirements also apply
     /// once all execution consumers read their captured `StepContext`.
-    fn validate_active_step_settings(
+    pub(super) fn validate_active_step_settings(
         &self,
         turn_context: &TurnContext,
         settings: &ResolvedStepSettings,

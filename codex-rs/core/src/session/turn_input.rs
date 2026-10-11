@@ -201,6 +201,9 @@ impl PreparedTurnInputSettings {
                 .turn_metadata_state
                 .set_root_turn_id(root_turn_id);
         }
+        if kind == TurnStartKind::Recovery {
+            session.restore_maintenance_context(&turn_context).await?;
+        }
         Ok(Some(turn_context))
     }
 

@@ -253,6 +253,7 @@ mod submission;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
 mod input_queue;
+pub(crate) mod maintenance_recovery;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_refresh;

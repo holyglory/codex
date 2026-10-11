@@ -1,3 +1,5 @@
+#[path = "maintenance_controller.rs"]
+mod maintenance;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -1056,6 +1058,9 @@ impl MessageProcessor {
         );
 
         let (turn_admission, recheck_turn_admission) = match &codex_request {
+            ClientRequest::TurnInterrupt { .. } => {
+                (Some(self.turn_admission.admit_interrupt()?), false)
+            }
             ClientRequest::ThreadStart { .. }
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }
@@ -1726,9 +1731,23 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::TurnInterrupt { params, .. } => {
-                self.turn_processor
-                    .turn_interrupt(&request_id, params)
+                if self
+                    .turn_admission
+                    .resumptions
+                    .cancel(&params.thread_id, &params.turn_id)
                     .await
+                    .map_err(|error| {
+                        internal_error(format!("failed to preserve Stop during recovery: {error}"))
+                    })?
+                {
+                    Ok(Some(
+                        codex_app_server_protocol::TurnInterruptResponse {}.into(),
+                    ))
+                } else {
+                    self.turn_processor
+                        .turn_interrupt(&request_id, params)
+                        .await
+                }
             }
             ClientRequest::ThreadRealtimeStart { params, .. } => {
                 self.turn_processor

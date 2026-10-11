@@ -49,6 +49,7 @@ impl crate::CodexThread {
             options: crate::TurnStartOptions {
                 turn_trigger: metadata.current_turn_trigger(),
                 parent_turn_id: metadata.parent_turn_id(),
+                initiating_agent_path: metadata.initiating_agent_path().cloned(),
                 root_turn_id: metadata.root_turn_id(),
                 final_output_json_schema: context.final_output_json_schema.clone(),
                 service_tier: selected.service_tier.clone(),
@@ -115,7 +116,7 @@ impl Session {
         let mut settings = super::step_settings::ResolvedStepSettings::new(
             Arc::new(selected),
             Arc::new(model_info),
-            self.features.enabled(codex_features::Feature::FastMode),
+            self.features.get(),
         );
         let environments = self.services.turn_environments.selections();
         let state = self.state.lock().await;
@@ -190,18 +191,6 @@ impl Session {
             }
             return Ok(());
         }
-        self.stop_subscription_work().await;
-        if self.state_db().is_some()
-            && self
-                .services
-                .thread_extension_data
-                .get::<codex_event_subscriptions::SubscriptionRunState>()
-                .is_some_and(|run| run.stop_pending.load(std::sync::atomic::Ordering::Acquire))
-        {
-            return Err(codex_protocol::error::CodexErr::Fatal(
-                "failed to persist suspended wake permissions".into(),
-            ));
-        }
         self.emit_turn_abort_lifecycle(
             TurnAbortReason::Interrupted,
             &codex_extension_api::ExtensionData::new(turn_id.clone()),
@@ -210,6 +199,7 @@ impl Session {
         self.send_event_raw(Event {
             id: turn_id.clone(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some(turn_id),
                 reason: TurnAbortReason::Interrupted,
                 error: None,

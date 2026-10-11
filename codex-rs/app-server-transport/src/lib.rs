@@ -1,6 +1,7 @@
 pub mod daemon_recovery;
 #[cfg(any(windows, test))]
 mod daemon_shutdown;
+pub mod maintenance;
 #[cfg(windows)]
 pub use daemon_shutdown::DAEMON_SHUTDOWN_FILE_ENV;
 #[cfg(windows)]

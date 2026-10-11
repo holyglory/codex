@@ -11,6 +11,7 @@ pub(super) enum ReconnectPresentation {
     #[default]
     Conversation,
     Overview,
+    RejectedFreshStart,
 }
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ pub(super) struct ReconnectState {
     pub(super) failed: bool,
     pub(super) presentation: ReconnectPresentation,
     pub(super) seen_version_notice: Option<String>,
+    pub(super) startup_worktree: Option<crate::ManagedTuiWorktree>,
 }
 
 pub(super) struct Reconnected {
@@ -60,7 +62,21 @@ pub(super) async fn reconnect(
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
             let bootstrap = session.bootstrap(&config).await?;
-            let thread = if let Some(thread_id) = thread_id {
+            let thread = if presentation == ReconnectPresentation::RejectedFreshStart {
+                match session
+                    .start_thread_with_session_start_source(
+                        &local_settings,
+                        &config,
+                        /*session_start_source*/ None,
+                        remote_cwd.as_deref(),
+                        /*selected_profile*/ None,
+                    )
+                    .await
+                {
+                    Ok(started) => Some(started),
+                    Err(error) => return Err(error),
+                }
+            } else if let Some(thread_id) = thread_id {
                 match session
                     .resume_thread(
                         &local_settings,
@@ -71,6 +87,13 @@ pub(super) async fn reconnect(
                     .await
                 {
                     Ok(thread) => Some(thread),
+                    Err(error)
+                        if error
+                            .downcast_ref::<TypedRequestError>()
+                            .is_some_and(TypedRequestError::is_server_switching) =>
+                    {
+                        return Err(error);
+                    }
                     Err(error)
                         if matches!(
                             error.downcast_ref::<TypedRequestError>(),
@@ -113,6 +136,12 @@ pub(super) async fn reconnect(
         let result = tokio::time::timeout_at(deadline, attempt).await;
         match result {
             Ok(Ok(connected)) => return Ok(connected),
+            Ok(Err(error)) if presentation == ReconnectPresentation::RejectedFreshStart
+                && error.downcast_ref::<TypedRequestError>().is_some_and(|error| {
+                    matches!(error, TypedRequestError::Transport { method, .. } if method == "thread/start")
+                        || matches!(error, TypedRequestError::Deserialize { method, .. } if method == "thread/start")
+                        || matches!(error, TypedRequestError::Server { method, .. } if method == "thread/start" && !error.is_server_switching())
+                }) => return Err(error),
             Ok(Err(_)) => {}
             Err(_) => break,
         }
@@ -172,10 +201,11 @@ impl App {
     }
 
     pub(super) fn recover_transport_error(&mut self, error: &color_eyre::Report) -> bool {
-        let disconnected = matches!(
-            error.downcast_ref::<TypedRequestError>(),
-            Some(TypedRequestError::Transport { .. })
-        );
+        let disconnected = error
+            .downcast_ref::<TypedRequestError>()
+            .is_some_and(|error| {
+                matches!(error, TypedRequestError::Transport { .. }) || error.is_server_switching()
+            });
         disconnected && self.begin_reconnect()
     }
 
@@ -437,7 +467,11 @@ impl App {
             self.active_thread_rx = Some(receiver);
             self.recap.seed_from_turns(&snapshot.turns, Instant::now());
             self.render_thread_snapshot(
-                tui, app_server, id, snapshot, /*resume_restored_queue*/ false,
+                tui,
+                app_server,
+                id,
+                snapshot,
+                self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart,
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;

@@ -154,6 +154,10 @@ impl Hooks {
         self.engine.command_runtime.shutdown().await;
     }
 
+    pub async fn wait_for_async_hooks(&self) {
+        self.engine.command_runtime.wait_for_async_hooks().await;
+    }
+
     pub fn startup_warnings(&self) -> &[String] {
         self.engine.warnings()
     }

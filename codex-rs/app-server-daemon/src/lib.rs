@@ -1,6 +1,11 @@
 //! Managed app-server lifecycle, serialized across CLI invocations and the updater.
 
 mod backend;
+mod handover;
+pub use handover::cancel_handover;
+pub use handover::handover_status;
+pub use handover::request_handover;
+pub use handover::run_handover;
 mod background_command;
 #[cfg(windows)]
 pub use backend::windows::DetachedLaunchRestricted;
@@ -129,6 +134,7 @@ pub struct BootstrapOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateStatus {
+    Pending,
     Updated,
     NoUpdate,
     Unsupported,
@@ -206,7 +212,7 @@ pub(crate) enum RestartIfRunningOutcome {
     NotRunning,
     NotReady,
     AlreadyCurrent,
-    Restarted,
+    Scheduled,
 }
 
 #[cfg(any(unix, windows))]
@@ -425,14 +431,18 @@ impl Daemon {
                 self.wait_until_ready().await?,
             )
         } else {
-            // A fresh start must ignore snapshots left by older stop clients.
-            if let Err(err) = thread_recovery::discard_pending(self) {
+            // Preserve a committed maintenance handoff after its owner exited.
+            if let Err(err) = thread_recovery::prepare_fresh_start(self) {
                 self.diagnostic(format_args!(
-                    "warning: failed to clear stale daemon recovery before start: {err}"
+                    "warning: failed to prepare daemon recovery before start: {err}"
                 ));
             }
-            prepare_install::prepare(self, &settings).await?;
-            managed.managed_codex_bin = self.current_managed_codex_bin()?;
+            if let Some(recovery_binary) = handover::recovery::recovery_binary(self).await? {
+                managed.managed_codex_bin = recovery_binary;
+            } else {
+                prepare_install::prepare(self, &settings).await?;
+                managed.managed_codex_bin = self.current_managed_codex_bin()?;
+            }
             managed.ensure_managed_codex_bin()?;
             // Only a fresh launch may replace these settings. Keep them for restarts
             // and updates, without changing the user's config or a running daemon.
@@ -448,6 +458,7 @@ impl Daemon {
                 self.wait_until_ready().await?,
             )
         };
+        handover::recovery::finish_orphaned(&managed).await?;
         if backend.is_some()
             && let Err(err) = managed.ensure_managed_updater(&settings).await
         {
@@ -558,37 +569,8 @@ impl Daemon {
                 }
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
                 RestartDecision::Restart => {
-                    #[cfg(windows)]
-                    backend::windows::ensure_detached_launch(managed_codex_bin)?;
-                    if let Err(err) = thread_recovery::discard_pending(self) {
-                        eprintln!(
-                            "warning: failed to clear stale daemon recovery before update: {err}"
-                        );
-                    }
-                    diagnostics::event(
-                        "restart_requested",
-                        serde_json::json!({
-                                "shutdownGraceSeconds": settings.shutdown_grace_seconds,
-                        }),
-                    );
-                    let started = std::time::Instant::now();
-                    diagnostics::result(
-                        "shutdown",
-                        started,
-                        backend
-                            .stop_with_grace(settings.shutdown_grace_seconds)
-                            .await,
-                    )?;
-                    let started = std::time::Instant::now();
-                    diagnostics::result(
-                        "replacement_launch",
-                        started,
-                        self.start_managed_backend_with_bin(&settings, managed_codex_bin)
-                            .await,
-                    )?;
-                    let started = std::time::Instant::now();
-                    diagnostics::result("readiness", started, self.wait_until_ready().await)?;
-                    RestartIfRunningOutcome::Restarted
+                    let _ = handover::request_locked(self).await?;
+                    RestartIfRunningOutcome::Scheduled
                 }
             }
         } else if client::probe(&self.socket_path).await.is_ok() {
