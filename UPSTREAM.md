@@ -88,6 +88,13 @@ the authority for release outcomes and verification receipts.
   rediscovered during testing. Keep the preflight and its mismatched-toolchain
   fixture in the release workflow, and use the canonical isolated runner rather
   than a hand-written substitute test graph.
+- **Do not replay a broad checkpoint without its companion API adaptations.**
+  The 0.162.1 forward-port checkpoints carried downstream account, usage, event,
+  and plugin code but also reverted or omitted newer stable interfaces. Replaying
+  one wholesale produced duplicate modules, stale SQLite constructors,
+  `PathUri`/`AbsolutePath` mismatches, and missing authenticated plugin methods.
+  Preserve each checkpoint for diagnosis, then apply its ordered companion
+  adaptation commits and run a compile-only compatibility gate before tests.
 - **Pin native inputs in the release runner too.** This line's voice-host
   crates require GStreamer 1.28; the system package is older. Use the retained
   `model-capacity-voice-tests` native/pkg-config and ALSA inputs, with their
