@@ -67,6 +67,7 @@ pub use codex_thread::ThreadConfigSnapshot;
 pub use project_automation::project_automation_id;
 pub use project_automation::project_automation_now_ms;
 pub use project_automation::validate_project_evidence;
+pub use project_work_context::capture_project_work_binding;
 pub use session::turn_context::TurnContext;
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;
