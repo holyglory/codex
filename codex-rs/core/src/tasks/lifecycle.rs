@@ -81,9 +81,18 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "idle admission state and receipt cleanup must observe the same active turn"
+    )]
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+        let wake_run = self
+            .services
+            .thread_extension_data
+            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default);
+        let dispatch = wake_run.dispatch.lock().await;
+        let active_turn = self.active_turn.lock().await;
         let cause = {
-            let active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return;
             }
@@ -96,6 +105,11 @@ impl Session {
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return;
         }
+
+        wake_run.running.store(/*val*/ false, Ordering::Release);
+        self.clear_subscription_wake_inputs().await;
+        drop(active_turn);
+        drop(dispatch);
 
         for contributor in self.services.extensions.thread_lifecycle_contributors() {
             contributor

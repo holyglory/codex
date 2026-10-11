@@ -410,6 +410,27 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.split_off(0)
     }
 
+    pub(crate) async fn take_pending_response_items_for_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+        expected: &[ResponseItem],
+    ) -> Vec<TurnInput> {
+        let mut turn_state = turn_state.lock().await;
+        let mut selected = Vec::new();
+        turn_state.pending_input.items.retain(|input| {
+            let TurnInput::ResponseItem(envelope) = input else {
+                return true;
+            };
+            if expected.iter().any(|item| item == &envelope.item) {
+                selected.push(input.clone());
+                false
+            } else {
+                true
+            }
+        });
+        selected
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"

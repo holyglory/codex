@@ -360,7 +360,11 @@ impl Session {
         let session = Arc::clone(self);
         let ctx = Arc::clone(&turn_context);
         let task_for_run = Arc::clone(&task);
-        let task_input = input;
+        let mut task_input = input;
+        task_input.extend(
+            self.take_pending_subscription_wake_inputs(turn_state.as_ref())
+                .await,
+        );
         let task_cancellation_token = cancellation_token.child_token();
         // Task-owned turn spans keep a core-owned span open for the
         // full task lifecycle after the submission dispatch span ends.
