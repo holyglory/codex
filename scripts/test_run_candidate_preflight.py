@@ -7,9 +7,63 @@ from run_candidate_preflight import run_preflight
 
 
 class CandidatePreflightTests(unittest.TestCase):
+    def test_each_release_capability_requires_a_nonempty_test_family(self):
+        manifest = {
+            "capabilities": [
+                {
+                    "id": "retained-feature",
+                    "packages": ["codex-cli"],
+                    "filters": ["test(kept_feature::)", "test(recovery::)"],
+                }
+            ]
+        }
+        for failure in (None, 4):
+            with (
+                self.subTest(failure=failure),
+                patch("run_candidate_preflight.verify_toolchain"),
+                patch("run_candidate_preflight.load_manifest", return_value=manifest),
+                patch("run_candidate_preflight.verify"),
+                patch("run_candidate_preflight.subprocess.run") as run,
+            ):
+                if failure is None:
+                    run_preflight(Path("/candidate"))
+                    self.assertEqual(
+                        run.call_args_list[-1].args[0][-1], "test(recovery::)"
+                    )
+                else:
+                    run.side_effect = [None] * 8 + [
+                        subprocess.CalledProcessError(failure, "just")
+                    ]
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        run_preflight(Path("/candidate"))
+                selections = [call.args[0] for call in run.call_args_list[1:]]
+                self.assertTrue(
+                    all(command[:-1] == selections[0][:-1] for command in selections)
+                )
+                self.assertTrue(all("codex-cli" in command for command in selections))
+
+    def test_release_inclusion_refusal_stops_before_build(self):
+        with (
+            patch("run_candidate_preflight.verify_toolchain"),
+            patch("run_candidate_preflight.load_manifest", return_value={}),
+            patch(
+                "run_candidate_preflight.verify",
+                side_effect=ValueError("missing capability"),
+            ),
+            patch("run_candidate_preflight.subprocess.run") as run,
+        ):
+            with self.assertRaises(ValueError):
+                run_preflight(Path("/candidate"))
+            run.assert_not_called()
+
     def test_all_families_are_required_with_the_same_feature_union(self):
         with (
             patch("run_candidate_preflight.verify_toolchain"),
+            patch(
+                "run_candidate_preflight.load_manifest",
+                return_value={"capabilities": []},
+            ),
+            patch("run_candidate_preflight.verify"),
             patch("run_candidate_preflight.subprocess.run") as run,
         ):
             run_preflight(Path("/candidate"))
@@ -59,6 +113,11 @@ class CandidatePreflightTests(unittest.TestCase):
                     side_effect=[None, subprocess.CalledProcessError(code, "just")],
                 ) as run,
                 patch("run_candidate_preflight.verify_toolchain"),
+                patch(
+                    "run_candidate_preflight.load_manifest",
+                    return_value={"capabilities": []},
+                ),
+                patch("run_candidate_preflight.verify"),
             ):
                 with self.assertRaises(subprocess.CalledProcessError):
                     run_preflight(Path("/candidate"))
@@ -71,6 +130,11 @@ class CandidatePreflightTests(unittest.TestCase):
                 side_effect=[None, None, subprocess.CalledProcessError(1, "just")],
             ) as run,
             patch("run_candidate_preflight.verify_toolchain"),
+            patch(
+                "run_candidate_preflight.load_manifest",
+                return_value={"capabilities": []},
+            ),
+            patch("run_candidate_preflight.verify"),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
                 run_preflight(Path("/candidate"))
@@ -86,6 +150,11 @@ class CandidatePreflightTests(unittest.TestCase):
                     + [subprocess.CalledProcessError(1, "just")],
                 ) as run,
                 patch("run_candidate_preflight.verify_toolchain"),
+                patch(
+                    "run_candidate_preflight.load_manifest",
+                    return_value={"capabilities": []},
+                ),
+                patch("run_candidate_preflight.verify"),
             ):
                 with self.assertRaises(subprocess.CalledProcessError):
                     run_preflight(Path("/candidate"))
@@ -98,6 +167,11 @@ class CandidatePreflightTests(unittest.TestCase):
                 side_effect=subprocess.CalledProcessError(1, "cargo"),
             ) as run,
             patch("run_candidate_preflight.verify_toolchain"),
+            patch(
+                "run_candidate_preflight.load_manifest",
+                return_value={"capabilities": []},
+            ),
+            patch("run_candidate_preflight.verify"),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
                 run_preflight(Path("/candidate"))

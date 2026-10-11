@@ -7,9 +7,6 @@ use super::StartupOutcomeError;
 
 impl AsyncManagedClient {
     pub(crate) async fn connection_status(&self) -> Status {
-        if self.cancel_token.is_cancelled() {
-            return Status::Cancelled;
-        }
         let reconnect_outcome = if let Some(reconnect) = &self.startup_reconnect {
             let state = reconnect
                 .state
@@ -26,6 +23,9 @@ impl AsyncManagedClient {
         } else {
             None
         };
+        if self.cancel_token.is_cancelled() && reconnect_outcome.is_none() {
+            return Status::Cancelled;
+        }
         let outcome = reconnect_outcome.or_else(|| self.client.peek().cloned());
         match outcome {
             Some(Ok(client)) => {

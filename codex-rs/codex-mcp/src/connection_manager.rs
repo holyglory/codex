@@ -92,23 +92,20 @@ pub(crate) struct McpServerConnection {
     // Startup-only budget; changing it must not replace a ready connection.
     startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
-    authentication_blocked: AtomicBool,
-    authentication_error: Mutex<Option<StartupOutcomeError>>,
+    quarantined: AtomicBool,
+    latest_error: Mutex<Option<StartupOutcomeError>>,
     _diagnostics_guard: GaugeGuard,
 }
 
 impl McpServerConnection {
-    fn quarantine_authentication(&self, error: &StartupOutcomeError) {
-        self.authentication_blocked.store(true, Ordering::Release);
+    async fn quarantine(&self, error: &StartupOutcomeError) {
+        self.quarantined.store(true, Ordering::Release);
         *self
-            .authentication_error
+            .latest_error
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
         self.client.cancel_token.cancel();
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            client.shutdown().await;
-        });
+        self.client.shutdown().await;
     }
 
     async fn reusable_client(
@@ -149,16 +146,20 @@ impl McpServerConnection {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
-        if self.authentication_blocked.load(Ordering::Acquire) {
+        if self.quarantined.load(Ordering::Acquire) {
             return Err(self
-                .authentication_error
+                .latest_error
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
                 .unwrap_or_else(|| StartupOutcomeError::Failed {
-                    error: "MCP authentication is quarantined".to_string(),
-                    is_authentication_required: true,
+                    error: "MCP server is quarantined after a terminal startup failure".to_string(),
+                    is_authentication_required: false,
                 }));
+        }
+        if let Some(error) = self.client.terminal_error() {
+            self.quarantine(&error).await;
+            return Err(error);
         }
         if let Some(startup_trigger) = &self.startup_trigger {
             startup_trigger.send_replace(true);
@@ -166,25 +167,25 @@ impl McpServerConnection {
         match self.client.client().await {
             Ok(client) => Ok(client),
             Err(error) if error.is_authentication_required() => {
-                self.quarantine_authentication(&error);
+                self.quarantine(&error).await;
                 Err(error)
             }
             Err(error) => Err(error),
         }
     }
 
-    fn is_authentication_blocked(&self) -> bool {
-        self.authentication_blocked.load(Ordering::Acquire)
+    fn is_quarantined(&self) -> bool {
+        self.quarantined.load(Ordering::Acquire)
     }
 
-    fn authentication_blocked_error(&self) -> StartupOutcomeError {
-        self.authentication_error
+    fn quarantine_error(&self) -> StartupOutcomeError {
+        self.latest_error
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or_else(|| StartupOutcomeError::Failed {
-                error: "MCP authentication is quarantined".to_string(),
-                is_authentication_required: true,
+                error: "MCP server is quarantined after a terminal startup failure".to_string(),
+                is_authentication_required: false,
             })
     }
 
@@ -229,7 +230,7 @@ impl McpServerView {
     }
 
     fn cached_startup_tools(&self, fallback: Option<Vec<ToolInfo>>) -> Option<Vec<ToolInfo>> {
-        if self.connection.is_authentication_blocked() {
+        if self.connection.is_quarantined() || self.connection.client.terminal_error().is_some() {
             return None;
         }
         self.connection
@@ -252,13 +253,17 @@ impl McpServerView {
         &self,
         tool_plugin_context: &ToolPluginContext,
     ) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
-        if self.connection.is_authentication_blocked() {
-            return Err(self.connection.authentication_blocked_error());
+        if self.connection.is_quarantined() {
+            return Err(self.connection.quarantine_error());
+        }
+        if let Some(error) = self.connection.client.terminal_error() {
+            self.connection.quarantine(&error).await;
+            return Err(error);
         }
         let tools = match self.connection.client.listed_tools().await {
             Ok(tools) => tools,
             Err(error) if error.is_authentication_required() => {
-                self.connection.quarantine_authentication(&error);
+                self.connection.quarantine(&error).await;
                 return Err(error);
             }
             Err(error) => return Err(error),
@@ -553,7 +558,7 @@ impl McpConnectionSet {
                     && previous_view.catalog_item_limit == catalog_item_limit
                     && expected_protocol_mode.is_some()
                     && previous_view.protocol_mode == protocol_mode;
-                let unchanged_auth_failure = if connection.identity.as_ref()
+                let unchanged_failure = if connection.identity.as_ref()
                     == Some(&connection_identity)
                     && previous_view.protocol_mode == protocol_mode
                     && connection.client.startup_complete.load(Ordering::Acquire)
@@ -567,7 +572,7 @@ impl McpConnectionSet {
                     None
                 };
                 if reusable_pending_startup
-                    || unchanged_auth_failure.is_some()
+                    || unchanged_failure.is_some()
                     || connection
                         .reusable_client(&connection_identity)
                         .await
@@ -592,11 +597,12 @@ impl McpConnectionSet {
                             catalog_item_limit,
                         },
                     );
-                    if let Some(error) = unchanged_auth_failure {
+                    if let Some(error) = unchanged_failure {
                         let reason = connection_identity
                             .oauth_credentials()
                             .ok()
                             .flatten()
+                            .filter(|_| error.is_authentication_required())
                             .map(|_| McpStartupFailureReason::ReauthenticationRequired);
                         let status = McpStartupStatus::Failed {
                             error: mcp_init_error_display(
@@ -717,8 +723,8 @@ impl McpConnectionSet {
                 client: async_managed_client.clone(),
                 startup_timeout,
                 startup_trigger,
-                authentication_blocked: AtomicBool::new(false),
-                authentication_error: Mutex::new(None),
+                quarantined: AtomicBool::new(false),
+                latest_error: Mutex::new(None),
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             });
             servers.insert(
@@ -838,7 +844,7 @@ impl McpConnectionSet {
                 if let Err(error) = &outcome
                     && error.is_authentication_required()
                 {
-                    connection_for_startup.quarantine_authentication(error);
+                    connection_for_startup.quarantine(error).await;
                 }
 
                 if matches!(&outcome, Err(StartupOutcomeError::Failed { .. })) {

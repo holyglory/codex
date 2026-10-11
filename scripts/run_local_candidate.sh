@@ -30,6 +30,14 @@ mount -o remount,bind,ro /etc/codex
 test ! -e /etc/codex/config.toml
 test_home=$(getent passwd "$test_user" | cut -d: -f6)
 cd "$root"
+if [[ "${1:-}" == --command ]]; then
+  shift
+  test "$#" -gt 0
+  isolated_home=$(runuser -u "$test_user" -- mktemp -d /tmp/ch.XXXXXX)
+  exec runuser -u "$test_user" -- env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN \
+    PATH="$test_home/.cargo/bin:$test_home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+    CODEX_HOME="$isolated_home" TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 "$@"
+fi
 exec runuser -u "$test_user" -- env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN \
   PATH="$test_home/.cargo/bin:$test_home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 \

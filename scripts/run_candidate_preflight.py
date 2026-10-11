@@ -9,6 +9,9 @@ import shutil
 import subprocess
 import tomllib
 
+from check_release_inclusion import load_manifest
+from check_release_inclusion import verify
+
 
 def verify_toolchain(root: Path) -> dict[str, str]:
     """Verify the binaries selected by this runner match rust-toolchain.toml."""
@@ -47,6 +50,8 @@ def verify_toolchain(root: Path) -> dict[str, str]:
 
 def run_preflight(root: Path) -> None:
     verify_toolchain(root)
+    manifest = load_manifest(root)
+    verify(root, manifest)
     subprocess.run(
         [
             "cargo",
@@ -78,6 +83,15 @@ def run_preflight(root: Path) -> None:
         "codex-core",
         "--no-tests=fail",
     ]
+    for package in sorted(
+        {
+            package
+            for capability in manifest["capabilities"]
+            for package in capability["packages"]
+        }
+        - {"codex-app-server", "codex-tui", "codex-core"}
+    ):
+        command.extend(["-p", package])
     # Separate invocations intentionally require each family to select tests.
     # A combined OR filter can silently omit one family after a module rename.
     for family in (
@@ -94,6 +108,15 @@ def run_preflight(root: Path) -> None:
             cwd=root / "codex-rs",
             check=True,
         )
+    for capability in manifest["capabilities"]:
+        for selection in capability["filters"]:
+            print(
+                json.dumps({"capability": capability["id"], "selection": selection}),
+                flush=True,
+            )
+            subprocess.run(
+                [*command, "-E", selection], cwd=root / "codex-rs", check=True
+            )
 
 
 if __name__ == "__main__":
@@ -106,5 +129,5 @@ if __name__ == "__main__":
             verify_toolchain(root)
         else:
             run_preflight(root)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Candidate preflight refused: {error}\n")

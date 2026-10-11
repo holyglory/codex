@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 GATES = (
     "toolchain",
+    "release-inclusion",
     "helpers",
     "format",
     "package-prerequisites",
@@ -85,6 +86,10 @@ def commands(root, state, directory):
     return {
         "toolchain": (
             [sys.executable, "scripts/run_candidate_preflight.py", "--toolchain-only"],
+            root,
+        ),
+        "release-inclusion": (
+            [sys.executable, "scripts/check_release_inclusion.py"],
             root,
         ),
         "helpers": (

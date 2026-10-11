@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import local_candidate as candidate
 import cargo_native_inputs as native
+import check_release_inclusion as inclusion
 
 
 class LocalCandidateTests(unittest.TestCase):
@@ -55,6 +56,60 @@ class LocalCandidateTests(unittest.TestCase):
             log = self.directory / f"{check['name']}.log"
             self.assertEqual(log.read_text(), "fixture check passed\n")
             self.assertEqual(check["log_sha256"], candidate.digest(log))
+
+    def test_inclusion_rejects_a_lost_feature_or_changed_migration(self):
+        root = self.directory
+        manifest_path = root / "codex-rs/Cargo.toml"
+        manifest_path.parent.mkdir()
+        manifest_path.write_text('[workspace.package]\nversion = "0.162.1+multi.1"\n')
+        source = root / "feature.rs"
+        source.write_text("fn retained_feature() {}\n")
+        migration = root / "migration.sql"
+        migration.write_text("CREATE TABLE preserved (id INTEGER);\n")
+        for args in (
+            ["init", "-q"],
+            ["add", "."],
+            [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ):
+            subprocess.run(
+                ["git", "-C", str(root), *args], check=True, capture_output=True
+            )
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+        ).strip()
+        for tag in ("fixture-upstream", "fixture-rollback"):
+            subprocess.run(["git", "-C", str(root), "tag", tag], check=True)
+        manifest = {
+            "schema": 1,
+            "upstream": {"tag": "fixture-upstream", "commit": commit},
+            "rollback": {"tag": "fixture-rollback", "commit": commit},
+            "rust_version": "0.162.1+multi.1",
+            "npm_version": "0.162.1-multi.1",
+            "capabilities": [
+                {
+                    "id": "retained",
+                    "required_files": ["feature.rs"],
+                    "filters": ["test(retained)"],
+                }
+            ],
+            "migrations": {"migration.sql": candidate.digest(migration)},
+        }
+        self.assertEqual(inclusion.verify(root, manifest)["capabilities"], ["retained"])
+        source.unlink()
+        with self.assertRaisesRegex(ValueError, "retained: missing feature.rs"):
+            inclusion.verify(root, manifest)
+        source.write_text("fn retained_feature() {}\n")
+        migration.write_text("CREATE TABLE overwritten (id INTEGER);\n")
+        with self.assertRaisesRegex(ValueError, "migration missing or changed"):
+            inclusion.verify(root, manifest)
 
     def test_each_gate_failure_prevents_all_expensive_lanes(self):
         for failed in candidate.GATES:

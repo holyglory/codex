@@ -142,8 +142,8 @@ impl McpConnectionSet {
                     client,
                     startup_timeout: DEFAULT_STARTUP_TIMEOUT,
                     startup_trigger: None,
-                    authentication_blocked: std::sync::atomic::AtomicBool::new(false),
-                    authentication_error: std::sync::Mutex::new(None),
+                    quarantined: std::sync::atomic::AtomicBool::new(false),
+                    latest_error: std::sync::Mutex::new(None),
                     _diagnostics_guard: LIVE_CONNECTIONS.track(),
                 }),
                 metadata: McpServerMetadata {
@@ -723,6 +723,63 @@ async fn authentication_failure_stales_apps_startup_without_reconnect_loop() {
     assert_eq!(attempts.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn regular_mcp_startup_quarantines_after_three_reconnect_failures() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(Notify::new());
+    let reconnect_factory = {
+        let attempts = Arc::clone(&attempts);
+        let completed = Arc::clone(&completed);
+        Arc::new(move || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            let completed = Arc::clone(&completed);
+            async move {
+                completed.notify_one();
+                Err(StartupOutcomeError::Failed {
+                    error: "transport failed".to_string(),
+                    is_authentication_required: false,
+                })
+            }
+            .boxed()
+            .shared()
+        })
+    };
+    let manager = create_test_manager_with_failed_startup(
+        "regular",
+        Vec::new(),
+        reconnect_factory,
+        /*initial_authentication_required*/ false,
+    );
+    let client = manager.test_client("regular");
+
+    assert!(client.client().await.is_err());
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::advance(Duration::from_secs(10)).await;
+        }
+        let completed_wait = completed.notified();
+        client.reconnect_failed_startup().await;
+        completed_wait.await;
+    }
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert!(client.cancel_token.is_cancelled());
+    assert!(matches!(
+        client.terminal_error(),
+        Some(StartupOutcomeError::Failed {
+            is_authentication_required: false,
+            ..
+        })
+    ));
+    assert_eq!(
+        manager.connection_statuses().await,
+        HashMap::from([(
+            "regular".to_string(),
+            codex_protocol::mcp::McpServerConnectionStatus::Failed,
+        )])
+    );
+}
+
 #[tokio::test]
 async fn regular_authentication_failure_is_quarantined_for_the_connection_generation() {
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -751,14 +808,26 @@ async fn regular_authentication_failure_is_quarantined_for_the_connection_genera
         client,
         startup_timeout: DEFAULT_STARTUP_TIMEOUT,
         startup_trigger: None,
-        authentication_blocked: AtomicBool::new(false),
-        authentication_error: std::sync::Mutex::new(None),
+        quarantined: AtomicBool::new(false),
+        latest_error: std::sync::Mutex::new(None),
         _diagnostics_guard: LIVE_CONNECTIONS.track(),
     };
 
     let first = connection.client().await;
     assert!(matches!(first, Err(ref error) if error.is_authentication_required()));
     assert!(connection.client.cancel_token.is_cancelled());
+    assert!(connection.quarantined.load(Ordering::Acquire));
+    assert!(matches!(
+        connection
+            .latest_error
+            .lock()
+            .expect("latest MCP error lock")
+            .as_ref(),
+        Some(StartupOutcomeError::Failed {
+            is_authentication_required: true,
+            ..
+        })
+    ));
     let second = connection.client().await;
     assert!(matches!(second, Err(ref error) if error.is_authentication_required()));
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -883,25 +952,16 @@ fn create_test_manager_with_failed_apps_startup(
     cached_tools: Vec<ToolInfo>,
     reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
 ) -> McpConnectionSet {
-    create_test_manager_with_failed_apps_startup_and_auth(
+    create_test_manager_with_failed_startup(
+        CODEX_APPS_MCP_SERVER_NAME,
         cached_tools,
         reconnect_factory,
         /*initial_authentication_required*/ false,
     )
 }
 
-fn create_test_manager_with_auth_failed_apps_startup(
-    cached_tools: Vec<ToolInfo>,
-    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
-) -> McpConnectionSet {
-    create_test_manager_with_failed_apps_startup_and_auth(
-        cached_tools,
-        reconnect_factory,
-        /*initial_authentication_required*/ true,
-    )
-}
-
-fn create_test_manager_with_failed_apps_startup_and_auth(
+fn create_test_manager_with_failed_startup(
+    server_name: &str,
     cached_tools: Vec<ToolInfo>,
     reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
     initial_authentication_required: bool,
@@ -921,26 +981,42 @@ fn create_test_manager_with_failed_apps_startup_and_auth(
     store_current_tools(&cache_context, cached_tools);
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let cancel_token = CancellationToken::new();
     let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
     manager.insert_test_client(
-        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        server_name.to_string(),
         AsyncManagedClient {
             client,
-            is_codex_apps_mcp_server: true,
+            is_codex_apps_mcp_server: server_name == CODEX_APPS_MCP_SERVER_NAME,
             server_capabilities: Arc::new(std::sync::Mutex::new(None)),
             cached_server_info: None,
             codex_apps_tools_cache_context: Some(cache_context),
             tool_catalog_cache_context: None,
             startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            startup_reconnect: Some(Arc::new(CodexAppsStartupReconnect::new(reconnect_factory))),
-            cancel_token: CancellationToken::new(),
+            startup_reconnect: Some(Arc::new(
+                CodexAppsStartupReconnect::new(reconnect_factory)
+                    .with_cancel_token(cancel_token.clone()),
+            )),
+            cancel_token,
         },
     );
     manager
+}
+
+fn create_test_manager_with_auth_failed_apps_startup(
+    cached_tools: Vec<ToolInfo>,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+) -> McpConnectionSet {
+    create_test_manager_with_failed_startup(
+        CODEX_APPS_MCP_SERVER_NAME,
+        cached_tools,
+        reconnect_factory,
+        /*initial_authentication_required*/ true,
+    )
 }
 
 fn model_tool_names(tools: &[ToolInfo]) -> HashSet<ToolName> {
@@ -5227,8 +5303,8 @@ async fn manager_with_reusable_ready_server(
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
-                authentication_blocked: std::sync::atomic::AtomicBool::new(false),
-                authentication_error: std::sync::Mutex::new(None),
+                quarantined: std::sync::atomic::AtomicBool::new(false),
+                latest_error: std::sync::Mutex::new(None),
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
@@ -5665,8 +5741,8 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
-                authentication_blocked: std::sync::atomic::AtomicBool::new(false),
-                authentication_error: std::sync::Mutex::new(None),
+                quarantined: std::sync::atomic::AtomicBool::new(false),
+                latest_error: std::sync::Mutex::new(None),
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
@@ -5831,7 +5907,7 @@ async fn reconciliation_cancels_a_reused_pending_server_when_disabled() -> anyho
 }
 
 #[tokio::test]
-async fn reconciliation_retries_non_oauth_authentication_failures() {
+async fn reconciliation_reuses_unchanged_authentication_failures_until_identity_changes() {
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");
     let mut previous =
@@ -5846,9 +5922,17 @@ async fn reconciliation_retries_non_oauth_authentication_failures() {
     .boxed()
     .shared();
 
-    let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
+    let reconciled =
+        reconcile_reusable_server(&previous, config.clone(), runtime_context.clone()).await;
 
-    assert!(!previous.shares_test_connection_with(&reconciled, "docs"));
+    assert!(previous.shares_test_connection_with(&reconciled, "docs"));
+    let mut changed_config = config;
+    let McpServerTransportConfig::StreamableHttp { url, .. } = &mut changed_config.transport else {
+        panic!("test requires an HTTP MCP server");
+    };
+    *url = "http://127.0.0.1:2".to_string();
+    let recovered = reconcile_reusable_server(&reconciled, changed_config, runtime_context).await;
+    assert!(!reconciled.shares_test_connection_with(&recovered, "docs"));
 }
 
 #[test]
@@ -6372,8 +6456,8 @@ async fn reconciliation_replaces_closed_connections() -> anyhow::Result<()> {
             .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
         startup_trigger: None,
-        authentication_blocked: std::sync::atomic::AtomicBool::new(false),
-        authentication_error: std::sync::Mutex::new(None),
+        quarantined: std::sync::atomic::AtomicBool::new(false),
+        latest_error: std::sync::Mutex::new(None),
         _diagnostics_guard: LIVE_CONNECTIONS.track(),
     });
 

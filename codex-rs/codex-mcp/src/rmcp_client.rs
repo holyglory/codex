@@ -108,7 +108,7 @@ pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) const CODEX_APPS_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const CODEX_APPS_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
-const CODEX_APPS_MAX_CONSECUTIVE_RECONNECT_FAILURES: u32 = 3;
+const MCP_MAX_CONSECUTIVE_RECONNECT_FAILURES: u32 = 3;
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -164,7 +164,7 @@ struct CodexAppsStartupReconnectState {
     current_client: Option<ManagedClient>,
     last_error: Option<StartupOutcomeError>,
     reconnect_in_flight: bool,
-    authentication_blocked: bool,
+    quarantined: bool,
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
 }
@@ -180,6 +180,7 @@ pub(crate) struct CodexAppsStartupReconnect {
     factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
     state: StdMutex<CodexAppsStartupReconnectState>,
     startup_status_context: Option<CodexAppsStartupStatusContext>,
+    cancel_token: Option<CancellationToken>,
 }
 
 impl CodexAppsStartupReconnect {
@@ -188,6 +189,7 @@ impl CodexAppsStartupReconnect {
             factory,
             state: StdMutex::new(CodexAppsStartupReconnectState::default()),
             startup_status_context: None,
+            cancel_token: None,
         }
     }
 
@@ -205,6 +207,11 @@ impl CodexAppsStartupReconnect {
         self
     }
 
+    pub(crate) fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
+        self.cancel_token = Some(cancel_token);
+        self
+    }
+
     fn current_client(&self) -> Option<ManagedClient> {
         self.state
             .lock()
@@ -217,7 +224,29 @@ impl CodexAppsStartupReconnect {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .authentication_blocked
+            .quarantined
+    }
+
+    pub(crate) fn terminal_error(&self) -> Option<StartupOutcomeError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .quarantined
+            .then(|| state.last_error.clone())
+            .flatten()
+    }
+
+    fn record_initial_failure(&self, error: &StartupOutcomeError) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.last_error = Some(error.clone());
+        if error.is_authentication_required() {
+            state.quarantined = true;
+        }
     }
 
     fn reconnect_in_background(self: &Arc<Self>) {
@@ -229,7 +258,7 @@ impl CodexAppsStartupReconnect {
             if state.current_client.is_some() || state.reconnect_in_flight {
                 return;
             }
-            if state.authentication_blocked {
+            if state.quarantined {
                 return;
             }
             if state
@@ -262,7 +291,7 @@ impl CodexAppsStartupReconnect {
                     Err(error) => {
                         state.last_error = Some(error.clone());
                         if error.is_authentication_required() {
-                            state.authentication_blocked = true;
+                            state.quarantined = true;
                             state.retry_not_before = None;
                             warn!(
                                 error = %error,
@@ -271,10 +300,9 @@ impl CodexAppsStartupReconnect {
                         } else {
                             state.consecutive_failures =
                                 state.consecutive_failures.saturating_add(1);
-                            if state.consecutive_failures
-                                >= CODEX_APPS_MAX_CONSECUTIVE_RECONNECT_FAILURES
+                            if state.consecutive_failures >= MCP_MAX_CONSECUTIVE_RECONNECT_FAILURES
                             {
-                                state.authentication_blocked = true;
+                                state.quarantined = true;
                                 state.retry_not_before = None;
                                 warn!(
                                     error = %error,
@@ -295,6 +323,12 @@ impl CodexAppsStartupReconnect {
                     }
                 }
             };
+
+            if reconnect.is_quarantined()
+                && let Some(cancel_token) = &reconnect.cancel_token
+            {
+                cancel_token.cancel();
+            }
 
             if recovered && let Some(context) = startup_status_context {
                 let _ = context
@@ -542,16 +576,20 @@ impl AsyncManagedClient {
             server_capabilities: Arc::clone(&server_capabilities),
         });
         let client = startup.start();
-        let startup_reconnect = is_codex_apps_mcp_server.then(|| {
+        let startup_reconnect = Some({
             let startup = Arc::clone(&startup);
-            Arc::new(
-                CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
-                    .with_startup_status_context(
-                        startup_submit_id,
-                        reconnect_server_name,
-                        reconnect_tx_event,
-                    ),
-            )
+            let reconnect = CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
+                .with_cancel_token(cancel_token.clone());
+            let reconnect = if is_codex_apps_mcp_server {
+                reconnect.with_startup_status_context(
+                    startup_submit_id,
+                    reconnect_server_name,
+                    reconnect_tx_event,
+                )
+            } else {
+                reconnect
+            };
+            Arc::new(reconnect)
         });
         Self {
             client,
@@ -567,6 +605,9 @@ impl AsyncManagedClient {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
+        if let Some(error) = self.terminal_error() {
+            return Err(error);
+        }
         if let Some(client) = self
             .startup_reconnect
             .as_ref()
@@ -575,6 +616,12 @@ impl AsyncManagedClient {
             return Ok(client);
         }
         self.client.clone().await
+    }
+
+    pub(crate) fn terminal_error(&self) -> Option<StartupOutcomeError> {
+        self.startup_reconnect
+            .as_ref()
+            .and_then(|reconnect| reconnect.terminal_error())
     }
 
     /// Returns the current ready client, including its tool catalog and metadata,
@@ -604,23 +651,22 @@ impl AsyncManagedClient {
         }
         if let Err(error) = self.client().await {
             if error.is_authentication_required() {
-                let mut state = startup_reconnect
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.authentication_blocked = true;
+                startup_reconnect.record_initial_failure(&error);
+                self.cancel_token.cancel();
             } else if matches!(error, StartupOutcomeError::Failed { .. }) {
+                startup_reconnect.record_initial_failure(&error);
                 startup_reconnect.reconnect_in_background();
-                if startup_reconnect.is_quarantined() {
-                    self.cancel_token.cancel();
-                }
             }
         }
     }
 
     pub(crate) async fn shutdown(&self) {
         self.cancel_token.cancel();
-        match self.client().await {
+        if let Some(client) = self.ready_client() {
+            client.client.shutdown().await;
+            return;
+        }
+        match self.client.clone().await {
             Ok(client) => client.client.shutdown().await,
             Err(StartupOutcomeError::Cancelled) => {}
             Err(error) => {
