@@ -462,12 +462,13 @@ impl LocalUsageRequestProcessor {
             .as_ref()
             .map(|account| self.account_label(account))
             .transpose()?;
+        let worktree_ids = parse_worktree_keys(filters.worktree_keys)?;
+        let include_unassigned_worktrees =
+            filters.include_unassigned.unwrap_or(worktree_ids.is_none());
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
-                worktree_ids: parse_worktree_keys(filters.worktree_keys.clone())?,
-                include_unassigned_worktrees: filters
-                    .include_unassigned
-                    .unwrap_or(filters.worktree_keys.is_none()),
+                worktree_ids,
+                include_unassigned_worktrees,
                 thread_id: filters.thread_id.map(thread_id).transpose()?,
                 repository_id: filters.repository_key.map(repository_id).transpose()?,
                 account_profile_ref,
@@ -582,6 +583,9 @@ fn parse_worktree_keys(
     let Some(keys) = keys else {
         return Ok(None);
     };
+    if keys.is_empty() {
+        return Ok(None);
+    }
     if keys.len() > MAX_KEYS {
         return Err(invalid_params("worktreeKeys must contain at most 256 keys"));
     }
