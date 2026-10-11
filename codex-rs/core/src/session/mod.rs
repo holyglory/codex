@@ -2119,7 +2119,7 @@ impl Session {
             config.as_ref(),
             self.services.plugins_manager.as_ref(),
             environments.single_local_environment(),
-            None,
+            HookPluginAuth::Legacy,
             &disabled_plugin_ids,
         )
         .await;
@@ -2149,7 +2149,7 @@ impl Session {
             config.as_ref(),
             self.services.plugins_manager.as_ref(),
             environments.single_local_environment(),
-            auth.as_ref(),
+            HookPluginAuth::Captured(auth.as_ref()),
             &disabled_plugin_ids,
         )
         .await;
@@ -5175,7 +5175,7 @@ async fn build_hooks_config(
     config: &Config,
     plugins_manager: &PluginsManager,
     environment: Option<&TurnEnvironment>,
-    auth: Option<&codex_login::CodexAuth>,
+    auth: HookPluginAuth<'_>,
     disabled_plugin_ids: &[String],
 ) -> HooksConfig {
     let (hook_shell_program, hook_shell_argv) = environment
@@ -5188,10 +5188,15 @@ async fn build_hooks_config(
         })
         .unwrap_or_default();
     let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager
-        .plugins_for_config_with_auth(&plugins_input, auth)
-        .await
-        .without_plugins(disabled_plugin_ids);
+    let plugin_outcome = match auth {
+        HookPluginAuth::Legacy => plugins_manager.plugins_for_config(&plugins_input).await,
+        HookPluginAuth::Captured(auth) => {
+            plugins_manager
+                .plugins_for_config_with_auth(&plugins_input, auth)
+                .await
+        }
+    }
+    .without_plugins(disabled_plugin_ids);
     let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();
     let plugin_hook_load_warnings = plugin_outcome.effective_plugin_hook_warnings();
     HooksConfig {
@@ -5204,6 +5209,12 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
+}
+
+#[derive(Clone, Copy)]
+enum HookPluginAuth<'a> {
+    Legacy,
+    Captured(Option<&'a codex_login::CodexAuth>),
 }
 
 #[cfg(test)]
