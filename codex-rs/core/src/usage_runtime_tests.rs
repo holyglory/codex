@@ -51,6 +51,7 @@ fn tool_context<'a>(
         turn_id: Some(turn_id),
         delegated: false,
         call_id,
+        alarm_tool_name: "test_tool",
         cancellation_token: tokio_util::sync::CancellationToken::new(),
         descriptor: UsageToolDescriptor {
             kind: "builtin",

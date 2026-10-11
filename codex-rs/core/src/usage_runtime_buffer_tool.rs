@@ -330,7 +330,7 @@ impl UsageRuntime {
             alarm_context: (
                 context.thread_id.into(),
                 context.call_id.into(),
-                context.descriptor.safe_name.into(),
+                context.alarm_tool_name.into(),
             ),
             source_event_id: FactEventId::new(),
             started: Instant::now(),

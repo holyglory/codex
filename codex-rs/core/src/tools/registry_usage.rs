@@ -116,6 +116,7 @@ pub(crate) async fn begin_tool_attempt(
     let parent_thread_id = turn.parent_thread_id.map(|id| id.to_string());
     let repositories = repository_candidates(invocation);
     let (execution_group_id, execution_role) = execution_group(invocation).await;
+    let alarm_tool_name = invocation.tool_name.to_string();
     invocation
         .session
         .services
@@ -126,6 +127,7 @@ pub(crate) async fn begin_tool_attempt(
             turn_id: Some(turn.sub_id.as_str()),
             delegated: turn.session_source.is_non_root_agent(),
             call_id: &invocation.call_id,
+            alarm_tool_name: &alarm_tool_name,
             cancellation_token: invocation.cancellation_token.clone(),
             descriptor: usage_tool_descriptor(&invocation.tool_name, Some(runtime.as_ref())),
             execution_group_id,
