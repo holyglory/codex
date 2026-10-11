@@ -1098,7 +1098,7 @@ impl ThreadRequestProcessor {
         }
     }
 
-    async fn ensure_conversation_listener(
+    pub(crate) async fn ensure_conversation_listener(
         &self,
         conversation_id: ThreadId,
         connection_id: ConnectionId,
@@ -1113,7 +1113,7 @@ impl ThreadRequestProcessor {
         .await
     }
 
-    async fn ensure_listener_task_running(
+    pub(crate) async fn ensure_listener_task_running(
         &self,
         conversation_id: ThreadId,
         conversation: Arc<CodexThread>,
@@ -4246,7 +4246,7 @@ impl ThreadRequestProcessor {
         Ok(ControlFlow::Break(()))
     }
 
-    async fn load_and_apply_persisted_resume_metadata(
+    pub(crate) async fn load_and_apply_persisted_resume_metadata(
         &self,
         thread_history: &InitialHistory,
         request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
@@ -4590,7 +4590,7 @@ impl ThreadRequestProcessor {
         ))
     }
 
-    async fn load_resume_initial_history_from_stored_thread(
+    pub(crate) async fn load_resume_initial_history_from_stored_thread(
         &self,
         stored_thread: StoredThread,
     ) -> Result<(InitialHistory, StoredThread), JSONRPCErrorError> {
@@ -4627,7 +4627,7 @@ impl ThreadRequestProcessor {
         Ok((history, stored_thread))
     }
 
-    async fn read_stored_thread_for_resume(
+    pub(crate) async fn read_stored_thread_for_resume(
         &self,
         thread_id: &str,
         path: Option<&PathBuf>,
