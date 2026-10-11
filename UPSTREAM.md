@@ -242,6 +242,13 @@ the authority for release outcomes and verification receipts.
   of the shared capacity retry boundary. Keep both `server_is_overloaded` and
   `slow_down` in the packaged gzip and zstd smoke matrix; a passing source build
   alone is not enough.
+- **Reapply downstream npm metadata after upstream packaging changes.** The
+  stable refresh restored the upstream `@openai/codex` staging helper and
+  silently dropped the fork's `@holyglory/codex` package aliases, redistribution
+  files, and SemVer build-metadata guard. Run the package staging fixtures before
+  candidate validation; they must assert the six platform aliases, `LICENSE` and
+  `NOTICE`, the downstream package identity, and rejection of `+` versions. A
+  passing Rust build cannot prove that npm publication still targets the fork.
 - **Later visual-layout commits can stale earlier semantic assertions.** The
   `e8fdbf1f7c` borderless session-header change followed the startup-tip test
   and made its old “no model/no border” checks wrong even after the snapshots

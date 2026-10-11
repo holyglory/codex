@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @openai/codex npm module."""
+"""Stage and optionally package the @holyglory/codex npm module."""
 
 import argparse
 import json
@@ -15,49 +15,49 @@ CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
-CODEX_NPM_NAME = "@openai/codex"
+CODEX_NPM_NAME = "@holyglory/codex"
 CODEX_PACKAGE_COMPONENT = "codex-package"
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
-# The underlying package published to npm is always `@openai/codex`.
+# The underlying package published to npm is always `@holyglory/codex`.
 CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
-        "npm_name": "@openai/codex-linux-x64",
+        "npm_name": "@holyglory/codex-linux-x64",
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-musl",
         "os": "linux",
         "cpu": "x64",
     },
     "codex-linux-arm64": {
-        "npm_name": "@openai/codex-linux-arm64",
+        "npm_name": "@holyglory/codex-linux-arm64",
         "npm_tag": "linux-arm64",
         "target_triple": "aarch64-unknown-linux-musl",
         "os": "linux",
         "cpu": "arm64",
     },
     "codex-darwin-x64": {
-        "npm_name": "@openai/codex-darwin-x64",
+        "npm_name": "@holyglory/codex-darwin-x64",
         "npm_tag": "darwin-x64",
         "target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "x64",
     },
     "codex-darwin-arm64": {
-        "npm_name": "@openai/codex-darwin-arm64",
+        "npm_name": "@holyglory/codex-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
     "codex-win32-x64": {
-        "npm_name": "@openai/codex-win32-x64",
+        "npm_name": "@holyglory/codex-win32-x64",
         "npm_tag": "win32-x64",
         "target_triple": "x86_64-pc-windows-msvc",
         "os": "win32",
         "cpu": "x64",
     },
     "codex-win32-arm64": {
-        "npm_name": "@openai/codex-win32-arm64",
+        "npm_name": "@holyglory/codex-win32-arm64",
         "npm_tag": "win32-arm64",
         "target_triple": "aarch64-pc-windows-msvc",
         "os": "win32",
@@ -230,6 +230,12 @@ def prepare_staging_dir(staging_dir: Path | None) -> tuple[Path, bool]:
 
 
 def stage_sources(staging_dir: Path, version: str, package: str) -> None:
+    if "+" in version:
+        raise RuntimeError(
+            "npm strips SemVer build metadata; encode the downstream revision "
+            "in the prerelease portion instead"
+        )
+
     package_json: dict
     package_json_path: Path | None = None
 
@@ -261,9 +267,13 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
-            "files": ["vendor"],
+            "files": ["vendor", "NOTICE"],
             "repository": codex_package_json.get("repository"),
         }
+
+        for key in ("description", "homepage", "bugs", "publishConfig"):
+            if (value := codex_package_json.get(key)) is not None:
+                package_json[key] = value
 
         engines = codex_package_json.get("engines")
         if isinstance(engines, dict):
@@ -291,13 +301,15 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     else:
         raise RuntimeError(f"Unknown package '{package}'.")
 
+    copy_redistribution_files(staging_dir)
+
     if package_json_path is not None:
         with open(package_json_path, "r", encoding="utf-8") as fh:
             package_json = json.load(fh)
         package_json["version"] = version
 
     if package == "codex":
-        package_json["files"] = ["bin/codex.js"]
+        package_json["files"] = ["bin/codex.js", "NOTICE"]
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
                 f"npm:{CODEX_NPM_NAME}@"
@@ -318,9 +330,21 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         dependencies[CODEX_NPM_NAME] = version
         package_json["dependencies"] = dependencies
 
+    files = package_json.get("files")
+    if isinstance(files, list) and "NOTICE" not in files:
+        files.append("NOTICE")
+
     with open(staging_dir / "package.json", "w", encoding="utf-8") as out:
         json.dump(package_json, out, indent=2)
         out.write("\n")
+
+
+def copy_redistribution_files(staging_dir: Path) -> None:
+    for filename in ("LICENSE", "NOTICE"):
+        source = REPO_ROOT / filename
+        if not source.is_file():
+            raise RuntimeError(f"Required redistribution file not found: {source}")
+        shutil.copy2(source, staging_dir / filename)
 
 
 def compute_platform_package_version(version: str, platform_tag: str) -> str:
