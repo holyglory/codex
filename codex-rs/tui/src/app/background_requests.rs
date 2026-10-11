@@ -82,6 +82,7 @@ const RATE_LIMIT_RESET_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const WORKSPACE_HEADLINE_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(/*millis*/ 2000);
+const SKILLS_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(/*secs*/ 15);
 
 impl App {
     pub(super) fn start_mcp_login(
@@ -353,9 +354,18 @@ impl App {
         let app_event_tx = self.app_event_tx.clone();
         let cwd = self.config.cwd.to_path_buf();
         tokio::spawn(async move {
-            let result = fetch_skills_list(request_handle, cwd.clone())
-                .await
-                .map_err(|err| format!("{err:#}"));
+            let result = match tokio::time::timeout(
+                SKILLS_FETCH_TIMEOUT,
+                fetch_skills_list(request_handle, cwd.clone()),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|err| format!("{err:#}")),
+                Err(_) => Err(format!(
+                    "skills/list exceeded the {} second startup budget",
+                    SKILLS_FETCH_TIMEOUT.as_secs()
+                )),
+            };
             app_event_tx.send(AppEvent::SkillsListLoaded { cwd, result });
         });
     }
