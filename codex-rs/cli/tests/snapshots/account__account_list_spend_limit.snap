@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: "String::from_utf8_lossy(&restricted.get_output().stdout)"
+---
+ALIAS   PRIORITY  NOTE     CREDITS  CREDIT USE  BANKED RESETS  LIMITS                               RESET IN
+*alpha  1         primary  unknown  disabled    none           100%                                 unknown
+ beta   2                  unknown  disabled    unknown        unknown (unsupportedAuthentication)  unknown

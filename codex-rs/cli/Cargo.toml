@@ -23,6 +23,12 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-account-registry = { workspace = true }
+codex-backend-client = { workspace = true }
+codex-private-storage = { workspace = true }
+codex-usage = { workspace = true }
+unicode-width = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

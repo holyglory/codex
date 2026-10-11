@@ -1,0 +1,7 @@
+---
+source: cli/tests/account.rs
+expression: normalized
+---
+ALIAS   PRIORITY  NOTE     CREDITS  CREDIT USE  BANKED RESETS  LIMITS  RESET IN
+*alpha  1         primary  0        disabled    unknown        100%    [Codex reset countdown]
+ beta   2                  0        disabled    unknown        61%     [Codex reset countdown]

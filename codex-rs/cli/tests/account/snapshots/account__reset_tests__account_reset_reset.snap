@@ -1,0 +1,12 @@
+---
+source: cli/tests/account/reset_tests.rs
+expression: "human.replace(output[\"requestId\"].as_str().unwrap(), \"[request ID]\")"
+---
+Account: beta
+Outcome: reset
+Credit: a-tie
+Request: [request ID]
+Windows reset: 0
+Banked resets remaining: 6
+Soonest expiry: unknown
+Refresh: usageUnavailable

@@ -50,6 +50,7 @@ use supports_color::Stream;
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod account_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod cloud_config;
@@ -78,10 +79,13 @@ mod remote_control_cmd;
 mod sandbox_setup;
 mod sandbox_uninstall;
 mod state_db_recovery;
+mod usage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
 use crate::exec_server_command::ExecServerCommand;
+use crate::account_cmd::AccountCommand;
+use crate::usage_cmd::UsageCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
@@ -163,6 +167,12 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Manage local account profiles.
+    Account(AccountCommand),
+
+    /// Inspect, correct, and export local usage accounting.
+    Usage(UsageCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -1631,6 +1641,32 @@ async fn cli_main(
             );
             run_logout(logout_cli.config_overrides).await;
         }
+        Some(Subcommand::Account(mut command)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "account",
+            )?;
+            prepend_config_flags(&mut command.config_overrides, root_config_overrides.clone());
+            let json = command.json;
+            if let Err(error) = account_cmd::run(command, root_strict_config).await {
+                account_cmd::print_error(&error, json);
+                std::process::exit(error.exit_code());
+            }
+        }
+        Some(Subcommand::Usage(mut command)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "usage",
+            )?;
+            prepend_config_flags(&mut command.config_overrides, root_config_overrides.clone());
+            let json = command.json;
+            if let Err(error) = usage_cmd::run(command, root_strict_config).await {
+                usage_cmd::print_error(&error, json);
+                std::process::exit(error.exit_code());
+            }
+        }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2271,7 +2307,9 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Delete(_))
         | Some(Subcommand::Unarchive(_))
         | Some(Subcommand::Fork(_))
-        | Some(Subcommand::Doctor(_)) => None,
+        | Some(Subcommand::Doctor(_))
+        | Some(Subcommand::Account(_))
+        | Some(Subcommand::Usage(_)) => None,
         Some(Subcommand::AppServer(app_server)) if app_server.subcommand.is_none() => None,
         Some(Subcommand::AppServer(app_server)) => {
             Some(app_server_subcommand_name(app_server.subcommand.as_ref()))
