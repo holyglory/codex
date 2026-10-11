@@ -97,69 +97,75 @@ impl RequestPluginInstallHandler {
         &'a self,
         invocation: ToolInvocation,
     ) -> codex_tools::ToolExecutorFuture<'a> {
-        Box::pin(async move {
-            let ToolInvocation {
-                payload,
-                session,
-                step_context,
-                call_id,
-                ..
-            } = invocation;
-            let turn = Arc::clone(&step_context.turn);
-            let mcp = &step_context.mcp;
+        Box::pin(self.handle_call_inner(invocation))
+    }
 
-            let arguments = match payload {
-                ToolPayload::Function { arguments } => arguments,
-                _ => {
-                    return Err(FunctionCallError::Fatal(format!(
-                        "{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload"
-                    )));
-                }
-            };
+    async fn handle_call_inner(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let ToolInvocation {
+            payload,
+            session,
+            step_context,
+            call_id,
+            ..
+        } = invocation;
+        let turn = Arc::clone(&step_context.turn);
+        let mcp = &step_context.mcp;
 
-            if turn.session_source.is_non_root_agent() {
-                return Err(FunctionCallError::RespondToModel(
-                    "request_plugin_install can only be used by the root thread".to_string(),
-                ));
+        let arguments = match payload {
+            ToolPayload::Function { arguments } => arguments,
+            _ => {
+                return Err(FunctionCallError::Fatal(format!(
+                    "{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload"
+                )));
             }
+        };
 
-            let (requested_tool_id, requested_tool_type, suggest_reason) = match self.presentation {
-                ToolSuggestPresentation::ListTool => {
-                    let args: RequestPluginInstallArgs = parse_arguments(&arguments)?;
-                    if args.action_type != DiscoverableToolAction::Install {
-                        return Err(FunctionCallError::RespondToModel(
+        if turn.session_source.is_non_root_agent() {
+            return Err(FunctionCallError::RespondToModel(
+                "request_plugin_install can only be used by the root thread".to_string(),
+            ));
+        }
+
+        let (requested_tool_id, requested_tool_type, suggest_reason) = match self.presentation {
+            ToolSuggestPresentation::ListTool => {
+                let args: RequestPluginInstallArgs = parse_arguments(&arguments)?;
+                if args.action_type != DiscoverableToolAction::Install {
+                    return Err(FunctionCallError::RespondToModel(
                         "plugin install requests currently support only action_type=\"install\""
                             .to_string(),
                     ));
-                    }
-                    (args.tool_id, Some(args.tool_type), args.suggest_reason)
                 }
-                ToolSuggestPresentation::RecommendationContext => {
-                    let args: RecommendedPluginInstallArgs = parse_arguments(&arguments)?;
-                    (args.plugin_id, None, args.suggest_reason)
-                }
-            };
-            let suggest_reason = suggest_reason.trim();
-            if suggest_reason.is_empty() {
-                return Err(FunctionCallError::RespondToModel(
-                    "suggest_reason must not be empty".to_string(),
-                ));
+                (args.tool_id, Some(args.tool_type), args.suggest_reason)
             }
-            if (requested_tool_type == Some(DiscoverableToolType::Plugin)
-                || self.presentation == ToolSuggestPresentation::RecommendationContext)
-                && turn.app_server_client_name.as_deref() == Some("codex-tui")
-            {
-                return Err(FunctionCallError::RespondToModel(
-                    "plugin install requests are not available in codex-tui yet".to_string(),
-                ));
+            ToolSuggestPresentation::RecommendationContext => {
+                let args: RecommendedPluginInstallArgs = parse_arguments(&arguments)?;
+                (args.plugin_id, None, args.suggest_reason)
             }
+        };
+        let suggest_reason = suggest_reason.trim();
+        if suggest_reason.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "suggest_reason must not be empty".to_string(),
+            ));
+        }
+        if (requested_tool_type == Some(DiscoverableToolType::Plugin)
+            || self.presentation == ToolSuggestPresentation::RecommendationContext)
+            && turn.app_server_client_name.as_deref() == Some("codex-tui")
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "plugin install requests are not available in codex-tui yet".to_string(),
+            ));
+        }
 
-            let discoverable_tools = filter_request_plugin_install_discoverable_tools_for_client(
-                self.discoverable_tools.clone(),
-                turn.app_server_client_name.as_deref(),
-            );
+        let discoverable_tools = filter_request_plugin_install_discoverable_tools_for_client(
+            self.discoverable_tools.clone(),
+            turn.app_server_client_name.as_deref(),
+        );
 
-            let tool = discoverable_tools
+        let tool = discoverable_tools
             .into_iter()
             .find(|tool| {
                 tool.id() == requested_tool_id
@@ -189,147 +195,141 @@ impl RequestPluginInstallHandler {
                     "{argument_name} must match one of {source}"
                 ))
             })?;
-            let tool = if self.presentation == ToolSuggestPresentation::RecommendationContext {
-                let plugin_id = tool.id().to_string();
-                let auth = session.services.auth_manager.auth().await;
-                let plugins_config = turn.config.plugins_config_input();
-                match codex_core_plugins::hydrate_selected_recommended_plugin_install_metadata(
-                    &plugins_config,
-                    auth.as_ref(),
-                    tool,
-                )
-                .await
-                {
-                    Ok(Some(tool)) => tool,
-                    Ok(None) => return Err(recommended_plugins_no_longer_available()),
-                    Err(err) => {
-                        warn!(
-                            plugin_id,
-                            error = %err,
-                            "failed to hydrate selected recommended plugin install metadata"
-                        );
-                        return Err(recommended_plugin_metadata_retryable());
-                    }
-                }
-            } else {
-                tool
-            };
-            let tool_type = tool.tool_type();
-
-            let suggestion_id = format!("request_plugin_install_{call_id}");
-            if let DiscoverableTool::Plugin(plugin) = &tool {
-                let source = match self.presentation {
-                    ToolSuggestPresentation::ListTool => {
-                        PluginInstallRequestSource::LegacyDiscovery
-                    }
-                    ToolSuggestPresentation::RecommendationContext => {
-                        PluginInstallRequestSource::EndpointRecommendation
-                    }
-                };
-                session
-                    .services
-                    .analytics_events_client
-                    .track_plugin_install_requested(
-                        build_track_events_context(
-                            step_context.settings.model_info.slug.clone(),
-                            session.thread_id.to_string(),
-                            turn.sub_id.clone(),
-                            turn.originator.clone(),
-                            /*turn_metadata*/ None,
-                        ),
-                        PluginInstallRequested {
-                            suggestion_id: suggestion_id.clone(),
-                            plugins: vec![PluginInstallRequestedPlugin {
-                                plugin_id: plugin.id.clone(),
-                                remote_plugin_id: plugin.remote_plugin_id.clone(),
-                                plugin_name: plugin.name.clone(),
-                                connector_ids: plugin.app_connector_ids.clone(),
-                            }],
-                            source,
-                        },
-                    );
-            }
-
-            let request = build_request_plugin_install_elicitation_request(
-                suggest_reason,
-                &tool,
-                &suggestion_id,
-            );
-            let request_id = RequestId::String(suggestion_id.into());
-            let elicitation = session
-                .request_mcp_server_elicitation(
-                    turn.as_ref(),
-                    CODEX_APPS_MCP_SERVER_NAME.to_string(),
-                    request_id,
-                    request,
-                )
-                .await;
-            let response = elicitation.response;
-            if let Some(response) = response.as_ref() {
-                maybe_persist_disabled_install_request(&session, &turn, &tool, response).await;
-            }
-            let user_confirmed = response
-                .as_ref()
-                .is_some_and(|response| response.action == ElicitationAction::Accept);
-
+        let tool = if self.presentation == ToolSuggestPresentation::RecommendationContext {
+            let plugin_id = tool.id().to_string();
             let auth = session.services.auth_manager.auth().await;
-            let completed = if user_confirmed {
-                verify_request_plugin_install_completed(&session, &turn, mcp, &tool, auth.as_ref())
-                    .await
-            } else {
-                false
-            };
-
-            if completed && let DiscoverableTool::Connector(connector) = &tool {
-                session
-                    .merge_connector_selection(HashSet::from([connector.id.clone()]))
-                    .await;
-            }
-
-            if elicitation.sent {
-                let tool_type = match tool_type {
-                    DiscoverableToolType::Connector => "connector",
-                    DiscoverableToolType::Plugin => "plugin",
-                };
-                let response_action = match response.as_ref().map(|response| &response.action) {
-                    Some(ElicitationAction::Accept) => "accept",
-                    Some(ElicitationAction::Decline) => "decline",
-                    Some(ElicitationAction::Cancel) => "cancel",
-                    Some(_) => "unknown",
-                    None => "unavailable",
-                };
-                step_context
-                    .session_telemetry
-                    .record_plugin_install_suggestion(
-                        tool_type,
-                        tool.id(),
-                        tool.name(),
-                        response_action,
-                        user_confirmed,
-                        completed,
+            let plugins_config = turn.config.plugins_config_input();
+            match codex_core_plugins::hydrate_selected_recommended_plugin_install_metadata(
+                &plugins_config,
+                auth.as_ref(),
+                tool,
+            )
+            .await
+            {
+                Ok(Some(tool)) => tool,
+                Ok(None) => return Err(recommended_plugins_no_longer_available()),
+                Err(err) => {
+                    warn!(
+                        plugin_id,
+                        error = %err,
+                        "failed to hydrate selected recommended plugin install metadata"
                     );
+                    return Err(recommended_plugin_metadata_retryable());
+                }
             }
+        } else {
+            tool
+        };
+        let tool_type = tool.tool_type();
 
-            let content = serde_json::to_string(&RequestPluginInstallResult {
-                completed,
-                user_confirmed,
-                tool_type,
-                action_type: DiscoverableToolAction::Install,
-                tool_id: tool.id().to_string(),
-                tool_name: tool.name().to_string(),
-                suggest_reason: suggest_reason.to_string(),
-            })
-            .map_err(|err| {
-                FunctionCallError::Fatal(format!(
-                    "failed to serialize {REQUEST_PLUGIN_INSTALL_TOOL_NAME} response: {err}"
-                ))
-            })?;
+        let suggestion_id = format!("request_plugin_install_{call_id}");
+        if let DiscoverableTool::Plugin(plugin) = &tool {
+            let source = match self.presentation {
+                ToolSuggestPresentation::ListTool => PluginInstallRequestSource::LegacyDiscovery,
+                ToolSuggestPresentation::RecommendationContext => {
+                    PluginInstallRequestSource::EndpointRecommendation
+                }
+            };
+            session
+                .services
+                .analytics_events_client
+                .track_plugin_install_requested(
+                    build_track_events_context(
+                        step_context.settings.model_info.slug.clone(),
+                        session.thread_id.to_string(),
+                        turn.sub_id.clone(),
+                        turn.originator.clone(),
+                        /*turn_metadata*/ None,
+                    ),
+                    PluginInstallRequested {
+                        suggestion_id: suggestion_id.clone(),
+                        plugins: vec![PluginInstallRequestedPlugin {
+                            plugin_id: plugin.id.clone(),
+                            remote_plugin_id: plugin.remote_plugin_id.clone(),
+                            plugin_name: plugin.name.clone(),
+                            connector_ids: plugin.app_connector_ids.clone(),
+                        }],
+                        source,
+                    },
+                );
+        }
 
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                content,
-                Some(true),
-            )))
+        let request =
+            build_request_plugin_install_elicitation_request(suggest_reason, &tool, &suggestion_id);
+        let request_id = RequestId::String(suggestion_id.into());
+        let elicitation = session
+            .request_mcp_server_elicitation(
+                turn.as_ref(),
+                CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                request_id,
+                request,
+            )
+            .await;
+        let response = elicitation.response;
+        if let Some(response) = response.as_ref() {
+            maybe_persist_disabled_install_request(&session, &turn, &tool, response).await;
+        }
+        let user_confirmed = response
+            .as_ref()
+            .is_some_and(|response| response.action == ElicitationAction::Accept);
+
+        let auth = session.services.auth_manager.auth().await;
+        let completed = if user_confirmed {
+            verify_request_plugin_install_completed(&session, &turn, mcp, &tool, auth.as_ref())
+                .await
+        } else {
+            false
+        };
+
+        if completed && let DiscoverableTool::Connector(connector) = &tool {
+            session
+                .merge_connector_selection(HashSet::from([connector.id.clone()]))
+                .await;
+        }
+
+        if elicitation.sent {
+            let tool_type = match tool_type {
+                DiscoverableToolType::Connector => "connector",
+                DiscoverableToolType::Plugin => "plugin",
+            };
+            let response_action = match response.as_ref().map(|response| &response.action) {
+                Some(ElicitationAction::Accept) => "accept",
+                Some(ElicitationAction::Decline) => "decline",
+                Some(ElicitationAction::Cancel) => "cancel",
+                Some(_) => "unknown",
+                None => "unavailable",
+            };
+            step_context
+                .session_telemetry
+                .record_plugin_install_suggestion(
+                    tool_type,
+                    tool.id(),
+                    tool.name(),
+                    response_action,
+                    user_confirmed,
+                    completed,
+                );
+        }
+
+        let content = serde_json::to_string(&RequestPluginInstallResult {
+            completed,
+            user_confirmed,
+            tool_type,
+            action_type: DiscoverableToolAction::Install,
+            tool_id: tool.id().to_string(),
+            tool_name: tool.name().to_string(),
+            suggest_reason: suggest_reason.to_string(),
         })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize {REQUEST_PLUGIN_INSTALL_TOOL_NAME} response: {err}"
+            ))
+        })?;
+
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            content,
+            Some(true),
+        )))
     }
 }
 
