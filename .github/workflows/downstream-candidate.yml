@@ -553,10 +553,12 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import shutil
           import tarfile
 
           archive = Path(os.environ["ARCHIVE"])
           package = Path(os.environ["RUNNER_TEMP"]) / "root-usage-package"
+          shutil.rmtree(package, ignore_errors=True)
           package.mkdir()
           with tarfile.open(archive, "r:gz") as source:
               source.extractall(package, filter="data")
