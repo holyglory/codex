@@ -356,6 +356,9 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         CODEX_PERMISSION_PROFILE_ENV_VAR,
         CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
         PLUGIN_METRICS_OUTPUT_ENV_VAR,
+        "DEVCOORDINATOR_WORK_CONTEXT",
+        "CODEX_ALARM_CONTEXT",
+        "CODEX_ALARM_ACTIVATION",
     ] {
         if let Some(value) = env.get(key) {
             override_env.insert(key.to_string(), value.clone());

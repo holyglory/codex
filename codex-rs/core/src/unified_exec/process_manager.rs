@@ -146,6 +146,9 @@ pub(super) fn exec_env_policy_from_shell_policy(
         CODEX_VERSION_ENV_VAR.to_string(),
         codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         PLUGIN_METRICS_OUTPUT_ENV_VAR.to_string(),
+        "DEVCOORDINATOR_WORK_CONTEXT".to_string(),
+        "CODEX_ALARM_CONTEXT".to_string(),
+        "CODEX_ALARM_ACTIVATION".to_string(),
     ]);
     let mut r#set = policy.r#set.clone();
     r#set.retain(|key, _| {
@@ -154,6 +157,9 @@ pub(super) fn exec_env_policy_from_shell_policy(
             CODEX_VERSION_ENV_VAR,
             codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
             PLUGIN_METRICS_OUTPUT_ENV_VAR,
+            "DEVCOORDINATOR_WORK_CONTEXT",
+            "CODEX_ALARM_CONTEXT",
+            "CODEX_ALARM_ACTIVATION",
         ]
         .iter()
         .any(|runtime_key| key.eq_ignore_ascii_case(runtime_key))
@@ -1448,6 +1454,28 @@ impl UnifiedExecProcessManager {
             context.session.thread_id.to_string(),
         );
         inject_session_env(&mut env, context.session.session_id());
+        env.remove("DEVCOORDINATOR_WORK_CONTEXT");
+        env.remove("CODEX_ALARM_CONTEXT");
+        env.remove("CODEX_ALARM_ACTIVATION");
+        if let Ok(Some(work)) = tokio::time::timeout(
+            Duration::from_millis(250),
+            crate::project_work_context::execution_context(context, &cwd),
+        )
+        .await
+        {
+            env.insert("DEVCOORDINATOR_WORK_CONTEXT".into(), work.work);
+            if !request.turn_environment.environment.is_remote() {
+                if let Some(alarm) = work.alarm {
+                    env.insert("CODEX_ALARM_CONTEXT".into(), alarm);
+                }
+                if let Some(path) = work
+                    .activation
+                    .and_then(|path| path.as_path().to_str().map(str::to_owned))
+                {
+                    env.insert("CODEX_ALARM_ACTIVATION".into(), path);
+                }
+            }
+        }
         inject_apply_patch_env(&mut env);
         let active_permission_profile = request.turn_environment.active_permission_profile();
         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
@@ -1455,6 +1483,16 @@ impl UnifiedExecProcessManager {
         strip_output_env(&mut env);
         let mut explicit_env_overrides = shell_environment_policy.r#set.clone();
         strip_output_env(&mut explicit_env_overrides);
+        for key in [
+            "DEVCOORDINATOR_WORK_CONTEXT",
+            "CODEX_ALARM_CONTEXT",
+            "CODEX_ALARM_ACTIVATION",
+        ] {
+            explicit_env_overrides.remove(key);
+            if let Some(value) = env.get(key) {
+                explicit_env_overrides.insert(key.to_owned(), value.clone());
+            }
+        }
         let exec_server_env_config = ExecServerEnvConfig {
             policy: exec_env_policy_from_shell_policy(shell_environment_policy),
             local_policy_env,
