@@ -89,7 +89,7 @@ class CandidatePreflightTests(unittest.TestCase):
         self.assertEqual(
             [command[-1] for command in commands],
             [
-                "test(suite::v2::thread_reconnect::)",
+                "test(suite::v2::local_usage::)",
                 "test(app::tests::turn_submission::)",
                 "test(unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags)",
                 "test(suite::unified_exec::unified_exec_formats_large_output_summary)",
