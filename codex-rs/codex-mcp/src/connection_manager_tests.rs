@@ -781,6 +781,69 @@ async fn regular_mcp_startup_quarantines_after_three_reconnect_failures() {
 }
 
 #[tokio::test]
+async fn cancelled_reconnect_disposes_a_late_ready_client() {
+    let recovered = create_test_managed_client(Vec::new()).await;
+    let recovered_transport = Arc::clone(&recovered.client);
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let completed = Arc::new(Notify::new());
+    let reconnect_factory = {
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        let completed = Arc::clone(&completed);
+        Arc::new(move || {
+            let recovered = recovered.clone();
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            let completed = Arc::clone(&completed);
+            async move {
+                started.notify_one();
+                release.notified().await;
+                completed.notify_one();
+                Ok(recovered)
+            }
+            .boxed()
+            .shared()
+        })
+    };
+    let cancel_token = CancellationToken::new();
+    let client = AsyncManagedClient {
+        client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Err(
+            StartupOutcomeError::Failed {
+                error: "initial transport failed".to_string(),
+                is_authentication_required: false,
+            },
+        ))
+        .boxed()
+        .shared(),
+        is_codex_apps_mcp_server: false,
+        server_capabilities: Arc::new(std::sync::Mutex::new(None)),
+        cached_server_info: None,
+        codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
+        startup_complete: Arc::new(AtomicBool::new(true)),
+        startup_reconnect: Some(Arc::new(
+            CodexAppsStartupReconnect::new(reconnect_factory)
+                .with_cancel_token(cancel_token.clone()),
+        )),
+        cancel_token: cancel_token.clone(),
+    };
+
+    client.reconnect_failed_startup().await;
+    started.notified().await;
+    cancel_token.cancel();
+    release.notify_one();
+    completed.notified().await;
+    tokio::task::yield_now().await;
+
+    assert!(recovered_transport.is_closed().await);
+    assert!(matches!(
+        client.terminal_error(),
+        Some(StartupOutcomeError::Cancelled)
+    ));
+}
+
+#[tokio::test]
 async fn regular_authentication_failure_is_quarantined_for_the_connection_generation() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let attempts_for_client = Arc::clone(&attempts);

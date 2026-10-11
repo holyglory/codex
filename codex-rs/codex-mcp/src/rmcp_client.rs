@@ -274,6 +274,7 @@ impl CodexAppsStartupReconnect {
         tokio::spawn(async move {
             let result = (reconnect.factory)().await;
             let startup_status_context = reconnect.startup_status_context.clone();
+            let mut discarded_client = None;
             let recovered = {
                 let mut state = reconnect
                     .state
@@ -282,11 +283,24 @@ impl CodexAppsStartupReconnect {
                 state.reconnect_in_flight = false;
                 match result {
                     Ok(client) => {
-                        state.current_client = Some(client);
-                        state.last_error = None;
-                        state.consecutive_failures = 0;
-                        state.retry_not_before = None;
-                        true
+                        let cancelled = reconnect
+                            .cancel_token
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled);
+                        if cancelled || state.quarantined {
+                            discarded_client = Some(client);
+                            state.current_client = None;
+                            state.last_error = Some(StartupOutcomeError::Cancelled);
+                            state.quarantined = true;
+                            state.retry_not_before = None;
+                            false
+                        } else {
+                            state.current_client = Some(client);
+                            state.last_error = None;
+                            state.consecutive_failures = 0;
+                            state.retry_not_before = None;
+                            true
+                        }
                     }
                     Err(error) => {
                         state.last_error = Some(error.clone());
@@ -323,6 +337,10 @@ impl CodexAppsStartupReconnect {
                     }
                 }
             };
+
+            if let Some(client) = discarded_client {
+                client.client.shutdown().await;
+            }
 
             if reconnect.is_quarantined()
                 && let Some(cancel_token) = &reconnect.cancel_token
