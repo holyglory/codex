@@ -66,6 +66,27 @@
       ]
     },
     {
+      "id": "profile-auth",
+      "required_files": [
+        "codex-rs/app-server/src/in_process_bootstrap_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/account.rs",
+        "codex-rs/app-server/tests/suite/v2/realtime_profile_auth.rs",
+        "codex-rs/cli/src/login_storage_tests.rs",
+        "codex-rs/cli/tests/account.rs"
+      ],
+      "packages": [
+        "codex-app-server",
+        "codex-cli"
+      ],
+      "filters": [
+        "test(bootstrap_discovery_survives_identity_installation_but_account_access_is_revoked)",
+        "test(login_account_chatgpt_device_code_succeeds_and_notifies)",
+        "test(realtime_profile_auth::)",
+        "test(login_default_filter_records_sanitized_storage_fallback)",
+        "test(login_and_logout_replace_only_the_active_profile)"
+      ]
+    },
+    {
       "id": "usage-reporting",
       "required_files": [
         "codex-rs/core/tests/suite/usage_stats.rs",
