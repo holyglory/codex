@@ -738,9 +738,9 @@ pub(crate) async fn record_pending_input(
             .await;
         }
         TurnInput::ResponseItem(item) => {
-            let wake_item = item.clone();
+            let wake_item = item.item.clone();
             let is_subscription_wake = matches!(
-                &item,
+                &item.item,
                 ResponseItem::Message { role, content, .. }
                     if role == "developer"
                         && content.iter().any(|content| matches!(
