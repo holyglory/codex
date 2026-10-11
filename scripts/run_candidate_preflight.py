@@ -95,7 +95,7 @@ def run_preflight(root: Path) -> None:
     # Separate invocations intentionally require each family to select tests.
     # A combined OR filter can silently omit one family after a module rename.
     for family in (
-        "suite::v2::local_usage::",
+        "suite::v2::thread_reconnect::",
         "app::tests::turn_submission::",
         "unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags",
         "suite::unified_exec::unified_exec_formats_large_output_summary",
