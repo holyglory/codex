@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -30,26 +31,22 @@ def verify_toolchain(root: Path) -> dict[str, str]:
             check=True,
             capture_output=True,
             text=True,
+            timeout=10,
         )
-        version_match = re.search(r"\b\d+\.\d+\.\d+\b", result.stdout)
-        if version_match is None or version_match.group() != expected:
-            actual = result.stdout.strip() or result.stderr.strip()
+        version_match = re.match(rf"^{tool} (\d+\.\d+\.\d+)(?:\s|$)", result.stdout)
+        if version_match is None or version_match.group(1) != expected:
+            actual = (result.stdout.strip() or result.stderr.strip())[:256]
             raise RuntimeError(
                 f"{tool} selected {executable} ({actual}); expected Rust {expected}"
             )
         selected[f"{tool}_path"] = executable
-        selected[f"{tool}_version"] = version_match.group()
-    print(
-        "toolchain preflight: "
-        + " ".join(f"{key}={value}" for key, value in selected.items()),
-        flush=True,
-    )
+        selected[f"{tool}_version"] = version_match.group(1)
+    print(json.dumps({"expected": expected, **selected}), flush=True)
     return selected
 
 
-def run_preflight(root: Path, *, check_toolchain: bool = True) -> None:
-    if check_toolchain:
-        verify_toolchain(root)
+def run_preflight(root: Path) -> None:
+    verify_toolchain(root)
     subprocess.run(
         [
             "cargo",
@@ -109,5 +106,5 @@ if __name__ == "__main__":
             verify_toolchain(root)
         else:
             run_preflight(root)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Candidate preflight refused: {error}\n")
