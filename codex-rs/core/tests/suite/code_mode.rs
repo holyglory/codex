@@ -4665,7 +4665,9 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
         )?);
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
-        .with_code_mode_session_provider(code_mode_session_provider)
+        .with_thread_manager_after_host(move |manager| {
+            manager.with_code_mode_session_provider(code_mode_session_provider)
+        })
         .with_config(|config| {
             config
                 .features

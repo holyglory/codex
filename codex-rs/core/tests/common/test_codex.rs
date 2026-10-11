@@ -17,7 +17,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_analytics::AnalyticsEventsClient;
 use codex_attachment_store::AttachmentStore;
-use codex_code_mode::CodeModeSessionProvider;
 use codex_config::CloudConfigBundleLoader;
 use codex_core::CodexThread;
 pub use codex_core::StartThreadOptions;
@@ -420,7 +419,7 @@ pub struct TestCodexBuilder {
     supports_openai_form_elicitation: bool,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
-    code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
+    post_thread_manager_configurer: Option<Box<dyn FnOnce(ThreadManager) -> ThreadManager + Send>>,
     history_mode: Option<ThreadHistoryMode>,
     models_manager: Option<SharedModelsManager>,
     thread_store: Option<Arc<dyn ThreadStore>>,
@@ -438,6 +437,14 @@ impl TestCodexBuilder {
         configure: impl FnOnce(ThreadManager) -> ThreadManager + Send + 'static,
     ) -> Self {
         self.thread_manager_configurer = Some(Box::new(configure));
+        self
+    }
+
+    pub fn with_thread_manager_after_host(
+        mut self,
+        configure: impl FnOnce(ThreadManager) -> ThreadManager + Send + 'static,
+    ) -> Self {
+        self.post_thread_manager_configurer = Some(Box::new(configure));
         self
     }
 
@@ -589,14 +596,6 @@ impl TestCodexBuilder {
 
     pub fn with_code_mode_host_program(mut self, host_program: PathBuf) -> Self {
         self.code_mode_host_program = Some(host_program);
-        self
-    }
-
-    pub fn with_code_mode_session_provider(
-        mut self,
-        provider: Arc<dyn CodeModeSessionProvider>,
-    ) -> Self {
-        self.code_mode_session_provider = Some(provider);
         self
     }
 
@@ -860,6 +859,7 @@ impl TestCodexBuilder {
             .code_mode_host_program
             .take()
             .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
+        let post_thread_manager_configurer = self.post_thread_manager_configurer.take();
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
             codex_core::install_agent_message_board(&mut extensions, manager.clone());
@@ -900,10 +900,9 @@ impl TestCodexBuilder {
             } else {
                 thread_manager
             };
-            if let Some(provider) = self.code_mode_session_provider.take() {
-                thread_manager.with_code_mode_session_provider(provider)
-            } else {
-                thread_manager
+            match post_thread_manager_configurer {
+                Some(configure) => configure(thread_manager),
+                None => thread_manager,
             }
         });
         let user_shell_override = self.user_shell_override.clone();
@@ -1561,7 +1560,7 @@ pub fn test_codex() -> TestCodexBuilder {
         supports_openai_form_elicitation: false,
         external_time_provider: None,
         code_mode_host_program: None,
-        code_mode_session_provider: None,
+        post_thread_manager_configurer: None,
         // These fixtures exercise legacy-only resume/fork helpers; store-default tests opt out.
         history_mode: Some(ThreadHistoryMode::Legacy),
         models_manager: None,
