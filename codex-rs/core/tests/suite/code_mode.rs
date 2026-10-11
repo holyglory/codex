@@ -347,6 +347,10 @@ async fn missing_process_host_falls_back_to_direct_tools_and_warns_once() -> Res
                 .features
                 .enable(Feature::CodeMode)
                 .expect("code mode should be enabled");
+            config
+                .features
+                .disable(Feature::CodeModeHost)
+                .expect("custom code-mode provider should bypass host feature");
         });
     let test = builder.build_with_auto_env(&server).await?;
     let (first_body, first_warnings) = run_unavailable_code_mode_turn(&server, &test).await?;
