@@ -29,6 +29,7 @@ use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -179,6 +180,7 @@ impl Harness {
             },
             remote_control_handle: None,
             plugin_startup_tasks: None,
+            background_subscription_loader: Arc::new(OnceLock::new()),
         }));
         Ok(Self {
             processor,

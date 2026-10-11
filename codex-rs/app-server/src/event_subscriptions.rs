@@ -44,6 +44,16 @@ fn capacity_retry_delay_seconds() -> i64 {
         + i64::from(Uuid::now_v7().as_bytes()[15]) % CAPACITY_RETRY_JITTER_SECONDS
 }
 
+fn is_guardian_review_source(source: &SessionSource) -> bool {
+    matches!(
+        source,
+        SessionSource::Internal(InternalSessionSource::Guardian)
+    ) || matches!(
+        source,
+        SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "guardian"
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct AppServerSubscriptionWakeSink {
     thread_manager: Weak<ThreadManager>,

@@ -8,19 +8,12 @@ fn project_automation_instruction_updates_append_once_after_legacy_snapshots() {
     assert!(
         current
             .render_fragment_diff(PreviousSectionState::Known(&legacy))
-            .0
+            .1
             .is_some()
     );
-    assert!(
-        current
-            .render_fragment_diff(PreviousSectionState::Unknown)
-            .0
-            .is_some()
-    );
-    let saved = ProjectAutomationInstructionsSnapshot::Current {
-        enabled: true,
-        hash: WorldStateHash::from_fragment(&current),
-    };
+    let (saved, fragment) = current.render_fragment_diff(PreviousSectionState::Unknown);
+    assert!(fragment.is_some());
+    let saved = saved.expect("persist current instruction state");
     assert!(
         current
             .render_fragment_diff(PreviousSectionState::Known(&saved))
@@ -34,7 +27,7 @@ fn project_automation_instruction_updates_append_once_after_legacy_snapshots() {
     assert!(
         current
             .render_fragment_diff(PreviousSectionState::Known(&previous))
-            .0
+            .1
             .is_some()
     );
 }

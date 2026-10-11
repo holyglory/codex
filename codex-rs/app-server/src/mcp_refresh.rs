@@ -488,6 +488,7 @@ enabled = false
                     git_attribution_base_url: good_config.chatgpt_base_url.clone(),
                     http_client_factory: good_config.http_client_factory(),
                     queue_service: None,
+                    event_subscription_service: None,
                     turn_start_admission: None,
                 }),
                 Arc::new(CodexHomeUserInstructionsProvider::new(

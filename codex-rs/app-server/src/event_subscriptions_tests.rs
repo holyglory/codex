@@ -10,6 +10,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
@@ -58,8 +59,7 @@ async fn terminal_capacity_error_registers_a_durable_retry_alarm() {
         TurnErrorInput {
             turn_id: "turn",
             error: CodexErrorInfo::ServerOverloaded,
-            session_source: &SessionSource::Cli,
-            retryable_before_response: true,
+            error_details: &CodexErrorDetails::ServerOverloaded,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
@@ -79,33 +79,6 @@ async fn terminal_capacity_error_registers_a_durable_retry_alarm() {
     let deadline = page.data[0].next_heartbeat_at_ms.expect("retry deadline");
     let now = codex_core::project_automation_now_ms();
     assert!((now + 30_000..now + 90_000).contains(&deadline));
-    runtime
-        .event_subscriptions()
-        .cancel_capacity_retry_subscriptions(thread_id)
-        .await
-        .expect("cancel retry alarm");
-    <EventSubscriptionLifecycle as TurnLifecycleContributor>::on_turn_error(
-        &lifecycle,
-        TurnErrorInput {
-            turn_id: "turn",
-            error: CodexErrorInfo::ServerOverloaded,
-            session_source: &SessionSource::Cli,
-            retryable_before_response: false,
-            session_store: &session_store,
-            thread_store: &thread_store,
-            turn_store: &turn_store,
-        },
-    )
-    .await;
-    let page = service
-        .list(codex_event_subscriptions::ListSubscriptionsQuery {
-            thread_id: Some(thread_id),
-            offset: 0,
-            limit: 100,
-        })
-        .await
-        .expect("list non-retryable capacity alarm");
-    assert!(page.data.is_empty());
     service.shutdown().await;
 }
 
