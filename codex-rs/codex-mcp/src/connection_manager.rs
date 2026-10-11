@@ -563,14 +563,7 @@ impl McpConnectionSet {
                     && previous_view.protocol_mode == protocol_mode
                     && connection.client.startup_complete.load(Ordering::Acquire)
                 {
-                    if connection.is_quarantined() {
-                        Some(connection.quarantine_error())
-                    } else if let Some(error) = connection.client.terminal_error() {
-                        connection.quarantine(&error).await;
-                        Some(error)
-                    } else {
-                        None
-                    }
+                    connection.client().await.err()
                 } else {
                     None
                 };

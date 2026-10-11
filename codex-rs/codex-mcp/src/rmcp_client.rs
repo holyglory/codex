@@ -243,7 +243,9 @@ impl CodexAppsStartupReconnect {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.last_error = Some(error.clone());
+        if state.last_error.is_none() {
+            state.last_error = Some(error.clone());
+        }
         if error.is_authentication_required() {
             state.quarantined = true;
         }
@@ -633,7 +635,13 @@ impl AsyncManagedClient {
         {
             return Ok(client);
         }
-        self.client.clone().await
+        let result = self.client.clone().await;
+        if let Err(error) = &result {
+            if let Some(reconnect) = &self.startup_reconnect {
+                reconnect.record_initial_failure(error);
+            }
+        }
+        result
     }
 
     pub(crate) fn terminal_error(&self) -> Option<StartupOutcomeError> {
