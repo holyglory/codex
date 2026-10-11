@@ -81,6 +81,7 @@ pub(crate) struct UsageToolAttempt {
     pub(super) runtime: Arc<UsageRuntime>,
     pub(super) operation_id: OperationId,
     pub(super) key: String,
+    pub(super) alarm_context: (String, String, String),
     pub(super) source_event_id: FactEventId,
     pub(super) started: Instant,
     pub(super) finished: AtomicBool,
@@ -339,6 +340,11 @@ impl UsageRuntime {
             runtime: Arc::clone(self),
             operation_id,
             key,
+            alarm_context: (
+                context.thread_id.into(),
+                context.call_id.into(),
+                context.descriptor.safe_name.into(),
+            ),
             source_event_id: FactEventId::new(),
             started: Instant::now(),
             finished: AtomicBool::new(false),
@@ -738,6 +744,16 @@ impl UsageToolAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.runtime
+            .alarm_tool_result(
+                &self.alarm_context.0,
+                self.operation_id,
+                &self.alarm_context.1,
+                &self.alarm_context.2,
+                status,
+                error,
+            )
+            .await;
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let Some(finish) = self.pending.finish(status, error, duration_ns) else {
             return;
@@ -860,7 +876,18 @@ impl Drop for UsageToolAttempt {
         };
         let pending = Arc::clone(&self.pending);
         let durable = self.durable;
+        let alarm_context = self.alarm_context.clone();
         drop(handle.spawn(async move {
+            runtime
+                .alarm_tool_result(
+                    &alarm_context.0,
+                    operation_id,
+                    &alarm_context.1,
+                    &alarm_context.2,
+                    status,
+                    Some(error),
+                )
+                .await;
             if !durable {
                 runtime.tool_state.active_tools.lock().await.remove(&key);
                 runtime
