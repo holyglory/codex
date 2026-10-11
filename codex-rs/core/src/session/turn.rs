@@ -2785,28 +2785,34 @@ async fn try_run_sampling_request(
 
         // A steer normally preempts a response immediately. During cooperative maintenance,
         // keep the response running so its tool call and output reach the durable checkpoint;
-        // the steer remains queued for the resumed turn.
+        // the steer remains queued for the resumed turn. Preserve the nested cancellation result
+        // shape below so ordinary preemption and stream errors retain their original handling.
         let event = loop {
             let receiving = stream
                 .next()
                 .instrument(trace_span!(parent: &handle_responses, "receiving"));
-            tokio::pin!(receiving);
-            tokio::select! {
-                biased;
-                _ = cancellation_token.cancelled() => break Err(CodexErr::TurnAborted),
-                event = &mut receiving => break Ok(event),
-                _ = preempt.cancelled(), if !preempt_disabled_for_maintenance => {
-                    if maintenance_pending() {
-                        preempt_disabled_for_maintenance = true;
-                        continue;
-                    }
-                    break Err(CodexErr::TurnAborted);
+            let event = if preempt_disabled_for_maintenance {
+                receiving.or_cancel(&cancellation_token).await.map(Ok)
+            } else {
+                receiving
+                    .or_cancel(&preempt)
+                    .or_cancel(&cancellation_token)
+                    .await
+            };
+            match event {
+                Ok(Err(_)) if maintenance_pending() => {
+                    preempt_disabled_for_maintenance = true;
+                    continue;
                 }
+                event => break event,
             }
         };
+        if cancellation_token.is_cancelled() {
+            break Err(CodexErr::TurnAborted);
+        }
         let event = match event {
-            Ok(Some(Ok(event))) => event,
-            Ok(Some(Err(_))) => {
+            Ok(Ok(event)) => event,
+            Ok(Err(_)) => {
                 if let Some(interrupt) = stream.interrupt.take() {
                     if step_context.settings.model_info.use_responses_lite {
                         let _ = interrupt.send(());
@@ -2823,12 +2829,17 @@ async fn try_run_sampling_request(
                     last_agent_message,
                 });
             }
-            Ok(None) => {
+            Err(_) => break Err(CodexErr::TurnAborted),
+        };
+
+        let event = match event {
+            Some(Ok(event)) => event,
+            Some(Err(err)) => break Err(err),
+            None => {
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                 ));
             }
-            Err(err) => break Err(err),
         };
 
         sess.services
