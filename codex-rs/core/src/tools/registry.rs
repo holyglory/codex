@@ -13,7 +13,6 @@ use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -26,11 +25,6 @@ use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
 use crate::tools::router::tool_log_payload;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
-use crate::usage_runtime::RepositoryCandidate;
-use crate::usage_runtime::ToolAttemptContext;
-use crate::usage_runtime::UsageToolDescriptor;
-use crate::usage_runtime::repository_safe_label;
-use crate::usage_runtime::usage_account_snapshot;
 use crate::util::error_or_panic;
 use codex_analytics::ControlToolCallStatus;
 use codex_extension_api::ToolCallOutcome;
@@ -49,6 +43,11 @@ use futures::future::BoxFuture;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use serde_json::Value;
+
+#[path = "registry_usage.rs"]
+mod registry_usage;
+use registry_usage::begin_tool_attempt;
+use registry_usage::usage_terminal_status;
 
 pub(crate) type ToolTelemetryTags = Vec<(&'static str, String)>;
 
@@ -550,55 +549,17 @@ impl ToolRegistry {
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
-        let otel = invocation.step_context.session_telemetry.clone();
+        let otel = invocation
+            .step_context
+            .session_telemetry
+            .clone()
+            .with_product_sku(invocation.turn.config.apps_mcp_product_sku.as_deref());
         // TODO(anp): Reconcile these tags with TurnEnvironment::sandbox_context
         // instead of reporting the thread-wide backend for environment-scoped tools.
         let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;
         let tool = self.tool(&tool_name);
 
-        let usage_thread_id = invocation.session.thread_id().to_string();
-        let alarm_tool_name = tool_name.to_string();
-        let usage_parent_thread_id = invocation.turn.parent_thread_id.map(|id| id.to_string());
-        let usage_account = usage_account_snapshot(
-            invocation
-                .turn
-                .account_lease
-                .as_ref()
-                .map(|lease| lease.account_id().as_str()),
-            invocation
-                .turn
-                .account_lease
-                .as_ref()
-                .and_then(|lease| lease.auth_manager().get_api_auth_mode())
-                .or_else(|| {
-                    invocation
-                        .turn
-                        .auth_manager
-                        .as_ref()
-                        .and_then(|manager| manager.get_api_auth_mode())
-                }),
-        );
-        let usage_repositories = usage_repository_candidates_for_tool(&invocation);
-        let (execution_group_id, execution_role) = usage_tool_execution(&invocation).await;
-        let mut usage_attempt = invocation
-            .session
-            .services
-            .usage_runtime
-            .begin_tool_attempt(ToolAttemptContext {
-                thread_id: &usage_thread_id,
-                parent_thread_id: usage_parent_thread_id.as_deref(),
-                turn_id: Some(invocation.turn.sub_id.as_str()),
-                delegated: invocation.turn.session_source.is_non_root_agent(),
-                call_id: &invocation.call_id,
-                alarm_tool_name: &alarm_tool_name,
-                cancellation_token: invocation.cancellation_token.clone(),
-                descriptor: usage_tool_descriptor(&tool_name, tool.as_deref()),
-                execution_group_id,
-                execution_role,
-                account: usage_account,
-                repositories: usage_repositories,
-            })
-            .await;
+        let usage_attempt = begin_tool_attempt(&invocation, tool.as_deref()).await;
 
         {
             let mut active = invocation.session.active_turn.lock().await;
@@ -890,193 +851,6 @@ impl ToolRegistry {
             }
         }
     }
-}
-
-fn usage_terminal_status(
-    outcome: codex_tools::UsageTerminalOutcome,
-) -> (
-    codex_usage::TerminalStatus,
-    Option<codex_usage::ErrorCategory>,
-) {
-    let status = match outcome.status {
-        codex_tools::UsageTerminalStatus::Completed => codex_usage::TerminalStatus::Completed,
-        codex_tools::UsageTerminalStatus::Failed => codex_usage::TerminalStatus::Failed,
-        codex_tools::UsageTerminalStatus::Denied => codex_usage::TerminalStatus::Denied,
-        codex_tools::UsageTerminalStatus::TimedOut => codex_usage::TerminalStatus::TimedOut,
-        codex_tools::UsageTerminalStatus::Cancelled => codex_usage::TerminalStatus::Cancelled,
-    };
-    let error = outcome.error_category.map(|category| match category {
-        codex_tools::UsageTerminalErrorCategory::Tool => codex_usage::ErrorCategory::Tool,
-        codex_tools::UsageTerminalErrorCategory::Timeout => codex_usage::ErrorCategory::Timeout,
-        codex_tools::UsageTerminalErrorCategory::Cancelled => codex_usage::ErrorCategory::Cancelled,
-        codex_tools::UsageTerminalErrorCategory::Provider => codex_usage::ErrorCategory::Provider,
-    });
-    (status, error)
-}
-
-fn usage_tool_descriptor(
-    name: &ToolName,
-    runtime: Option<&dyn CoreToolRuntime>,
-) -> UsageToolDescriptor {
-    let descriptor = |kind, safe_name, family| UsageToolDescriptor {
-        kind,
-        safe_name,
-        family,
-        activity_control: false,
-        activity_state: codex_usage::ActivityState::ToolActive,
-    };
-    if name.is_default_namespace() {
-        if name.name.starts_with("browser") || name.name.starts_with("playwright") {
-            return descriptor("browser", "browser_tool", "browser_automation");
-        }
-        if name.name.starts_with("extension_") {
-            return descriptor("plugin", "plugin_tool", "extension");
-        }
-        return match name.name.as_str() {
-            "usage_activity" => UsageToolDescriptor {
-                kind: "control",
-                safe_name: "usage_activity",
-                family: "accounting",
-                activity_control: true,
-                activity_state: codex_usage::ActivityState::ToolActive,
-            },
-            "account_management" => descriptor("builtin", "account_management", "configuration"),
-            "usage_stats" => UsageToolDescriptor {
-                kind: "control",
-                safe_name: "usage_stats",
-                family: "accounting",
-                activity_control: true,
-                activity_state: codex_usage::ActivityState::ToolActive,
-            },
-            "shell_command" | "exec_command" | "write_stdin" => {
-                descriptor("shell", "shell", "execution")
-            }
-            "apply_patch" => descriptor("builtin", "apply_patch", "coding"),
-            "view_image" | "imagegen" => descriptor("image", "image", "media"),
-            "tool_search" => descriptor("builtin", "tool_search", "discovery"),
-            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource" => {
-                descriptor("mcp", "mcp_resource", "external_context")
-            }
-            "wait_agent" => UsageToolDescriptor {
-                activity_state: codex_usage::ActivityState::ExternalWait,
-                ..descriptor("collaboration", "collaboration", "coordination")
-            },
-            "spawn_agent" | "send_input" | "close_agent" | "resume_agent" | "list_agents"
-            | "interrupt_agent" | "send_message" | "followup_task" => {
-                descriptor("collaboration", "collaboration", "coordination")
-            }
-            "update_plan" => descriptor("builtin", "update_plan", "planning"),
-            "request_user_input" => UsageToolDescriptor {
-                activity_state: codex_usage::ActivityState::UserWait,
-                ..descriptor("builtin", "request_user_input", "user_interaction")
-            },
-            "request_plugin_install" => {
-                descriptor("plugin", "request_plugin_install", "configuration")
-            }
-            "request_permissions" => descriptor("builtin", "request_permissions", "permissions"),
-            "sleep" | "test_sync" | "test_sync_tool" | "wait_for_environment" | "await_work" => {
-                UsageToolDescriptor {
-                    activity_state: codex_usage::ActivityState::ExternalWait,
-                    ..descriptor("builtin", "utility", "control")
-                }
-            }
-            "current_time"
-            | "get_context_remaining"
-            | "new_context_window"
-            | "send_user_message_async" => descriptor("builtin", "utility", "control"),
-            _ if runtime.is_some() => descriptor("dynamic", "dynamic_tool", "dynamic"),
-            _ => descriptor("unsupported", "unsupported_tool", "unsupported"),
-        };
-    }
-    if runtime.and_then(CoreToolRuntime::mcp_server_name).is_some() {
-        descriptor("mcp", "mcp_tool", "external_context")
-    } else if runtime.is_some() {
-        descriptor("plugin", "plugin_tool", "extension")
-    } else {
-        descriptor("unsupported", "unsupported_tool", "unsupported")
-    }
-}
-
-async fn usage_tool_execution(
-    invocation: &ToolInvocation,
-) -> (
-    Option<codex_usage::ToolExecutionGroupId>,
-    codex_usage::ToolExecutionRole,
-) {
-    let role = match &invocation.source {
-        ToolCallSource::CodeMode { .. } => codex_usage::ToolExecutionRole::Nested,
-        ToolCallSource::Direct
-            if invocation.tool_name.is_default_namespace()
-                && matches!(
-                    invocation.tool_name.name.as_str(),
-                    crate::tools::code_mode::PUBLIC_TOOL_NAME
-                        | crate::tools::code_mode::WAIT_TOOL_NAME
-                ) =>
-        {
-            codex_usage::ToolExecutionRole::Wrapper
-        }
-        ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
-            codex_usage::ToolExecutionRole::Standalone
-        }
-    };
-    if role == codex_usage::ToolExecutionRole::Standalone {
-        return (None, role);
-    }
-    let group = invocation
-        .originating_call()
-        .await
-        .and_then(|origin| origin.item_id)
-        .map(|item_id| {
-            let key = format!(
-                "{}\0{}\0{}",
-                invocation.session.thread_id,
-                invocation.turn.sub_id,
-                item_id.as_str()
-            );
-            codex_usage::ToolExecutionGroupId::from_stable_key(key.as_bytes())
-        });
-    (group, role)
-}
-
-fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<RepositoryCandidate> {
-    let enriched = invocation.turn.turn_metadata_state.current_workspaces();
-    let mut workspaces = invocation
-        .step_context
-        .environments
-        .primary()
-        .map(|environment| vec![environment.cwd().to_path_buf()])
-        .unwrap_or_default();
-    if workspaces.is_empty() {
-        workspaces.extend(enriched.keys().map(std::path::PathBuf::from));
-    }
-    workspaces
-        .into_iter()
-        .filter_map(|workspace| {
-            let repository_root = if workspace.is_absolute() {
-                codex_git_utils::get_git_repo_root(&workspace).unwrap_or_else(|| workspace.clone())
-            } else {
-                workspace.clone()
-            };
-            let workspace = workspace.to_str()?.to_string();
-            let repository_root = repository_root.to_str()?.to_string();
-            let origin = enriched
-                .get(&repository_root)
-                .and_then(|details| {
-                    details.associated_remote_urls.as_ref().and_then(|remotes| {
-                        remotes
-                            .get("origin")
-                            .or_else(|| remotes.values().next())
-                            .cloned()
-                    })
-                })
-                .map(String::from);
-            Some(RepositoryCandidate::new(
-                workspace,
-                origin,
-                repository_safe_label(&repository_root),
-            ))
-        })
-        .collect()
 }
 
 async fn notify_tool_finish_if_unclaimed(

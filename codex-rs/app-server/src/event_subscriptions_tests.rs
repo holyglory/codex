@@ -55,6 +55,7 @@ async fn terminal_capacity_error_registers_a_durable_retry_alarm() {
         retryable_before_response: true,
         guardian_review: false,
     });
+    let before_registration = codex_core::project_automation_now_ms();
     <EventSubscriptionLifecycle as TurnLifecycleContributor>::on_turn_error(
         &lifecycle,
         TurnErrorInput {
@@ -78,8 +79,8 @@ async fn terminal_capacity_error_registers_a_durable_retry_alarm() {
         .expect("list retry alarm");
     assert_eq!(page.data.len(), 1);
     let deadline = page.data[0].next_heartbeat_at_ms.expect("retry deadline");
-    let now = codex_core::project_automation_now_ms();
-    assert!((now + 30_000..now + 90_000).contains(&deadline));
+    let after_registration = codex_core::project_automation_now_ms();
+    assert!((before_registration + 30_000..after_registration + 90_000).contains(&deadline));
     service.shutdown().await;
 }
 

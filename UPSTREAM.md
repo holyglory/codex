@@ -44,9 +44,9 @@ never move `main` or `upstream-sync` before the release gates pass.
    Preserve capacity recovery through `suite::retry_after` and the packaged
    `test_capacity_response_recovers_in_same_turn` check; an upstream test that
    expects immediate failure does not replace this downstream requirement.
-7. Push the exact tested candidate, then update `main` only with a freshly
-   observed `--force-with-lease` value. Verify the archive tag and default branch
-   before deleting fork-owned temporary branches.
+7. Push the exact tested candidate, open its stable-refresh pull request, and
+   merge through the reviewed pull request. Do not rewrite `main`. Verify the
+   rollback tag and merged commit before retiring temporary branches.
 
 No update procedure creates a release, stages npm packages, publishes npm
 packages, installs binaries, or deploys a running service unless those actions
@@ -124,6 +124,21 @@ the authority for release outcomes and verification receipts.
   package version metadata before spending time on the full suite. Resolve
   upstream interface changes at the current extension point instead of keeping
   an old compatibility shim.
+- **Trace a missing test family to its production behavior.** A zero-test
+  reconnect filter exposed both a deleted suite and missing `turn/start` and
+  `turn/steer` recovery calls. Restore the original journey; do not substitute
+  an unrelated passing filter. A worktree migration and path-normalization test
+  likewise cannot prove worktree capture, token ownership, filtering or reports.
+- **Preserve runtime initialization as well as methods.** Cooperative upgrade
+  code compiled without installing `MaintenanceGate` in each session. Every
+  prepare request then incorrectly reported `alreadyPausing`. Exercise the
+  public prepare/cancel/restore journey after replaying lifecycle adapters.
+- **Reuse the isolated runner and compatible build stores.** Verify the pinned
+  toolchain and retained GNU/musl V8, libcap and smoke-test Python paths from
+  `CI.md` before submission. Use the existing governed isolated test environment
+  and warm Cargo target with the same package/feature selection. A new worktree
+  does not require a fresh target directory; do not assert isolation with an
+  environment flag while host configuration remains visible.
 - **Update test doubles when upstream traits gain context parameters.** The
   stable refresh changed workspace-routing resolution to receive the selected
   auth manager. Search every test-only resolver implementation after a trait
@@ -332,11 +347,11 @@ the authority for release outcomes and verification receipts.
   six platform payloads before the root launcher, then verify registry integrity,
   provenance and an isolated public install. Browser/2FA authorization remains a
   human step; an old login success does not prove the current npm session is valid.
-- **Authentication failures must stale resolver work instead of retrying forever.** A
+- **Authentication failures must keep skill listing responsive.** A
   repeated `invalid_token` from a Codex Apps or MCP worker can leave the app-server
   consuming CPU while a skills resolver waits. Treat an auth-required startup failure
   as terminal for the current runtime, stop reconnect attempts with unchanged
-  credentials, and bound `skills/list` so the client receives a stale-resolver error.
+  credentials, and bound `skills/list` so healthy and local skills remain available.
   Cover both the circuit breaker and the public app-server/TUI request path; recovery
   must come from a fresh authenticated runtime or explicit credential change.
 

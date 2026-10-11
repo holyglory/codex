@@ -9,7 +9,6 @@ use crate::usage_runtime::usage_account_snapshot;
 use codex_tools::ToolName;
 use codex_usage::ToolExecutionGroupId;
 use codex_usage::ToolExecutionRole;
-use std::sync::Arc;
 
 pub(crate) fn usage_tool_descriptor(
     name: &ToolName,
@@ -96,7 +95,7 @@ pub(crate) fn usage_tool_descriptor(
 
 pub(crate) async fn begin_tool_attempt(
     invocation: &ToolInvocation,
-    runtime: &Arc<dyn CoreToolRuntime>,
+    runtime: Option<&dyn CoreToolRuntime>,
 ) -> crate::usage_runtime::UsageToolAttempt {
     let turn = &invocation.turn;
     let account = usage_account_snapshot(
@@ -129,7 +128,7 @@ pub(crate) async fn begin_tool_attempt(
             call_id: &invocation.call_id,
             alarm_tool_name: &alarm_tool_name,
             cancellation_token: invocation.cancellation_token.clone(),
-            descriptor: usage_tool_descriptor(&invocation.tool_name, Some(runtime.as_ref())),
+            descriptor: usage_tool_descriptor(&invocation.tool_name, runtime),
             execution_group_id,
             execution_role,
             account,
@@ -139,15 +138,44 @@ pub(crate) async fn begin_tool_attempt(
 }
 
 fn repository_candidates(invocation: &ToolInvocation) -> Vec<RepositoryCandidate> {
-    let Some(environment) = invocation.step_context.environments.primary() else {
-        return Vec::new();
-    };
-    let workspace = environment.cwd().to_path_buf().display().to_string();
-    vec![RepositoryCandidate::new(
-        workspace.clone(),
-        None,
-        repository_safe_label(&workspace),
-    )]
+    let enriched = invocation.turn.turn_metadata_state.current_workspaces();
+    let mut workspaces = invocation
+        .step_context
+        .environments
+        .primary()
+        .map(|environment| vec![environment.cwd().to_path_buf()])
+        .unwrap_or_default();
+    if workspaces.is_empty() {
+        workspaces.extend(enriched.keys().map(std::path::PathBuf::from));
+    }
+    workspaces
+        .into_iter()
+        .filter_map(|workspace| {
+            let repository_root = if workspace.is_absolute() {
+                codex_git_utils::get_git_repo_root(&workspace).unwrap_or_else(|| workspace.clone())
+            } else {
+                workspace.clone()
+            };
+            let workspace = workspace.to_str()?.to_string();
+            let repository_root = repository_root.to_str()?.to_string();
+            let origin = enriched
+                .get(&repository_root)
+                .and_then(|details| {
+                    details.associated_remote_urls.as_ref().and_then(|remotes| {
+                        remotes
+                            .get("origin")
+                            .or_else(|| remotes.values().next())
+                            .cloned()
+                    })
+                })
+                .map(String::from);
+            Some(RepositoryCandidate::new(
+                workspace,
+                origin,
+                repository_safe_label(&repository_root),
+            ))
+        })
+        .collect()
 }
 
 async fn execution_group(

@@ -57,6 +57,29 @@ class LocalCandidateTests(unittest.TestCase):
             self.assertEqual(log.read_text(), "fixture check passed\n")
             self.assertEqual(check["log_sha256"], candidate.digest(log))
 
+    def test_isolation_requires_host_configuration_to_be_hidden(self):
+        with (
+            patch("local_candidate.frozen_commit", return_value=self.commit),
+            patch("local_candidate.platform.system", return_value="Linux"),
+            patch("local_candidate.platform.machine", return_value="x86_64"),
+            patch.dict(os.environ, {"CODEX_RELEASE_ISOLATED": "1"}),
+            patch("local_candidate.shutil.which", return_value=None),
+        ):
+            for present in (True, False):
+                with (
+                    self.subTest(host_configuration_present=present),
+                    patch.object(Path, "exists", return_value=present),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "host Codex configuration"
+                        if present
+                        else "Required build tool",
+                    ),
+                ):
+                    candidate.check(
+                        self.directory, self.directory, self.directory, self.directory
+                    )
+
     def test_inclusion_rejects_a_lost_feature_or_changed_migration(self):
         root = self.directory
         manifest_path = root / "codex-rs/Cargo.toml"
