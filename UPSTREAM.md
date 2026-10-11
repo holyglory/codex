@@ -107,6 +107,14 @@ the authority for release outcomes and verification receipts.
   and `RUSTY_V8_SRC_BINDING_PATH` from the retained `rusty-v8-150.4.0` fixture
   before full Rust or package validation; do not treat the download 404 as a
   product failure.
+- **Check temporary-storage inodes, not only free bytes.** The governed TUI
+  suite had enough `/tmp` capacity by bytes but could not create SQLite and
+  PTY fixtures because stale test directories consumed nearly every tmpfs inode.
+  Before a broad run, record `df -h` and `df -i` for the actual temporary mount,
+  use the approved private bulk scratch mount for large transient trees, and
+  remove only verified stale test scratch after checking that no process still
+  references it. A later `No space left on device` cascade is an environment
+  failure until both byte and inode pressure are ruled out.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve
