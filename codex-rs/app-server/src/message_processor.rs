@@ -506,6 +506,7 @@ impl MessageProcessor {
         let on_effective_plugins_changed =
             crate::effective_plugin_change::effective_plugins_changed_callback(
                 auth_manager.clone(),
+                profile_auth_router.clone(),
                 Arc::clone(&thread_manager),
                 config_manager.clone(),
                 config_processor.clone(),
@@ -585,7 +586,7 @@ impl MessageProcessor {
             account_processor.clone(),
         );
         let plugin_processor = PluginRequestProcessor::new(
-            auth_manager.clone(),
+            profile_auth_router.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
@@ -769,6 +770,9 @@ impl MessageProcessor {
     }
 
     pub(crate) fn clear_runtime_references(&self) {
+        if let Some(bridge) = &self.coordinator_event_bridge {
+            bridge.cancel();
+        }
         self.account_processor.clear_external_auth();
         self.apps_processor.shutdown();
         self.models_refresh_worker.shutdown();
@@ -995,6 +999,11 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        if let Some(bridge) = &self.coordinator_event_bridge
+            && let Err(error) = bridge.shutdown().await
+        {
+            tracing::warn!(%error, "Coordinator event source did not shut down cleanly");
+        }
         self.models_refresh_worker.shutdown();
         if let Some(worker) = &self.turn_cost_worker {
             worker.shutdown();

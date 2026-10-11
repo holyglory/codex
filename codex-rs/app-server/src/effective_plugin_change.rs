@@ -10,6 +10,9 @@ use codex_core_plugins::remote::RemotePluginMaterialization;
 use codex_core_plugins::remote::RemotePluginScope;
 use codex_core_plugins::remote::RemotePluginShareDiscoverability;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
+use codex_login::CodexAuth;
+use codex_login::SharedProfileAuthRouter;
 use serde_json::json;
 use tracing::warn;
 
@@ -22,6 +25,7 @@ use crate::request_serialization::RequestSerializationQueues;
 /// Refresh plugin consumers and trust hooks from newly materialized Workspace + Listed bundles.
 pub(crate) fn effective_plugins_changed_callback(
     auth_manager: Arc<AuthManager>,
+    profile_auth_router: SharedProfileAuthRouter,
     thread_manager: Arc<ThreadManager>,
     config_manager: ConfigManager,
     config_processor: ConfigRequestProcessor,
@@ -42,6 +46,7 @@ pub(crate) fn effective_plugins_changed_callback(
         }
 
         let trust_auth_manager = Arc::clone(&auth_manager);
+        let trust_profile_auth_router = profile_auth_router.clone();
         let trust_thread_manager = Arc::clone(&thread_manager);
         let trust_config_manager = config_manager.clone();
         let trust_config_processor = config_processor.clone();
@@ -52,8 +57,19 @@ pub(crate) fn effective_plugins_changed_callback(
                     RequestSerializationQueueKey::Global("config"),
                     RequestSerializationAccess::Exclusive,
                     async move {
+                        let auth_lease = match trust_profile_auth_router.lease_for_operation().await
+                        {
+                            Ok(lease) => lease,
+                            Err(error) => {
+                                warn!(%error, "failed to resolve plugin hook trust account");
+                                return;
+                            }
+                        };
+                        let auth = auth_lease.auth_manager().auth().await;
                         if let Err(err) = trust_materialized_plugin_hooks(
                             change.materialized_remote_plugins,
+                            &auth_lease,
+                            auth.as_ref(),
                             &trust_auth_manager,
                             &trust_thread_manager,
                             &trust_config_manager,
@@ -96,14 +112,17 @@ fn hook_trusted_hash_edit(hook_key: &str, current_hash: &str) -> ConfigEdit {
 
 pub(crate) async fn trust_materialized_plugin_hooks(
     materializations: Vec<RemotePluginMaterialization>,
+    auth_lease: &AuthManagerLease,
+    auth: Option<&CodexAuth>,
     auth_manager: &AuthManager,
     thread_manager: &ThreadManager,
     config_manager: &ConfigManager,
     config_processor: &ConfigRequestProcessor,
 ) -> Result<(), String> {
-    let Some(current_account_id) = auth_manager
-        .auth_cached()
-        .and_then(|auth| auth.get_account_id())
+    let Some(current_account_id) = auth_lease
+        .account_id()
+        .map(ToString::to_string)
+        .or_else(|| auth.and_then(CodexAuth::get_account_id))
     else {
         return Ok(());
     };
@@ -117,7 +136,7 @@ pub(crate) async fn trust_materialized_plugin_hooks(
         .map_err(|err| format!("failed to reload config: {err}"))?;
     let plugin_outcome = thread_manager
         .plugins_manager()
-        .plugins_for_config(&config.plugins_config_input())
+        .plugins_for_config_with_auth(&config.plugins_config_input(), auth)
         .await;
     let hooks = codex_hooks::list_hooks(codex_hooks::HooksConfig {
         feature_enabled: true,

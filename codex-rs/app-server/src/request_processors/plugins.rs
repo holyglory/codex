@@ -29,6 +29,8 @@ use codex_core_plugins::remote::RemotePluginScope;
 use codex_core_plugins::remote::is_valid_remote_plugin_id;
 use codex_core_plugins::remote::validate_remote_plugin_id;
 use codex_core_plugins::remote_bundle::RemotePluginBundleInstallError;
+use codex_login::AuthManagerLease;
+use codex_login::SharedProfileAuthRouter;
 use codex_mcp::McpOAuthLoginSupport;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::oauth_login_support;
@@ -58,7 +60,7 @@ fn plugin_redirect_mode(plugin_root: &Path) -> StreamableHttpRedirectMode {
 
 #[derive(Clone)]
 pub(crate) struct PluginRequestProcessor {
-    auth_manager: Arc<AuthManager>,
+    profile_auth_router: SharedProfileAuthRouter,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
@@ -400,7 +402,7 @@ fn plugin_share_principal_from_remote(
 
 impl PluginRequestProcessor {
     pub(crate) fn new(
-        auth_manager: Arc<AuthManager>,
+        profile_auth_router: SharedProfileAuthRouter,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
@@ -410,7 +412,7 @@ impl PluginRequestProcessor {
         >,
     ) -> Self {
         Self {
-            auth_manager,
+            profile_auth_router,
             thread_manager,
             outgoing,
             analytics_events_client,
@@ -545,6 +547,13 @@ impl PluginRequestProcessor {
             .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }
 
+    async fn operation_auth_lease(&self) -> Result<AuthManagerLease, JSONRPCErrorError> {
+        self.profile_auth_router
+            .lease_for_operation()
+            .await
+            .map_err(super::account_profile_processor::router_error)
+    }
+
     async fn plugin_list_response(
         &self,
         params: PluginListParams,
@@ -579,7 +588,8 @@ impl PluginRequestProcessor {
         if !context.plugins_enabled() && context.load_errors.is_empty() {
             return Ok(empty_response());
         }
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
         if include_local
             && force_refetch
@@ -608,12 +618,14 @@ impl PluginRequestProcessor {
         let (mut data, marketplace_load_errors, local_marketplaces) = if include_local {
             let context_for_marketplace_listing = context.clone();
             let plugins_manager_for_marketplace_listing = plugins_manager.clone();
+            let auth_for_marketplace_listing = auth.clone();
             let shared_plugin_ids_by_local_path = load_shared_plugin_ids_by_local_path(&config)?;
             match tokio::task::spawn_blocking(move || {
                 let outcome = plugins_manager_for_marketplace_listing
-                    .list_marketplaces_for_context(
+                    .list_marketplaces_for_context_with_auth(
                         &context_for_marketplace_listing,
                         /*include_openai_curated*/ !use_remote_global_catalog,
+                        auth_for_marketplace_listing.as_ref(),
                     )?;
                 let local_marketplaces = outcome.marketplaces.clone();
                 Ok::<
@@ -775,8 +787,9 @@ impl PluginRequestProcessor {
             || include_global_remote
             || !remote_catalog_cache_refresh_scopes.is_empty()
         {
-            plugins_manager.maybe_start_plugin_list_background_tasks(
+            plugins_manager.maybe_start_plugin_list_background_tasks_with_auth_lease(
                 &context,
+                auth_lease.clone(),
                 auth.clone(),
                 PluginListBackgroundTaskOptions {
                     local_marketplaces,
@@ -838,15 +851,17 @@ impl PluginRequestProcessor {
         if !context.plugins_enabled() && context.load_errors.is_empty() {
             return Ok(empty_response());
         }
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
 
         let use_remote_global_catalog = context.remote_plugins_enabled()
             && auth_mode.is_some_and(DomainAuthMode::uses_codex_backend);
         let remote_installed_plugin_visible_marketplaces =
             remote_installed_plugin_visible_marketplaces(&config, use_remote_global_catalog);
-        plugins_manager.maybe_start_remote_installed_plugin_bundle_sync(
+        plugins_manager.maybe_start_remote_installed_plugin_bundle_sync_with_auth_lease(
             &context.global_config,
+            auth_lease.clone(),
             auth.clone(),
             Some(self.effective_plugins_changed_callback()),
         );
@@ -857,6 +872,7 @@ impl PluginRequestProcessor {
                 &config,
                 &context,
                 install_suggestion_plugin_names,
+                auth.as_ref(),
             )
             .await?;
 
@@ -885,6 +901,7 @@ impl PluginRequestProcessor {
         config: &Config,
         context: &PluginMarketplaceContext,
         install_suggestion_plugin_names: HashSet<String>,
+        auth: Option<&CodexAuth>,
     ) -> Result<
         (
             Vec<PluginMarketplaceEntry>,
@@ -894,9 +911,13 @@ impl PluginRequestProcessor {
     > {
         let shared_plugin_ids_by_local_path = load_shared_plugin_ids_by_local_path(config)?;
         let context = context.clone();
+        let auth = auth.cloned();
         match tokio::task::spawn_blocking(move || {
-            let outcome = plugins_manager
-                .list_marketplaces_for_context(&context, /*include_openai_curated*/ true)?;
+            let outcome = plugins_manager.list_marketplaces_for_context_with_auth(
+                &context,
+                /*include_openai_curated*/ true,
+                auth.as_ref(),
+            )?;
             Ok::<
                 (
                     Vec<PluginMarketplaceEntry>,
@@ -1023,7 +1044,12 @@ impl PluginRequestProcessor {
         });
 
         let mut config = self.load_latest_config(config_cwd).await?;
-        let auth = match self.auth_manager.auth_with_http_client_factory().await {
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
             Some((auth, factory)) => {
                 config.application_network_policy = factory.network_policy().clone();
                 Some(auth)
@@ -1039,7 +1065,7 @@ impl PluginRequestProcessor {
                     marketplace_path,
                 };
                 let outcome = plugins_manager
-                    .read_plugin_for_config(&plugins_input, &request)
+                    .read_plugin_for_config_with_auth(&plugins_input, &request, auth.as_ref())
                     .await
                     .map_err(|err| Self::marketplace_error(err, "read plugin details"))?;
                 let shared_plugin_ids_by_local_path =
@@ -1238,7 +1264,8 @@ impl PluginRequestProcessor {
             ));
         }
 
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         let remote_plugin_service_config = remote_plugin_service_config(&config);
         let remote_skill_detail = codex_core_plugins::remote::fetch_remote_plugin_skill_detail(
             &remote_plugin_service_config,
@@ -1261,7 +1288,7 @@ impl PluginRequestProcessor {
         &self,
         params: PluginShareSaveParams,
     ) -> Result<PluginShareSaveResponse, JSONRPCErrorError> {
-        let (config, auth) = self.load_plugin_share_config_and_auth().await?;
+        let (config, _auth_lease, auth) = self.load_plugin_share_config_and_auth().await?;
         if !config.features.enabled(Feature::PluginSharing) {
             return Err(invalid_request("plugin sharing is disabled"));
         }
@@ -1324,7 +1351,7 @@ impl PluginRequestProcessor {
         &self,
         params: PluginShareUpdateTargetsParams,
     ) -> Result<PluginShareUpdateTargetsResponse, JSONRPCErrorError> {
-        let (config, auth) = self.load_plugin_share_config_and_auth().await?;
+        let (config, _auth_lease, auth) = self.load_plugin_share_config_and_auth().await?;
         if !config.features.enabled(Feature::PluginSharing) {
             return Err(invalid_request("plugin sharing is disabled"));
         }
@@ -1371,7 +1398,7 @@ impl PluginRequestProcessor {
         &self,
         _params: PluginShareListParams,
     ) -> Result<PluginShareListResponse, JSONRPCErrorError> {
-        let (config, auth) = self.load_plugin_share_config_and_auth().await?;
+        let (config, _auth_lease, auth) = self.load_plugin_share_config_and_auth().await?;
         let remote_plugin_service_config = remote_plugin_service_config(&config);
         let data = codex_core_plugins::remote::list_remote_plugin_shares(
             &remote_plugin_service_config,
@@ -1400,7 +1427,7 @@ impl PluginRequestProcessor {
         &self,
         params: PluginShareCheckoutParams,
     ) -> Result<PluginShareCheckoutResponse, JSONRPCErrorError> {
-        let (config, auth) = self.load_plugin_share_config_and_auth().await?;
+        let (config, _auth_lease, auth) = self.load_plugin_share_config_and_auth().await?;
         if !config.features.enabled(Feature::PluginSharing) {
             return Err(invalid_request("plugin sharing is disabled"));
         }
@@ -1434,7 +1461,7 @@ impl PluginRequestProcessor {
         &self,
         params: PluginShareDeleteParams,
     ) -> Result<PluginShareDeleteResponse, JSONRPCErrorError> {
-        let (config, auth) = self.load_plugin_share_config_and_auth().await?;
+        let (config, _auth_lease, auth) = self.load_plugin_share_config_and_auth().await?;
         let PluginShareDeleteParams { remote_plugin_id } = params;
         if remote_plugin_id.is_empty() || !is_valid_remote_plugin_id(&remote_plugin_id) {
             return Err(invalid_request("invalid remote plugin id"));
@@ -1461,13 +1488,14 @@ impl PluginRequestProcessor {
 
     async fn load_plugin_share_config_and_auth(
         &self,
-    ) -> Result<(Config, Option<CodexAuth>), JSONRPCErrorError> {
+    ) -> Result<(Config, AuthManagerLease, Option<CodexAuth>), JSONRPCErrorError> {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         if !config.features.enabled(Feature::Plugins) {
             return Err(invalid_request("plugin sharing is not enabled"));
         }
-        let auth = self.auth_manager.auth().await;
-        Ok((config, auth))
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
+        Ok((config, auth_lease, auth))
     }
 
     async fn plugin_install_response(
@@ -1499,7 +1527,12 @@ impl PluginRequestProcessor {
         };
         let config_cwd = marketplace_path.as_path().parent().map(Path::to_path_buf);
         let mut config = self.load_latest_config(config_cwd.clone()).await?;
-        let auth = match self.auth_manager.auth_with_http_client_factory().await {
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
             Some((auth, factory)) => {
                 config.application_network_policy = factory.network_policy().clone();
                 Some(auth)
@@ -1590,7 +1623,12 @@ impl PluginRequestProcessor {
         install_attempt_id: Option<String>,
     ) -> Result<PluginInstallResponse, JSONRPCErrorError> {
         let mut config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-        let auth = match self.auth_manager.auth_with_http_client_factory().await {
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
             Some((auth, factory)) => {
                 config.application_network_policy = factory.network_policy().clone();
                 Some(auth)
@@ -1599,9 +1637,10 @@ impl PluginRequestProcessor {
         };
         let plugins_manager = self.thread_manager.plugins_manager();
         let installation = plugins_manager
-            .install_remote_plugin(
+            .install_remote_plugin_with_auth_lease(
                 &config.plugins_config_input(),
-                auth.as_ref(),
+                auth_lease.clone(),
+                auth.clone(),
                 RemotePluginInstallRequest {
                     marketplace_name: remote_marketplace_name.clone(),
                     remote_plugin_id: remote_plugin_id.clone(),
@@ -2071,13 +2110,15 @@ impl PluginRequestProcessor {
         plugin_id: String,
     ) -> Result<PluginUninstallResponse, JSONRPCErrorError> {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         let outcome = self
             .thread_manager
             .plugins_manager()
-            .uninstall_remote_plugin(
+            .uninstall_remote_plugin_with_auth_lease(
                 &config.plugins_config_input(),
-                auth.as_ref(),
+                auth_lease,
+                auth.clone(),
                 &plugin_id,
                 Some(self.effective_plugins_changed_callback()),
             )

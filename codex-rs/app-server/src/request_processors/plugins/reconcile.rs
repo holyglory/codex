@@ -20,7 +20,8 @@ impl PluginRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let plugins_input = config.plugins_config_input();
-        let auth = self.auth_manager.auth().await;
+        let auth_lease = self.operation_auth_lease().await?;
+        let auth = auth_lease.auth_manager().auth().await;
         if !plugins_input.plugins_enabled
             || !auth.as_ref().is_some_and(CodexAuth::uses_codex_backend)
         {
@@ -55,6 +56,8 @@ impl PluginRequestProcessor {
         {
             let materializations = outcome.materialized_remote_plugins.clone();
             let processor = self.clone();
+            let trust_auth_lease = auth_lease.clone();
+            let trust_auth = auth.clone();
             let (complete, completion) = tokio::sync::oneshot::channel();
             request_serialization_queues
                 .enqueue_background(
@@ -63,7 +66,9 @@ impl PluginRequestProcessor {
                     async move {
                         let result = trust_materialized_plugin_hooks(
                             materializations,
-                            &processor.auth_manager,
+                            &trust_auth_lease,
+                            trust_auth.as_ref(),
+                            trust_auth_lease.auth_manager(),
                             &processor.thread_manager,
                             &processor.config_manager,
                             &config_processor,
