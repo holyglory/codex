@@ -865,6 +865,33 @@ impl ThreadManager {
         }
     }
 
+    pub async fn invalidate_mcp_runtimes_with_auth_lease(
+        &self,
+        auth_lease: codex_login::AuthManagerLease,
+    ) {
+        self.invalidate_starting_mcp_runtimes();
+        let threads = self
+            .state
+            .threads
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread
+                .session
+                .services
+                .mcp_runtime
+                .invalidate_resource_caches();
+            thread.session.mark_mcp_runtime_dirty_without_prewarm();
+            thread
+                .session
+                .refresh_mcp_if_dirty_with_auth_lease(&auth_lease)
+                .await;
+        }
+    }
+
     /// Rebuilds loaded hook runtimes without reloading their session configurations.
     pub async fn refresh_hook_runtimes(&self) {
         let threads = self
@@ -878,6 +905,26 @@ impl ThreadManager {
         for thread in threads {
             let config = thread.session.get_config().await;
             thread.session.refresh_hooks(config).await;
+        }
+    }
+
+    pub async fn refresh_hook_runtimes_with_auth_lease(
+        &self,
+        auth_lease: codex_login::AuthManagerLease,
+    ) {
+        let threads = self
+            .state
+            .threads
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread
+                .session
+                .refresh_hooks_with_auth_lease(&auth_lease)
+                .await;
         }
     }
 

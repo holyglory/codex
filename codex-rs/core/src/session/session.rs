@@ -1613,6 +1613,7 @@ impl Session {
                 &config,
                 plugins_manager.as_ref(),
                 resolved_environments.single_local_environment(),
+                None,
                 &session_configuration.disabled_plugin_ids,
             )
             .await;

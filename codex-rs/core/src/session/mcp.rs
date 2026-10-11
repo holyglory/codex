@@ -273,6 +273,16 @@ impl Session {
         }
     }
 
+    pub(crate) async fn refresh_mcp_if_dirty_with_auth_lease(
+        self: &Arc<Self>,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
+        self.services
+            .thread_extension_data
+            .insert(auth_lease.clone());
+        self.refresh_mcp_if_dirty().await;
+    }
+
     /// Refreshes Apps tools on the published thread runtime and returns that client's snapshot.
     pub(crate) async fn refresh_codex_apps_tools(
         self: &Arc<Self>,
@@ -370,6 +380,10 @@ impl Session {
 
     pub(super) fn mark_mcp_runtime_dirty(&self) {
         self.mcp_refresh.invalidate();
+    }
+
+    pub(crate) fn mark_mcp_runtime_dirty_without_prewarm(&self) {
+        self.mark_mcp_runtime_dirty();
     }
 
     #[tracing::instrument(

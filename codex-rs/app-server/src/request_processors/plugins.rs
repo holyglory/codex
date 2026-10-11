@@ -1,6 +1,7 @@
 use super::apps_processor::APP_READ_MAX_IDS;
 use super::config_processor::reload_user_config;
 use super::*;
+use crate::effective_plugin_change::EffectivePluginsChangedCallbackFactory;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use codex_analytics::PluginInstallSource;
@@ -65,8 +66,7 @@ pub(crate) struct PluginRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
     config_manager: ConfigManager,
-    on_effective_plugins_changed:
-        Arc<dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync>,
+    effective_plugins_changed_callback_factory: EffectivePluginsChangedCallbackFactory,
 }
 
 fn plugin_skills_to_info<'a>(
@@ -407,9 +407,7 @@ impl PluginRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
         config_manager: ConfigManager,
-        on_effective_plugins_changed: Arc<
-            dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync,
-        >,
+        effective_plugins_changed_callback_factory: EffectivePluginsChangedCallbackFactory,
     ) -> Self {
         Self {
             profile_auth_router,
@@ -417,7 +415,7 @@ impl PluginRequestProcessor {
             outgoing,
             analytics_events_client,
             config_manager,
-            on_effective_plugins_changed,
+            effective_plugins_changed_callback_factory,
         }
     }
 
@@ -522,14 +520,21 @@ impl PluginRequestProcessor {
 
     pub(crate) fn effective_plugins_changed_callback(
         &self,
+        auth_lease: AuthManagerLease,
+        auth: Option<CodexAuth>,
     ) -> Arc<dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync> {
-        Arc::clone(&self.on_effective_plugins_changed)
+        self.effective_plugins_changed_callback_factory
+            .callback(auth_lease, auth)
     }
 
-    async fn on_effective_plugins_changed(&self) {
+    async fn on_effective_plugins_changed(&self, auth_lease: &AuthManagerLease) {
         self.clear_plugin_related_caches();
-        self.thread_manager.invalidate_mcp_runtimes().await;
-        self.thread_manager.refresh_hook_runtimes().await;
+        self.thread_manager
+            .invalidate_mcp_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
+        self.thread_manager
+            .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
     }
 
     fn clear_plugin_related_caches(&self) {
@@ -597,7 +602,7 @@ impl PluginRequestProcessor {
                 .refresh_non_curated_plugin_cache_for_context(&context)
                 .await
         {
-            self.on_effective_plugins_changed().await;
+            self.on_effective_plugins_changed(&auth_lease).await;
         }
         let include_vertical = context.global_config.plugins_enabled
             && marketplace_kinds.contains(&PluginListMarketplaceKind::Vertical);
@@ -795,7 +800,7 @@ impl PluginRequestProcessor {
                     local_marketplaces,
                     remote_catalog_cache_refresh_scopes,
                 },
-                Some(self.effective_plugins_changed_callback()),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             );
         }
 
@@ -863,7 +868,7 @@ impl PluginRequestProcessor {
             &context.global_config,
             auth_lease.clone(),
             auth.clone(),
-            Some(self.effective_plugins_changed_callback()),
+            Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
         );
 
         let (mut data, marketplace_load_errors) = self
@@ -882,6 +887,7 @@ impl PluginRequestProcessor {
                     plugins_manager,
                     &context.global_config,
                     &remote_installed_plugin_visible_marketplaces,
+                    &auth_lease,
                     auth.as_ref(),
                 )
                 .await,
@@ -984,6 +990,7 @@ impl PluginRequestProcessor {
         plugins_manager: Arc<codex_core_plugins::PluginsManager>,
         plugins_input: &codex_core_plugins::PluginsConfigInput,
         visible_marketplaces: &[&str],
+        auth_lease: &AuthManagerLease,
         auth: Option<&CodexAuth>,
     ) -> Vec<PluginMarketplaceEntry> {
         let remote_marketplaces = if let Some(remote_marketplaces) = plugins_manager
@@ -996,7 +1003,9 @@ impl PluginRequestProcessor {
                     plugins_input,
                     auth,
                     visible_marketplaces,
-                    Some(self.effective_plugins_changed_callback()),
+                    Some(
+                        self.effective_plugins_changed_callback(auth_lease.clone(), auth.cloned()),
+                    ),
                 )
                 .await
         };
@@ -1578,8 +1587,12 @@ impl PluginRequestProcessor {
 
         self.clear_plugin_related_caches();
         reload_user_config(&self.config_manager, &self.thread_manager).await;
-        self.thread_manager.invalidate_mcp_runtimes().await;
-        self.thread_manager.refresh_hook_runtimes().await;
+        self.thread_manager
+            .invalidate_mcp_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
+        self.thread_manager
+            .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
 
         let plugin_mcp_servers = load_configured_plugin_mcp_servers(
             result.installed_path.as_path(),
@@ -1593,6 +1606,7 @@ impl PluginRequestProcessor {
             let redirect_mode = plugin_redirect_mode(result.installed_path.as_path());
             self.start_plugin_mcp_oauth_logins(
                 &config,
+                auth_lease.clone(),
                 &result.plugin_id,
                 plugin_mcp_servers,
                 redirect_mode,
@@ -1646,7 +1660,7 @@ impl PluginRequestProcessor {
                     remote_plugin_id: remote_plugin_id.clone(),
                     install_attempt_id,
                 },
-                Some(self.effective_plugins_changed_callback()),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             )
             .await
             .map_err(|err| {
@@ -1715,6 +1729,7 @@ impl PluginRequestProcessor {
             let redirect_mode = plugin_redirect_mode(result.installed_path.as_path());
             self.start_plugin_mcp_oauth_logins(
                 &config,
+                auth_lease.clone(),
                 &result.plugin_id,
                 plugin_mcp_servers,
                 redirect_mode,
@@ -1868,6 +1883,7 @@ impl PluginRequestProcessor {
     async fn start_plugin_mcp_oauth_logins(
         &self,
         config: &Config,
+        auth_lease: AuthManagerLease,
         plugin_id: &PluginId,
         mut plugin_mcp_servers: HashMap<String, McpServerConfig>,
         redirect_mode: StreamableHttpRedirectMode,
@@ -1944,6 +1960,7 @@ impl PluginRequestProcessor {
             let notification_name = name.clone();
             let oauth_credential_name = server.oauth_credential_name(&name).into_owned();
             let thread_manager = Arc::clone(&self.thread_manager);
+            let auth_lease = auth_lease.clone();
             let http_client = Arc::clone(&http_client);
             let global_callback_url = config.mcp_oauth_callback_url.clone();
 
@@ -1997,7 +2014,9 @@ impl PluginRequestProcessor {
                     Err(err) => (false, Some(err.to_string())),
                 };
                 if success {
-                    thread_manager.invalidate_mcp_runtimes().await;
+                    thread_manager
+                        .invalidate_mcp_runtimes_with_auth_lease(auth_lease)
+                        .await;
                 }
 
                 let notification = ServerNotification::McpServerOauthLoginCompleted(
@@ -2034,7 +2053,10 @@ impl PluginRequestProcessor {
             .await
             .map_err(Self::plugin_uninstall_error)?;
         match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(_) => self.on_effective_plugins_changed().await,
+            Ok(_) => {
+                let auth_lease = self.operation_auth_lease().await?;
+                self.on_effective_plugins_changed(&auth_lease).await;
+            }
             Err(err) => {
                 warn!(
                     "failed to reload config after plugin uninstall, clearing plugin-related caches only: {err:?}"
@@ -2117,17 +2139,17 @@ impl PluginRequestProcessor {
             .plugins_manager()
             .uninstall_remote_plugin_with_auth_lease(
                 &config.plugins_config_input(),
-                auth_lease,
+                auth_lease.clone(),
                 auth.clone(),
                 &plugin_id,
-                Some(self.effective_plugins_changed_callback()),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             )
             .await
             .map_err(remote_plugin_operation_error_to_jsonrpc)?;
         self.analytics_events_client
             .track_plugin_uninstalled(outcome.telemetry);
         if outcome.effective_plugins_changed {
-            self.on_effective_plugins_changed().await;
+            self.on_effective_plugins_changed(&auth_lease).await;
         }
         if let Some(err) = outcome.cache_removal_error {
             return Err(remote_plugin_catalog_error_to_jsonrpc(

@@ -68,7 +68,6 @@ impl PluginRequestProcessor {
                             materializations,
                             &trust_auth_lease,
                             trust_auth.as_ref(),
-                            trust_auth_lease.auth_manager(),
                             &processor.thread_manager,
                             &processor.config_manager,
                             &config_processor,
@@ -77,7 +76,10 @@ impl PluginRequestProcessor {
                         // Removals and disablements have no trust write to rebuild loaded hooks.
                         // Rebuild after the trust attempt, even if it failed, to drop stale hooks.
                         if hooks_changed {
-                            processor.thread_manager.refresh_hook_runtimes().await;
+                            processor
+                                .thread_manager
+                                .refresh_hook_runtimes_with_auth_lease(trust_auth_lease)
+                                .await;
                         }
                         let _ = complete.send(result);
                     },

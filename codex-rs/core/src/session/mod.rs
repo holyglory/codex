@@ -2119,6 +2119,7 @@ impl Session {
             config.as_ref(),
             self.services.plugins_manager.as_ref(),
             environments.single_local_environment(),
+            None,
             &disabled_plugin_ids,
         )
         .await;
@@ -2126,6 +2127,33 @@ impl Session {
         let state = self.state.lock().await;
         // A newer refresh may have updated the config while this hook build was in flight.
         // Only publish hooks derived from the current config snapshot.
+        if Arc::ptr_eq(
+            &state.session_configuration.original_config_do_not_use,
+            &config,
+        ) && state.active_disabled_plugin_ids == disabled_plugin_ids
+        {
+            let hooks = self.hooks().reconfigured(hooks_config);
+            self.services.hooks.store(Arc::new(hooks));
+        }
+    }
+
+    pub(crate) async fn refresh_hooks_with_auth_lease(
+        &self,
+        auth_lease: &codex_login::AuthManagerLease,
+    ) {
+        let config = self.get_config().await;
+        let disabled_plugin_ids = self.state.lock().await.active_disabled_plugin_ids.clone();
+        let environments = self.services.turn_environments.snapshot().await;
+        let auth = auth_lease.auth_manager().auth().await;
+        let hooks_config = build_hooks_config(
+            config.as_ref(),
+            self.services.plugins_manager.as_ref(),
+            environments.single_local_environment(),
+            auth.as_ref(),
+            &disabled_plugin_ids,
+        )
+        .await;
+        let state = self.state.lock().await;
         if Arc::ptr_eq(
             &state.session_configuration.original_config_do_not_use,
             &config,
@@ -5147,6 +5175,7 @@ async fn build_hooks_config(
     config: &Config,
     plugins_manager: &PluginsManager,
     environment: Option<&TurnEnvironment>,
+    auth: Option<&codex_login::CodexAuth>,
     disabled_plugin_ids: &[String],
 ) -> HooksConfig {
     let (hook_shell_program, hook_shell_argv) = environment
@@ -5160,7 +5189,7 @@ async fn build_hooks_config(
         .unwrap_or_default();
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager
-        .plugins_for_config(&plugins_input)
+        .plugins_for_config_with_auth(&plugins_input, auth)
         .await
         .without_plugins(disabled_plugin_ids);
     let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();

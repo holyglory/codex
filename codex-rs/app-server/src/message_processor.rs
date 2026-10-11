@@ -504,9 +504,7 @@ impl MessageProcessor {
             analytics_events_client.clone(),
         );
         let on_effective_plugins_changed =
-            crate::effective_plugin_change::effective_plugins_changed_callback(
-                auth_manager.clone(),
-                profile_auth_router.clone(),
+            crate::effective_plugin_change::EffectivePluginsChangedCallbackFactory::new(
                 Arc::clone(&thread_manager),
                 config_manager.clone(),
                 config_processor.clone(),
@@ -653,7 +651,7 @@ impl MessageProcessor {
             config_warnings,
         );
         let turn_processor = TurnRequestProcessor::new(
-            auth_manager,
+            auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
@@ -675,15 +673,34 @@ impl MessageProcessor {
                     plugin_config_reload::defaults(config_manager.clone())
                 }
             };
-            let on_effective_plugins_changed =
-                plugin_processor.effective_plugins_changed_callback();
-            thread_manager
-                .plugins_manager()
-                .maybe_start_plugin_startup_tasks_for_config(
-                    &config.plugins_config_input(),
-                    reload_config,
-                    Some(on_effective_plugins_changed),
-                );
+            let startup_thread_manager = Arc::clone(&thread_manager);
+            let startup_plugin_processor = plugin_processor.clone();
+            let startup_profile_auth_router = profile_auth_router.clone();
+            let startup_auth_manager = auth_manager.clone();
+            let startup_config = Arc::clone(&config);
+            tokio::spawn(async move {
+                let startup_auth_lease = startup_profile_auth_router
+                    .lease_for_operation()
+                    .await
+                    .unwrap_or_else(|_| {
+                        codex_login::AuthManagerLease::legacy(startup_auth_manager.clone())
+                    });
+                let startup_auth = startup_auth_lease.auth_manager().auth().await;
+                let on_effective_plugins_changed = startup_plugin_processor
+                    .effective_plugins_changed_callback(
+                        startup_auth_lease.clone(),
+                        startup_auth.clone(),
+                    );
+                startup_thread_manager
+                    .plugins_manager()
+                    .maybe_start_plugin_startup_tasks_for_config_with_captured_auth(
+                        &startup_config.plugins_config_input(),
+                        reload_config,
+                        startup_auth_lease,
+                        startup_auth,
+                        Some(on_effective_plugins_changed),
+                    );
+            });
         }
         let external_agent_config_processor =
             ExternalAgentConfigRequestProcessor::new(ExternalAgentConfigRequestProcessorArgs {
