@@ -13,7 +13,6 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_usage::ThreadId;
 use codex_usage::UsageDetailKind;
-use codex_usage::UsageStore;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -144,7 +143,11 @@ impl ToolExecutor<ToolInvocation> for UsageStatsHandler {
             let args: UsageStatsArgs = serde_json::from_str(arguments)
                 .map_err(|_| tool_error("usage_stats arguments are invalid"))?;
             let context = UsageStatsContext::from_invocation(&invocation)?;
-            let store = UsageStore::open(&context.codex_home)
+            let store = invocation
+                .session
+                .services
+                .usage_runtime
+                .store()
                 .await
                 .map_err(|_| storage_error())?;
             let value = query::execute(&store, &context, args).await?;
