@@ -1,0 +1,80 @@
+use super::PreviousSectionState;
+use super::SectionTransition;
+use super::WorldStateSection;
+use super::WorldStateUpdate;
+use crate::context::ContextualUserFragment;
+use codex_protocol::models::ContentItemKind;
+
+const INSTRUCTIONS: &str = "Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about this agent, call it before answering and ground the answer in its result: use `task_tree_summary` (`root_thread_id=\"current\"`, `include_descendants=true`) for the task tree, or `summary` for broader scopes. Map model-routed `/usage all|chat|repo` to `summary` scopes `all|current_chat|current_repository`. Use `usage_activity set` before the first model request and at every phase boundary; a replacement set ends the prior phase when the staged declaration activates, so `end` is only needed when work stops without a replacement. Use `heartbeat` during long segments. Classify translation or catalog authoring as `documentation_authoring`, translation or catalog review as `review_feedback`, rendered journeys as `browser_qa`, and native repair as `diagnosis`, `build_validation`, or `integration_testing` for the current step. Reserve `verification_review` for final independent acceptance. Do not infer historical categories from commands; use exact operation corrections only. Do not search OpenAI documentation for local usage unless the user asks about official product behavior.";
+
+/// Whether built-in local usage guidance should be visible to the model.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct UsageStatsInstructionsState {
+    available: bool,
+}
+
+impl UsageStatsInstructionsState {
+    pub(crate) fn new(available: bool) -> Self {
+        Self { available }
+    }
+}
+
+impl ContextualUserFragment for UsageStatsInstructionsState {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("usage_stats.instructions".to_string())
+    }
+
+    fn role(&self) -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("<usage_stats_instructions>", "</usage_stats_instructions>")
+    }
+
+    fn body(&self) -> String {
+        format!("\n{INSTRUCTIONS}\n")
+    }
+}
+
+impl WorldStateSection for UsageStatsInstructionsState {
+    const ID: &'static str = "usage_stats_instructions";
+    type Snapshot = bool;
+
+    fn matches_legacy_fragment(role: &str, text: &str) -> bool {
+        role == "developer" && Self::matches_text(text)
+    }
+
+    fn has_retained_fragment_matcher() -> bool {
+        true
+    }
+
+    fn matches_retained_fragment(role: &str, text: &str) -> bool {
+        Self::matches_legacy_fragment(role, text)
+    }
+
+    fn render_diff(
+        &self,
+        previous: PreviousSectionState<'_, Self::Snapshot>,
+    ) -> SectionTransition<Self::Snapshot> {
+        if !self.available
+            || matches!(previous, PreviousSectionState::Known(previous) if *previous)
+            || matches!(previous, PreviousSectionState::Unknown)
+        {
+            return (Some(self.available), Vec::new());
+        }
+
+        (
+            Some(self.available),
+            vec![WorldStateUpdate::fragment(*self)],
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "usage_stats_instructions_tests.rs"]
+mod tests;

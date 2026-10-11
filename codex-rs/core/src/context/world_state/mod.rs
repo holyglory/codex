@@ -19,6 +19,7 @@ mod realtime;
 pub(crate) mod test_support;
 mod tools;
 mod top_level_tools;
+mod usage_stats_instructions;
 
 use crate::context::ContextualUserFragment;
 use codex_extension_api::PreviousWorldStateSection;
@@ -59,6 +60,7 @@ pub(crate) use plugins_instructions::PluginsInstructionsState;
 pub(crate) use realtime::RealtimeState;
 pub(crate) use tools::ToolsState;
 pub(crate) use top_level_tools::TopLevelToolsState;
+pub(crate) use usage_stats_instructions::UsageStatsInstructionsState;
 
 /// One contribution to model context and its placement policy.
 pub(crate) struct WorldStateUpdate {

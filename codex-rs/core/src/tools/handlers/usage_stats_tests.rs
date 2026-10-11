@@ -1,6 +1,9 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[path = "usage_stats_pagination_tests.rs"]
+mod pagination_tests;
+
 fn args() -> UsageStatsArgs {
     UsageStatsArgs {
         action: UsageStatsAction::Repositories,
@@ -17,6 +20,8 @@ fn args() -> UsageStatsArgs {
         limit: None,
         cursor_sort_value: None,
         cursor_id: None,
+        outcome_cursor: None,
+        outcome_limit: None,
     }
 }
 
@@ -264,6 +269,8 @@ async fn isolated_handler_query_resolves_current_repository_and_account_alias() 
             limit: None,
             cursor_sort_value: None,
             cursor_id: None,
+            outcome_cursor: None,
+            outcome_limit: None,
         },
     )
     .await

@@ -14,12 +14,14 @@ use codex_tools::ToolSpec;
 use codex_usage::ThreadId;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageStore;
+use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod pagination;
 mod query;
 mod query_lists;
 mod repository;
@@ -36,6 +38,7 @@ pub struct UsageStatsHandler;
 enum UsageStatsAction {
     Summary,
     TaskTreeSummary,
+    PerformanceReview,
     Repositories,
     Tools,
     Activities,
@@ -69,6 +72,8 @@ struct UsageStatsArgs {
     limit: Option<u32>,
     cursor_sort_value: Option<i64>,
     cursor_id: Option<String>,
+    outcome_cursor: Option<String>,
+    outcome_limit: Option<u32>,
 }
 
 struct UsageStatsContext {
@@ -101,6 +106,12 @@ impl ToolOutput for UsageStatsOutput {
 
     fn success_for_logging(&self) -> bool {
         true
+    }
+
+    fn fallback_token_limit_override(&self) -> Option<usize> {
+        // The handler already bounds complete JSON; generic middle truncation would
+        // corrupt both the report and its pagination cursor.
+        Some(TruncationPolicy::Bytes(MAX_OUTPUT_BYTES).token_budget())
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
@@ -166,6 +177,7 @@ fn usage_stats_spec() -> ToolSpec {
                 vec![
                     json!("summary"),
                     json!("task_tree_summary"),
+                    json!("performance_review"),
                     json!("repositories"),
                     json!("tools"),
                     json!("activities"),
@@ -184,7 +196,7 @@ fn usage_stats_spec() -> ToolSpec {
                     json!("current_repository"),
                     json!("repository"),
                 ],
-                Some("Summary scope; defaults to current_chat.".to_string()),
+                Some("For summary only; defaults to current_chat.".to_string()),
             ),
         ),
         (
@@ -203,20 +215,29 @@ fn usage_stats_spec() -> ToolSpec {
         (
             "thread_id".to_string(),
             JsonSchema::string(Some(
-                "Thread id or current for detail filtering.".to_string(),
+                "Thread id or current for details or performance_review.".to_string(),
             )),
         ),
         (
             "root_thread_id".to_string(),
             JsonSchema::string(Some(
-                "Root task thread for task_tree_summary; use current for this chat.".to_string(),
+                "Root task for task_tree_summary; defaults to current.".to_string(),
             )),
         ),
         (
             "include_descendants".to_string(),
             JsonSchema::boolean(Some(
-                "For task_tree_summary, include recorded delegated descendants.".to_string(),
+                "Include recorded descendants: task_tree_summary defaults to true; thread-scoped performance_review defaults to false. Set true for daily task reviews that include delegated work."
+                    .to_string(),
             )),
+        ),
+        (
+            "outcome_cursor".to_string(),
+            JsonSchema::string(Some("For performance_review, continue its fixed outcome snapshot; expired cursors require a new first page.".to_string())),
+        ),
+        (
+            "outcome_limit".to_string(),
+            JsonSchema::number(Some("For performance_review, outcome rows per page, 1–50 (default 8), subject to the response byte limit.".to_string())),
         ),
         (
             "agent_id".to_string(),
@@ -242,7 +263,9 @@ fn usage_stats_spec() -> ToolSpec {
         ),
         (
             "limit".to_string(),
-            JsonSchema::number(Some("Detail page size from 1 through 50.".to_string())),
+            JsonSchema::number(Some(
+                "Detail/summary page size, 1–50. Summary totals repeat across pages.".to_string(),
+            )),
         ),
         (
             "cursor_sort_value".to_string(),
@@ -255,7 +278,7 @@ fn usage_stats_spec() -> ToolSpec {
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: TOOL_NAME.to_string(),
-        description: "Read the private, content-free local usage collector. Summary preserves every aggregate dimension; task_tree_summary gives one bounded root/descendant management view. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
+        description: "Read the private, content-free local usage collector. Summaries retain totals and paginate detail when needed; task_tree_summary includes recorded descendants. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
             .to_string(),
         strict: false,
         defer_loading: None,

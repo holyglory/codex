@@ -39,10 +39,61 @@ pub(super) async fn execute(
 ) -> Result<Value, FunctionCallError> {
     validate_args(&args)?;
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
+    if time_range.is_none_or(|range| !range.is_finite())
+        && matches!(
+            args.action,
+            UsageStatsAction::PerformanceReview
+                | UsageStatsAction::Summary
+                | UsageStatsAction::TaskTreeSummary
+        )
+    {
+        let cache = store.report_cache_status().await.map_err(|error| {
+            if let Some(failure) = error.report_failure() {
+                tool_error(
+                    &serde_json::to_string(&failure)
+                        .unwrap_or_else(|_| "Usage report unavailable".into()),
+                )
+            } else {
+                storage_error()
+            }
+        })?;
+        if !cache.ready {
+            return Ok(warming_response(args.action, cache));
+        }
+    }
     let mut value = match args.action {
         UsageStatsAction::Summary => summary(store, context, &args, time_range).await,
         UsageStatsAction::TaskTreeSummary => {
             task_tree_summary(store, context, &args, time_range).await
+        }
+        UsageStatsAction::PerformanceReview => {
+            let packet = match store
+                .performance_review_packet(codex_usage::PerformanceReviewQuery {
+                    repository_id: optional_repository(store, context, args.repository.as_deref())
+                        .await?,
+                    thread_id: optional_thread(context, args.thread_id.as_deref())?,
+                    time_range,
+                    include_descendants: args.include_descendants.unwrap_or(false),
+                    outcome_cursor: args.outcome_cursor.clone(),
+                    outcome_limit: args.outcome_limit,
+                })
+                .await
+            {
+                Ok(packet) => packet,
+                Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
+                    return Ok(warming_response(
+                        UsageStatsAction::PerformanceReview,
+                        *cache,
+                    ));
+                }
+                Err(error @ codex_usage::UsageStoreError::InvalidReviewCursor)
+                | Err(error @ codex_usage::UsageStoreError::ReportTimedOut)
+                | Err(error @ codex_usage::UsageStoreError::ReportBusy) => {
+                    return Err(tool_error(&error.to_string()));
+                }
+                Err(_) => return Err(storage_error()),
+            };
+            serde_json::to_value(packet).map_err(|_| storage_error())
         }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,
         UsageStatsAction::Tools => query_lists::tools(store, context, &args, time_range).await,
@@ -52,6 +103,12 @@ pub(super) async fn execute(
         UsageStatsAction::Events => query_lists::events(store, context, &args, time_range).await,
         UsageStatsAction::Details => details(store, context, &args, time_range).await,
     }?;
+    if matches!(
+        args.action,
+        UsageStatsAction::Summary | UsageStatsAction::TaskTreeSummary
+    ) {
+        super::pagination::paginate(&mut value, &args)?;
+    }
     if let Some(object) = value.as_object_mut() {
         object.insert("reportingOperationInProgress".to_string(), json!(true));
         object.insert(
@@ -60,6 +117,35 @@ pub(super) async fn execute(
         );
     }
     Ok(value)
+}
+
+pub(super) fn warming_response(
+    action: UsageStatsAction,
+    cache: codex_usage::ReportCacheStatus,
+) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "kind": "usageReportWarming",
+        "action": action_name(action),
+        "freshness": cache.freshness,
+        "cache": cache,
+        "retryAfterMs": 1_000,
+        "message": "The rolled-up usage report is still warming. Retry shortly or provide from_at_ms and to_at_ms for a bounded window.",
+        "reportingOperationInProgress": false,
+    })
+}
+
+fn action_name(action: UsageStatsAction) -> &'static str {
+    match action {
+        UsageStatsAction::Summary => "summary",
+        UsageStatsAction::TaskTreeSummary => "task_tree_summary",
+        UsageStatsAction::PerformanceReview => "performance_review",
+        UsageStatsAction::Repositories => "repositories",
+        UsageStatsAction::Tools => "tools",
+        UsageStatsAction::Activities => "activities",
+        UsageStatsAction::Events => "events",
+        UsageStatsAction::Details => "details",
+    }
 }
 
 async fn task_tree_summary(
@@ -358,6 +444,19 @@ fn account_display(labels: &HashMap<String, String>, reference: &AccountProfileR
 }
 
 fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
+    if (args.outcome_cursor.is_some() || args.outcome_limit.is_some())
+        && !matches!(args.action, UsageStatsAction::PerformanceReview)
+        || args
+            .outcome_limit
+            .is_some_and(|limit| !(1..=50).contains(&limit))
+        || matches!(args.action, UsageStatsAction::PerformanceReview)
+            && args.include_descendants == Some(true)
+            && args.thread_id.is_none()
+    {
+        return Err(tool_error(
+            "Outcome pagination is available for performance_review (limit 1–50); descendant inclusion requires thread_id.",
+        ));
+    }
     let invalid = match args.action {
         UsageStatsAction::Summary => {
             args.thread_id.is_some()
@@ -365,9 +464,6 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.include_descendants.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
-                || args.limit.is_some()
-                || args.cursor_sort_value.is_some()
-                || args.cursor_id.is_some()
                 || (args.repository.is_some()
                     && !matches!(args.scope, Some(UsageStatsScope::Repository)))
         }
@@ -378,13 +474,20 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.thread_id.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
-                || args.limit.is_some()
-                || args.cursor_sort_value.is_some()
-                || args.cursor_id.is_some()
                 || args.root_thread_id.is_none()
                 || args.include_descendants.is_none()
                 || args.from_at_ms.is_none()
                 || args.to_at_ms.is_none()
+        }
+        UsageStatsAction::PerformanceReview => {
+            args.scope.is_some()
+                || args.account.is_some()
+                || args.root_thread_id.is_some()
+                || args.agent_id.is_some()
+                || args.detail.is_some()
+                || args.limit.is_some()
+                || args.cursor_sort_value.is_some()
+                || args.cursor_id.is_some()
         }
         UsageStatsAction::Repositories => {
             args.scope.is_some()

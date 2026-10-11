@@ -23,6 +23,7 @@ use crate::context::world_state::PluginsInstructionsState;
 use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::TopLevelToolsState;
+use crate::context::world_state::UsageStatsInstructionsState;
 use crate::context::world_state::WorldState;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use codex_connectors::AppToolPolicyEvaluator;
@@ -283,6 +284,12 @@ impl Session {
                     .config
                     .features
                     .enabled(Feature::DeferredExecutor),
+        ));
+        world_state.add_section(UsageStatsInstructionsState::new(
+            step_context
+                .tool_router
+                .tool_runtime(&ToolName::plain("usage_stats"))
+                .is_some(),
         ));
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
