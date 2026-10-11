@@ -2381,7 +2381,8 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Fork(_))
         | Some(Subcommand::Doctor(_))
         | Some(Subcommand::Account(_))
-        | Some(Subcommand::Usage(_)) => None,
+        | Some(Subcommand::Usage(_))
+        | Some(Subcommand::Subscriptions(_)) => None,
         Some(Subcommand::AppServer(app_server)) if app_server.subcommand.is_none() => None,
         Some(Subcommand::AppServer(app_server)) => {
             Some(app_server_subcommand_name(app_server.subcommand.as_ref()))
