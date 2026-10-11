@@ -53,8 +53,4 @@ impl AuthRouteConfig {
     pub fn http_client_factory(&self) -> &HttpClientFactory {
         &self.http_client_factory
     }
-
-    pub(crate) fn application_network_policy(&self) -> &NetworkPolicy {
-        &self.application_network_policy
-    }
 }
