@@ -362,6 +362,14 @@ impl InProcessAppServerClient {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let server_capabilities = handle
+            .initialize_response()
+            .map(|response| {
+                AppServerCapabilities::from_initialize_result(
+                    &serde_json::to_value(response).expect("initialize response serializes"),
+                )
+            })
+            .unwrap_or_else(AppServerCapabilities::advertised_v1);
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
@@ -469,7 +477,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
-            server_capabilities: AppServerCapabilities::advertised_v1(),
+            server_capabilities,
         })
     }
 

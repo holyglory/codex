@@ -427,6 +427,12 @@ impl AppServerSession {
         self.client.server_capabilities().supports_multi_account()
     }
 
+    pub(crate) fn supports_event_subscriptions(&self) -> bool {
+        self.client
+            .server_capabilities()
+            .supports_event_subscriptions()
+    }
+
     /// Platform of the app-server process, not necessarily its executor.
     pub(crate) fn app_server_platform_family(&self) -> Option<&str> {
         self.client.platform_family()

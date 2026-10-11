@@ -13,6 +13,7 @@ fn advertised_capabilities_keep_supported_versions() {
             supports_credit_usage: true,
         }),
         Some(LocalUsageAccountingCapability { version: 2 }),
+        None,
     );
 
     assert_eq!(
@@ -25,6 +26,7 @@ fn advertised_capabilities_keep_supported_versions() {
                 supports_credit_usage: true,
             }),
             local_usage_accounting: Some(LocalUsageAccountingCapability { version: 2 }),
+            event_subscriptions: None,
         }
     );
     assert!(capabilities.supports_multi_account());
@@ -41,6 +43,7 @@ fn absent_and_unknown_versions_are_unavailable() {
             supports_credit_usage: true,
         }),
         Some(LocalUsageAccountingCapability { version: 99 }),
+        None,
     );
 
     assert_eq!(capabilities, AppServerCapabilities::default());
@@ -78,6 +81,7 @@ fn in_process_contract_advertises_current_versions() {
                 supports_credit_usage: true,
             }),
             Some(LocalUsageAccountingCapability { version: 2 }),
+            None,
         )
     );
 }

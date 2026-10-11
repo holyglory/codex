@@ -59,6 +59,7 @@ mod daemon_telemetry;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+mod event_subscriptions_cmd;
 #[cfg(test)]
 #[path = "exec_args_tests.rs"]
 mod exec_args_tests;
@@ -84,6 +85,7 @@ mod usage_cmd;
 mod wsl_paths;
 
 use crate::account_cmd::AccountCommand;
+use crate::event_subscriptions_cmd::EventSubscriptionsCommand;
 use crate::exec_server_command::ExecServerCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
@@ -173,6 +175,9 @@ enum Subcommand {
 
     /// Inspect, correct, and export local usage accounting.
     Usage(UsageCommand),
+
+    /// Manage durable provider-neutral event subscriptions.
+    Subscriptions(EventSubscriptionsCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -1721,6 +1726,18 @@ async fn cli_main(
                 usage_cmd::print_error(&error, json);
                 std::process::exit(error.exit_code());
             }
+        }
+        Some(Subcommand::Subscriptions(command)) => {
+            let output = event_subscriptions_cmd::run_event_subscriptions_command(
+                command,
+                interactive,
+                root_config_overrides.clone(),
+                root_remote.clone(),
+                root_remote_auth_token_env.clone(),
+                arg0_paths.clone(),
+            )
+            .await?;
+            println!("{output}");
         }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(

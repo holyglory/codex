@@ -1,3 +1,4 @@
+use codex_app_server_protocol::EventSubscriptionsCapability;
 use codex_app_server_protocol::LocalUsageAccountingCapability;
 use codex_app_server_protocol::MultiAccountCapability;
 use serde::Deserialize;
@@ -15,6 +16,7 @@ const LOCAL_USAGE_ACCOUNTING_VERSION: u32 = 2;
 pub struct AppServerCapabilities {
     multi_account: Option<MultiAccountCapability>,
     local_usage_accounting: Option<LocalUsageAccountingCapability>,
+    event_subscriptions: Option<EventSubscriptionsCapability>,
 }
 
 impl AppServerCapabilities {
@@ -35,25 +37,32 @@ impl AppServerCapabilities {
             Some(LocalUsageAccountingCapability {
                 version: LOCAL_USAGE_ACCOUNTING_VERSION,
             }),
+            None,
         )
     }
 
     pub(crate) fn from_advertised(
         multi_account: Option<MultiAccountCapability>,
         local_usage_accounting: Option<LocalUsageAccountingCapability>,
+        event_subscriptions: Option<EventSubscriptionsCapability>,
     ) -> Self {
         Self {
             multi_account: multi_account
                 .filter(|capability| capability.version == MULTI_ACCOUNT_VERSION),
             local_usage_accounting: local_usage_accounting
                 .filter(|capability| capability.version == LOCAL_USAGE_ACCOUNTING_VERSION),
+            event_subscriptions: event_subscriptions.filter(|capability| capability.version == 1),
         }
     }
 
     pub(crate) fn from_initialize_result(result: &serde_json::Value) -> Self {
         let advertised = serde_json::from_value::<InitializeCapabilityFields>(result.clone())
             .unwrap_or_default();
-        Self::from_advertised(advertised.multi_account, advertised.local_usage_accounting)
+        Self::from_advertised(
+            advertised.multi_account,
+            advertised.local_usage_accounting,
+            advertised.event_subscriptions,
+        )
     }
 
     pub fn multi_account(&self) -> Option<&MultiAccountCapability> {
@@ -71,6 +80,14 @@ impl AppServerCapabilities {
     pub fn supports_local_usage_accounting(&self) -> bool {
         self.local_usage_accounting.is_some()
     }
+
+    pub fn event_subscriptions(&self) -> Option<&EventSubscriptionsCapability> {
+        self.event_subscriptions.as_ref()
+    }
+
+    pub fn supports_event_subscriptions(&self) -> bool {
+        self.event_subscriptions.is_some()
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -80,6 +97,8 @@ struct InitializeCapabilityFields {
     multi_account: Option<MultiAccountCapability>,
     #[serde(default)]
     local_usage_accounting: Option<LocalUsageAccountingCapability>,
+    #[serde(default)]
+    event_subscriptions: Option<EventSubscriptionsCapability>,
 }
 
 #[cfg(test)]

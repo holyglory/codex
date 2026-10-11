@@ -74,6 +74,7 @@ use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
@@ -288,11 +289,15 @@ pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
+    initialize_response: Option<InitializeResponse>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
 
 impl InProcessClientHandle {
+    pub fn initialize_response(&self) -> Option<&InitializeResponse> {
+        self.initialize_response.as_ref()
+    }
     /// Sends a typed client request into the in-process runtime.
     ///
     /// The returned value is a transport-level `IoResult` containing either a
@@ -387,7 +392,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
         });
     }
     let initialize = args.initialize.clone();
-    let client = Box::pin(start_uninitialized(args)).await?;
+    let mut client = Box::pin(start_uninitialized(args)).await?;
 
     let initialize_response = client
         .request(ClientRequest::Initialize {
@@ -395,15 +400,25 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
             params: initialize,
         })
         .await?;
-    if let Err(error) = initialize_response {
-        let _ = client.shutdown().await;
-        return Err(IoError::new(
-            ErrorKind::InvalidData,
-            format!("in-process initialize failed: {}", error.message),
-        ));
-    }
+    let initialize_response = match initialize_response {
+        Ok(result) => match serde_json::from_value::<InitializeResponse>(result) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = client.shutdown().await;
+                return Err(IoError::new(ErrorKind::InvalidData, error));
+            }
+        },
+        Err(error) => {
+            let _ = client.shutdown().await;
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                format!("in-process initialize failed: {}", error.message),
+            ));
+        }
+    };
     client.notify(ClientNotification::Initialized)?;
 
+    client.initialize_response = Some(initialize_response);
     Ok(client)
 }
 
@@ -814,6 +829,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
+        initialize_response: None,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -1020,6 +1036,7 @@ mod tests {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
+            initialize_response: None,
             _test_codex_home: None,
         };
 
