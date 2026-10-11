@@ -145,6 +145,13 @@ pub(super) fn local_report(coverage: protocol::LocalUsageCoverage) -> protocol::
             provenance: "agent_declared".to_string(),
             count: 5,
         }],
+        worktrees: Vec::new(),
+        worktree_coverage: protocol::LocalUsageReportWorktreeCoverage {
+            assigned_operation_count: 0,
+            unassigned_operation_count: 5,
+            assigned_token_observation_count: 0,
+            unassigned_token_observation_count: 1,
+        },
         repository_participation: protocol::LocalUsageReportRepositoryParticipation {
             operation_count: 5,
             tool_count: 3,
