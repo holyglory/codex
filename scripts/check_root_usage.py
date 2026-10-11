@@ -139,7 +139,7 @@ def inside(binary, scratch):
             doctor = json.loads(
                 run([str(binary), "usage", "doctor", "--json"], environment)
             )
-            assert doctor["integrity"] == "ok" and doctor["migrationCount"] == 8
+            assert doctor["integrity"] == "ok" and doctor["migrationCount"] == 9
             assert (home / "usage/usage.sqlite3").exists(), (
                 "CLI selected inherited HOME instead of passwd home"
             )
