@@ -515,9 +515,74 @@ jobs:
           done
           exit "$cache_check_status"
 
+  root-usage:
+    name: Verify UID 0 usage from Linux package
+    # This consumes the exact x86_64 Linux archive produced by native. Keep it
+    # between native packaging and npm/final candidate completion so those
+    # results cannot pass without the installed-package acceptance.
+    needs: [identity, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+      - name: Install bubblewrap for the UID 0 fixture
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap
+      - name: Download the canonical Linux package archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: x86_64-unknown-linux-musl
+          path: native-artifacts
+      - name: Extract the declared package entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find native-artifacts -type f -name 'codex-package-x86_64-unknown-linux-musl.tar.gz' -print -quit)"
+          test -n "$archive"
+          export ARCHIVE="$archive"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import tarfile
+
+          archive = Path(os.environ["ARCHIVE"])
+          package = Path(os.environ["RUNNER_TEMP"]) / "root-usage-package"
+          package.mkdir()
+          with tarfile.open(archive, "r:gz") as source:
+              source.extractall(package, filter="data")
+          metadata = json.loads((package / "codex-package.json").read_text())
+          entrypoint = Path(metadata["entrypoint"])
+          if entrypoint.is_absolute() or ".." in entrypoint.parts:
+              raise SystemExit("package entrypoint escapes the package root")
+          binary = (package / entrypoint).resolve()
+          if not binary.is_relative_to(package.resolve()) or not binary.is_file():
+              raise SystemExit(f"declared package entrypoint is missing: {entrypoint}")
+          if not os.access(binary, os.X_OK):
+              raise SystemExit(f"declared package entrypoint is not executable: {entrypoint}")
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write(f"ROOT_USAGE_BINARY={binary}\n")
+          print(f"Testing package entrypoint declared by codex-package.json: {binary}")
+          PY
+      - name: Run the frozen UID 0 usage acceptance
+        env:
+          PYTHONPATH: ${{ github.workspace }}/sdk/python/src:${{ github.workspace }}/sdk/python/tests
+        run: |
+          uv run --frozen --project scripts/codex_package/smoke_tests \
+            python scripts/check_root_usage.py --binary "$ROOT_USAGE_BINARY"
+
   npm:
     name: Build and verify seven npm tarballs
-    needs: [identity, native]
+    needs: [identity, native, root-usage]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -577,7 +642,7 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: always()
-    needs: [identity, preflight, rust-validation, bazel-validation, native, npm]
+    needs: [identity, preflight, rust-validation, bazel-validation, native, root-usage, npm]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate job

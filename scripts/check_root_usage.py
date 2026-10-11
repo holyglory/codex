@@ -217,10 +217,11 @@ def verify(binary):
     with tempfile.TemporaryDirectory(prefix="root-passwd-") as temporary:
         passwd = Path(temporary) / "passwd"
         passwd.write_text("root:x:0:0:fixture:/root:/bin/sh\n")
-        python_runner = os.environ.get(
-            "LOCAL_PACKAGE_PYTHON",
-            "/mnt/build-storage/codex/state/candidate-0.153.0-smoke-venv/bin/python",
-        )
+        # Keep the interpreter used by the outer fixture available after
+        # bubblewrap clears the environment. Hosted runners do not have the
+        # local candidate virtualenv path, so use the active interpreter as
+        # the portable default.
+        python_runner = os.environ.get("LOCAL_PACKAGE_PYTHON") or sys.executable
         command = [
             bwrap,
             "--die-with-parent",
@@ -237,9 +238,6 @@ def verify(binary):
             "/tmp",
             "--tmpfs",
             "/root",
-            "--setenv",
-            "HOME",
-            "/tmp/inherited",
             "--tmpfs",
             "/etc/codex",
             "--ro-bind",
@@ -255,6 +253,12 @@ def verify(binary):
             "--setenv",
             "PATH",
             "/usr/bin:/bin",
+            "--setenv",
+            "HOME",
+            "/tmp/inherited",
+            "--setenv",
+            "LOCAL_PACKAGE_PYTHON",
+            python_runner,
             "--setenv",
             "PYTHONDONTWRITEBYTECODE",
             "1",

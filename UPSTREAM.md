@@ -311,7 +311,9 @@ the authority for release outcomes and verification receipts.
   broadening permissions or changing ownership. The local candidate acceptance
   graph runs `scripts/check_root_usage.py` through `scripts/local_candidate.py`
   against the packaged Linux binary; a source-only resolver test does not
-  satisfy this gate.
+  satisfy this gate. The hosted downstream candidate graph repeats the check
+  against the extracted x86_64 Linux archive's manifest-declared entrypoint
+  before npm and final candidate completion.
 - **Diagnose SQLite with its WAL attached.** Use a consistent online backup for
   private recovery; independently copied database/sidecar files can miss committed
   facts. Inspect per-source cursors and the failing page. Multiple effective
