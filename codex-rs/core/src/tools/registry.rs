@@ -60,6 +60,11 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    /// Whether this runtime is supplied by an extension or external tool host.
+    fn is_third_party_tool(&self) -> bool {
+        false
+    }
+
     /// Whether this built-in control tool needs a structured tool-call event.
     fn is_builtin_control_tool(&self) -> bool {
         false
@@ -552,6 +557,7 @@ impl ToolRegistry {
         let tool = self.tool(&tool_name);
 
         let usage_thread_id = invocation.session.thread_id().to_string();
+        let alarm_tool_name = tool_name.to_string();
         let usage_parent_thread_id = invocation.turn.parent_thread_id.map(|id| id.to_string());
         let usage_account = usage_account_snapshot(
             invocation
@@ -584,6 +590,7 @@ impl ToolRegistry {
                 turn_id: Some(invocation.turn.sub_id.as_str()),
                 delegated: invocation.turn.session_source.is_non_root_agent(),
                 call_id: &invocation.call_id,
+                alarm_tool_name: &alarm_tool_name,
                 cancellation_token: invocation.cancellation_token.clone(),
                 descriptor: usage_tool_descriptor(&tool_name, tool.as_deref()),
                 execution_group_id,
@@ -592,7 +599,6 @@ impl ToolRegistry {
                 repositories: usage_repositories,
             })
             .await;
-        usage_attempt.set_alarm_tool_name(&tool_name.to_string());
 
         {
             let mut active = invocation.session.active_turn.lock().await;
@@ -879,9 +885,7 @@ impl ToolRegistry {
             Err(err) => {
                 dispatch_trace.record_failed(&err);
                 let cancelled = invocation.cancellation_token.is_cancelled();
-                usage_attempt
-                    .finish_error(cancelled, err.usage_terminal_outcome())
-                    .await;
+                usage_attempt.finish_error(cancelled, None).await;
                 Err(err)
             }
         }
@@ -1040,10 +1044,7 @@ fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<Repo
         .step_context
         .environments
         .primary()
-        .map(|environment| {
-            let cwd = environment.cwd().to_path_buf();
-            vec![cwd]
-        })
+        .map(|environment| vec![environment.cwd().to_path_buf()])
         .unwrap_or_default();
     if workspaces.is_empty() {
         workspaces.extend(enriched.keys().map(std::path::PathBuf::from));
@@ -1070,7 +1071,7 @@ fn usage_repository_candidates_for_tool(invocation: &ToolInvocation) -> Vec<Repo
                 })
                 .map(String::from);
             Some(RepositoryCandidate::new(
-                workspace.clone(),
+                workspace,
                 origin,
                 repository_safe_label(&repository_root),
             ))

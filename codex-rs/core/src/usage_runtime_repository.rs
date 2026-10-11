@@ -289,38 +289,6 @@ fn canonical_path(value: &str) -> Option<CanonicalRepositoryPath> {
 pub(crate) async fn model_repository_candidates(
     metadata: &crate::responses_metadata::CodexResponsesMetadata,
 ) -> Vec<crate::usage_runtime::RepositoryCandidate> {
-    if let Some(cwd) = &metadata.local_usage_workspace {
-        // Optional Git enrichment also scans the working tree and can finish after
-        // a fast model request. Resolve its known directory independently.
-        let workspace = cwd.to_path_buf();
-        let repository_root =
-            codex_git_utils::get_git_repo_root(cwd.as_path()).unwrap_or_else(|| cwd.to_path_buf());
-        let origin = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            codex_git_utils::get_git_remote_urls_assume_git_repo(&repository_root),
-        )
-        .await
-        .ok()
-        .flatten()
-        .and_then(|remotes| {
-            remotes
-                .get("origin")
-                .or_else(|| remotes.values().next())
-                .cloned()
-        })
-        .map(String::from);
-        if let Some(workspace) = workspace.to_str() {
-            let repository_label = repository_root
-                .to_str()
-                .map(repository_safe_label)
-                .unwrap_or_else(|| repository_safe_label(workspace));
-            return vec![RepositoryCandidate::new(
-                workspace,
-                origin,
-                repository_label,
-            )];
-        }
-    }
     metadata
         .workspaces
         .iter()
