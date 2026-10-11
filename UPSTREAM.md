@@ -88,13 +88,15 @@ the authority for release outcomes and verification receipts.
   rediscovered during testing. Keep the preflight and its mismatched-toolchain
   fixture in the release workflow, and use the canonical isolated runner rather
   than a hand-written substitute test graph.
-- **Do not replay a broad checkpoint without its companion API adaptations.**
+- **Do not restore downstream behavior by replaying broad WIP checkpoints.**
   The 0.162.1 forward-port checkpoints carried downstream account, usage, event,
   and plugin code but also reverted or omitted newer stable interfaces. Replaying
   one wholesale produced duplicate modules, stale SQLite constructors,
   `PathUri`/`AbsolutePath` mismatches, and missing authenticated plugin methods.
-  Preserve each checkpoint for diagnosis, then apply its ordered companion
-  adaptation commits and run a compile-only compatibility gate before tests.
+  Their companion adaptation chains also regressed upstream behavior. Preserve
+  those checkpoints for diagnosis. Restore bounded behavior from the published
+  rollback source through current upstream interfaces, then review semantics and
+  verify the affected journeys. Compilation alone does not prove inclusion.
 - **Pin native inputs in the release runner too.** This line's voice-host
   crates require GStreamer 1.28; the system package is older. Use the retained
   `model-capacity-voice-tests` native/pkg-config and ALSA inputs, with their
@@ -107,14 +109,16 @@ the authority for release outcomes and verification receipts.
   and `RUSTY_V8_SRC_BINDING_PATH` from the retained `rusty-v8-150.4.0` fixture
   before full Rust or package validation; do not treat the download 404 as a
   product failure.
-- **Check temporary-storage inodes, not only free bytes.** The governed TUI
+- **Check temporary-storage inodes, not only free bytes.** A direct TUI
   suite had enough `/tmp` capacity by bytes but could not create SQLite and
   PTY fixtures because stale test directories consumed nearly every tmpfs inode.
   Before a broad run, record `df -h` and `df -i` for the actual temporary mount,
   use the approved private bulk scratch mount for large transient trees, and
-  remove only verified stale test scratch after checking that no process still
-  references it. A later `No space left on device` cascade is an environment
-  failure until both byte and inode pressure are ruled out.
+  use Coordinator's exact-target cleanup after verifying ownership and active
+  references. Age alone is never disposal proof. Route runtime tests through
+  Coordinator with the isolated runner. Storage-full errors explain affected
+  filesystem operations; investigate stack overflows and snapshot regressions
+  separately rather than attributing every failure to storage pressure.
 - **Review the resolved code before testing.** Check account routing, auth
   ownership, API error mapping, generated protocol exports, test fixtures, and
   package version metadata before spending time on the full suite. Resolve
