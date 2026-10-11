@@ -45,6 +45,7 @@ pub(super) async fn fork_source(
         config_warnings: Vec::new(),
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
+        process_account: None,
         client_name: "codex_exec".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,

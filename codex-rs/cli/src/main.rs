@@ -1105,6 +1105,18 @@ async fn cli_main(
     if let Some(subcommand) = subcommand.as_ref() {
         profile_v2_for_subcommand(&interactive, subcommand)?;
     }
+    if interactive.shared.account.is_some()
+        && !matches!(
+            subcommand,
+            None | Some(Subcommand::Exec(_))
+                | Some(Subcommand::Review(_))
+                | Some(Subcommand::Resume(_))
+                | Some(Subcommand::Fork(_))
+                | Some(Subcommand::AppServer(_))
+        )
+    {
+        anyhow::bail!("--account applies only to TUI, exec, review, resume, fork, or app-server");
+    }
 
     let open_agents_overview = matches!(&subcommand, Some(Subcommand::Agents(_)));
     match subcommand {
@@ -1277,7 +1289,15 @@ async fn cli_main(
                     };
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
-                        process_account: account,
+                        process_account: match (interactive.shared.account.clone(), account) {
+                            (Some(root), Some(scoped)) if root != scoped => {
+                                anyhow::bail!(
+                                    "codex app-server received conflicting --account values"
+                                )
+                            }
+                            (Some(root), _) => Some(root),
+                            (_, scoped) => scoped,
+                        },
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)

@@ -224,6 +224,8 @@ pub struct InProcessClientStartArgs {
     pub session_source: SessionSource,
     /// Whether auth loading should honor the `CODEX_API_KEY` environment variable.
     pub enable_codex_api_key_env: bool,
+    /// Optional local account profile pinned to this embedded server process.
+    pub process_account: Option<String>,
     /// Client name reported during initialize.
     pub client_name: String,
     /// Client version reported during initialize.
@@ -282,6 +284,7 @@ impl InProcessClientStartArgs {
             config_warnings: self.config_warnings,
             session_source: self.session_source,
             enable_codex_api_key_env: self.enable_codex_api_key_env,
+            process_account: self.process_account,
             initialize,
             channel_capacity: self.channel_capacity,
         }
@@ -906,6 +909,7 @@ mod tests {
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: false,
+            process_account: None,
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
@@ -2180,6 +2184,7 @@ mod tests {
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,
             enable_codex_api_key_env: false,
+            process_account: None,
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,

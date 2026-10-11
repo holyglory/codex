@@ -165,6 +165,8 @@ pub struct InProcessStartArgs {
     pub session_source: SessionSource,
     /// Whether serving auth should honor `CODEX_API_KEY`; workspace policy still uses stored auth.
     pub enable_codex_api_key_env: bool,
+    /// Optional local account profile pinned to this embedded server process.
+    pub process_account: Option<String>,
     /// Initialize params used for initial handshake.
     pub initialize: InitializeParams,
     /// Capacity used for all runtime queues (clamped to at least 1).
@@ -506,7 +508,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 state_db: args.state_db,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
-                process_account: None,
+                process_account: args.process_account,
                 user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
                     &auth_manager,
                 ))),
@@ -879,6 +881,7 @@ mod tests {
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: false,
+            process_account: None,
             initialize: InitializeParams {
                 client_info: ClientInfo {
                     name: "codex-in-process-test".to_string(),
