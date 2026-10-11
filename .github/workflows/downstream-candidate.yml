@@ -644,7 +644,16 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: always()
-    needs: [identity, preflight, rust-validation, bazel-validation, native, root-usage, npm]
+    needs:
+      [
+        identity,
+        preflight,
+        rust-validation,
+        bazel-validation,
+        native,
+        root-usage,
+        npm,
+      ]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate job
