@@ -341,7 +341,10 @@ fn worktree_ids_are_distinct_per_checkout_and_share_repository_identity() {
     let one_id = first.worktree_id(&repository_id, &one).expect("one id");
     let two_id = first.worktree_id(&repository_id, &two).expect("two id");
     assert_ne!(one_id, two_id);
-    assert_eq!(one_id, first.worktree_id(&repository_id, &one).expect("stable id"));
+    assert_eq!(
+        one_id,
+        first.worktree_id(&repository_id, &one).expect("stable id")
+    );
 }
 
 fn test_repository_key(bytes: [u8; 32]) -> RepositoryHmacKey {
