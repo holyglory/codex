@@ -556,6 +556,7 @@ fn assert_report_matches_structured(report: &LocalUsageReport, expected: serde_j
 fn empty_summary_params() -> LocalUsageSummaryParams {
     LocalUsageSummaryParams {
         worktree_keys: None,
+        include_unassigned: None,
         repository_key: None,
         thread_id: None,
         account_id: None,

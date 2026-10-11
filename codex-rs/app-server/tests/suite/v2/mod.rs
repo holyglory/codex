@@ -152,6 +152,8 @@ mod thread_name_persistence;
 mod thread_name_websocket;
 mod thread_queue;
 mod thread_read;
+#[path = "thread_reconnect_tests.rs"]
+mod thread_reconnect;
 mod thread_resume;
 mod thread_revert;
 mod thread_sections;
