@@ -143,7 +143,12 @@ impl WakeSink for AppServerSubscriptionWakeSink {
                         }
                     });
                 }
-                return Ok(WakeDisposition::DeferredUntilResume);
+                self.background_loader
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .ok_or_else(|| "background thread loader is not ready".to_string())?
+                    .ensure_background_thread_loaded(wake.thread_id)
+                    .await?
             }
         };
         let run = thread.subscription_run_state();

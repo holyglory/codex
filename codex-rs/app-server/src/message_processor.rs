@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 
 use crate::attestation::app_server_attestation_provider;
@@ -151,6 +152,8 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    coordinator_event_bridge: Option<crate::coordinator_event_bridge::CoordinatorEventBridge>,
+    background_subscription_loader: Arc<OnceLock<Weak<ThreadRequestProcessor>>>,
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
@@ -181,7 +184,7 @@ pub(crate) struct MessageProcessor {
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
-    thread_processor: ThreadRequestProcessor,
+    thread_processor: Arc<ThreadRequestProcessor>,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
@@ -282,6 +285,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
+    pub(crate) background_subscription_loader: Arc<OnceLock<Weak<ThreadRequestProcessor>>>,
 }
 
 fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
@@ -342,6 +346,7 @@ impl MessageProcessor {
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
+            background_subscription_loader,
         } = args;
         // Startup credential reads must not open a browser before initialize selects the policy.
         let gateway_login_control =
@@ -404,7 +409,6 @@ impl MessageProcessor {
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
         let mut queue_service = None;
         let mut event_subscription_service = None;
-        let background_subscription_loader = Arc::new(OnceLock::new());
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             queue_service = queue_store.map(|queue| {
                 Arc::new(QueuedItemService::new(
@@ -687,7 +691,7 @@ impl MessageProcessor {
                 thread_store: Arc::clone(&thread_store),
                 config_manager: config_manager.clone(),
                 config_processor: config_processor.clone(),
-                state_db,
+                state_db: state_db.clone(),
                 analytics_events_client,
                 arg0_paths,
                 codex_home: config.codex_home.to_path_buf(),
@@ -704,7 +708,23 @@ impl MessageProcessor {
             config_manager,
         );
 
+        let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
+            state_db.as_ref().map(|state| {
+                let watcher = Arc::new(
+                    codex_file_watcher::FileWatcher::new()
+                        .unwrap_or_else(|_| codex_file_watcher::FileWatcher::noop()),
+                );
+                crate::coordinator_event_bridge::CoordinatorEventBridge::spawn(
+                    Arc::new(state.event_subscriptions().clone()),
+                    Arc::new(service.clone()),
+                    config.codex_home.clone(),
+                    watcher,
+                )
+            })
+        });
         Self {
+            coordinator_event_bridge,
+            background_subscription_loader,
             turn_admission,
             user_verification,
             outgoing,
@@ -735,11 +755,17 @@ impl MessageProcessor {
             search_processor,
             thread_goal_processor,
             thread_queue_processor,
-            thread_processor,
+            thread_processor: Arc::new(thread_processor),
             turn_processor,
             windows_sandbox_processor,
             request_serialization_queues,
         }
+    }
+
+    pub(crate) fn initialize_background_subscription_loader(self: &Arc<Self>) {
+        let _ = self
+            .background_subscription_loader
+            .set(Arc::downgrade(&self.thread_processor));
     }
 
     pub(crate) fn clear_runtime_references(&self) {

@@ -178,6 +178,21 @@ impl PreparedTurnInputSettings {
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
+        if matches!(kind, TurnStartKind::User | TurnStartKind::Recovery) {
+            turn_context
+                .extension_data
+                .insert(codex_event_subscriptions::SubscriptionWorkOrigin::UserWork);
+            turn_context
+                .extension_data
+                .insert(codex_event_subscriptions::UserStartedSubscriptionWork);
+        } else if matches!(
+            turn_trigger.as_deref(),
+            Some("event_subscription" | "capacity_retry" | "project_review")
+        ) {
+            turn_context
+                .extension_data
+                .insert(codex_event_subscriptions::SubscriptionWorkOrigin::Background);
+        }
         if let Some(turn_trigger) = turn_trigger {
             turn_context
                 .turn_metadata_state

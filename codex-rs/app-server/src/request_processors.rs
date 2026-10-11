@@ -569,6 +569,7 @@ mod remote_control_processor;
 mod rollout;
 mod search;
 mod thread_attachments;
+mod thread_background_resume;
 mod thread_enrichment;
 mod thread_fork_goal;
 mod thread_input;

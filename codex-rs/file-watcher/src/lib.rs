@@ -374,6 +374,11 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
+    /// Whether this watcher has an operating-system event backend.
+    pub fn is_live(&self) -> bool {
+        self.inner.is_some()
+    }
+
     /// Creates a live filesystem watcher and starts its background event loop
     /// on the current Tokio runtime.
     pub fn new() -> notify::Result<Self> {

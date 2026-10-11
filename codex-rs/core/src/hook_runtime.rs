@@ -738,8 +738,22 @@ pub(crate) async fn record_pending_input(
             .await;
         }
         TurnInput::ResponseItem(item) => {
+            let wake_item = item.clone();
+            let is_subscription_wake = matches!(
+                &item,
+                ResponseItem::Message { role, content, .. }
+                    if role == "developer"
+                        && content.iter().any(|content| matches!(
+                            content,
+                            codex_protocol::models::ContentItem::InputText { text }
+                                if crate::context::EventSubscriptionWakeContext::matches_text(text)
+                        ))
+            );
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
                 .await;
+            if is_subscription_wake {
+                sess.record_subscription_wake_delivery(&wake_item).await;
+            }
         }
         TurnInput::FunctionCallOutput(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item.clone()])

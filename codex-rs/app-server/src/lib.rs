@@ -19,6 +19,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 
@@ -107,6 +108,7 @@ mod config_manager;
 mod config_manager_service;
 mod connection_cleanup;
 mod connection_rpc_gate;
+mod coordinator_event_bridge;
 mod current_time;
 mod daemon_thread_recovery;
 mod dynamic_tools;
@@ -984,6 +986,7 @@ pub async fn run_main_with_transport_options(
         let auth_manager = Arc::clone(&auth_manager);
         let initialize_notification_sender = outgoing_message_sender.clone();
         let outbound_control_tx = outbound_control_tx;
+        let background_subscription_loader = Arc::new(OnceLock::new());
         let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
             outgoing: outgoing_message_sender,
             analytics_events_client,
@@ -1010,7 +1013,9 @@ pub async fn run_main_with_transport_options(
                 PluginStartupTasks::Start
             )
             .then_some(plugin_startup_config),
+            background_subscription_loader,
         }));
+        processor.initialize_background_subscription_loader();
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut active_admissions_rx = processor.turn_admission.subscribe_active();

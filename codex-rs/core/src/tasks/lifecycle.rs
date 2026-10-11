@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use codex_analytics::TurnAnalyticsMetadata;
 use codex_extension_api::ExtensionData;
@@ -19,6 +20,30 @@ impl Session {
         token_usage_at_turn_start: Option<&TokenUsage>,
         phase: TurnStartPhase,
     ) {
+        let wake_run = self
+            .services
+            .thread_extension_data
+            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default);
+        wake_run.running.store(true, Ordering::Release);
+        if let Some(origin) = turn_context
+            .extension_data
+            .get::<codex_event_subscriptions::SubscriptionWorkOrigin>()
+        {
+            wake_run.user_work.store(
+                matches!(
+                    *origin,
+                    codex_event_subscriptions::SubscriptionWorkOrigin::UserWork
+                ),
+                Ordering::Release,
+            );
+        }
+        if turn_context
+            .extension_data
+            .get::<codex_event_subscriptions::UserStartedSubscriptionWork>()
+            .is_some()
+        {
+            self.resume_subscription_work().await;
+        }
         let metadata: Arc<dyn TurnAnalyticsMetadata> = turn_context.turn_metadata_state.clone();
         turn_context.extension_data.insert(metadata);
         let collaboration_mode = turn_context.collaboration_mode();
