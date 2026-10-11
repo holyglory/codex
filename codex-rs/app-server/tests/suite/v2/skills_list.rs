@@ -124,7 +124,6 @@ async fn skills_list_stays_responsive_while_mcp_auth_failure_is_quarantined() ->
 
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .without_auto_env()
         .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
     let thread = app
