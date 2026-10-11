@@ -202,6 +202,7 @@ def stage_python_runtime_package(
 
     package_version = normalize_codex_version(codex_version)
     _copy_package_tree(python_runtime_root(), staging_dir)
+    _normalize_runtime_package_modes(staging_dir)
 
     pyproject_path = staging_dir / "pyproject.toml"
     pyproject_text = pyproject_path.read_text()
@@ -214,10 +215,19 @@ def stage_python_runtime_package(
     runtime_package_root = staged_runtime_package_root(staging_dir)
     if package_source.is_dir():
         shutil.copytree(package_source, runtime_package_root, dirs_exist_ok=True)
+        _normalize_runtime_package_modes(runtime_package_root)
         _validate_codex_package_layout(runtime_package_root, package_source)
     else:
         _extract_codex_package_archive(package_source, runtime_package_root)
     return staging_dir
+
+
+def _normalize_runtime_package_modes(package_dir: Path) -> None:
+    """Match safe tar extraction modes while preserving executable payloads."""
+    for path in package_dir.rglob("*"):
+        if path.is_file():
+            mode = path.stat().st_mode
+            path.chmod(0o755 if mode & 0o111 else 0o644)
 
 
 def _extract_codex_package_archive(package_archive: Path, runtime_package_root: Path) -> None:
