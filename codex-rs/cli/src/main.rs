@@ -83,14 +83,14 @@ mod usage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
-use crate::exec_server_command::ExecServerCommand;
 use crate::account_cmd::AccountCommand;
-use crate::usage_cmd::UsageCommand;
+use crate::exec_server_command::ExecServerCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::queue_cmd::QueueCommand;
 use crate::remote_control_cmd::RemoteControlCommand;
+use crate::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -580,7 +580,7 @@ struct LogoutCommand {
 #[derive(Debug, Parser)]
 struct AppServerCommand {
     /// Account alias or id pinned to this app-server process.
-    #[arg(long)]
+    #[arg(long, value_name = "ALIAS_OR_ID")]
     account: Option<String>,
 
     /// Omit to run the app server; specify a subcommand for tooling.
