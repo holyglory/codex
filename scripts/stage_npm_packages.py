@@ -229,6 +229,8 @@ def install_from_downloaded_artifacts(
     components: Sequence[str],
     vendor_dir: Path,
 ) -> None:
+    if not local_artifacts_cover_components(artifacts_dir, components):
+        raise FileNotFoundError("The downloaded native artifact set is incomplete")
     if CODEX_PACKAGE_COMPONENT in components:
         install_codex_package_archives(artifacts_dir, vendor_dir, BINARY_TARGETS)
     install_binary_components(
@@ -236,6 +238,29 @@ def install_from_downloaded_artifacts(
         vendor_dir,
         [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
     )
+
+
+def local_artifacts_cover_components(
+    artifacts_dir: Path,
+    components: Sequence[str],
+) -> bool:
+    for target in BINARY_TARGETS:
+        artifact_dir = artifact_dir_for_target(artifacts_dir, target)
+        if not artifact_dir.is_dir():
+            return False
+        if CODEX_PACKAGE_COMPONENT in components:
+            archive = artifact_dir / f"codex-package-{target}.tar.gz"
+            if not archive.is_file():
+                return False
+        for component_name in components:
+            component = BINARY_COMPONENTS.get(component_name)
+            if component is None:
+                continue
+            try:
+                binary_archive_path(artifact_dir, component.artifact_prefix, target)
+            except FileNotFoundError:
+                return False
+    return True
 
 
 def select_target_artifacts(
