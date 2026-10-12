@@ -1,5 +1,6 @@
 //! Disk-backed selection keeps raw histories out of the report reader's heap.
 use crate::UsageSummaryQuery;
+use crate::repository::WorktreeId;
 use sqlx::QueryBuilder;
 use sqlx::Sqlite;
 use sqlx::SqliteConnection;
@@ -58,7 +59,12 @@ pub(super) async fn select(
     }
     if let Some(worktrees) = &query.worktree_ids {
         sql.push(" AND (operation.id IN (SELECT operation_id FROM repository_attributions WHERE worktree_id IN (SELECT value FROM json_each(")
-            .push_bind(Json(worktrees.iter().map(|id| id.as_str()).collect::<Vec<_>>()))
+            .push_bind(Json(
+                worktrees
+                    .iter()
+                    .map(WorktreeId::as_str)
+                    .collect::<Vec<_>>(),
+            ))
             .push(")))");
         if query.include_unassigned_worktrees {
             sql.push(" OR NOT EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = operation.id AND worktree_id IS NOT NULL)");
