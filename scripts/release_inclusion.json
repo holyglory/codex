@@ -61,7 +61,7 @@
         "codex-app-server"
       ],
       "filters": [
-        "test(account::credits_tests::)",
+        "test(credits::)",
         "test(desktop_credit_fallback_obeys_priority_permission_and_probe_evidence)"
       ]
     },
