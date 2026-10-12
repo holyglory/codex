@@ -108,7 +108,7 @@
       "filters": [
         "test(suite::usage_stats::)",
         "test(suite::v2::local_usage::)",
-        "test(report_tests::backfill_tests::)"
+        "test(report::tests::backfill_tests::)"
       ]
     },
     {
