@@ -430,7 +430,7 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     std::fs::create_dir_all(bin.parent().expect("binary parent")).expect("release directory");
     codex_utils_cargo_bin::write_executable(
         &bin,
-        "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo codex 1.0.0; else exec sleep 30; fi\n",
+        "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo codex 1.0.0; elif [ \"$3\" = handover-compatibility ]; then echo maintenance-test-v1; else exec sleep 30; fi\n",
     )
     .expect("managed binary");
     std::os::unix::fs::symlink(format!("releases/{release}"), standalone.join("current"))
@@ -674,95 +674,48 @@ async fn test_control_server(
 ) -> tokio::task::JoinHandle<()> {
     use futures::SinkExt;
     use futures::StreamExt;
-    use tokio_tungstenite::tungstenite::Message;
     std::fs::create_dir_all(daemon.socket_path.parent().expect("socket parent"))
         .expect("socket directory");
     let mut listener = codex_uds::UnixListener::bind(&daemon.socket_path)
         .await
         .expect("control listener");
     let codex_home = home.to_path_buf();
+    let previous = daemon
+        .managed_codex_bin
+        .canonicalize()
+        .expect("serving binary");
+    let pid_file = daemon.pid_file.clone();
     tokio::spawn(async move {
         loop {
             let connection = listener.accept().await.expect("control connection");
             let mut websocket = tokio_tungstenite::accept_async(connection)
                 .await
                 .expect("websocket handshake");
-            let frame = websocket
-                .next()
-                .await
-                .expect("initialize or maintenance request")
-                .expect("frame");
-            let Message::Text(text) = frame else {
+            let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                websocket.next().await
+            else {
                 continue;
             };
-            let request: serde_json::Value =
-                serde_json::from_str(&text).expect("control request JSON");
-            if let Some(kind) = request["type"].as_str() {
-                match kind {
-                    "prepare" => {
-                        websocket
-                            .send(Message::Text(
-                                serde_json::json!({
-                                    "type": "ready",
-                                    "operationId": request["operationId"],
-                                    "pid": request["pid"],
-                                })
-                                .to_string()
-                                .into(),
-                            ))
-                            .await
-                            .expect("maintenance ready response");
-                        let Some(Ok(Message::Text(commit_text))) = websocket.next().await else {
-                            continue;
-                        };
-                        let commit: serde_json::Value =
-                            serde_json::from_str(&commit_text).expect("commit request JSON");
-                        websocket
-                            .send(Message::Text(
-                                serde_json::json!({
-                                    "type": "committed",
-                                    "operationId": commit["operationId"],
-                                    "pid": commit["pid"],
-                                })
-                                .to_string()
-                                .into(),
-                            ))
-                            .await
-                            .expect("maintenance committed response");
-                        let _ = websocket.send(Message::Close(None)).await;
-                    }
-                    "status" => {
-                        websocket
-                            .send(Message::Text(
-                                serde_json::json!({
-                                    "type": "status",
-                                    "pid": 0,
-                                    "accepting": true,
-                                    "preparing": false,
-                                    "restored": true,
-                                    "executable": "",
-                                })
-                                .to_string()
-                                .into(),
-                            ))
-                            .await
-                            .expect("maintenance status response");
-                        let _ = websocket.send(Message::Close(None)).await;
-                    }
-                    _ => {}
-                }
+            let request: serde_json::Value = serde_json::from_str(&text).expect("control request");
+            if request["type"] == "status" {
+                let record: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&pid_file).expect("serving PID record"))
+                        .expect("PID JSON");
+                websocket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::json!({"type":"status", "pid":record["pid"],
+                        "accepting":true, "preparing":false, "restored":true,
+                        "executable":previous})
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .expect("maintenance status");
+                let _ = websocket.next().await;
                 continue;
             }
-            let version = if std::fs::read_to_string(
-                crate::managed_install::package_root(&codex_home).join("auto-update-version"),
-            )
-            .unwrap_or_default()
-            .starts_with("1.1.0")
-            {
-                "1.1.0"
-            } else {
-                "1.0.0"
-            };
+            // Installation does not change the version served by this fixture.
+            let version = "1.0.0";
             websocket.send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::json!({"id": 1, "result": {
                     "userAgent": format!("codex_app_server_daemon/{version}"),
@@ -819,7 +772,7 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn scheduled_resource_only_update_restarts_daemon() {
+async fn scheduled_resource_only_update_schedules_handover() {
     let home = TempDir::new().expect("home");
     let (daemon, release) = manual_update_daemon(&home);
     let settings = crate::settings::DaemonSettings::default();
@@ -856,18 +809,29 @@ async fn scheduled_resource_only_update_restarts_daemon() {
             Some(RestartIfRunningOutcome::Scheduled)
         )
     ));
-    assert_ne!(
+    assert_eq!(
         std::fs::read(&daemon.pid_file).expect("daemon PID record"),
         previous_pid_record
     );
+    let handover = crate::backend::PidBackend::new_handover(
+        daemon.current_managed_codex_bin().expect("selected binary"),
+        daemon.pid_file.with_file_name("handover.pid"),
+    );
+    assert!(
+        handover
+            .is_starting_or_running()
+            .await
+            .expect("handover owner")
+    );
+    handover.stop().await.expect("stop handover fixture");
     backend.stop().await.expect("stop daemon");
     server.abort();
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("standalone").await;
+async fn manual_update_schedules_managed_daemon_with_automatic_updates_disabled() {
+    check_manual_update_handover("standalone").await;
 }
 
 #[cfg(unix)]
@@ -1016,12 +980,12 @@ async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settin
 
 #[cfg(unix)]
 #[tokio::test]
-async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("app-server-daemon").await;
+async fn manual_update_schedules_local_daemon_with_automatic_updates_disabled() {
+    check_manual_update_handover("app-server-daemon").await;
 }
 
 #[cfg(unix)]
-async fn check_manual_update_restart(package_directory: &str) {
+async fn check_manual_update_handover(package_directory: &str) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
@@ -1082,7 +1046,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         )
     } else {
         format!(
-            r#"printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex 1.1.0; else exec sleep 30; fi\n' > '{root}/releases/{next}/bin/codex'"#,
+            r#"printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex 1.1.0; elif [ "$3" = handover-compatibility ]; then echo maintenance-test-v1; else exec sleep 30; fi\n' > '{root}/releases/{next}/bin/codex'"#,
             root = standalone.display()
         )
     };
@@ -1135,15 +1099,27 @@ async fn check_manual_update_restart(package_directory: &str) {
         .await
         .expect("first request task")
         .expect("manual update");
-    assert_eq!(output.status, UpdateStatus::Updated);
+    assert_eq!(output.status, UpdateStatus::Pending);
     assert_eq!(output.installed_version.as_deref(), Some(version));
-    assert_eq!(output.running_version.as_deref(), Some(version));
+    assert_eq!(output.running_version.as_deref(), Some("1.0.0"));
     assert_eq!(
         output.managed_codex_path,
         standalone.join("current/bin/codex")
     );
-    let restarted = current_pid();
-    assert_ne!(restarted, before);
+    let serving = current_pid();
+    assert_eq!(serving, before);
+    let handover = crate::backend::PidBackend::new_handover(
+        daemon.current_managed_codex_bin().expect("selected binary"),
+        daemon.pid_file.with_file_name("handover.pid"),
+    );
+    assert!(
+        handover
+            .is_starting_or_running()
+            .await
+            .expect("handover owner")
+    );
+    let receipt =
+        std::fs::read(daemon.pid_file.with_file_name("handover.json")).expect("handover receipt");
     let mut response = Vec::new();
     queued
         .read_to_end(&mut response)
@@ -1151,11 +1127,13 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("second response");
     let second: Result<crate::UpdateOutput, String> =
         serde_json::from_slice(&response).expect("valid second response");
+    assert_eq!(second.expect("second update").status, UpdateStatus::Pending);
+    assert_eq!(current_pid(), serving);
     assert_eq!(
-        second.expect("second update").status,
-        UpdateStatus::NoUpdate
+        std::fs::read(daemon.pid_file.with_file_name("handover.json"))
+            .expect("deduplicated handover"),
+        receipt
     );
-    assert_eq!(current_pid(), restarted);
     tokio::time::timeout(Duration::from_secs(5), worker)
         .await
         .expect("one-shot updater did not exit")
@@ -1182,8 +1160,9 @@ async fn check_manual_update_restart(package_directory: &str) {
     )
     .await
     .expect("retry with stale running binary");
-    assert_eq!(output.status, UpdateStatus::NoUpdate);
-    assert_ne!(current_pid(), restarted);
+    assert_eq!(output.status, UpdateStatus::Pending);
+    assert_eq!(current_pid(), serving);
+    handover.stop().await.expect("stop handover fixture");
     backend.stop().await.expect("stop daemon");
     server.abort();
 }

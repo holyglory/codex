@@ -57,6 +57,7 @@ fn account_output_is_bounded_and_omits_internal_identity() {
                 "enabled": true,
                 "authenticated": true,
                 "priority": 1000,
+                "creditUsageEnabled": false,
                 "isDefault": true,
                 "isCurrentTurn": true
             }],
@@ -129,12 +130,12 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
         ManagedAccountSnapshot {
             generation: u64::MAX,
             auto_selection_enabled: true,
-            accounts: (0..10)
+            accounts: (0..5)
                 .map(|index| account(&format!("account{index}"), u32::MAX))
                 .collect(),
         },
         /*offset*/ 0,
-        /*limit*/ 10,
+        /*limit*/ 5,
         /*routed_account*/ None,
     )
     .expect("maximal service usage page");

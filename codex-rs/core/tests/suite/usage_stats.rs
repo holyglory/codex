@@ -215,7 +215,8 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_reads_usage_and_appends_a_classification_correction() -> Result<()> {
+async fn agent_reads_current_repository_usage_and_appends_a_classification_correction() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -234,7 +235,7 @@ async fn agent_reads_usage_and_appends_a_classification_correction() -> Result<(
                     "usage_stats",
                     &json!({
                         "action": "summary",
-                        "scope": "all"
+                        "scope": "current_repository"
                     })
                     .to_string(),
                 ),
@@ -317,7 +318,7 @@ async fn agent_reads_usage_and_appends_a_classification_correction() -> Result<(
     );
     let summary = tool_output(&first_requests[2], "read-usage");
     assert_eq!(summary["kind"], "usageSummary");
-    assert_eq!(summary["scope"]["type"], "all");
+    assert_eq!(summary["scope"]["type"], "repository");
     assert_eq!(summary["reportingOperationInProgress"], true);
     assert!(summary["providerTokens"].is_array());
     assert!(summary["classifications"].is_array());

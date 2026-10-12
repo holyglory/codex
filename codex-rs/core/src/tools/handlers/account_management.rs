@@ -32,7 +32,7 @@ mod spec;
 
 const DEFAULT_PAGE_LIMIT: u32 = 10;
 const MAX_PAGE_LIMIT: u32 = 25;
-const MAX_USAGE_PAGE_LIMIT: u32 = 10;
+const MAX_USAGE_PAGE_LIMIT: u32 = 5;
 const MAX_USAGE_RESULT_LIMIT: u32 = 8;
 const MAX_TOOL_OUTPUT_BYTES: usize = 16 * 1024;
 
