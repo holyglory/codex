@@ -38,6 +38,7 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
@@ -284,9 +285,6 @@ async fn pinned_server_reports_and_logs_out_only_the_process_active_profile() ->
     assert!(!secondary.is_default);
     assert!(secondary.is_active);
 
-    let logout_id = server.send_logout_account_request().await?;
-    let _: LogoutAccountResponse =
-        timeout(Duration::from_secs(10), server.read_response(logout_id)).await??;
     let primary_storage = ProfileAuthStorage::new(
         codex_home.path(),
         first_id.parse()?,
@@ -299,7 +297,35 @@ async fn pinned_server_reports_and_logs_out_only_the_process_active_profile() ->
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
-    assert!(primary_storage.load()?.is_some());
+    let primary_before = primary_storage.load()?;
+    let mut expected_secondary = secondary_storage.load()?.expect("secondary credentials");
+    expected_secondary.openai_api_key = Some("replacement-secondary-key".into());
+    let login_id = server
+        .send_login_account_request(serde_json::json!({
+            "type": "apiKey",
+            "apiKey": "replacement-secondary-key"
+        }))
+        .await?;
+    let login: LoginAccountResponse =
+        timeout(Duration::from_secs(10), server.read_response(login_id)).await??;
+    assert_eq!(login, LoginAccountResponse::ApiKey {});
+    let changed: AccountProfileActiveChangedNotification = server
+        .read_notification("accountProfile/activeChanged")
+        .await?;
+    assert_eq!(changed.account_id, second_id);
+    assert_eq!(primary_storage.load()?, primary_before);
+    assert_eq!(secondary_storage.load()?, Some(expected_secondary));
+    assert!(!codex_home.path().join("auth.json").exists());
+
+    let logout_id = server.send_logout_account_request().await?;
+    let _: LogoutAccountResponse =
+        timeout(Duration::from_secs(10), server.read_response(logout_id)).await??;
+    let logged_out: AccountProfileActiveChangedNotification = server
+        .read_notification("accountProfile/activeChanged")
+        .await?;
+    assert_eq!(logged_out.account_id, second_id);
+    assert!(logged_out.generation > changed.generation);
+    assert_eq!(primary_storage.load()?, primary_before);
     assert_eq!(secondary_storage.load()?, None);
     Ok(())
 }
