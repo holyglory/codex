@@ -8,6 +8,7 @@ use crate::realtime_context::truncate_realtime_text_to_token_budget;
 use crate::realtime_prompt::prepare_realtime_backend_prompt;
 use crate::responses_metadata::THREAD_SOURCE_KEY;
 use crate::session::session::Session;
+use crate::session::turn_context::router_external_auth_state;
 use anyhow::Context;
 use async_channel::Receiver;
 use async_channel::RecvError;
@@ -32,6 +33,7 @@ use codex_api::map_api_error;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
 use codex_http_client::HttpClientFactory;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
@@ -61,6 +63,7 @@ use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::RealtimeTranscriptEntry;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::RealtimeVoicesList;
+use codex_usage::AccountProfileRef;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::take_bytes_at_char_boundary;
@@ -523,6 +526,7 @@ struct ConversationState {
     // A misalignment failure retires only this session's queued handoffs.
     route_handoffs: Arc<RealtimeHandoffAdmission>,
     stop_token: CancellationToken,
+    _profile_auth_lease: Option<AuthManagerLease>,
 }
 
 struct RealtimeStart {
@@ -540,6 +544,7 @@ struct RealtimeStart {
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
     model_client: ModelClient,
+    profile_auth_lease: Option<AuthManagerLease>,
     sdp: Option<String>,
     existing_call_id: Option<String>,
 }
@@ -646,6 +651,7 @@ impl RealtimeConversationManager {
             realtime_call_api_provider,
             session_config,
             model_client,
+            profile_auth_lease,
             sdp,
             existing_call_id,
         } = start;
@@ -779,6 +785,7 @@ impl RealtimeConversationManager {
             realtime_active: Arc::clone(&realtime_active),
             route_handoffs: Arc::clone(&route_handoffs),
             stop_token,
+            _profile_auth_lease: profile_auth_lease,
         });
         state.mode_instructions = Some(mode_instructions);
         state.context_active = true;
@@ -1312,6 +1319,8 @@ struct PreparedRealtimeConversationStart {
     version: RealtimeWsVersion,
     session_config: RealtimeSessionConfig,
     transport: ConversationStartTransport,
+    model_client: ModelClient,
+    profile_auth_lease: Option<AuthManagerLease>,
 }
 
 #[derive(Clone, Copy)]
@@ -1331,6 +1340,42 @@ async fn prepare_realtime_start(
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
     let config = sess.get_config().await;
+    let profile_auth_lease = if let Some(router) = &sess.services.profile_auth_router {
+        let chatgpt_base_url = config.chatgpt_base_url.clone();
+        let http_client_factory = config.http_client_factory();
+        let external_auth = router_external_auth_state(&config);
+        let probe = move |lease| {
+            codex_backend_client::fetch_profile_rate_limits(
+                lease,
+                chatgpt_base_url.clone(),
+                http_client_factory.clone(),
+            )
+        };
+        router
+            .lease_for_turn_with_external_auth_and_probe(external_auth, probe)
+            .await
+            .map_err(|error| CodexErr::Fatal(error.safe_message()))?
+            .map(AuthManagerLease::profile)
+    } else {
+        None
+    };
+    let auth_manager = profile_auth_lease
+        .as_ref()
+        .map(|lease| Arc::clone(lease.auth_manager()))
+        .unwrap_or_else(|| Arc::clone(&auth_manager));
+    let model_client = if let Some(lease) = &profile_auth_lease {
+        let account_id = lease
+            .account_id()
+            .ok_or_else(|| CodexErr::InvalidRequest("missing account profile".to_string()))?;
+        let profile = AccountProfileRef::new(account_id.as_str())
+            .map_err(|_| CodexErr::InvalidRequest("invalid account profile".to_string()))?;
+        sess.services
+            .model_client
+            .for_auth_manager(Arc::clone(lease.auth_manager()))
+            .with_account_profile_ref(profile)
+    } else {
+        sess.services.model_client.clone()
+    };
     let (auth, http_client_factory) = match auth_manager.auth_with_http_client_factory().await {
         Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
             Some(auth),
@@ -1464,6 +1509,8 @@ async fn prepare_realtime_start(
         version,
         session_config,
         transport,
+        model_client,
+        profile_auth_lease,
     })
 }
 
@@ -1688,6 +1735,8 @@ async fn handle_start_inner(
         version,
         session_config,
         transport,
+        model_client,
+        profile_auth_lease,
     } = prepared_start;
     info!("starting realtime conversation");
     let (sdp, existing_call_id) = match transport {
@@ -1713,7 +1762,8 @@ async fn handle_start_inner(
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
-        model_client: sess.services.model_client.clone(),
+        model_client,
+        profile_auth_lease,
         sdp,
         existing_call_id,
     };
