@@ -729,7 +729,7 @@ async fn test_control_server(
                             ))
                             .await
                             .expect("maintenance committed response");
-                        let _ = websocket.next().await;
+                        websocket.close(None).await.expect("maintenance close");
                     }
                     "status" => {
                         websocket
@@ -747,7 +747,7 @@ async fn test_control_server(
                             ))
                             .await
                             .expect("maintenance status response");
-                        let _ = websocket.next().await;
+                        websocket.close(None).await.expect("status close");
                     }
                     _ => {}
                 }
