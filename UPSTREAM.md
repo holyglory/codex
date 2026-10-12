@@ -139,6 +139,21 @@ the authority for release outcomes and verification receipts.
   and warm Cargo target with the same package/feature selection. A new worktree
   does not require a fresh target directory; do not assert isolation with an
   environment flag while host configuration remains visible.
+  Carry both V8 artifact variables into the governed environment explicitly;
+  a warm target can conceal a missing prerequisite until another target or
+  package selection rebuilds V8. Preserve the package/feature union between
+  focused runs to avoid rebuilding shared dependencies.
+- **Freeze editor setup with the candidate.** Initialize navigation metadata
+  before sealing a worktree, or navigate the mutable integration checkout.
+  Creating `.serena/` during a governed run changes its source fingerprint even
+  when product files are untouched and invalidates release evidence. Reuse a
+  completed check's worktree for the next committed candidate after its run is
+  terminal; keep the earlier source identity and retained logs.
+- **Retain profile authentication for realtime sessions.** Restore the public
+  realtime profile suite alongside normal-turn authentication. Compile success
+  cannot detect a voice call using the process auth manager instead of the
+  selected profile. Check default changes, process pins, automatic selection,
+  exhausted capacity, reconnect credentials, and lease release after Stop.
 - **Update test doubles when upstream traits gain context parameters.** The
   stable refresh changed workspace-routing resolution to receive the selected
   auth manager. Search every test-only resolver implementation after a trait

@@ -1098,7 +1098,7 @@ impl ThreadRequestProcessor {
         }
     }
 
-    pub(crate) async fn ensure_conversation_listener(
+    pub(super) async fn ensure_conversation_listener(
         &self,
         conversation_id: ThreadId,
         connection_id: ConnectionId,

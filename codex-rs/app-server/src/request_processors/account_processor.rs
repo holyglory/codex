@@ -7,14 +7,22 @@ use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
 use crate::outgoing_message::AccountNotification;
 use chrono::DateTime;
+use chrono::Utc;
 use codex_account_registry::AccountId;
+use codex_account_registry::OpaqueServiceId;
+use codex_account_registry::RegistryStore;
+use codex_account_registry::RegistryStoreError;
+use codex_app_server_protocol::AccountProfileActiveChangedNotification;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_login::AccountLease;
 use codex_login::LoginOnboardingEntrypoint;
 use codex_login::ProfileAuthStorage;
 use codex_login::SharedProfileAuthRouter;
+use codex_login::login_with_api_key_to_profile;
 use codex_login::login_with_bedrock_access_keys;
+use codex_login::login_with_bedrock_access_keys_to_profile;
+use codex_login::login_with_bedrock_api_key_to_profile;
 use codex_mcp::ema_auth_scope;
 use codex_model_provider::is_supported_amazon_bedrock_region;
 use codex_otel::auth_storage::AuthStorageOriginator;
@@ -439,6 +447,11 @@ impl AccountRequestProcessor {
                 chatgpt_account_id,
                 chatgpt_plan_type,
             } => {
+                if self.active_profile_id.is_some() {
+                    return Err(invalid_request(
+                        "externally managed ChatGPT authentication cannot be attached to a local account profile",
+                    ));
+                }
                 self.login_chatgpt_auth_tokens(
                     request_id,
                     access_token,
@@ -531,12 +544,16 @@ impl AccountRequestProcessor {
             }
         }
 
-        match login_with_api_key(
-            &self.config.codex_home,
-            &params.api_key,
-            self.config.cli_auth_credentials_store_mode,
-            self.config.auth_keyring_backend_kind(),
-        ) {
+        let saved = match self.active_profile_storage()? {
+            Some(profile) => login_with_api_key_to_profile(&profile, &params.api_key),
+            None => login_with_api_key(
+                &self.config.codex_home,
+                &params.api_key,
+                self.config.cli_auth_credentials_store_mode,
+                self.config.auth_keyring_backend_kind(),
+            ),
+        };
+        match saved {
             Ok(()) => {
                 self.auth_manager.reload().await;
                 self.config_manager.clear_cloud_config_bundle_loader();
@@ -606,14 +623,20 @@ impl AccountRequestProcessor {
             )
             .await?;
 
+            let profile = self.active_profile_storage()?;
             match credentials {
-                BedrockLoginCredentials::ApiKey(api_key) => login_with_bedrock_api_key(
-                    &self.config.codex_home,
-                    api_key.trim(),
-                    region,
-                    self.config.cli_auth_credentials_store_mode,
-                    self.config.auth_keyring_backend_kind(),
-                ),
+                BedrockLoginCredentials::ApiKey(api_key) => match profile.as_ref() {
+                    Some(profile) => {
+                        login_with_bedrock_api_key_to_profile(profile, api_key.trim(), region)
+                    }
+                    None => login_with_bedrock_api_key(
+                        &self.config.codex_home,
+                        api_key.trim(),
+                        region,
+                        self.config.cli_auth_credentials_store_mode,
+                        self.config.auth_keyring_backend_kind(),
+                    ),
+                },
                 BedrockLoginCredentials::AccessKeys {
                     access_key_id,
                     secret_access_key,
@@ -623,14 +646,22 @@ impl AccountRequestProcessor {
                         .as_deref()
                         .map(str::trim)
                         .filter(|token| !token.is_empty());
-                    login_with_bedrock_access_keys(
-                        &self.config.codex_home,
-                        access_key_id.trim(),
-                        secret_access_key.trim(),
-                        session_token,
-                        self.config.cli_auth_credentials_store_mode,
-                        self.config.auth_keyring_backend_kind(),
-                    )
+                    match profile.as_ref() {
+                        Some(profile) => login_with_bedrock_access_keys_to_profile(
+                            profile,
+                            access_key_id.trim(),
+                            secret_access_key.trim(),
+                            session_token,
+                        ),
+                        None => login_with_bedrock_access_keys(
+                            &self.config.codex_home,
+                            access_key_id.trim(),
+                            secret_access_key.trim(),
+                            session_token,
+                            self.config.cli_auth_credentials_store_mode,
+                            self.config.auth_keyring_backend_kind(),
+                        ),
+                    }
                 }
             }
             .map_err(|err| internal_error(format!("failed to save Amazon Bedrock auth: {err}")))?;
@@ -686,6 +717,9 @@ impl AccountRequestProcessor {
             && !issuer.trim().is_empty()
         {
             opts.issuer = issuer;
+        }
+        if let Some(profile) = self.active_profile_storage()? {
+            opts = opts.with_profile_auth_storage(profile);
         }
         #[cfg(debug_assertions)]
         if let LoginSuccessPage::Hosted { url, .. } = &mut opts.login_success_page
@@ -1039,6 +1073,11 @@ impl AccountRequestProcessor {
                     AccountNotification::Updated(notification),
                 )
                 .await;
+            if let Some(account_id) = &self.active_profile_id
+                && let Ok(generation) = sync_profile_registry(&self.config, account_id, true)
+            {
+                self.send_profile_auth_changed(account_id, generation).await;
+            }
         }
     }
 
@@ -1157,6 +1196,7 @@ impl AccountRequestProcessor {
 
     async fn logout_v2(&self, request_id: ConnectionRequestId) -> Result<(), JSONRPCErrorError> {
         let result = self.logout_common().await;
+        let succeeded = result.is_ok();
         let account_updated =
             result
                 .as_ref()
@@ -1175,7 +1215,26 @@ impl AccountRequestProcessor {
                 .send_server_notification(ServerNotification::AccountUpdated(payload))
                 .await;
         }
+        if succeeded
+            && let Some(account_id) = &self.active_profile_id
+            && let Ok(generation) = sync_profile_registry(&self.config, account_id, false)
+        {
+            self.send_profile_auth_changed(account_id, generation).await;
+        }
         Ok(())
+    }
+
+    async fn send_profile_auth_changed(&self, account_id: &AccountId, generation: u64) {
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountProfileActiveChanged(
+                AccountProfileActiveChangedNotification {
+                    account_id: account_id.to_string(),
+                    previous_account_id: Some(account_id.to_string()),
+                    changed_at: Utc::now().timestamp(),
+                    generation,
+                },
+            ))
+            .await;
     }
 
     async fn refresh_token_if_requested(&self, do_refresh: bool) -> RefreshTokenRequestOutcome {
@@ -1651,6 +1710,86 @@ fn workspace_message_type_from_backend(
 
 fn workspace_messages_feature_disabled(err: &BackendRequestError) -> bool {
     err.status().is_some_and(|status| status.as_u16() == 404)
+}
+
+fn sync_profile_registry(
+    config: &Config,
+    account_id: &AccountId,
+    refresh_metadata: bool,
+) -> Result<u64, ()> {
+    let identity = if refresh_metadata {
+        let profile = ProfileAuthStorage::new(
+            &config.codex_home,
+            account_id.clone(),
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+        )
+        .map_err(|_| ())?;
+        let auth = profile.load().map_err(|_| ())?.ok_or(())?;
+        Some(auth.profile_metadata())
+    } else {
+        None
+    };
+    let service_identity = identity
+        .as_ref()
+        .and_then(|identity| {
+            identity
+                .service_account_id
+                .as_ref()
+                .zip(identity.service_workspace_id.as_ref())
+        })
+        .map(|(account, workspace)| {
+            Ok::<_, ()>((
+                OpaqueServiceId::new(account.clone()).map_err(|_| ())?,
+                OpaqueServiceId::new(workspace.clone()).map_err(|_| ())?,
+            ))
+        })
+        .transpose()?;
+    let store = RegistryStore::new(&config.codex_home);
+    for _ in 0..3 {
+        let registry = store.read().map_err(|_| ())?;
+        if !registry
+            .accounts
+            .iter()
+            .any(|account| &account.id == account_id)
+        {
+            return Err(());
+        }
+        let guard = store.acquire_lock().map_err(|_| ())?;
+        let update = store.compare_and_swap_with_guard(&guard, registry.generation, |registry| {
+            if let Some(identity) = &identity
+                && let Some(account) = registry
+                    .accounts
+                    .iter_mut()
+                    .find(|account| &account.id == account_id)
+            {
+                account.auth_mode = identity.auth_mode;
+                account.email = identity.email.clone();
+                account.plan_type = identity.plan_type.clone();
+                account.service_account_id = service_identity
+                    .as_ref()
+                    .map(|(account, _)| account.clone());
+                account.service_workspace_id = service_identity
+                    .as_ref()
+                    .map(|(_, workspace)| workspace.clone());
+            }
+        });
+        match update {
+            Ok(updated) => return Ok(updated.generation),
+            Err(RegistryStoreError::GenerationConflict { .. }) => {}
+            Err(RegistryStoreError::CommittedDurabilityUncertain { .. }) => {
+                store
+                    .repair_committed_durability_with_guard(&guard)
+                    .map_err(|_| ())?;
+                return store
+                    .read()
+                    .map(|registry| registry.generation)
+                    .map_err(|_| ());
+            }
+            Err(_) => return Err(()),
+        }
+    }
+    Err(())
 }
 
 #[cfg(test)]

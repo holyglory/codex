@@ -1030,6 +1030,9 @@ impl MessageProcessor {
 
     pub(crate) async fn cancel_active_login(&self) {
         self.account_processor.cancel_active_login().await;
+        self.account_profile_processor
+            .cancel_active_profile_login()
+            .await;
     }
 
     pub(crate) async fn clear_all_thread_listeners(&self) {
