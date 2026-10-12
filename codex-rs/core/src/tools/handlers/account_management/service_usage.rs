@@ -11,7 +11,7 @@ use super::AccountOutput;
 use crate::tools::context::ToolInvocation;
 
 const MAX_SERVICE_BUCKETS: usize = 8;
-const MAX_SAFE_BUCKET_NAME_BYTES: usize = 32;
+const MAX_SAFE_BUCKET_NAME_BYTES: usize = 16;
 const SERVICE_USAGE_CONCURRENCY: usize = 3;
 const SERVICE_USAGE_BUCKET_FIELDS: &[&str] = &[
     "bucket",
@@ -129,7 +129,7 @@ async fn refresh_service_usage(
             .map(|mut credits| {
                 credits.balance = credits.balance.filter(|value| {
                     !value.trim().is_empty()
-                        && value.len() <= 128
+                        && value.len() <= 32
                         && !value.chars().any(char::is_control)
                 });
                 credits
@@ -237,7 +237,7 @@ pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
         credits: Some(codex_protocol::protocol::CreditsSnapshot {
             has_credits: true,
             unlimited: true,
-            balance: Some("9".repeat(128)),
+            balance: Some("9".repeat(32)),
         }),
         state: "observed",
         reason: None,
@@ -248,7 +248,7 @@ pub(super) fn maximal_service_usage() -> ServiceUsageOutput {
         buckets: (0..MAX_SERVICE_BUCKETS)
             .map(|index| {
                 ServiceUsageBucket(
-                    format!("b{index:0>31}"),
+                    format!("b{index:0>15}"),
                     Some(100.0),
                     Some(i64::MAX),
                     Some(100.0),
