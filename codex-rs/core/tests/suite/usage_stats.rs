@@ -267,7 +267,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     // Current-repository usage resolves app-host Git metadata, and both turns below explicitly use
     // the local environment. Keep the fixture local instead of projecting a remote Windows cwd
     // onto the app host in Wine-exec runs.
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_remote_and_local_env(&server).await?;
     test.submit_turn_with_environments(
         "seed usage history",
         Some(vec![local(test.config.cwd.clone())]),
