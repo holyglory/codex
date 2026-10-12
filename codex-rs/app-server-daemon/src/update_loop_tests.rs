@@ -674,6 +674,7 @@ async fn test_control_server(
 ) -> tokio::task::JoinHandle<()> {
     use futures::SinkExt;
     use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
     std::fs::create_dir_all(daemon.socket_path.parent().expect("socket parent"))
         .expect("socket directory");
     let mut listener = codex_uds::UnixListener::bind(&daemon.socket_path)
@@ -686,11 +687,70 @@ async fn test_control_server(
             let mut websocket = tokio_tungstenite::accept_async(connection)
                 .await
                 .expect("websocket handshake");
-            websocket
+            let frame = websocket
                 .next()
                 .await
-                .expect("initialize request")
+                .expect("initialize or maintenance request")
                 .expect("frame");
+            let Message::Text(text) = frame else {
+                continue;
+            };
+            let request: serde_json::Value =
+                serde_json::from_str(&text).expect("control request JSON");
+            if let Some(kind) = request["type"].as_str() {
+                match kind {
+                    "prepare" => {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "ready",
+                                    "operationId": request["operationId"],
+                                    "pid": request["pid"],
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("maintenance ready response");
+                        let Some(Ok(Message::Text(commit_text))) = websocket.next().await else {
+                            continue;
+                        };
+                        let commit: serde_json::Value =
+                            serde_json::from_str(&commit_text).expect("commit request JSON");
+                        websocket
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "committed",
+                                    "operationId": commit["operationId"],
+                                    "pid": commit["pid"],
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("maintenance committed response");
+                    }
+                    "status" => {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "status",
+                                    "pid": 0,
+                                    "accepting": true,
+                                    "preparing": false,
+                                    "restored": true,
+                                    "executable": "",
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("maintenance status response");
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             let version = if std::fs::read_to_string(
                 crate::managed_install::package_root(&codex_home).join("auto-update-version"),
             )
@@ -702,7 +762,7 @@ async fn test_control_server(
                 "1.0.0"
             };
             websocket.send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"type":"response", "id": 1, "result": {
+                serde_json::json!({"id": 1, "result": {
                     "userAgent": format!("codex_app_server_daemon/{version}"),
                     "codexHome": codex_home, "platformFamily": "unix", "platformOs": std::env::consts::OS,
                 }}).to_string().into(),

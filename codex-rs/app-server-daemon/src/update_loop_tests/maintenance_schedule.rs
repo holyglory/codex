@@ -58,7 +58,7 @@ async fn manual_update_schedules_cooperative_activation_without_claiming_serving
             let response = if request["type"] == "status" {
                 serde_json::json!({"type":"status","pid":pid,"accepting":true,"preparing":false,"restored":true,"executable":old_binary})
             } else {
-                serde_json::json!({"type":"response","id":request["id"],"result":{"userAgent":"codex_app_server_daemon/1.0.0","codexHome":codex_home,"platformFamily":"unix","platformOs":std::env::consts::OS}})
+                serde_json::json!({"id":request["id"],"result":{"userAgent":"codex_app_server_daemon/1.0.0","codexHome":codex_home,"platformFamily":"unix","platformOs":std::env::consts::OS}})
             };
             socket
                 .send(Message::Text(response.to_string().into()))
