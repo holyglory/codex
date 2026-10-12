@@ -791,7 +791,7 @@ async fn scheduled_resource_only_update_restarts_daemon() {
         outcome,
         (
             super::UpdateLoopControl::Continue,
-            Some(RestartIfRunningOutcome::Restarted)
+            Some(RestartIfRunningOutcome::Scheduled)
         )
     ));
     assert_ne!(
