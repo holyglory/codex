@@ -25,7 +25,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::sleep;
 
 fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
     let content = request
@@ -271,6 +273,38 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         Some(vec![local(test.config.cwd.clone())]),
     )
     .await?;
+    let usage = UsageStore::open(home.path()).await?;
+    let mut seeded = false;
+    for _ in 0..100 {
+        let details = usage
+            .list_details(
+                UsageDetailKind::Operations,
+                &UsageDetailListQuery {
+                    page: UsagePageRequest {
+                        cursor: None,
+                        limit: 20,
+                    },
+                    time_range: None,
+                    thread_id: None,
+                    repository_id: None,
+                    account_profile_ref: None,
+                },
+                codex_usage::redacted_account_profile_label,
+            )
+            .await?;
+        if details.data.iter().any(|record| {
+            matches!(
+                record,
+                UsageDetailRecord::Operation(detail)
+                    if detail.operation_kind == "model_request"
+            )
+        }) {
+            seeded = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(seeded, "seed model request was not captured");
     test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
