@@ -158,36 +158,6 @@ async fn clear_existing_auth_before_login(
     }
 }
 
-pub async fn login_with_chatgpt(
-    codex_home: PathBuf,
-    forced_chatgpt_workspace_id: Option<Vec<String>>,
-    cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
-    auth_keyring_backend_kind: AuthKeyringBackendKind,
-    auth_route_config: AuthRouteConfig,
-) -> std::io::Result<()> {
-    clear_existing_auth_before_login(
-        &codex_home,
-        cli_auth_credentials_store_mode,
-        auth_keyring_backend_kind,
-        &auth_route_config,
-    )
-    .await;
-
-    let opts = ServerOptions::new(
-        codex_home,
-        CLIENT_ID.to_string(),
-        forced_chatgpt_workspace_id,
-        cli_auth_credentials_store_mode,
-        auth_keyring_backend_kind,
-        auth_route_config,
-    );
-    let server = run_login_server(opts)?;
-
-    print_login_server_start(server.actual_port, &server.auth_url);
-
-    server.block_until_done().await
-}
-
 pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);

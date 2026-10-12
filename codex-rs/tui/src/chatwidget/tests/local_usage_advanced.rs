@@ -18,28 +18,6 @@ pub(super) fn local_aggregate(
     }
 }
 
-pub(super) fn local_thread_response(
-    coverage: protocol::LocalUsageCoverage,
-) -> protocol::LocalUsageThreadReadResponse {
-    protocol::LocalUsageThreadReadResponse {
-        thread: protocol::LocalUsageThread {
-            thread_id: "private-thread-id".to_string(),
-            repository_keys: vec!["private-repository-key".to_string()],
-            account_id: None,
-            started_at: 1,
-            updated_at: 2,
-            aggregate: local_aggregate(coverage),
-        },
-        token_categories: vec![protocol::LocalUsageTokenCategory {
-            category_key: "input_tokens".to_string(),
-            count: Some(120),
-            provenance: protocol::LocalUsageProvenance::ProviderReported,
-            coverage,
-        }],
-        report: local_report(coverage),
-    }
-}
-
 fn all_report(coverage: protocol::LocalUsageCoverage) -> protocol::LocalUsageReport {
     let mut report = local_report(coverage);
     report.scope = protocol::LocalUsageReportScope {
