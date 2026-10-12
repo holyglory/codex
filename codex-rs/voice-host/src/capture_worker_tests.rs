@@ -198,7 +198,7 @@ async fn capture_reaches_remote_rtp_and_mute_discards_queued_and_partial_audio()
                 next: NoopInterceptor::new(),
                 sender,
             }))
-            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .with_udp_addrs(vec!["127.0.0.1:0"])
             .build()
             .await
             .unwrap();

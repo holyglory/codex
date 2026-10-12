@@ -791,8 +791,8 @@ impl PluginsManager {
         let tool_suggest_metadata_cache =
             ToolSuggestMetadataCache::new(Arc::clone(&store.manifest_cache));
         Self {
-            codex_home: codex_home.clone(),
-            store: PluginStore::new(codex_home),
+            codex_home,
+            store,
             featured_plugin_ids_cache: RwLock::new(HashMap::new()),
             recommended_plugins_cache: RwLock::new(HashMap::new()),
             recommended_plugins_refreshes: RwLock::new(HashMap::new()),

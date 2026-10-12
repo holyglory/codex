@@ -68,6 +68,8 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
         command.args(
             "--ro-bind /usr /usr --ro-bind /etc /etc --proc /proc --dev /dev".split_whitespace(),
         );
+        // The outer fixture changes PATH and may hide Bazel's resolved helper.
+        command.arg("--ro-bind").arg(&bwrap).arg("/usr/bin/bwrap");
         command.args("--dir /run --dir /.agents --symlink /private-link /.git".split_whitespace());
         command.args(["--symlink", codex_target, "/.codex"]);
         command.args(["--symlink", "/private/reopened", "/private-link"]);

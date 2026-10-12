@@ -61,9 +61,9 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 .with_setting_engine(settings)
                 .with_handler(Arc::new(RemoteEvents(sender, gathered.clone())));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec!["127.0.0.1:0"])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec!["127.0.0.1:0"])
             }
             .build()
             .await

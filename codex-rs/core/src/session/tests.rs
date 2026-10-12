@@ -510,7 +510,7 @@ fn extension_metrics_preserve_session_metadata_tags() {
         BTreeMap::from([
             (
                 "app.version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
+                codex_otel::metrics::metrics_app_version().to_string(),
             ),
             (
                 "auth_mode".to_string(),

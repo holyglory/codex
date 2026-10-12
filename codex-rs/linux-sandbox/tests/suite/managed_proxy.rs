@@ -482,7 +482,13 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
 
     let resources_dir = tempdir.path().join("codex-resources");
     std::fs::create_dir(&resources_dir).expect("create bundled resource directory");
-    std::os::unix::fs::symlink(&system_bwrap, resources_dir.join("bwrap"))
+    // Bazel stamps the sandbox with the digest of its paired bubblewrap build.
+    let bundled_bwrap = if codex_utils_cargo_bin::runfiles_available() {
+        codex_utils_cargo_bin::cargo_bin("bwrap").expect("paired Bazel bubblewrap")
+    } else {
+        system_bwrap
+    };
+    std::os::unix::fs::symlink(&bundled_bwrap, resources_dir.join("bwrap"))
         .expect("install bundled bubblewrap");
 
     let system_dir = tempdir.path().join("system");
@@ -795,7 +801,11 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+    let sandbox_helper = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+        .expect("sandbox helper")
+        .canonicalize()
+        .expect("canonical sandbox helper");
+    let sandbox_helper_dir = sandbox_helper
         .parent()
         .expect("sandbox helper should have a parent");
     let file_system_sandbox_policy =

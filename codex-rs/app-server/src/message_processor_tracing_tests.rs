@@ -467,6 +467,11 @@ pub(super) async fn read_response_from<T: serde::de::DeserializeOwned>(
         if connection_id != expected_connection_id {
             continue;
         }
+        if let crate::outgoing_message::OutgoingMessage::Error(error) = &message
+            && error.id == RequestId::Integer(request_id)
+        {
+            panic!("request {request_id} failed: {:?}", error.error);
+        }
         let crate::outgoing_message::OutgoingMessage::Response(response) = message else {
             continue;
         };
