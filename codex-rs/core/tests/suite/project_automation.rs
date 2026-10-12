@@ -266,8 +266,12 @@ async fn shell_work_context_replaces_inherited_values_without_private_content(
         "current usage operation is linked"
     );
     assert!(work["turn_id"].is_string());
-    work.as_object_mut().unwrap().remove("operation_id");
-    work.as_object_mut().unwrap().remove("turn_id");
+    work.as_object_mut()
+        .context("work context object")?
+        .remove("operation_id");
+    work.as_object_mut()
+        .context("work context object")?
+        .remove("turn_id");
     assert_eq!(
         work,
         json!({
@@ -281,19 +285,25 @@ async fn shell_work_context_replaces_inherited_values_without_private_content(
         .next()
         .context("alarm context")?
         .strip_prefix("alarm=")
-        .unwrap();
+        .context("alarm prefix")?;
     let activation = lines
         .next()
         .context("alarm activation")?
         .strip_prefix("activation=")
-        .unwrap();
+        .context("activation prefix")?;
     let local_alarm = alarms_available && !test.executor_environment().environment().is_remote();
     if local_alarm {
         let mut alarm: Value = serde_json::from_str(alarm)?;
         assert!(
-            alarm["lease_expires_at"].as_i64().unwrap() > codex_core::project_automation_now_ms()
+            alarm["lease_expires_at"]
+                .as_i64()
+                .context("alarm lease expiry")?
+                > codex_core::project_automation_now_ms()
         );
-        alarm.as_object_mut().unwrap().remove("lease_expires_at");
+        alarm
+            .as_object_mut()
+            .context("alarm object")?
+            .remove("lease_expires_at");
         assert_eq!(
             alarm,
             json!({"alarm_namespace":"codex.review.v1","capability_revision":1})
@@ -328,7 +338,8 @@ async fn mcp_work_context_is_scoped_and_activates_the_alarm_route(name: &str) ->
             json!({"method":"tools/list"}),
         ))
         .respond_with(|request: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let body: Value = serde_json::from_slice(&request.body)
+                .expect("tools/list request body must be valid JSON");
             wiremock::ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
                 "jsonrpc":"2.0","id":body["id"],"result":{"tools":[{
                     "name":"inspect","description":"Inspect bounded metadata.",
@@ -345,7 +356,8 @@ async fn mcp_work_context_is_scoped_and_activates_the_alarm_route(name: &str) ->
             json!({"method":"tools/call"}),
         ))
         .respond_with(|request: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let body: Value = serde_json::from_slice(&request.body)
+                .expect("tools/call request body must be valid JSON");
             wiremock::ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
                 "jsonrpc":"2.0","id":body["id"],
                 "result":{"content":[{"type":"text","text":"ok"}],"isError":false}
@@ -366,14 +378,14 @@ async fn mcp_work_context_is_scoped_and_activates_the_alarm_route(name: &str) ->
             config
                 .features
                 .disable(codex_features::Feature::Mcp20260728)
-                .unwrap();
+                .expect("Mcp20260728 can be disabled in this fixture");
             config
                 .mcp_servers
                 .set(std::collections::HashMap::from([(
                     configured_name,
                     mcp_config,
                 )]))
-                .unwrap();
+                .expect("MCP server fixture should be valid");
         })
         .build_with_auto_env(&server)
         .await?;
@@ -404,7 +416,7 @@ async fn mcp_work_context_is_scoped_and_activates_the_alarm_route(name: &str) ->
     let calls: Vec<Value> = mcp
         .received_requests()
         .await
-        .unwrap()
+        .context("MCP requests")?
         .into_iter()
         .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
         .filter(|body| body["method"] == "tools/call")
@@ -425,7 +437,12 @@ async fn mcp_work_context_is_scoped_and_activates_the_alarm_route(name: &str) ->
         assert!(serde_json::to_string(meta)?.len() <= 2048);
         assert_eq!(routes.len(), 1);
         assert_eq!(
-            routes[0].filter.as_ref().unwrap().labels.clone(),
+            routes[0]
+                .filter
+                .as_ref()
+                .context("Coordinator route filter")?
+                .labels
+                .clone(),
             std::collections::BTreeMap::from([(
                 "owner_thread_id".into(),
                 test.session_configured.thread_id.to_string()

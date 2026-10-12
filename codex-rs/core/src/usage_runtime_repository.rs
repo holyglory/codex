@@ -181,7 +181,8 @@ impl UsageRuntime {
                 worktrees.insert(selected.worktree_id);
             }
             let worktree_id = (ids.len() == 1 && worktrees.len() == 1)
-                .then(|| worktrees.into_iter().next().expect("one worktree"));
+                .then(|| worktrees.into_iter().next())
+                .flatten();
             (ids.clone(), worktree_id)
         };
         for (previous_id, repository_id) in merges {

@@ -156,7 +156,7 @@ impl CodeModeExecuteHandler {
         let wall_time = response
             .code_mode_host_duration()
             .unwrap_or_else(|| started_at.elapsed());
-        Ok(handle_runtime_response(
+        handle_runtime_response(
             &exec,
             &step_context.settings.model_info,
             response,
@@ -165,7 +165,7 @@ impl CodeModeExecuteHandler {
             exec.turn.config.code_mode.experimental_show_cell_overhead,
         )
         .await
-        .map_err(FunctionCallError::RespondToModel)?)
+        .map_err(FunctionCallError::RespondToModel)
     }
 }
 

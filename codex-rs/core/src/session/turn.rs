@@ -624,27 +624,19 @@ pub(crate) async fn run_turn(
                 else {
                     break result;
                 };
+                let Some(next_account_lease) = next_turn_context.account_lease.as_ref() else {
+                    break result;
+                };
+                let Ok(next_account_profile_ref) =
+                    codex_usage::AccountProfileRef::new(next_account_lease.account_id().as_str())
+                else {
+                    break result;
+                };
                 let next_model_client = sess
                     .services
                     .model_client
-                    .for_auth_manager(Arc::clone(
-                        next_turn_context
-                            .account_lease
-                            .as_ref()
-                            .expect("failover context has a profile lease")
-                            .auth_manager(),
-                    ))
-                    .with_account_profile_ref(
-                        codex_usage::AccountProfileRef::new(
-                            next_turn_context
-                                .account_lease
-                                .as_ref()
-                                .expect("failover context has a profile lease")
-                                .account_id()
-                                .as_str(),
-                        )
-                        .expect("account id is a valid usage profile reference"),
-                    );
+                    .for_auth_manager(Arc::clone(next_account_lease.auth_manager()))
+                    .with_account_profile_ref(next_account_profile_ref);
                 if !client_session.responses_websocket_enabled() {
                     next_model_client.force_http_fallback(
                         &sess.services.session_telemetry,
