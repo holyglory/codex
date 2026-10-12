@@ -251,22 +251,18 @@ async fn agent_reads_usage_and_appends_a_classification_correction() -> Result<(
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_workspace_setup(|cwd, fs| async move {
-            fs.create_directory(
-                &PathUri::from_abs_path(&cwd).join(".git")?,
-                CreateDirectoryOptions {
-                    recursive: false,
-                    follow_symlinks: false,
-                },
-                /*sandbox*/ None,
-            )
-            .await?;
+        .with_workspace_setup(|cwd, _fs| async move {
+            let output = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&cwd)
+                .output()?;
+            anyhow::ensure!(output.status.success(), "initialize isolated repository");
             Ok(())
         });
     // Current-repository usage resolves app-host Git metadata, and both turns below explicitly use
     // the local environment. Keep the fixture local instead of projecting a remote Windows cwd
     // onto the app host in Wine-exec runs.
-    let test = builder.build_with_remote_and_local_env(&server).await?;
+    let test = builder.build(&server).await?;
     test.submit_turn_with_environments(
         "seed usage history",
         Some(vec![local(test.config.cwd.clone())]),
