@@ -73,6 +73,7 @@
         "codex-rs/app-server/src/request_processors/account_processor.rs",
         "codex-rs/app-server/src/in_process_bootstrap_tests.rs",
         "codex-rs/app-server/tests/suite/v2/account.rs",
+        "codex-rs/app-server/tests/suite/v2/account_profile.rs",
         "codex-rs/app-server/tests/suite/v2/realtime_profile_auth.rs",
         "codex-rs/cli/src/login_storage_tests.rs",
         "codex-rs/login/src/auth/profile/router.rs",
