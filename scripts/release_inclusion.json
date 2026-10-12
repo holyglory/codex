@@ -86,6 +86,7 @@
       "filters": [
         "test(bootstrap_discovery_survives_identity_installation_but_account_access_is_revoked)",
         "test(login_account_chatgpt_device_code_succeeds_and_notifies)",
+        "test(suite::v2::account_profile::profile_crud_auto_and_generation_survive_restart)",
         "test(realtime_profile_auth::)",
         "test(login_default_filter_records_sanitized_storage_fallback)",
         "test(login_and_logout_replace_only_the_active_profile)"
