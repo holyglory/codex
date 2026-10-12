@@ -400,11 +400,9 @@ struct ManagedClientStartup {
 
 impl ManagedClientStartup {
     fn start(&self) -> ManagedClientFuture {
-        // A new attempt must not expose capabilities from an earlier connection.
-        *self
-            .server_capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        // Keep initialized capabilities available for degraded status while this
+        // configuration retries discovery. A successful initialize replaces them;
+        // a different connection configuration owns a fresh capabilities slot.
         let Self {
             originator,
             server_name,

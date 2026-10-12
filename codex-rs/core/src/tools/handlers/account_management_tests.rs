@@ -13,6 +13,7 @@ use super::account_page;
 use super::all_priorities_output;
 use super::encode_output;
 use super::service_usage;
+use super::validated_limit;
 
 fn account(alias: &str, priority: u32) -> ManagedAccountSummary {
     ManagedAccountSummary {
@@ -125,16 +126,24 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     let encoded_list = encode_output(&list).expect("maximal account list stays bounded");
     assert!(encoded_list.len() < MAX_TOOL_OUTPUT_BYTES);
 
+    // Exercise the same page selection as the tool: ten requested accounts may
+    // produce a smaller page so complete usage facts fit without truncation.
+    let limit = validated_limit(Some(10), /*refresh_service_usage*/ true).expect("usage limit");
+    assert_eq!(
+        validated_limit(/*limit*/ None, /*refresh_service_usage*/ true)
+            .expect("default usage limit"),
+        limit
+    );
     let mut usage = account_page(
         ManagedAccountSnapshot {
             generation: u64::MAX,
             auto_selection_enabled: true,
             accounts: (0..10)
-                .map(|index| account(&format!("account{index}"), u32::MAX))
+                .map(|index| account(&format!("a{}{index:02}", "x".repeat(61)), u32::MAX))
                 .collect(),
         },
         /*offset*/ 0,
-        /*limit*/ 10,
+        limit,
         /*routed_account*/ None,
     )
     .expect("maximal service usage page");
@@ -142,7 +151,9 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     for account in &mut usage.accounts {
         account.service_usage = Some(service_usage::maximal_service_usage());
     }
-    let encoded_usage = encode_output(&usage).expect("10 accounts by 8 buckets stays bounded");
+    assert_eq!(usage.accounts.len(), limit as usize);
+    assert_eq!(usage.next_offset, Some(limit));
+    let encoded_usage = encode_output(&usage).expect("bounded page preserves all eight buckets");
     assert!(encoded_usage.len() < MAX_TOOL_OUTPUT_BYTES);
 
     assert!(encode_output(&"x".repeat(MAX_TOOL_OUTPUT_BYTES)).is_err());
