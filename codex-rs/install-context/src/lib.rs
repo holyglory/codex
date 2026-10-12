@@ -174,6 +174,12 @@ impl InstallContext {
     }
 
     pub fn code_mode_host_program(&self) -> PathBuf {
+        if cfg!(debug_assertions)
+            && let Some(path) = std::env::var_os("CARGO_BIN_EXE_codex-code-mode-host")
+            && Path::new(&path).is_file()
+        {
+            return PathBuf::from(path);
+        }
         // prefer the one packed under codex-resources
         self.bundled_resource(CODE_MODE_HOST_EXECUTABLE_NAME)
             .map_or_else(

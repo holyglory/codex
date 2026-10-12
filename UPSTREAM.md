@@ -154,6 +154,12 @@ the authority for release outcomes and verification receipts.
   cannot detect a voice call using the process auth manager instead of the
   selected profile. Check default changes, process pins, automatic selection,
   exhausted capacity, reconnect credentials, and lease release after Stop.
+- **Keep Bazel helper binaries on the runtime path.** App-server tests may
+  stage `codex-code-mode-host` in a separate Bazel package. In debug/test
+  builds, resolve the inherited `CARGO_BIN_EXE_codex-code-mode-host` before
+  deriving a sibling path from `current_exe`; otherwise code-mode integration
+  tests fail only under Bazel even when Cargo and the runfiles manifest contain
+  the helper.
 - **Update test doubles when upstream traits gain context parameters.** The
   stable refresh changed workspace-routing resolution to receive the selected
   auth manager. Search every test-only resolver implementation after a trait

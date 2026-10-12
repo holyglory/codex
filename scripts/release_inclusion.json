@@ -158,6 +158,7 @@
     {
       "id": "code-mode-event-wait",
       "required_files": [
+        "codex-rs/install-context/src/lib.rs",
         "codex-rs/core/src/tools/code_mode/event_wait.rs",
         "codex-rs/core/tests/suite/code_mode_wait_timer.rs"
       ],
