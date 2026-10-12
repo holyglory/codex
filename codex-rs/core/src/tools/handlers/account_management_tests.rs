@@ -95,7 +95,7 @@ fn tool_contract_explains_priority_direction_and_security_boundary() {
         "set_priority",
         "set_all_priorities",
         "higher numbers drain first",
-        "never returns email",
+        "never returns credentials, email",
     ] {
         assert!(encoded.contains(required), "missing {required}");
     }
