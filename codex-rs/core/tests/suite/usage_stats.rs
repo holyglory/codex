@@ -222,6 +222,11 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         &server,
         vec![
             sse(vec![
+                ev_response_created("resp-seed"),
+                ev_assistant_message("msg-seed", "usage seeded"),
+                ev_completed("resp-seed"),
+            ]),
+            sse(vec![
                 ev_response_created("resp-1"),
                 ev_function_call(
                     "read-usage",
@@ -262,13 +267,18 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     // onto the app host in Wine-exec runs.
     let test = builder.build(&server).await?;
     test.submit_turn_with_environments(
+        "seed usage history",
+        Some(vec![local(test.config.cwd.clone())]),
+    )
+    .await?;
+    test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
     )
     .await?;
 
     let first_requests = first_mock.requests();
-    assert_eq!(first_requests.len(), 2);
+    assert_eq!(first_requests.len(), 3);
     assert!(
         first_requests[0].body_json()["tools"]
             .as_array()
@@ -276,7 +286,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
                 .iter()
                 .any(|tool| tool["name"].as_str() == Some("usage_stats")))
     );
-    let summary = tool_output(&first_requests[1], "read-usage");
+    let summary = tool_output(&first_requests[2], "read-usage");
     assert_eq!(summary["kind"], "usageSummary");
     assert_eq!(summary["scope"]["type"], "repository");
     assert_eq!(summary["reportingOperationInProgress"], true);
