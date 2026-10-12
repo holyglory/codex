@@ -349,6 +349,38 @@ class LocalCandidateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             candidate.frozen_commit(self.directory)
 
+    def test_preserve_generated_test_artifacts_keeps_source_clean(self):
+        generated = self.directory / "codex-rs/core/tests/suite/example.snap.new"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("snapshot candidate")
+        lock = self.directory / "codex-rs/non-existent/.auth-credential-lock-v1"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("fixture lock")
+        with patch.object(
+            candidate,
+            "git",
+            return_value=(
+                "?? codex-rs/core/tests/suite/example.snap.new\0"
+                "?? codex-rs/non-existent/.auth-credential-lock-v1\0"
+            ),
+        ):
+            candidate.preserve_generated_test_artifacts(self.directory, self.directory)
+        self.assertFalse(generated.exists())
+        self.assertFalse(lock.exists())
+        self.assertEqual(
+            (
+                self.directory / "generated/codex-rs/core/tests/suite/example.snap.new"
+            ).read_text(),
+            "snapshot candidate",
+        )
+
+    def test_preserve_generated_test_artifacts_rejects_unexpected_source_change(self):
+        with patch.object(candidate, "git", return_value="?? unexpected.txt\0"):
+            with self.assertRaisesRegex(ValueError, "unexpected source path"):
+                candidate.preserve_generated_test_artifacts(
+                    self.directory, self.directory
+                )
+
     def test_package_smokes_require_both_formats_and_real_linux_coverage(self):
         (self.directory / "source-commit.txt").write_text(self.commit)
 

@@ -126,8 +126,9 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     assert_eq!(identity["kind"], "usageRepositoryIdentity");
     assert_eq!(identity["scope"]["id"], repository.as_str());
     assert_eq!(identity["databaseSchemaVersion"], 9);
+    assert!(identity["worktreeKey"].is_string());
     assert!(identity.get("tokens").is_none());
-    assert_eq!(identity.as_object().unwrap().len(), 5);
+    assert_eq!(identity.as_object().unwrap().len(), 6);
     codex_command(home.path())?
         .current_dir(checkout.path())
         .args([

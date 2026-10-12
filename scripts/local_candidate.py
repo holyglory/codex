@@ -83,6 +83,7 @@ def commands(root, state, directory):
     native_cargo = [*native, "run", "--state", str(state), "--"]
     bazel = ["bash", ".github/scripts/run-bazel-ci.sh", "--"]
     cache = f"--disk_cache={state / 'bazel-actions'}"
+    bazel_home = f"/tmp/codex-test-home-{directory.name}"
     return {
         "toolchain": (
             [sys.executable, "scripts/run_candidate_preflight.py", "--toolchain-only"],
@@ -144,7 +145,7 @@ def commands(root, state, directory):
                 "--sandbox_tmpfs_path=/tmp",
                 "--test_env=TMPDIR=/tmp",
                 "--test_env=TEST_TMPDIR=/tmp",
-                "--test_env=HOME=/tmp/codex-test-home",
+                f"--test_env=HOME={bazel_home}",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
                 "--test_env=INSTA_UPDATE=no",
@@ -201,7 +202,7 @@ def commands(root, state, directory):
                 "--sandbox_tmpfs_path=/tmp",
                 "--test_env=TMPDIR=/tmp",
                 "--test_env=TEST_TMPDIR=/tmp",
-                "--test_env=HOME=/tmp/codex-test-home",
+                f"--test_env=HOME={bazel_home}",
                 "--keep_going",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
@@ -247,6 +248,26 @@ def run_step(name, command, cwd, environ, directory):
     }
     print(json.dumps(result), flush=True)
     return result
+
+
+def preserve_generated_test_artifacts(root, directory):
+    """Move known test-only outputs out of the frozen source checkout."""
+    status = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    for entry in status.split("\0"):
+        if not entry:
+            continue
+        state = entry[:2]
+        path = entry[3:]
+        if state != "??" or not (
+            path.endswith(".snap.new")
+            or path == "codex-rs/non-existent/.auth-credential-lock-v1"
+        ):
+            raise ValueError(
+                f"Acceptance run modified an unexpected source path: {path}"
+            )
+        target = directory / "generated" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(root / path), target)
 
 
 def execute(plan, environ, directory, unchanged, runner=run_step):
@@ -373,6 +394,7 @@ def check(root, state, cargo_target, release_target):
         results = execute(
             commands(root, state, directory), environ, directory, unchanged
         )
+        preserve_generated_test_artifacts(root, directory)
         receipt = {
             "schema": 1,
             "commit": commit,
