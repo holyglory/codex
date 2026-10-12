@@ -129,12 +129,12 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
         ManagedAccountSnapshot {
             generation: u64::MAX,
             auto_selection_enabled: true,
-            accounts: (0..5)
+            accounts: (0..10)
                 .map(|index| account(&format!("account{index}"), u32::MAX))
                 .collect(),
         },
         /*offset*/ 0,
-        /*limit*/ 5,
+        /*limit*/ 10,
         /*routed_account*/ None,
     )
     .expect("maximal service usage page");
@@ -142,7 +142,7 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     for account in &mut usage.accounts {
         account.service_usage = Some(service_usage::maximal_service_usage());
     }
-    let encoded_usage = encode_output(&usage).expect("5 accounts by 8 buckets stays bounded");
+    let encoded_usage = encode_output(&usage).expect("10 accounts by 8 buckets stays bounded");
     assert!(encoded_usage.len() < MAX_TOOL_OUTPUT_BYTES);
 
     assert!(encode_output(&"x".repeat(MAX_TOOL_OUTPUT_BYTES)).is_err());
