@@ -97,7 +97,6 @@ def run_preflight(root: Path) -> None:
     for family in (
         "suite::v2::thread_reconnect::",
         "app::tests::turn_submission::",
-        "unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags",
         "suite::unified_exec::unified_exec_formats_large_output_summary",
         "suite::v2::account_auto_selection::",
         "suite::models_cache_ttl::",
