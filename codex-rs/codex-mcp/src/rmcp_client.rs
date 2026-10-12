@@ -636,10 +636,10 @@ impl AsyncManagedClient {
             return Ok(client);
         }
         let result = self.client.clone().await;
-        if let Err(error) = &result {
-            if let Some(reconnect) = &self.startup_reconnect {
-                reconnect.record_initial_failure(error);
-            }
+        if let Err(error) = &result
+            && let Some(reconnect) = &self.startup_reconnect
+        {
+            reconnect.record_initial_failure(error);
         }
         result
     }
