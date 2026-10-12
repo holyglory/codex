@@ -84,14 +84,13 @@ class CandidatePreflightTests(unittest.TestCase):
             ],
         )
         commands = [call.args[0] for call in run.call_args_list[1:]]
-        self.assertEqual(len(commands), 7)
+        self.assertEqual(len(commands), 6)
         self.assertTrue(all(command[:-1] == commands[0][:-1] for command in commands))
         self.assertEqual(
             [command[-1] for command in commands],
             [
                 "test(suite::v2::thread_reconnect::)",
                 "test(app::tests::turn_submission::)",
-                "test(unified_exec::async_watcher::tests::streaming_output_preserves_summary_when_delta_consumer_lags)",
                 "test(suite::unified_exec::unified_exec_formats_large_output_summary)",
                 "test(suite::v2::account_auto_selection::)",
                 "test(suite::models_cache_ttl::)",
@@ -141,7 +140,7 @@ class CandidatePreflightTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
 
     def test_output_capture_failure_stops_the_gate(self):
-        for preceding_successes in (3, 4, 5, 6, 7):
+        for preceding_successes in (3, 4, 5, 6):
             with (
                 self.subTest(preceding_successes=preceding_successes),
                 patch(
