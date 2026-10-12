@@ -374,10 +374,9 @@ impl InProcessAppServerClient {
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
         let server_capabilities = handle
             .initialize_response()
-            .map(|response| {
-                AppServerCapabilities::from_initialize_result(
-                    &serde_json::to_value(response).expect("initialize response serializes"),
-                )
+            .and_then(|response| {
+                let response = serde_json::to_value(response).ok()?;
+                AppServerCapabilities::from_initialize_result(&response).into()
             })
             .unwrap_or_else(AppServerCapabilities::advertised_v1);
         let request_sender = handle.sender();
