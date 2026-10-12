@@ -180,7 +180,8 @@ fn linux_sandbox_command(
     args.push("--".to_string());
     args.extend(command.iter().map(|entry| (*entry).to_string()));
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    let sandbox = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").expect("sandbox helper");
+    let mut cmd = Command::new(sandbox);
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
