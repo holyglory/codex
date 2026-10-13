@@ -38,9 +38,13 @@ Settings:
     - Do not use python scripts to attempt to output larger chunks of a file.
 
 
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[4]:
+    [01] <project_automation_instructions>Use durable alarm_set reminders for elapsed UTC time, active work, or a...r admission blocks.</project_automation_instructions> [hash=ad0173b74f937254]
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
+    [04] <usage_stats_instructions>
+        Local usage analytics are available through `usage_stats`. For usage-based analysis or reflection about ...unless the user asks about official product behavior. [hash=c3bc870833af4f1f]
+        </usage_stats_instructions>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
