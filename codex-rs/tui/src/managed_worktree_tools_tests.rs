@@ -300,25 +300,27 @@ async fn creation_attaches_to_original_task_and_survives_service_restart() -> co
         );
         let result = tokio::time::timeout(Duration::from_secs(/*secs*/ 20), async {
             loop {
-                let result = supervised
-                    .execute(
-                        server.request_handle(),
-                        thread_id.clone(),
-                        "get_worktree_creation_status",
-                        json!({"operationId":pending["operationId"]}),
-                    )
-                    .await;
-                if !result.success {
+                let result = value(
+                    supervised
+                        .execute(
+                            server.request_handle(),
+                            thread_id.clone(),
+                            "get_worktree_creation_status",
+                            json!({"operationId":pending["operationId"]}),
+                        )
+                        .await,
+                );
+                if result["type"] != "pending" {
                     break result;
                 }
                 tokio::time::sleep(Duration::from_millis(/*millis*/ 20)).await;
             }
         })
         .await?;
-        assert!(
-            format!("{result:?}").contains("outcome is uncertain"),
-            "{result:?}"
-        );
+        assert!(matches!(
+            result["type"].as_str(),
+            Some("created") | Some("registrationFailed")
+        ));
         assert!(
             supervised
                 .operations
