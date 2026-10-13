@@ -1008,6 +1008,9 @@ impl TestCodexBuilder {
         } else {
             load_default_config_for_test(home).await
         };
+        // Keep upstream fixtures independent of downstream local controls. The account,
+        // usage, alarm, and event integration suites enable those controls explicitly.
+        config.local_control_tools_enabled = false;
         // Keep generic tests stable when the bundled catalog default changes. Tests that need a
         // specific model can still override this with a config mutator.
         config.model = Some("gpt-5.5".to_string());
