@@ -404,6 +404,7 @@ impl ModelsManager for OpenAiModelsManager {
             let refresh = async {
                 if let Some(auth_manager) = self.auth_manager.as_ref()
                     && auth_manager.has_external_auth()
+                    && !self.endpoint_client.has_command_auth()
                 {
                     let (_, timed_out) = auth_manager.auth_with_external_reload_timeout().await;
                     if timed_out {
