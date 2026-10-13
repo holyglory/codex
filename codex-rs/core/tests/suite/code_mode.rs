@@ -1084,6 +1084,8 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
         "requires a Windows test_stdio_server in the Wine-exec environment"
     );
     skip_if_no_network!(Ok(()));
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let environment_id = remote_aware_environment_id();
 
     for omit_tools_from in [
         &["code_mode"][..],
@@ -1115,8 +1117,8 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
                 ]),
             )
             .await;
-            let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
-            let environment_id = remote_aware_environment_id();
+            let rmcp_test_server_bin = rmcp_test_server_bin.clone();
+            let environment_id = environment_id.clone();
             let mut builder = test_codex()
                 .with_model_info_override("gpt-5.4", move |model| {
                     model.supports_search_tool = supports_search_tool;
@@ -1159,6 +1161,7 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
             } else {
                 "mcp__rmcp"
             };
+            let base_thread_id = base_test.session_configured.thread_id.clone();
             let new_thread = base_test
                 .thread_manager
                 .start_thread(StartThreadOptions {
@@ -1184,6 +1187,8 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
                 })
                 .await?;
             let mut test = base_test;
+            let _ = test.codex.shutdown_and_wait().await;
+            test.thread_manager.remove_thread(&base_thread_id).await;
             test.codex = new_thread.thread;
             test.session_configured = new_thread.session_configured;
             wait_for_mcp_server(&test.codex, "rmcp").await?;
@@ -1269,9 +1274,14 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
                     "an unrelated same-namespace tool must remain available inside Code Mode; \
                  omit_tools_from={omit_tools_from:?}, \
                  supports_search_tool={supports_search_tool}, \
-                 nested_tool_name={unrelated_nested_tool_name}"
+                    nested_tool_name={unrelated_nested_tool_name}"
                 );
             }
+            let replacement_thread_id = test.session_configured.thread_id.clone();
+            let _ = test.codex.shutdown_and_wait().await;
+            test.thread_manager
+                .remove_thread(&replacement_thread_id)
+                .await;
         }
     }
 
@@ -1285,6 +1295,8 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
         "requires a Windows test_stdio_server in the Wine-exec environment"
     );
     skip_if_no_network!(Ok(()));
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let environment_id = remote_aware_environment_id();
 
     for omit_tools_from in [
         &["code_mode"][..],
@@ -1348,8 +1360,8 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
             } else {
                 None
             };
-            let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
-            let environment_id = remote_aware_environment_id();
+            let rmcp_test_server_bin = rmcp_test_server_bin.clone();
+            let environment_id = environment_id.clone();
             let mut builder = test_codex()
                 .with_model_info_override("gpt-5.4", move |model| {
                     model.supports_search_tool = supports_search_tool;
@@ -1427,6 +1439,9 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                      namespace={namespace}, output={output:?}"
                 );
             }
+            let thread_id = test.session_configured.thread_id.clone();
+            let _ = test.codex.shutdown_and_wait().await;
+            test.thread_manager.remove_thread(&thread_id).await;
         }
     }
 
