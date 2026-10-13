@@ -83,7 +83,9 @@ class LocalCandidateTests(unittest.TestCase):
 
     def test_runner_keeps_nonroot_identity_and_private_mounts(self):
         if os.environ.get("CODEX_BAZEL_BATCH"):
-            self.skipTest("the acceptance runner is already inside its isolated namespace")
+            self.skipTest(
+                "the acceptance runner is already inside its isolated namespace"
+            )
         if sys.platform != "linux" or shutil.which("bwrap") is None:
             self.skipTest("the local Linux runner requires bubblewrap")
         bulk_root = Path("/mnt/build-storage/codex")
