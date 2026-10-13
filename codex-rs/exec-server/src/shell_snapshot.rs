@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::os::fd::AsRawFd;
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -361,26 +360,7 @@ async fn capture_snapshot(
     })?;
     // Probe under the exact capture sandbox, including its /proc fallback and
     // read policy. Keep cached env replay when descriptor paths cannot be opened.
-    // Linux sandboxing exposes `/dev/fd` through the `/proc/self/fd` symlink.
-    // Check both names against the effective policy before selecting descriptor
-    // replay; a probe through the wrapper can otherwise succeed while the final
-    // sandboxed process cannot resolve the same descriptor path.
-    let descriptor_replay_allowed = params.sandbox.as_ref().is_none_or(|sandbox| {
-        let Ok(cwd) = params.cwd.to_abs_path() else {
-            return false;
-        };
-        let policy = sandbox.permissions.file_system_sandbox_policy();
-        let descriptor_paths = [Path::new("/dev/fd"), Path::new("/proc/self/fd")];
-        !policy
-            .get_unreadable_roots_with_cwd_preserving_symlinks(cwd.as_path())
-            .iter()
-            .any(|root| {
-                descriptor_paths.iter().any(|path| {
-                    root.as_path().starts_with(path) || path.starts_with(root.as_path())
-                })
-            })
-    });
-    let probe = if shell_type == ShellType::Sh || !descriptor_replay_allowed {
+    let probe = if shell_type == ShellType::Sh {
         None
     } else {
         tokio::task::spawn_blocking(move || crate::shell_snapshot_file::materialize(shell_type, ""))
