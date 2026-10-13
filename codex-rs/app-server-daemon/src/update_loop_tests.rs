@@ -1,4 +1,7 @@
 use std::sync::Mutex;
+
+#[path = "update_loop_tests/maintenance_schedule.rs"]
+mod maintenance_schedule;
 #[cfg(unix)]
 use std::time::Duration;
 

@@ -889,7 +889,8 @@ impl TestCodexBuilder {
                 Some(configure) => configure(thread_manager),
                 None => thread_manager,
             };
-            let thread_manager = if config.features.enabled(Feature::CodeModeHost)
+            let thread_manager = if (config.features.enabled(Feature::CodeModeHost)
+                || config.code_mode.disable_in_process_fallback)
                 && let Some(code_mode_host_program) = code_mode_host_program
             {
                 codex_core::test_support::with_code_mode_host_program(

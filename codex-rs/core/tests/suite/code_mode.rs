@@ -465,6 +465,7 @@ async fn disabled_process_host_with_fallback_disabled_attempts_the_host() -> Res
     let server = responses::start_mock_server().await;
     let builder = test_codex()
         .with_model("test-gpt-5.1-codex")
+        .with_code_mode_host_program("codex-code-mode-host-does-not-exist".into())
         .with_config(|config| {
             config
                 .features
