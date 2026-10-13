@@ -1151,22 +1151,6 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
         .await?;
 
     submit_user_input(&test, "exhaust the headerless rate-limited stream").await?;
-    let retry = telemetry.next_retry().await;
-    assert!(
-        (FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay),
-        "{retry:?}",
-    );
-    assert_eq!(
-        retry,
-        RetryTelemetryEvent {
-            attempt: 1,
-            delay: retry.delay,
-            layer: "stream".into(),
-            operation: "sampling".into(),
-        }
-    );
-    wait_for_retry(&mut telemetry, &retry).await;
-
     let expected_error = if code == "slow_down" {
         CodexErrorInfo::ServerOverloaded
     } else {
@@ -1177,6 +1161,23 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
     } else {
         "Rate limit exceeded."
     };
+    if code != "slow_down" {
+        let retry = telemetry.next_retry().await;
+        assert!(
+            (FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay),
+            "{retry:?}",
+        );
+        assert_eq!(
+            retry,
+            RetryTelemetryEvent {
+                attempt: 1,
+                delay: retry.delay,
+                layer: "stream".into(),
+                operation: "sampling".into(),
+            }
+        );
+        wait_for_retry(&mut telemetry, &retry).await;
+    }
 
     let mut error_events = 0;
     let mut stream_error_events = 0;
@@ -1200,8 +1201,11 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
     }
 
     assert_eq!(error_events, 1);
-    assert_eq!(stream_error_events, 1);
-    assert_eq!(response_mock.requests().len(), 2);
+    assert_eq!(stream_error_events, usize::from(code != "slow_down"));
+    assert_eq!(
+        response_mock.requests().len(),
+        if code == "slow_down" { 1 } else { 2 }
+    );
     assert_eq!(
         telemetry.events.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
