@@ -1126,22 +1126,19 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
 
     let mut telemetry = RetryTelemetryCapture::install();
     let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_response_sequence(
-        &server,
-        vec![
-            responses::sse_response(responses::sse_failed(
-                "rate-limited",
-                code,
-                "Rate limit exceeded.",
-            )),
-            responses::sse_response(responses::sse_failed(
-                "still-rate-limited",
-                code,
-                "Rate limit exceeded.",
-            )),
-        ],
-    )
-    .await;
+    let mut responses = vec![responses::sse_response(responses::sse_failed(
+        "rate-limited",
+        code,
+        "Rate limit exceeded.",
+    ))];
+    if code != "slow_down" {
+        responses.push(responses::sse_response(responses::sse_failed(
+            "still-rate-limited",
+            code,
+            "Rate limit exceeded.",
+        )));
+    }
+    let response_mock = responses::mount_response_sequence(&server, responses).await;
     let test = test_codex()
         .with_config(|config| {
             config.model_provider.request_max_retries = Some(0);
