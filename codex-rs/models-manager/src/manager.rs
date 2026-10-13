@@ -402,6 +402,13 @@ impl ModelsManager for OpenAiModelsManager {
     ) -> ModelsManagerFuture<'_, ()> {
         Box::pin(async move {
             let refresh = async {
+                if self
+                    .auth_manager
+                    .as_ref()
+                    .is_some_and(AuthManager::external_auth_reload_timed_out)
+                {
+                    return Ok(());
+                }
                 // Resolve lazy command credentials before comparing catalog identities.
                 if !self.should_refresh_models().await {
                     return Ok(());

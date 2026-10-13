@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -2303,6 +2304,7 @@ pub struct AuthManager {
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
+    external_auth_reload_timed_out: AtomicBool,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2448,6 +2450,7 @@ impl AuthManager {
             forced_chatgpt_workspace_id,
             managed_auth_policy,
             auth_route_config,
+            external_auth_reload_timed_out: AtomicBool::new(false),
         } = auth_config;
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
@@ -2675,10 +2678,12 @@ impl AuthManager {
     #[instrument(level = "trace", skip_all)]
     pub async fn auth(&self) -> Option<CodexAuth> {
         if self.has_external_auth() {
-            if tokio::time::timeout(EXTERNAL_AUTH_RELOAD_TIMEOUT, self.reload())
+            let timed_out = tokio::time::timeout(EXTERNAL_AUTH_RELOAD_TIMEOUT, self.reload())
                 .await
-                .is_err()
-            {
+                .is_err();
+            self.external_auth_reload_timed_out
+                .store(timed_out, Ordering::SeqCst);
+            if timed_out {
                 tracing::warn!(
                     timeout_seconds = EXTERNAL_AUTH_RELOAD_TIMEOUT.as_secs(),
                     "external auth reload timed out; using cached credentials"
@@ -3052,6 +3057,11 @@ impl AuthManager {
 
     pub fn has_external_auth(&self) -> bool {
         self.external_auth_provider().is_some()
+    }
+
+    /// Reports whether the most recent external-auth reload exceeded its bounded deadline.
+    pub fn external_auth_reload_timed_out(&self) -> bool {
+        self.external_auth_reload_timed_out.load(Ordering::SeqCst)
     }
 
     pub fn is_workload_identity_selected(&self) -> bool {
