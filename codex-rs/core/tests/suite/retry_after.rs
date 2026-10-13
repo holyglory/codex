@@ -1179,7 +1179,7 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
         match wait_for_event(&test.codex, |_| true).await {
             EventMsg::Error(error) => {
                 error_events += 1;
-                assert_eq!(error.codex_error_info, Some(expected_error));
+                assert_eq!(error.codex_error_info, Some(expected_error.clone()));
                 assert!(error.message.contains("Rate limit exceeded."));
             }
             EventMsg::StreamError(_) => stream_error_events += 1,
