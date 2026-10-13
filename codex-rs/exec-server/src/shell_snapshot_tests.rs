@@ -136,8 +136,13 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
         for (prepared, reader) in [(&mut prepared, first), (&mut concurrent, second)] {
             if let Some(reader) = reader {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
-                prepared.command[2] =
-                    prepared.command[2].replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
+                let descriptor = format!("/dev/fd/{fd}");
+                let command = prepared
+                    .command
+                    .iter_mut()
+                    .find(|argument| argument.contains(&descriptor))
+                    .expect("snapshot restore command must contain its reader descriptor");
+                *command = command.replace(&descriptor, "/dev/fd/SNAPSHOT");
             }
         }
         assert_eq!(
