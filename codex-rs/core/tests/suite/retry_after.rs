@@ -1172,6 +1172,11 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
     } else {
         CodexErrorInfo::RateLimitExceeded
     };
+    let expected_message = if code == "slow_down" {
+        "Selected model is at capacity."
+    } else {
+        "Rate limit exceeded."
+    };
 
     let mut error_events = 0;
     let mut stream_error_events = 0;
@@ -1180,7 +1185,7 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
             EventMsg::Error(error) => {
                 error_events += 1;
                 assert_eq!(error.codex_error_info, Some(expected_error.clone()));
-                assert!(error.message.contains("Rate limit exceeded."));
+                assert!(error.message.contains(expected_message));
             }
             EventMsg::StreamError(_) => stream_error_events += 1,
             EventMsg::TurnComplete(event) => {
