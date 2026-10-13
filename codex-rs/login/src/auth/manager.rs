@@ -147,6 +147,7 @@ impl fmt::Debug for AuthProfileMetadata {
 }
 
 const AGENT_IDENTITY_BOOTSTRAP_FAILURE_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+const EXTERNAL_AUTH_RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct CachedAgentIdentityBootstrapFailure {
@@ -2674,7 +2675,15 @@ impl AuthManager {
     #[instrument(level = "trace", skip_all)]
     pub async fn auth(&self) -> Option<CodexAuth> {
         if self.has_external_auth() {
-            self.reload().await;
+            if tokio::time::timeout(EXTERNAL_AUTH_RELOAD_TIMEOUT, self.reload())
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    timeout_seconds = EXTERNAL_AUTH_RELOAD_TIMEOUT.as_secs(),
+                    "external auth reload timed out; using cached credentials"
+                );
+            }
             return self.auth_cached();
         }
 
