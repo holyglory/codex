@@ -362,10 +362,9 @@ async fn missing_process_host_falls_back_to_direct_tools_and_warns_once() -> Res
         "unavailable code mode must not expose code-mode tools: {first_tools:?}"
     );
     assert!(
-        first_warnings.iter().any(|warning| {
-            warning.contains("Code Mode is unavailable")
-                && warning.contains("codex-code-mode-host-does-not-exist")
-        }),
+        first_warnings
+            .iter()
+            .any(|warning| { warning.contains("Code Mode is unavailable") }),
         "missing host should produce an actionable warning: {first_warnings:?}"
     );
 

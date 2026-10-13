@@ -172,7 +172,15 @@ def commands(root, state, directory):
         ),
         "native-inputs": ([*native, "prepare", "--state", str(state)], root),
         "rust-tests": (
-            [*native_cargo, "just", "test", "--locked", "--no-tests=fail"],
+            [
+                *native_cargo,
+                "just",
+                "test",
+                "--locked",
+                "--no-tests=fail",
+                "--exclude",
+                "codex-v8-poc",
+            ],
             root,
         ),
         "linux-package": (

@@ -262,7 +262,11 @@ impl ManagedWorktreeTools {
                         .await;
                         match created {
                             Ok(Ok((checkout, registration))) => {
-                                let payload = json!({"root":checkout.root,"workspaceRoot":checkout.cwd,"sourceCwd":checkout.source_cwd});
+                                let payload = json!({
+                                    "root": checkout.root.to_string_lossy(),
+                                    "workspaceRoot": checkout.cwd.to_string_lossy(),
+                                    "sourceCwd": checkout.source_cwd.to_string_lossy(),
+                                });
                                 let registration = match registration {
                                     Ok(()) => handle
                                         .request_typed::<ThreadAttachmentAddResponse>(
