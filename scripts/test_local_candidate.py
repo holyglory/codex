@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,61 @@ class LocalCandidateTests(unittest.TestCase):
                     candidate.check(
                         self.directory, self.directory, self.directory, self.directory
                     )
+
+    def test_runner_keeps_nonroot_identity_and_private_mounts(self):
+        if sys.platform != "linux" or shutil.which("bwrap") is None:
+            self.skipTest("the local Linux runner requires bubblewrap")
+        bulk_root = Path("/mnt/build-storage/codex")
+        if not bulk_root.is_dir() or not os.access(bulk_root, os.W_OK):
+            self.skipTest("the local runner bulk volume is unavailable")
+        runner = Path(__file__).with_name("run_local_candidate.sh")
+        probe = (
+            "import json, os, pathlib, pwd; "
+            "home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir); "
+            "socket = pathlib.Path('/tmp') / f'codex-daemon-{os.getuid()}'; "
+            "assert os.getuid() != 0; "
+            "assert pathlib.Path(os.environ['HOME']) == home; "
+            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')); "
+            "assert not pathlib.Path('/etc/codex/config.toml').exists(); "
+            "assert socket.stat().st_mode & 0o777 == 0o700; "
+            "(socket / 'probe').write_text('namespace-only'); "
+            "print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'home': str(home)}))"
+        )
+        with tempfile.TemporaryDirectory(prefix="runner-test-", dir=bulk_root) as state:
+            environment = dict(
+                os.environ,
+                OPENAI_API_KEY="fixture-secret",
+                CODEX_API_KEY="fixture-secret",
+                CODEX_ACCESS_TOKEN="fixture-secret",
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(runner),
+                    state,
+                    "--command",
+                    sys.executable,
+                    "-c",
+                    probe,
+                ],
+                cwd=runner.parents[1],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["uid"], os.getuid())
+            self.assertEqual(payload["gid"], os.getgid())
+            self.assertFalse(
+                (
+                    Path(state)
+                    / "test-environment"
+                    / "tmp"
+                    / f"codex-daemon-{os.getuid()}"
+                    / "probe"
+                ).exists()
+            )
 
     def test_inclusion_rejects_a_lost_feature_or_changed_migration(self):
         root = self.directory
