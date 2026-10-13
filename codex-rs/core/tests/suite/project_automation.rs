@@ -34,7 +34,10 @@ async fn tool_turn(
 async fn alarms_tools_persist_nudge_and_ack_only_delivery() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    let test = test_codex()
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build_with_auto_env(&server)
+        .await?;
     let [_,response]=tool_turn(&test,&server,"set-alarm","alarm_set",json!({"dedupe_key":"review-window","subject":"Performance review due","summary":"Use Coordinator review.prepare and review.record; acknowledgement only handles delivery.","absolute_at_ms":1})).await?;
     let alarm: Value = serde_json::from_str(
         &response
@@ -123,7 +126,10 @@ async fn unavailable_project_store_does_not_abort_model_turn() -> Result<()> {
 async fn alarm_result_trigger_observes_the_real_tool_terminal_without_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    let test = test_codex()
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build_with_auto_env(&server)
+        .await?;
     let [_,response]=tool_turn(&test,&server,"watch-result","alarm_set",json!({"dedupe_key":"command-result","subject":"Command finished","summary":"Check the command result.","operation_result":{"operation_id":"execute-observed","tool_name":"exec_command","outcome_class":"completed"}})).await?;
     let alarm: Value = serde_json::from_str(
         &response
@@ -171,7 +177,10 @@ async fn alarm_result_trigger_observes_the_real_tool_terminal_without_output() -
 async fn alarm_pages_bound_escaped_reminders_without_losing_the_next_page() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+    let test = test_codex()
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build_with_auto_env(&server)
+        .await?;
     for index in 0..5 {
         let _=tool_turn(&test,&server,&format!("set-{index}"),"alarm_set",json!({"dedupe_key":format!("bounded-{index}"),"subject":"Bounded reminder","summary":"\u{0001}".repeat(512),"relative_ms":86400000})).await?;
     }
