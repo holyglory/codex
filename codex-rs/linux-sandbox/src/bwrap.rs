@@ -1618,7 +1618,9 @@ mod tests {
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry::new(
-                AbsolutePathBuf::try_from("/dev/fd").expect("descriptor path"),
+                AbsolutePathBuf::try_from("/dev/fd")
+                    .expect("descriptor path")
+                    .into(),
                 FileSystemAccessMode::Deny,
             ),
         ]);
