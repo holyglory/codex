@@ -35,7 +35,6 @@ use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
-use std::path::PathBuf;
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
