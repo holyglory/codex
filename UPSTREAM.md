@@ -264,6 +264,24 @@ the authority for release outcomes and verification receipts.
   index and reproduce a representative case. Do not label consistent failures
   as load, races, or host contamination without evidence that distinguishes
   those causes from deterministic setup errors.
+- **Keep fixture boundaries explicit.** Generic upstream core fixtures disable
+  downstream local control tools; account, usage, alarm, and event suites opt in.
+  Preserve those opt-ins through rebases. Re-enabling the tools globally changes
+  unrelated tool lists, prompt layouts, and context-budget tests. Do not accept
+  broad snapshot changes to hide that fixture mismatch.
+- **Check runner contracts before freezing.** Cargo exclusions require
+  `--workspace`; package-scoped diagnostics should not add it. Run the local
+  namespace probe through Coordinator before the complete candidate. The
+  source-owned bubblewrap runner preserves isolation without requiring `sudo`
+  under the executor's `NoNewPrivileges` setting. Use existing compatible
+  caches and targets; a new evidence directory does not require a cold build.
+  A failing sandbox test remains unverified when skipped: fix its boundary or
+  retain the explicit missing acceptance instead of reporting a successful test.
+- **Freeze all candidate inputs.** Even a workflow-only commit changes the
+  candidate identity. Make remaining repairs in a separate checkout, integrate
+  them after the accepted run finishes, and bind the next run to that commit.
+  The reusable correction is recorded as
+  `rebase-fixture-and-runner-preservation-20261013` in Coordinator.
 - **Stage companion executables in direct Bazel fixtures.** A raw app-server
   test launcher can find `codex-app-server` while its Code Mode host remains in
   a separate Bazel runfiles directory. Stage both binaries beside the launched
