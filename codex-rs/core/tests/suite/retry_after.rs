@@ -1167,23 +1167,26 @@ async fn sse_failure_without_retry_after_exhausts_stream_retries(code: &str) -> 
     );
     wait_for_retry(&mut telemetry, &retry).await;
 
+    let expected_error = if code == "slow_down" {
+        CodexErrorInfo::ServerOverloaded
+    } else {
+        CodexErrorInfo::RateLimitExceeded
+    };
+
     let mut error_events = 0;
     let mut stream_error_events = 0;
     loop {
         match wait_for_event(&test.codex, |_| true).await {
             EventMsg::Error(error) => {
                 error_events += 1;
-                assert_eq!(
-                    error.codex_error_info,
-                    Some(CodexErrorInfo::RateLimitExceeded)
-                );
+                assert_eq!(error.codex_error_info, Some(expected_error));
                 assert!(error.message.contains("Rate limit exceeded."));
             }
             EventMsg::StreamError(_) => stream_error_events += 1,
             EventMsg::TurnComplete(event) => {
                 assert_eq!(
                     event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::RateLimitExceeded)
+                    Some(expected_error)
                 );
                 break;
             }
