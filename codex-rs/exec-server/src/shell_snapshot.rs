@@ -370,9 +370,15 @@ async fn capture_snapshot(
             return false;
         };
         let policy = sandbox.permissions.file_system_sandbox_policy();
-        ["/dev/fd", "/proc/self/fd"]
-            .into_iter()
-            .all(|path| policy.can_read_local_path_with_cwd(Path::new(path), cwd.as_path()))
+        let descriptor_paths = [Path::new("/dev/fd"), Path::new("/proc/self/fd")];
+        !policy
+            .get_unreadable_roots_with_cwd_preserving_symlinks(cwd.as_path())
+            .iter()
+            .any(|root| {
+                descriptor_paths.iter().any(|path| {
+                    root.as_path().starts_with(path) || path.starts_with(root.as_path())
+                })
+            })
     });
     let probe = if shell_type == ShellType::Sh || !descriptor_replay_allowed {
         None
