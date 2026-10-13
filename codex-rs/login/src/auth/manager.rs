@@ -147,7 +147,7 @@ impl fmt::Debug for AuthProfileMetadata {
 }
 
 const AGENT_IDENTITY_BOOTSTRAP_FAILURE_COOLDOWN: Duration = Duration::from_secs(60 * 60);
-const EXTERNAL_AUTH_RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
+const EXTERNAL_AUTH_RELOAD_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct CachedAgentIdentityBootstrapFailure {
