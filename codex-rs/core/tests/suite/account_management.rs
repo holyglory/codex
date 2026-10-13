@@ -93,6 +93,7 @@ async fn agent_lists_and_mutates_priorities_without_credential_exposure() -> Res
         .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::from_api_key("model-route"))
         .with_config(|config| {
+            config.local_control_tools_enabled = true;
             config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
         });
     let test = builder.build_with_auto_env(&server).await?;

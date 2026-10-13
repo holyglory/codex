@@ -98,6 +98,7 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
+        .with_config(|config| config.local_control_tools_enabled = true)
         .with_workspace_setup(|cwd, fs| async move {
             let auxiliary_output = cwd.join("auxiliary-output");
             for root in [&cwd, &auxiliary_output] {
@@ -252,6 +253,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
+        .with_config(|config| config.local_control_tools_enabled = true)
         .with_workspace_setup(|cwd, _fs| async move {
             let output = std::process::Command::new("git")
                 .args(["init", "--quiet"])
@@ -455,6 +457,7 @@ text(JSON.stringify(result));
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_config(|config| {
+            config.local_control_tools_enabled = true;
             config
                 .features
                 .enable(Feature::CodeMode)
