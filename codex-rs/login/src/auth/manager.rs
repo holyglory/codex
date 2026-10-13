@@ -2890,7 +2890,9 @@ impl AuthManager {
                             }
                             cached_auth
                         }
-                        RefreshTokenError::Transient(_) => None,
+                        // A transient provider failure must not erase usable cached
+                        // credentials. Keep the last known auth and retry resolution later.
+                        RefreshTokenError::Transient(_) => cached_auth,
                         RefreshTokenError::Policy(_) => cached_auth,
                     }
                 }
