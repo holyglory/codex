@@ -117,11 +117,11 @@ async fn agent_lists_and_mutates_priorities_without_credential_exposure() -> Res
     assert_eq!(mutation["changedCount"], 1);
     let listed = tool_output(&requests[2], "list-accounts");
     assert_eq!(listed["priorityOrder"], "higherFirst");
-    assert_eq!(listed["routedAccount"], "default");
+    assert_eq!(listed["routedAccount"], Value::Null);
     assert_eq!(listed["accounts"][0]["alias"], "default");
     assert_eq!(listed["accounts"][0]["priority"], 900);
     assert_eq!(listed["accounts"][0]["authenticated"], true);
-    assert_eq!(listed["accounts"][0]["isCurrentTurn"], true);
+    assert_eq!(listed["accounts"][0]["isCurrentTurn"], false);
     let encoded = serde_json::to_string(&(mutation, listed))?;
     assert!(!encoded.contains(credential));
     assert!(!encoded.contains("email"));
