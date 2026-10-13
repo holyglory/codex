@@ -178,6 +178,7 @@ def commands(root, state, directory):
                 "test",
                 "--locked",
                 "--no-tests=fail",
+                "--workspace",
                 "--exclude",
                 "codex-v8-poc",
             ],
