@@ -367,6 +367,7 @@ def check(root, state, cargo_target, release_target):
         CARGO_PROFILE_TEST_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
         CODEX_BAZEL_BATCH="1",
+        RUST_MIN_STACK="16777216",
         BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
         BAZEL_REPOSITORY_CACHE=str(state / "bazel-downloads"),
         LOCAL_BAZEL_CACHE=str(state / "bazel-actions"),
