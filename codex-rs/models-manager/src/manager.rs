@@ -405,7 +405,7 @@ impl ModelsManager for OpenAiModelsManager {
                 if self
                     .auth_manager
                     .as_ref()
-                    .is_some_and(AuthManager::external_auth_reload_timed_out)
+                    .is_some_and(|auth_manager| auth_manager.external_auth_reload_timed_out())
                 {
                     return Ok(());
                 }
