@@ -17,7 +17,6 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -2304,7 +2303,6 @@ pub struct AuthManager {
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
-    external_auth_reload_timed_out: AtomicBool,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2478,7 +2476,6 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
-            external_auth_reload_timed_out: AtomicBool::new(false),
         }
     }
 
@@ -2538,7 +2535,6 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
-            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2570,7 +2566,6 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
-            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2610,7 +2605,6 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
-            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2644,7 +2638,6 @@ impl AuthManager {
             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
                 OutboundProxyPolicy::ReqwestDefault,
             )),
-            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2676,34 +2669,40 @@ impl AuthManager {
         })
     }
 
-    /// Current cached auth (clone). May be `None` if not logged in or load failed.
-    /// For managed ChatGPT auth that needs a proactive refresh, first performs
-    /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
+    /// Resolves auth, reporting whether an external provider reload exceeded its deadline.
     #[instrument(level = "trace", skip_all)]
-    pub async fn auth(&self) -> Option<CodexAuth> {
+    pub async fn auth_with_external_reload_timeout(&self) -> (Option<CodexAuth>, bool) {
         if self.has_external_auth() {
             let timed_out = tokio::time::timeout(EXTERNAL_AUTH_RELOAD_TIMEOUT, self.reload())
                 .await
                 .is_err();
-            self.external_auth_reload_timed_out
-                .store(timed_out, Ordering::SeqCst);
             if timed_out {
                 tracing::warn!(
                     timeout_seconds = EXTERNAL_AUTH_RELOAD_TIMEOUT.as_secs(),
                     "external auth reload timed out; using cached credentials"
                 );
             }
-            return self.auth_cached();
+            return (self.auth_cached(), timed_out);
         }
 
-        let auth = self.auth_cached()?;
+        let Some(auth) = self.auth_cached() else {
+            return (None, false);
+        };
         if Self::should_refresh_proactively(&auth)
             && let Err(err) = self.refresh_token().await
         {
             tracing::error!("Failed to refresh token: {}", err);
-            return Some(auth);
+            return (Some(auth), false);
         }
-        self.auth_cached()
+        (self.auth_cached(), false)
+    }
+
+    /// Current cached auth (clone), refreshing the active source when needed.
+    /// For managed ChatGPT auth that needs a proactive refresh, first performs
+    /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
+    #[instrument(level = "trace", skip_all)]
+    pub async fn auth(&self) -> Option<CodexAuth> {
+        self.auth_with_external_reload_timeout().await.0
     }
 
     /// Refreshes auth, then captures credentials and their account-bound factory together.
@@ -3063,11 +3062,6 @@ impl AuthManager {
 
     pub fn has_external_auth(&self) -> bool {
         self.external_auth_provider().is_some()
-    }
-
-    /// Reports whether the most recent external-auth reload exceeded its bounded deadline.
-    pub fn external_auth_reload_timed_out(&self) -> bool {
-        self.external_auth_reload_timed_out.load(Ordering::SeqCst)
     }
 
     pub fn is_workload_identity_selected(&self) -> bool {

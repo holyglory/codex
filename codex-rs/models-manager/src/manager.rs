@@ -405,17 +405,10 @@ impl ModelsManager for OpenAiModelsManager {
                 if let Some(auth_manager) = self.auth_manager.as_ref()
                     && auth_manager.has_external_auth()
                 {
-                    // Resolve command credentials before admitting a catalog refresh. The
-                    // resolver itself is bounded and records a timeout, so a stalled provider
-                    // cannot spend the refresh budget on a request that will use stale auth.
-                    let _ = auth_manager.auth().await;
-                }
-                if self
-                    .auth_manager
-                    .as_ref()
-                    .is_some_and(|auth_manager| auth_manager.external_auth_reload_timed_out())
-                {
-                    return Ok(());
+                    let (_, timed_out) = auth_manager.auth_with_external_reload_timeout().await;
+                    if timed_out {
+                        return Ok(());
+                    }
                 }
                 // Resolve lazy command credentials before comparing catalog identities.
                 if !self.should_refresh_models().await {
