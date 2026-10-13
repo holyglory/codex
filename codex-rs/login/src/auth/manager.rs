@@ -2450,7 +2450,6 @@ impl AuthManager {
             forced_chatgpt_workspace_id,
             managed_auth_policy,
             auth_route_config,
-            external_auth_reload_timed_out: AtomicBool::new(false),
         } = auth_config;
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
@@ -2479,6 +2478,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
+            external_auth_reload_timed_out: AtomicBool::new(false),
         }
     }
 
@@ -2538,6 +2538,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2569,6 +2570,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2608,6 +2610,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
@@ -2641,6 +2644,7 @@ impl AuthManager {
             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
                 OutboundProxyPolicy::ReqwestDefault,
             )),
+            external_auth_reload_timed_out: AtomicBool::new(false),
         })
     }
 
