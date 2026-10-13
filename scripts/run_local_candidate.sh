@@ -54,14 +54,21 @@ if [[ "${1:-}" != --inside ]]; then
     --unsetenv SUDO_UID \
     --unsetenv SUDO_GID \
     --unsetenv SUDO_COMMAND \
-    -- bash "$root/scripts/run_local_candidate.sh" --inside "$state" "$@"
+    -- bash "$root/scripts/run_local_candidate.sh" --inside "$state" "$test_uid" "$test_gid" "$@"
 fi
 
 shift
 state=$(realpath -e "${1:?Provide an existing build-state directory outside the checkout}")
 shift
-test "$(id -u)" = "$test_uid"
-test "$(id -u)" != 0
+expected_uid=${1:?Missing invoking UID}
+expected_gid=${2:?Missing invoking GID}
+shift 2
+test "$(id -u)" = "$expected_uid"
+test "$(id -g)" = "$expected_gid"
+test "$expected_uid" != 0
+test_uid=$expected_uid
+test_gid=$expected_gid
+test_user=$(id -un)
 socket_root="/tmp/codex-daemon-$test_uid"
 
 # Bubblewrap has already created the mounts before dropping to the invoking
