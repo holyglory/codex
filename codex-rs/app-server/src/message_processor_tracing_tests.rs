@@ -161,6 +161,10 @@ impl TracingHarness {
             )
             .await;
         assert!(harness.session.initialized());
+        harness
+            .processor
+            .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
+            .await;
 
         Ok(harness)
     }

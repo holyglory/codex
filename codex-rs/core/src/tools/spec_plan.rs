@@ -1161,25 +1161,6 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let advertise_environment_tools =
         stable_environment_tools || environment_mode.has_environment();
 
-    if turn_context.config.local_control_tools_enabled {
-        registry.add(ProjectAutomationHandler);
-        for name in [
-            "alarm_set",
-            "alarm_list",
-            "alarm_status",
-            "alarm_ack",
-            "alarm_cancel",
-        ] {
-            registry.add(AlarmHandler(name));
-        }
-        registry.add(AwaitWorkHandler);
-    }
-
-    if !turn_context.session_source.is_non_root_agent() {
-        registry.add(UsageStatsHandler);
-        registry.add(UsageActivityHandler);
-        registry.add(AccountManagementHandler);
-    }
     if !advertise_environment_tools
         || !features.enabled(Feature::ShellTool)
         || matches!(context.model_info.shell_type, ConfigShellToolType::Disabled)
@@ -1250,6 +1231,23 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     let stable_environment_tools = features.enabled(Feature::StableEnvironmentTools);
     let advertise_environment_tools =
         stable_environment_tools || environment_mode.has_environment();
+
+    if turn_context.config.local_control_tools_enabled {
+        registry.add(UsageActivityHandler);
+        registry.add(UsageStatsHandler);
+        registry.add(ProjectAutomationHandler);
+        for name in [
+            "alarm_set",
+            "alarm_list",
+            "alarm_status",
+            "alarm_ack",
+            "alarm_cancel",
+        ] {
+            registry.add(AlarmHandler(name));
+        }
+        registry.add(AwaitWorkHandler);
+        registry.add(AccountManagementHandler);
+    }
 
     if turn_context.config.update_plan_enabled {
         registry.add(PlanHandler);
