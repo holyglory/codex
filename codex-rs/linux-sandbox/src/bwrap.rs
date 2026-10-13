@@ -355,6 +355,17 @@ fn create_bwrap_flags(
     let mut args = Vec::new();
     args.push("--new-session".to_string());
     args.push("--die-with-parent".to_string());
+    let masks_proc_fd = options.mount_proc
+        && filesystem_args
+            .windows(2)
+            .any(|window| window[0] == "--tmpfs" && window[1] == "/proc/self/fd");
+    if masks_proc_fd {
+        // `/dev/fd` is a symlink to `/proc/self/fd` on Linux. Mount proc before
+        // applying the deny mask so bubblewrap sees the real directory instead
+        // of trying to mount over the symlink.
+        args.push("--proc".to_string());
+        args.push("/proc".to_string());
+    }
     args.extend(filesystem_args);
     if options.mask_wsl_interop {
         // WSL's Windows-process bridge uses Unix sockets under /run/WSL.
@@ -382,7 +393,7 @@ fn create_bwrap_flags(
         args.push("--unshare-net".to_string());
     }
     // Mount a fresh /proc unless the caller explicitly disables it.
-    if options.mount_proc {
+    if options.mount_proc && !masks_proc_fd {
         args.push("--proc".to_string());
         args.push("/proc".to_string());
     }
@@ -1350,6 +1361,11 @@ fn append_unreadable_root_args(
         )));
     }
 
+    let mount_root = unreadable_mount_target(unreadable_root);
+    if mount_root != unreadable_root {
+        return append_existing_unreadable_path_args(bwrap_args, &mount_root, allowed_write_paths);
+    }
+
     if !unreadable_root.exists() {
         if let Some(first_missing_component) = find_first_non_existent_component(unreadable_root)
             && is_within_allowed_write_paths(&first_missing_component, allowed_write_paths)
@@ -1360,6 +1376,18 @@ fn append_unreadable_root_args(
     }
 
     append_existing_unreadable_path_args(bwrap_args, unreadable_root, allowed_write_paths)
+}
+
+fn unreadable_mount_target(path: &Path) -> PathBuf {
+    // `/dev/fd` is a kernel-provided symlink whose target contains the current
+    // process id when canonicalized. Keep the stable procfs spelling so the
+    // mask follows the sandbox's proc mount and never embeds a host PID.
+    if path == Path::new("/dev/fd")
+        && fs::read_link(path).is_ok_and(|target| target == Path::new("/proc/self/fd"))
+    {
+        return PathBuf::from("/proc/self/fd");
+    }
+    path.to_path_buf()
 }
 
 fn append_existing_unreadable_path_args(
@@ -1576,6 +1604,43 @@ mod tests {
             assert!(args.iter().any(|arg| arg == "--unshare-net"));
             assert!(args.windows(2).any(|args| args == ["--cap-drop", "ALL"]));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_deny_masks_proc_fd_after_proc_mount() {
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Root,
+                },
+                access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
+            },
+            FileSystemSandboxEntry::new(
+                AbsolutePathBuf::try_from("/dev/fd").expect("descriptor path"),
+                FileSystemAccessMode::Deny,
+            ),
+        ]);
+        let args = create_bwrap_command_args(
+            vec!["/bin/true".to_string()],
+            &policy,
+            Path::new("/"),
+            Path::new("/"),
+            BwrapOptions::default(),
+        )
+        .expect("create bwrap args")
+        .args;
+        let proc_mount = args
+            .windows(2)
+            .position(|window| window == ["--proc", "/proc"])
+            .expect("proc mount");
+        let proc_fd_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", "/proc/self/fd"])
+            .expect("descriptor mask");
+        assert!(proc_mount < proc_fd_mask);
+        assert!(!args.iter().any(|arg| arg == "/dev/fd"));
     }
 
     fn unreadable_glob_entry(pattern: String) -> FileSystemSandboxEntry {

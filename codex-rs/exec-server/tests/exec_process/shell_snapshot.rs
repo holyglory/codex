@@ -258,6 +258,11 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 .await?;
             let (output, errors, status, closed) =
                 collect_process_output_from_events(started.process).await?;
+            assert_eq!(
+                (errors, status, closed),
+                (String::new(), Some(7), true),
+                "output={output:?}"
+            );
             assert!(
                 output.ends_with(&format!("restored:input-{index}")),
                 "{output:?}"
@@ -268,7 +273,6 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                     "{output:?}"
                 );
             }
-            assert_eq!((errors, status, closed), (String::new(), Some(7), true));
             Ok::<_, anyhow::Error>(())
         }
     });
