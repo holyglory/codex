@@ -39,7 +39,7 @@ use ratatui::widgets::Wrap;
 #[cfg(not(debug_assertions))]
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+const RELEASE_NOTES_URL: &str = "https://github.com/holyglory/codex";
 
 #[cfg(not(debug_assertions))]
 pub(crate) enum UpdatePromptOutcome {
@@ -226,7 +226,7 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push(
             /*flex*/ 1,
             Paragraph::new(Line::from(vec![
-                "Release notes: ".dim(),
+                "Fork source: ".dim(),
                 RELEASE_NOTES_URL.dim().underlined(),
             ]))
             .wrap(Wrap { trim: false })

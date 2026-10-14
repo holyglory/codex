@@ -15,7 +15,8 @@ pub(crate) struct VersionInfo {
     pub(crate) dismissed_version: Option<String>,
 }
 
-const VERSION_FILENAME: &str = "version.json";
+// Upstream and the fork share CODEX_HOME, but not their release channel.
+const VERSION_FILENAME: &str = "holyglory-version.json";
 
 pub(crate) fn version_filepath(config: &Config) -> PathBuf {
     config.codex_home.join(VERSION_FILENAME).into_path_buf()

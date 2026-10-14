@@ -328,6 +328,15 @@ the authority for release outcomes and verification receipts.
   were refreshed. When a rebase includes a later UI layout commit, inspect the
   feature history and update behavioral assertions to the current contract;
   snapshot refresh alone is not sufficient.
+- **Upstream update code is a separate fork boundary.** The 0.162.1 replay
+  restored the upstream updater, registry endpoint, version parser, cache
+  filename, and release-note links even though the npm launcher still named
+  `@holyglory/codex`. A passing Rust suite did not catch this; the packaged
+  updater smoke caught it only after linking the release binary. Keep the
+  fork channel in `update_action`, `npm_registry`, `update_versions`,
+  `updates_cache`, doctor diagnostics, and visible update notices. The release
+  inclusion manifest now owns those files and runs focused command, parser,
+  cache, and snapshot checks before the expensive candidate graph.
 - **A complete-suite failure can still have a clean release-focused slice.** On
   `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
   one timeout clustered in Code Mode pressure, Guardian async scorer load,

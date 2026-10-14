@@ -1,8 +1,8 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
 //! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version HTTP probes. It never executes package managers or
-//! other helpers selected by PATH; npm update targets are not verified.
+//! and bounded latest-version HTTP probes. Fork package-manager installs use the
+//! fork's npm release channel and never the upstream release channel.
 
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -32,9 +32,8 @@ use super::network;
 
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
-const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const VERSION_FILE_NAME: &str = "holyglory-version.json";
+const NPM_LATEST_RELEASE_URL: &str = "https://registry.npmjs.org/@holyglory%2fcodex/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -67,8 +66,7 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
     let summary = "update configuration is locally consistent".to_string();
 
     if doctor_managed_by_npm(current_exe.as_deref()) {
-        details
-            .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
+        details.push("npm update target: @holyglory/codex@latest".to_string());
     }
     let client = RouteAwareClientPool::new_without_request_logging(
         config.http_client_factory(),
@@ -389,12 +387,11 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::Npm => "npm install -g @holyglory/codex@latest",
+        InstallMethod::Bun => "bun install -g @holyglory/codex@latest",
+        InstallMethod::VitePlus => "vp install -g @holyglory/codex@latest",
+        InstallMethod::Pnpm => "pnpm add -g @holyglory/codex@latest",
+        InstallMethod::Brew | InstallMethod::Standalone { .. } => "original fork delivery workflow",
         InstallMethod::Other => "manual or unknown",
     }
 }
@@ -404,40 +401,29 @@ async fn fetch_latest_version(
     context: &InstallContext,
 ) -> Result<String, String> {
     match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(client).await,
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::VitePlus
-        | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(client).await,
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::VitePlus | InstallMethod::Pnpm => {
+            fetch_latest_npm_release_version(client).await
+        }
+        InstallMethod::Brew | InstallMethod::Standalone { .. } | InstallMethod::Other => {
+            Err("no automatic fork updater for this installation".to_string())
+        }
     }
 }
 
-async fn fetch_latest_github_release_version(
-    client: &RouteAwareClientPool,
-) -> Result<String, String> {
+async fn fetch_latest_npm_release_version(client: &RouteAwareClientPool) -> Result<String, String> {
     #[derive(Deserialize)]
     struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(client, GITHUB_LATEST_RELEASE_URL).await?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-async fn fetch_homebrew_cask_version(client: &RouteAwareClientPool) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
         version: String,
     }
 
-    http_get_json::<HomebrewCaskInfo>(client, HOMEBREW_CASK_API_URL)
-        .await
-        .map(|info| info.version)
+    let info = http_get_json::<ReleaseInfo>(client, NPM_LATEST_RELEASE_URL).await?;
+    if !info.version.contains("-multi.") && !info.version.contains("+multi.") {
+        return Err("npm latest is not a fork root release".to_string());
+    }
+    if parse_version(&info.version).is_none() {
+        return Err("npm latest has an invalid version".to_string());
+    }
+    Ok(info.version)
 }
 
 async fn http_get_json<T>(client: &RouteAwareClientPool, url: &str) -> Result<T, String>
@@ -477,12 +463,23 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
+fn parse_version(value: &str) -> Option<(u64, u64, u64, u64)> {
+    let value = value.trim();
+    let (base, revision) = match value
+        .split_once("+multi.")
+        .or_else(|| value.split_once("-multi."))
+    {
+        Some((base, revision)) => (base, revision.parse::<u64>().ok()?),
+        None => (value, 0),
+    };
+    let mut parts = base.split('.');
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next()?.parse::<u64>().ok()?;
     let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch, revision))
 }
 
 #[derive(Deserialize)]
@@ -691,14 +688,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "pnpm add -g @holyglory/codex@latest"
         );
         assert_eq!(
             update_action_label(&InstallContext {
