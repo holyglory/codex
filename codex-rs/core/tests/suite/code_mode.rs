@@ -1161,7 +1161,7 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
             } else {
                 "mcp__rmcp"
             };
-            let base_thread_id = base_test.session_configured.thread_id.clone();
+            let base_thread_id = base_test.session_configured.thread_id;
             let new_thread = base_test
                 .thread_manager
                 .start_thread(StartThreadOptions {
@@ -1277,7 +1277,7 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
                     nested_tool_name={unrelated_nested_tool_name}"
                 );
             }
-            let replacement_thread_id = test.session_configured.thread_id.clone();
+            let replacement_thread_id = test.session_configured.thread_id;
             let _ = test.codex.shutdown_and_wait().await;
             test.thread_manager
                 .remove_thread(&replacement_thread_id)
@@ -1439,7 +1439,7 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                      namespace={namespace}, output={output:?}"
                 );
             }
-            let thread_id = test.session_configured.thread_id.clone();
+            let thread_id = test.session_configured.thread_id;
             let _ = test.codex.shutdown_and_wait().await;
             test.thread_manager.remove_thread(&thread_id).await;
         }
