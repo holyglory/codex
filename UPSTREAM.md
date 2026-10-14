@@ -337,6 +337,12 @@ the authority for release outcomes and verification receipts.
   `updates_cache`, doctor diagnostics, and visible update notices. The release
   inclusion manifest now owns those files and runs focused command, parser,
   cache, and snapshot checks before the expensive candidate graph.
+- **Snapshot commits require fresh Bazel test results.** The release graph
+  reused a cached TUI shard after the fork update prompt snapshot changed, so
+  Cargo showed the new rendered text while Bazel still compared the old
+  snapshot. The local candidate Bazel lane now passes
+  `--nocache_test_results`; keep that option whenever release evidence covers
+  committed snapshot changes.
 - **A complete-suite failure can still have a clean release-focused slice.** On
   `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
   one timeout clustered in Code Mode pressure, Guardian async scorer load,

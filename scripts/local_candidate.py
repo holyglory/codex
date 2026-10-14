@@ -207,6 +207,7 @@ def commands(root, state, directory):
                 *bazel,
                 "test",
                 cache,
+                "--nocache_test_results",
                 "--test_tmpdir=/tmp/b",
                 "--sandbox_writable_path=/tmp",
                 "--sandbox_writable_path=/dev/pts",
