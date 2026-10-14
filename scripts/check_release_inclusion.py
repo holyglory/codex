@@ -9,6 +9,9 @@ import subprocess
 import tomllib
 
 
+PACKAGE_CHECKS = {"fork-update", "root-usage"}
+
+
 def load_manifest(root):
     return json.loads((root / "scripts/release_inclusion.json").read_text())
 
@@ -51,6 +54,9 @@ def verify(root, manifest):
                 errors.append(f"{capability['id']}: missing {path}")
         if not capability["filters"]:
             errors.append(f"{capability['id']}: missing mandatory test selection")
+        for check in capability.get("package_checks", []):
+            if check not in PACKAGE_CHECKS:
+                errors.append(f"{capability['id']}: unknown package check {check}")
     for path, expected in manifest["migrations"].items():
         source = root / path
         if (

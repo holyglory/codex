@@ -54,6 +54,9 @@
         "test(history_cell::tests::pnpm_update_available_history_cell_snapshot)",
         "test(history_cell::tests::standalone_unix_update_available_history_cell_snapshot)",
         "test(history_cell::tests::standalone_windows_update_available_history_cell_snapshot)"
+      ],
+      "package_checks": [
+        "fork-update"
       ]
     },
     {
