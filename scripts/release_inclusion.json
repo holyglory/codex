@@ -49,7 +49,7 @@
         "test(doctor::updates::tests::update_action_labels_install_contexts)",
         "test(update_action::tests::package_manager_context_preserves_manager_and_updates_the_fork)",
         "test(npm_registry::tests::ready_version_)",
-        "test(updates_cache_tests::dismiss_version_creates_cache_file_when_missing)",
+        "test(tests::dismiss_version_creates_cache_file_when_missing)",
         "test(update_prompt::tests::update_prompt_snapshot)",
         "test(history_cell::tests::pnpm_update_available_history_cell_snapshot)",
         "test(history_cell::tests::standalone_unix_update_available_history_cell_snapshot)",
