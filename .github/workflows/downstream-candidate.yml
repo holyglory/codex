@@ -167,7 +167,7 @@ jobs:
       - name: Reclaim Clippy build output
         run: cargo clean
       - name: Run complete Rust suite
-        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test
+        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test --features codex-v8-poc/sandbox
       - name: Regenerate schemas
         run: |
           just write-config-schema

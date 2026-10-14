@@ -109,6 +109,12 @@ the authority for release outcomes and verification receipts.
   and `RUSTY_V8_SRC_BINDING_PATH` from the retained `rusty-v8-150.4.0` fixture
   before full Rust or package validation; do not treat the download 404 as a
   product failure.
+- **Keep the V8 feature aligned with the linked artifact.** The hosted Rust
+  lane links the sandbox-enabled V8 archive, so its complete `just test` must
+  pass `--features codex-v8-poc/sandbox`. The local candidate runner previously
+  excluded `codex-v8-poc`, which let local validation pass while hosted CI
+  failed `sandbox_feature_matches_linked_v8`. Keep both runners on the same
+  feature selection and include this canary in the release receipt.
 - **Check temporary-storage inodes, not only free bytes.** A direct TUI
   suite had enough `/tmp` capacity by bytes but could not create SQLite and
   PTY fixtures because stale test directories consumed nearly every tmpfs inode.
