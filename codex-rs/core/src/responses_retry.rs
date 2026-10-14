@@ -17,11 +17,19 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
+use rand::Rng;
 use tokio::time::Instant;
 use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const SERVER_OVERLOADED_RETRY_DELAYS: [Duration; 5] = [
+    Duration::ZERO,
+    Duration::from_secs(5),
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+    Duration::from_secs(300),
+];
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -31,6 +39,7 @@ pub(crate) enum ResponsesStreamRequest {
 
 pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
+    server_overloaded_retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
 }
@@ -39,6 +48,7 @@ impl Default for ResponsesStreamRetryState {
     fn default() -> Self {
         Self {
             retries: 0,
+            server_overloaded_retries: 0,
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
         }
@@ -84,9 +94,14 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
+    let is_server_overloaded = matches!(request, ResponsesStreamRequest::Sampling)
+        && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+        && !crate::guardian::is_basic_session_source(&turn_context.session_source);
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
-        return Err(err);
+    let delay = match err.retry_delay(retry_count) {
+        Some(delay) => delay,
+        None if is_server_overloaded => Duration::ZERO,
+        None => return Err(err),
     };
     let retry_after = err.retry_after();
 
@@ -117,7 +132,8 @@ pub(crate) async fn handle_response_stream_error(
         return Ok(());
     }
 
-    if retry_state.retries >= max_retries
+    if !is_server_overloaded
+        && retry_state.retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),
@@ -138,13 +154,29 @@ pub(crate) async fn handle_response_stream_error(
         return Ok(());
     }
 
-    if retry_state.retries < max_retries {
-        retry_state.retries = retry_count;
-        log_retry(request, turn_context, &err, retry_count, max_retries, delay);
+    let (retry_counter, retry_limit) = if is_server_overloaded {
+        (
+            &mut retry_state.server_overloaded_retries,
+            SERVER_OVERLOADED_RETRY_DELAYS.len() as u64,
+        )
+    } else {
+        (&mut retry_state.retries, max_retries)
+    };
+    if *retry_counter < retry_limit {
+        *retry_counter += 1;
+        let retry_count = *retry_counter;
+        let delay = if is_server_overloaded {
+            SERVER_OVERLOADED_RETRY_DELAYS[retry_count as usize - 1]
+                .mul_f64(rand::rng().random_range(1.0..2.0))
+        } else {
+            delay
+        };
+        log_retry(request, turn_context, &err, retry_count, retry_limit, delay);
 
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = retry_count > 1
+        let report_error = is_server_overloaded
+            || retry_count > 1
             || cfg!(debug_assertions)
             || !sess.services.model_client.responses_websocket_enabled();
         if report_error {
@@ -152,14 +184,18 @@ pub(crate) async fn handle_response_stream_error(
             // happening instead of staring at a seemingly frozen screen.
             sess.notify_stream_error(
                 turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
+                format!("Reconnecting... {retry_count}/{retry_limit}"),
                 err,
             )
             .await;
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
+        let retry_at = if is_server_overloaded {
+            now + delay
+        } else {
+            retry_after.map(RetryAfter::deadline).unwrap_or(now + delay)
+        };
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;

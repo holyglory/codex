@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::client::ModelClientSession;
+use crate::client::ServerOverloadRetry;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::run_inline_auto_compact_task;
@@ -1746,6 +1747,9 @@ async fn run_sampling_request(
     usage_chain: &UsageRequestChain,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
+    turn_context
+        .extension_data
+        .remove::<SamplingResponseStarted>();
     let preempt = step_context.preempt.clone().unwrap_or_default();
     let _input_watch = if let Some(preempt) = &step_context.preempt {
         sess.input_queue
@@ -1838,6 +1842,17 @@ async fn run_sampling_request(
         };
 
         let original_input = original_input.get_or_insert(prompt.input);
+
+        let is_server_overloaded = matches!(err.details(), CodexErrorDetails::ServerOverloaded);
+        let can_retry_server_overload = is_server_overloaded
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+            && turn_context
+                .extension_data
+                .get::<SamplingResponseStarted>()
+                .is_none();
+        if is_server_overloaded && !can_retry_server_overload {
+            return Err(err);
+        }
 
         let retry = handle_response_stream_error(
             &mut retry_state,
@@ -2662,9 +2677,6 @@ async fn try_run_sampling_request(
     usage_chain: &UsageRequestChain,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
-    turn_context
-        .extension_data
-        .remove::<SamplingResponseStarted>();
     feedback_tags!(
         model = step_context.settings.model_info.slug.clone(),
         approval_policy = turn_context.approval_policy(),
@@ -2714,6 +2726,11 @@ async fn try_run_sampling_request(
             responses_metadata,
             &inference_trace,
             usage_chain,
+            if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+                ServerOverloadRetry::Transport
+            } else {
+                ServerOverloadRetry::Caller
+            },
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
@@ -3169,6 +3186,7 @@ async fn try_run_sampling_request(
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
                 if let Some(active) = active_item.as_ref() {
@@ -3205,6 +3223,7 @@ async fn try_run_sampling_request(
                 call_id,
                 delta,
             } => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 let Some((active_call_id, consumer)) = active_tool_argument_diff_consumer.as_mut()
                 else {
                     continue;
@@ -3222,6 +3241,7 @@ async fn try_run_sampling_request(
                 delta,
                 summary_index,
             } => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 if uses_sequential_cutoff_reasoning_summaries {
                     continue;
                 }
@@ -3243,6 +3263,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 if uses_sequential_cutoff_reasoning_summaries {
                     continue;
                 }
@@ -3265,6 +3286,7 @@ async fn try_run_sampling_request(
                 text,
                 summary_index,
             } => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 if !uses_sequential_cutoff_reasoning_summaries {
                     continue;
                 }
@@ -3298,6 +3320,7 @@ async fn try_run_sampling_request(
                 delta,
                 content_index,
             } => {
+                turn_context.extension_data.insert(SamplingResponseStarted);
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;

@@ -459,6 +459,13 @@ enum WebsocketStreamOutcome {
     FallbackToHttp,
 }
 
+/// Selects the layer that owns capacity retries for a Responses request.
+#[derive(Clone, Copy)]
+pub(crate) enum ServerOverloadRetry {
+    Transport,
+    Caller,
+}
+
 /// Result of opening a WebRTC Realtime call.
 ///
 /// The SDP answer goes back to the client. The call id and auth headers stay on the server so the
@@ -1813,6 +1820,7 @@ impl ModelClientSession {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        server_overload_retry: ServerOverloadRetry,
         inference_trace: &InferenceTraceContext,
         usage_chain: &UsageRequestChain,
     ) -> Result<ResponseStream> {
@@ -1925,6 +1933,10 @@ impl ModelClientSession {
                 client_setup.api_auth,
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let client = match server_overload_retry {
+                ServerOverloadRetry::Transport => client,
+                ServerOverloadRetry::Caller => client.defer_server_overload_retries(),
+            };
             let usage_attempt = self
                 .begin_usage_attempt(
                     model_info,
@@ -2449,6 +2461,7 @@ impl ModelClientSession {
             responses_metadata,
             inference_trace,
             &usage_chain,
+            ServerOverloadRetry::Transport,
         )
         .await
     }
@@ -2465,6 +2478,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
         usage_chain: &UsageRequestChain,
+        server_overload_retry: ServerOverloadRetry,
     ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
@@ -2502,6 +2516,7 @@ impl ModelClientSession {
                     summary,
                     service_tier,
                     responses_metadata,
+                    server_overload_retry,
                     inference_trace,
                     usage_chain,
                 )
