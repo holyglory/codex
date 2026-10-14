@@ -343,6 +343,14 @@ the authority for release outcomes and verification receipts.
   snapshot. The local candidate Bazel lane now passes
   `--nocache_test_results`; keep that option whenever release evidence covers
   committed snapshot changes.
+- **Run package checks as part of local acceptance.** Declaring a check in the
+  inclusion manifest was not enough: the fork updater smoke check could be
+  skipped until a later package workflow. The local candidate now has an
+  explicit `fork-update` lane immediately after Linux packaging and validates
+  manifest package-check names before any expensive release result is accepted.
+  Candidate runs also set `INSTA_WORKSPACE_ROOT` and `INSTA_UPDATE=no`, so
+  snapshot evidence resolves against the frozen checkout instead of an
+  ambient workspace or stale generated result.
 - **A complete-suite failure can still have a clean release-focused slice.** On
   `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
   one timeout clustered in Code Mode pressure, Guardian async scorer load,

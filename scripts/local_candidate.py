@@ -32,7 +32,13 @@ GATES = (
     "native-inputs",
 )
 LANES = {
-    "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
+    "rust": (
+        "clippy",
+        "rust-tests",
+        "linux-package",
+        "fork-update",
+        "root-usage",
+    ),
     "bazel": ("bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
@@ -198,6 +204,15 @@ def commands(root, state, directory):
                 os.environ.get("LOCAL_PACKAGE_PYTHON", sys.executable),
                 "scripts/check_root_usage.py",
                 "--binary",
+                str(directory / "linux-package/bin/codex"),
+            ],
+            root,
+        ),
+        "fork-update": (
+            [
+                os.environ.get("LOCAL_PACKAGE_PYTHON", sys.executable),
+                "scripts/check_fork_update.py",
+                "--codex-binary",
                 str(directory / "linux-package/bin/codex"),
             ],
             root,
@@ -386,6 +401,8 @@ def check(root, state, cargo_target, release_target):
         CODEX_REPO_ROOT=str(root),
         CODEX_HOME=tempfile.mkdtemp(prefix="ch.", dir="/tmp"),
         TMPDIR="/tmp",
+        INSTA_UPDATE="no",
+        INSTA_WORKSPACE_ROOT=str(root / "codex-rs"),
         PYTHONDONTWRITEBYTECODE="1",
     )
     environ["LOCAL_RELEASE_TARGET"] = str(release_target)
