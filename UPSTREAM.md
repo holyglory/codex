@@ -349,6 +349,11 @@ the authority for release outcomes and verification receipts.
   snapshot. The local candidate Bazel lane now passes
   `--nocache_test_results`; keep that option whenever release evidence covers
   committed snapshot changes.
+- **Declare the top-level TUI snapshot tree explicitly.** The broad
+  `src/**/snapshots/**` test-data glob still allowed a Bazel runfile to compare
+  an old upstream update prompt against the current fork snapshot. Keep
+  `src/snapshots/**` as a direct test-data input and retain uncached Bazel test
+  results for stable rebases.
 - **A complete-suite failure can still have a clean release-focused slice.** On
   `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
   one timeout clustered in Code Mode pressure, Guardian async scorer load,
