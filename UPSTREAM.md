@@ -371,6 +371,10 @@ the authority for release outcomes and verification receipts.
   `PermissionError: [Errno 1] Operation not permitted` when the fixture binds
   `127.0.0.1`. Rerun the unchanged smoke artifacts with the host-approved
   loopback capability, then retain the gzip and zstd XML receipts.
+- **Rollout helpers must follow the candidate version.** A staging helper that
+  retains a previous release's literal package version rejects the current
+  archive after all build checks pass. Derive the expected version from the
+  checked-out workspace and compare it with the archive metadata.
 - **Verify the daemon binary separately from the CLI binary after rollout.**
   A stale manually launched app-server can remain on the control socket while
   the launcher and proxy select a newer CLI. That mixed pair caused Desktop's

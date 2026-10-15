@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 
 
 def digest(path):
@@ -127,8 +128,14 @@ def main():
                 with tarfile.open(archive) as bundle:
                     bundle.extractall(stage, filter="data")
                 metadata = json.loads((stage / "codex-package.json").read_text())
+                workspace_manifest = tomllib.loads(
+                    (
+                        Path(__file__).resolve().parents[1] / "codex-rs/Cargo.toml"
+                    ).read_text()
+                )
+                expected_version = workspace_manifest["workspace"]["package"]["version"]
                 if (
-                    metadata["version"] != "0.159.1+multi.3"
+                    metadata["version"] != expected_version
                     or metadata["target"] != "x86_64-unknown-linux-musl"
                 ):
                     raise SystemExit("Unexpected package identity")
