@@ -356,6 +356,11 @@ the authority for release outcomes and verification receipts.
   missing voice jitter-buffer support. Reproduce each cluster in a focused
   governed check before changing production code; do not turn a saturated
   full-suite run into a broad rebase patch.
+- **Process-group cancellation has an expected exit race.** A cancelled shell
+  can run its SIGTERM cleanup trap and disappear before the follow-up direct
+  kill reaches the leader. Treat `ENOENT` from that redundant kill as a
+  successful cleanup; otherwise a large feature-enabled suite can report a
+  false release failure even though the descendant group was handled.
 - **Package smoke needs loopback permission.** The Linux candidate build can
   produce valid archives while its in-sandbox smoke run reports
   `PermissionError: [Errno 1] Operation not permitted` when the fixture binds
