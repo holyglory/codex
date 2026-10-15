@@ -362,6 +362,15 @@ the authority for release outcomes and verification receipts.
   Candidate runs also set `INSTA_WORKSPACE_ROOT` and `INSTA_UPDATE=no`, so
   snapshot evidence resolves against the frozen checkout instead of an
   ambient workspace or stale generated result.
+- **Gate expensive release matrices behind shared validation.** The hosted
+  candidate previously started all six native builds after only focused
+  preflight, while the full Rust and Bazel jobs were still running. Schema
+  regeneration also happened after the complete Rust suite, and `cargo clean`
+  discarded Clippy output before that suite. Keep schema and lock checks in
+  preflight, preserve the target directory unless storage pressure requires a
+  cleanup, and require both shared validation jobs before starting platform
+  builds. Cancel superseded branch candidates; preserve immutable main and tag
+  evidence.
 - **A complete-suite failure can still have a clean release-focused slice.** On
   `t20261001T041035Z-cb1d20`, 21,467 of 21,509 tests passed; the 41 failures and
   one timeout clustered in Code Mode pressure, Guardian async scorer load,

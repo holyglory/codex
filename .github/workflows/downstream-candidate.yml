@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: downstream-candidate-${{ github.ref }}
-  cancel-in-progress: false
+  # Branch candidates are disposable; keep only the newest expensive graph.
+  # Protected main/tag candidates remain immutable for release evidence.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
@@ -63,6 +65,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_stage*.py'
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
+          python3 -m unittest discover -s scripts -p 'test_downstream_candidate_workflow.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
@@ -96,6 +99,17 @@ jobs:
       - name: Check formatting before compilation
         working-directory: codex-rs
         run: cargo fmt -- --config imports_granularity=Item --check
+      - name: Regenerate schemas before expensive tests
+        working-directory: codex-rs
+        run: |
+          just write-config-schema
+          just write-app-server-schema
+          just write-app-server-schema --experimental
+      - name: Verify generated files and Cargo lock before expensive tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
+          git diff --exit-code
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: nextest
@@ -164,15 +178,18 @@ jobs:
             python3 scripts/cargo_native_inputs.py prepare --state "$RUNNER_TEMP/cargo-native"
       - name: Run complete Clippy
         run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Reclaim Clippy build output
-        run: cargo clean
+      - name: Reclaim Clippy build output only under storage pressure
+        shell: bash
+        run: |
+          target_bytes="$(du -sb target | cut -f1)"
+          if (( target_bytes > 8 * 1024 * 1024 * 1024 )); then
+            echo "Cargo target directory is ${target_bytes} bytes; reclaiming it before the full suite."
+            cargo clean
+          else
+            echo "Cargo target directory is ${target_bytes} bytes; retaining it for the full suite."
+          fi
       - name: Run complete Rust suite
         run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test --features codex-v8-poc/sandbox
-      - name: Regenerate schemas
-        run: |
-          just write-config-schema
-          just write-app-server-schema
-          just write-app-server-schema --experimental
       - name: Verify generated files and Cargo lock
         working-directory: ${{ github.workspace }}
         run: |
@@ -302,9 +319,9 @@ jobs:
 
   native:
     name: Build ${{ matrix.target }}
-    # After focused regressions pass, compile alongside complete validation.
-    # Publication still requires every validation and packaging job to succeed.
-    needs: [identity, preflight]
+    # Do not spend on six platform builds until the shared Rust and Bazel
+    # validation has passed. Publication still requires every platform.
+    needs: [identity, preflight, rust-validation, bazel-validation]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
     permissions:
