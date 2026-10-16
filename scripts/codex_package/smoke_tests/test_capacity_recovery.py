@@ -1,6 +1,7 @@
 """Keep downstream capacity recovery in every shipped package's acceptance run."""
 
 import json
+import subprocess
 
 import pytest
 from app_server_harness import MockResponsesServer, ev_response_created, sse
@@ -86,3 +87,35 @@ def test_capacity_response_recovers_in_same_turn(
     ), incidents
     assert all(row["threadId"] == thread_id for row in incidents["data"])
     assert "Recover this pending request" not in json.dumps(incidents)
+
+
+def test_exec_network_failure_is_readable_after_exit(
+    package: SmokePackage,
+    responses_server: MockResponsesServer,
+) -> None:
+    """A final failed CLI turn retains its transport cause after process exit."""
+    responses_server.close()
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        package.run(
+            "exec",
+            "--skip-git-repo-check",
+            "--json",
+            "-c",
+            "features.unbounded_connection_retries=false",
+            "Private failed CLI fixture",
+        )
+    events = [
+        json.loads(line) for line in failed.value.stdout.splitlines() if line.strip()
+    ]
+    thread_id = next(
+        event["thread_id"] for event in events if event["type"] == "thread.started"
+    )
+    incidents = json.loads(
+        package.run("debug", "network-errors", "--thread-id", thread_id).stdout
+    )
+    assert any(row["event"] == "http_transport_failure" for row in incidents["data"])
+    assert any(
+        "refused" in row["details"].get("error", "").lower()
+        for row in incidents["data"]
+    ), incidents
+    assert "Private failed CLI fixture" not in json.dumps(incidents)
