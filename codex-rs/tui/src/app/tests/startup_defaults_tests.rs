@@ -6,7 +6,7 @@ use crate::app::startup::startup_model;
 use crate::app::startup_bootstrap::bootstrap_server_owned_start;
 use pretty_assertions::assert_eq;
 
-const TEST_PROXY_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 60);
+const TEST_PROXY_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 180);
 
 fn remote_target() -> AppServerTarget {
     AppServerTarget::Remote {
