@@ -686,8 +686,18 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
 
+    let state_db = codex_core::init_state_db(&config).await;
+    let feedback = CodexFeedback::new();
+    let log_db = state_db.clone().map(|state_db| {
+        codex_state::log_db::start(state_db, std::sync::Arc::new(feedback.clone()))
+    });
+    let log_db_layer = log_db
+        .clone()
+        .map(|layer| layer.with_filter(codex_state::log_db::default_filter()));
+
     let _ = tracing_subscriber::registry()
         .with(fmt_layer)
+        .with(log_db_layer)
         .with(otel_tracing_layer)
         .with(otel_logger_layer)
         .try_init();
@@ -714,7 +724,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
     );
-    let state_db = codex_core::init_state_db(&config).await;
     let environment_manager = if run_loader_overrides.ignore_user_config {
         EnvironmentManager::from_env(
             Some(local_runtime_paths),
@@ -737,8 +746,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         strict_config,
         cloud_config_bundle: run_cloud_config_bundle,
         embedded_network_policy,
-        feedback: CodexFeedback::new(),
-        log_db: None,
+        feedback,
+        log_db: log_db.clone(),
         state_db: state_db.clone(),
         environment_manager: std::sync::Arc::new(environment_manager),
         config_warnings,
@@ -752,7 +761,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
-    run_exec_session(ExecRunArgs {
+    let result = run_exec_session(ExecRunArgs {
         in_process_start_args,
         state_db,
         command,
@@ -775,7 +784,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cyber_access_program: cyber_access_program.map(Into::into),
     })
     .instrument(exec_span)
-    .await
+    .await;
+    if let Some(log_db) = log_db {
+        log_db.flush().await;
+    }
+    result
 }
 
 async fn build_exec_config<BuildConfig, BuildFuture>(
@@ -854,6 +867,7 @@ async fn load_bootstrap_config_or_exit(
 }
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
+    let log_db = args.in_process_start_args.log_db.clone();
     let ExecRunArgs {
         in_process_start_args,
         state_db,
@@ -1402,6 +1416,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     }
     event_processor.print_final_output();
     if error_seen {
+        if let Some(log_db) = log_db {
+            log_db.flush().await;
+        }
         std::process::exit(1);
     }
 

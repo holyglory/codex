@@ -73,6 +73,7 @@ mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
 mod migrate_rollouts;
+mod network_diagnostics;
 mod plugin_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
@@ -273,6 +274,9 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    /// Query retained model network incidents from the private local ledger.
+    NetworkErrors(network_diagnostics::NetworkDiagnosticsArgs),
+
     /// Render the raw model catalog as JSON.
     Models(DebugModelsCommand),
 
@@ -1845,6 +1849,14 @@ async fn cli_main(
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
+            DebugSubcommand::NetworkErrors(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug network-errors",
+                )?;
+                network_diagnostics::run(cmd, root_config_overrides).await?;
+            }
             DebugSubcommand::Models(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),

@@ -533,3 +533,118 @@ and out-of-scope item IDs return invalid params (`-32602`) with
 Omitted or null cursors preserve normal first-page behavior. Continue anchored
 pages with the returned opaque string `nextCursor`; response fields and
 `backwardsCursor` semantics are unchanged.
+
+
+# Downstream account and usage extensions
+
+The downstream protocol also declares experimental, additive `accountProfile*`,
+`accountAutoSelection*`, `localUsage*`, and event-subscription method families. Enhanced servers advertise support
+through optional `initialize` response fields named `multiAccount` and
+`localUsageAccounting`, plus `eventSubscriptions` when its feature is enabled;
+clients must capability-detect them and enable `experimentalApi` before
+calling the extension methods. Stock clients can ignore these fields and the experimental
+`accountProfile/activeChanged` and `localUsage/updated` notifications. The declarations contain
+only local profile metadata and content-free accounting data; credentials remain confined to the
+dedicated profile-login request.
+
+Multi-account capability version `2` adds explicit credential-presence and priority-order fields;
+clients that require those fields should check `multiAccount.version >= 2`.
+
+`accountProfile/list` is ordered by descending numeric priority, then alias and local profile ID;
+its cursor preserves that order. Higher priority numbers are drained first by automatic selection,
+while smaller numbers are preserved until later. `accountProfile` records include only a boolean
+`authenticated` credential-presence indicator, never credential values. New profiles start at
+priority `1000`, and enhanced clients can change a profile priority through
+`accountProfile/update`. Servers advertising `multiAccount.supportsCreditUsage`
+accept optional `creditUsageEnabled` on profile updates and return the saved
+permission in profile responses. Omission or null leaves it unchanged; it defaults
+off. It permits automatic credit fallback after same-priority included allowance
+is exhausted, before lower priorities, without changing manual sessions or pins.
+`accountAutoSelection/read` and `accountAutoSelection/write` report
+`priorityOrder: "higherFirst"` so clients do not have to infer the numeric direction.
+
+The customized server implements the `localUsage*` family against the private
+`${CODEX_HOME}/usage/usage.sqlite3` store. Reports expose coverage before exact token totals and
+never substitute zero for absent or incomplete provider usage. Local-usage capability version `2`
+adds a required, versioned `report` to `localUsage/summary`, `localUsageThread/read`, and
+`localUsageRepository/read` while preserving their existing `aggregate` and `tokenCategories`
+fields. The report includes every approved collector summary dimension: schema and taxonomy
+versions, scope and time range, coverage events and gaps, provider-native token categories with
+measurement provenance, activity attribution provenance, operation/model/tool counts, tool
+outcomes and durations, wall-time and interval unions, summed per-agent active time,
+classifications, repository participation, and aggregation formulas. Repository token rows also
+include a current safe `repositoryLabel`; their stable `repositoryBucket` remains a private local
+HMAC key and never contains a path or remote. Account filters return a current local alias or a
+redacted removed-account fingerprint, never email or service/workspace identity.
+
+`coverage.dimensions` distinguishes complete recorded token observations from unfinished
+operations, unknown timing intervals, and unattributed activity. Older servers may omit these
+details; clients must treat their absence as unknown. Completed lifecycle-start
+markers remain in event counts but do not by themselves make current coverage incomplete.
+Explicit missing or uncertain facts remain visible. Cached input and reasoning output are
+subsets of provider totals; concurrent agent time and elapsed wall time must not be added.
+
+`report.cost` is an optional standard API-equivalent estimate in USD, not a bill or a
+subscription-credit calculation. Older servers may omit it. `status` is `complete`,
+`partial`, or `unavailable`; an unavailable estimate has null monetary fields. Component
+counts retain measured evidence, and `unknownObservations` identifies unpriced or incomplete
+receipts. Input, cached-input, cache-write, and output costs are expressed in integer USD
+micros and add to `estimatedUsdMicros`. Cached reads and writes replace ordinary input
+pricing; reasoning remains a subset of output. Rates are selected per provider receipt,
+including its short/long-context boundary, and `rateCardRefs` identify the dated standard
+rate snapshot. Unknown models and unpriced tool receipts stay explicit; a proven covered
+receipt is not priced twice. Current rates cover the GPT-6 and GPT-5.6 model names recorded
+in the source rate card. Regional surcharges, other service tiers, and subscription billing
+are not inferred from token counts.
+
+Summary reads use one SQLite snapshot and bounded result groups. Canonical raw facts remain
+append-only; private derived projections refresh in restartable pages while capture continues.
+While the cache is rebuilding, requests without a finite time window return an explicit warming status; finite-window requests use bounded raw-history aggregation. Time windows
+remain half-open, and partial boundary hours use raw observations. Queries exceeding the
+bounded summary result size return an error so the caller can narrow the scope or range;
+existing detail pagination and opaque cursors are unchanged. `generatedAt` remains the
+response observation time rather than a historical cache timestamp.
+
+List methods use opaque keyset
+cursors, accept limits from 1 through 100, and tool/activity/event lists accept an inclusive
+`fromAt` and exclusive `toAt` in Unix seconds. Repository aliases, repository merges, and
+classification corrections append facts and emit `localUsage/updated` only after the mutation
+succeeds. Database corruption or migration failure returns a content-free JSON-RPC error from
+local-usage query, export, and mutation methods and does not recreate or reset the store. It never
+fails or cancels a model request, tool invocation, or turn. Capture failures are logged without
+conversation content, and completed model/tool records are retained in a bounded process-memory
+retry queue. A later operation retries the private store; if the process exits or the queue reaches
+capacity first, the content-free log records the collection gap and reports do not invent usage.
+
+`localUsageExport/create` requires the caller to provide an absolute `outputPath` with a private,
+existing parent directory and an extension matching `json`, `jsonl`, or `csv`. Export creation is
+explicit, local-only, atomic, no-clobber, and mode `0600` on Unix; the response returns only the
+safe final file name, never the output path. Export payloads use the same content-free report DTOs
+and contain no prompts, output, commands, tool payloads, raw errors, paths, or repository remotes.
+The customized server implements the capability-gated `accountProfile*` and
+`accountAutoSelection*` methods against the private account registry and profile credential
+namespaces. Listing and reading expose only nonsecret metadata. Activation is a registry CAS that
+new turns observe at their next turn boundary; an already running turn retains its original
+account lease. Update validates aliases, notes, priorities, and enabled/default fallback state.
+Removal permanently deletes that profile's stored credentials and is rejected while another turn
+or process holds a profile-use lease. Automatic selection currently supports the explicit
+`priority` policy with higher numeric values selected before smaller values.
+
+`accountProfileLogin/start` creates an invisible pending profile before browser, device-code,
+API-key, or managed Amazon Bedrock authorization. Failed and cancelled authorization deletes the
+pending credentials and journal; successful authorization verifies the stored credential twice,
+rejects duplicate aliases and complete service-identity pairs, then commits registry metadata.
+The optional `activate` request field defaults to `false`; when it is omitted or false, the new
+profile remains inactive even when it is the first profile. Pass `activate: true` to make it the
+default after authorization succeeds, or activate the committed profile later with
+`accountProfile/activate`.
+Device codes and authorization URLs are returned only in the authorized login response and never
+appear in notifications or logs. `accountProfileLogin/cancel` accepts the returned login ID.
+Profile rate-limit reads retain every validated service bucket and normalize an omitted primary
+bucket ID to `codex`.
+
+The existing singular account read, login, logout, rate-limit, usage, workspace-message, and reset
+operations remain compatible views of the active profile. Stock `account/updated` and
+`account/login/completed` notifications remain in place. Enhanced clients additionally receive
+experimental `accountProfile/activeChanged`; the transport suppresses that notification for stock
+connections that did not enable the experimental API.
