@@ -218,7 +218,8 @@
       "required_files": [
         "codex-rs/cli/src/network_diagnostics.rs",
         "scripts/check_network_diagnostics.py",
-        "scripts/codex_package/smoke_tests/test_capacity_recovery.py"
+        "scripts/codex_package/smoke_tests/test_capacity_recovery.py",
+        "codex-rs/exec/src/lib.rs"
       ],
       "packages": [
         "codex-state"

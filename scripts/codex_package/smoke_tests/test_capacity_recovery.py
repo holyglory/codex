@@ -9,7 +9,7 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from fixtures import SmokePackage
 
 
-@pytest.mark.parametrize("entrypoint", ["codex", "codex-app-server"])
+@pytest.mark.parametrize("entrypoint", ["codex", "codex-app-server", "exec"])
 @pytest.mark.parametrize("error_code", ["server_is_overloaded", "slow_down"])
 def test_capacity_response_recovers_in_same_turn(
     package: SmokePackage,
@@ -33,31 +33,43 @@ def test_capacity_response_recovers_in_same_turn(
         )
     )
     responses_server.enqueue_assistant_message("RECOVERED", response_id="recovered")
-    launch = (
-        (str(package.cli), "app-server")
-        if entrypoint == "codex"
-        else (str(package.app_server),)
-    )
-    config = CodexConfig(
-        launch_args_override=launch,
-        cwd=str(package.directory),
-        env=package.environment,
-    )
-    with Codex(config=config) as client:
-        thread = client.thread_start(
-            ephemeral=True,
-            approval_mode=ApprovalMode.deny_all,
-            sandbox=Sandbox.read_only,
+    if entrypoint == "exec":
+        output = package.run(
+            "exec", "--skip-git-repo-check", "--json", "Recover this pending request"
+        ).stdout
+        events = [json.loads(line) for line in output.splitlines() if line.strip()]
+        assert sum(event["type"] == "turn.completed" for event in events) == 1
+        assert "RECOVERED" in output
+        thread_id = next(
+            event["thread_id"] for event in events if event["type"] == "thread.started"
         )
-        events = list(thread.turn("Recover this pending request").stream())
-    completed = [
-        event.payload.turn for event in events if event.method == "turn/completed"
-    ]
-    assert len(completed) == 1
-    assert completed[0].status.value == "completed", completed[0].error
-    retries = [event.payload for event in events if event.method == "error"]
-    assert len(retries) == 1 and retries[0].will_retry
-    assert retries[0].error.message == "Reconnecting... 1/5"
+    else:
+        launch = (
+            (str(package.cli), "app-server")
+            if entrypoint == "codex"
+            else (str(package.app_server),)
+        )
+        config = CodexConfig(
+            launch_args_override=launch,
+            cwd=str(package.directory),
+            env=package.environment,
+        )
+        with Codex(config=config) as client:
+            thread = client.thread_start(
+                ephemeral=True,
+                approval_mode=ApprovalMode.deny_all,
+                sandbox=Sandbox.read_only,
+            )
+            events = list(thread.turn("Recover this pending request").stream())
+        completed = [
+            event.payload.turn for event in events if event.method == "turn/completed"
+        ]
+        assert len(completed) == 1
+        assert completed[0].status.value == "completed", completed[0].error
+        retries = [event.payload for event in events if event.method == "error"]
+        assert len(retries) == 1 and retries[0].will_retry
+        assert retries[0].error.message == "Reconnecting... 1/5"
+        thread_id = thread.id
     requests = responses_server.requests()
     assert len(requests) == 2
     assert requests[0].input() == requests[1].input()
@@ -65,12 +77,12 @@ def test_capacity_response_recovers_in_same_turn(
     # Query persisted evidence through the packaged CLI after its server exits.
     # This also keeps the public diagnostics command in the release inventory.
     incidents = json.loads(
-        package.run("debug", "network-errors", "--thread-id", thread.id).stdout
+        package.run("debug", "network-errors", "--thread-id", thread_id).stdout
     )
     assert any(
         row["event"] == "provider_stream_error"
         and row["details"].get("error_code") == error_code
         for row in incidents["data"]
     ), incidents
-    assert all(row["threadId"] == thread.id for row in incidents["data"])
+    assert all(row["threadId"] == thread_id for row in incidents["data"])
     assert "Recover this pending request" not in json.dumps(incidents)
