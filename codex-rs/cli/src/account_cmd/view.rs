@@ -18,6 +18,7 @@ use super::read_or_empty;
 use super::read_registry;
 use super::resolve_account;
 
+mod credits;
 mod table;
 
 #[derive(Clone, Serialize)]
@@ -31,6 +32,7 @@ struct AccountView {
     enabled: bool,
     authenticated: bool,
     priority: u32,
+    credit_usage_enabled: bool,
     created_at: String,
     last_used_at: Option<String>,
     note: Option<String>,
@@ -66,6 +68,7 @@ impl AccountView {
             enabled: account.enabled,
             authenticated,
             priority: account.priority,
+            credit_usage_enabled: account.credit_usage_enabled,
             created_at: account.created_at.to_rfc3339(),
             last_used_at: account.last_used_at.map(|value| value.to_rfc3339()),
             note: account.note.clone(),
@@ -235,6 +238,14 @@ fn output_account(
         );
         println!("Authentication: {}", auth_mode_label(view.auth_mode));
         println!("Priority: {}", view.priority);
+        println!(
+            "Credit use (automatic): {}",
+            if view.credit_usage_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
         if let Some(email) = view.email {
             println!("Email: {}", safe_human_text(&email));
         }

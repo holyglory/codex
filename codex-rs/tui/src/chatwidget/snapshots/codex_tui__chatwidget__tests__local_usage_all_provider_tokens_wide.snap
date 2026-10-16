@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/local_usage_advanced.rs
+assertion_line: 239
 expression: "render_bottom_popup(&chat, 72)"
 ---
   All local statistics

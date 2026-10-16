@@ -23,6 +23,10 @@ impl UsageRuntime {
         self.work_contexts.lock().await.insert(thread, context);
     }
 
+    /// Starts a model attempt without making accounting availability a prerequisite for work.
+    ///
+    /// A healthy store is used directly. If opening or writing it fails, the attempt is created
+    /// in the bounded in-memory retry buffer and replayed after a later successful open.
     pub(crate) async fn begin_model_attempt(
         self: &Arc<Self>,
         context: ModelAttemptContext<'_>,
@@ -50,6 +54,7 @@ impl UsageRuntime {
         attempt
     }
 
+    /// Starts a tool attempt without making accounting availability a prerequisite for work.
     pub(crate) async fn begin_tool_attempt(
         self: &Arc<Self>,
         context: ToolAttemptContext<'_>,

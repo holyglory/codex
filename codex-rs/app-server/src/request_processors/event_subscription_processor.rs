@@ -243,7 +243,7 @@ impl EventSubscriptionRequestProcessor {
         })
     }
 
-    fn service(&self) -> Result<&EventSubscriptionService, JSONRPCErrorError> {
+    pub(super) fn service(&self) -> Result<&EventSubscriptionService, JSONRPCErrorError> {
         self.service.as_ref().ok_or_else(|| {
             invalid_request(
                 "event subscriptions are unavailable; enable `event_subscriptions` with the durable local thread store",
@@ -251,7 +251,7 @@ impl EventSubscriptionRequestProcessor {
         })
     }
 
-    async fn require_persistent_thread(
+    pub(super) async fn require_persistent_thread(
         &self,
         thread_id: ThreadId,
     ) -> Result<(), JSONRPCErrorError> {
@@ -314,12 +314,12 @@ fn api_source_cursor(cursor: SourceCursor) -> ApiSourceCursor {
     }
 }
 
-fn parse_thread_id(value: &str) -> Result<ThreadId, JSONRPCErrorError> {
+pub(super) fn parse_thread_id(value: &str) -> Result<ThreadId, JSONRPCErrorError> {
     ThreadId::from_string(value)
         .map_err(|error| invalid_params(format!("invalid thread id: {error}")))
 }
 
-fn parse_subscription_id(value: &str) -> Result<Uuid, JSONRPCErrorError> {
+pub(super) fn parse_subscription_id(value: &str) -> Result<Uuid, JSONRPCErrorError> {
     Uuid::parse_str(value)
         .map_err(|error| invalid_params(format!("invalid subscription id: {error}")))
 }

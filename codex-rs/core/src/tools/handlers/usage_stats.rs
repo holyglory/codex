@@ -13,6 +13,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_usage::ThreadId;
 use codex_usage::UsageDetailKind;
+#[cfg(test)]
+use codex_usage::UsageStore;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -168,10 +170,6 @@ fn bounded_output(value: Value) -> Result<UsageStatsOutput, FunctionCallError> {
 
 impl CoreToolRuntime for UsageStatsHandler {
     fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-
-    fn bypasses_tool_hooks(&self) -> bool {
         true
     }
 }

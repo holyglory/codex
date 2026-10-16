@@ -1,6 +1,5 @@
 mod account;
 mod account_auto_selection;
-#[cfg(unix)]
 mod account_profile;
 #[path = "account_system_proxy_tests.rs"]
 mod account_system_proxy;
@@ -12,7 +11,13 @@ mod app_list;
 mod app_read;
 mod application_network;
 mod attestation;
+#[path = "auth_storage_originator_tests.rs"]
+mod auth_storage_originator;
 mod auto_env;
+#[path = "bedrock_gov_cloud_tests.rs"]
+mod bedrock_gov_cloud;
+#[path = "bedrock_service_tier_tests.rs"]
+mod bedrock_service_tier;
 mod bedrock_setup;
 mod client_metadata;
 mod code_mode_host;
@@ -66,7 +71,6 @@ mod hooks_list;
 mod host_skills;
 mod imagegen_extension;
 mod initialize;
-#[cfg(unix)]
 mod local_usage;
 mod luna_reserve;
 mod marketplace_add;
@@ -95,6 +99,7 @@ mod permission_profile_list;
 mod plan_item;
 mod plugin_install;
 mod plugin_list;
+mod plugin_manifest_cache;
 mod plugin_read;
 mod plugin_reconcile;
 mod plugin_search;
@@ -130,6 +135,7 @@ mod server_diagnostics;
 mod session_end;
 mod skills_list;
 mod sleep;
+mod sqlite_recovery;
 mod thread_archive;
 mod thread_attachments;
 mod thread_delete;
@@ -143,6 +149,7 @@ mod thread_list;
 mod thread_loaded_list;
 mod thread_memory_mode_set;
 mod thread_metadata_update;
+mod thread_name_persistence;
 mod thread_name_websocket;
 mod thread_queue;
 mod thread_read;
@@ -157,6 +164,7 @@ mod thread_start;
 mod thread_status;
 mod thread_timeline;
 mod thread_unarchive;
+mod thread_unload;
 mod thread_unsubscribe;
 mod turn_cost_otel;
 mod turn_interrupt;

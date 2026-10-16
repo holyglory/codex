@@ -29,6 +29,7 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
                         thread_id: ThreadId::new().to_string(),
                         turn: codex_app_server_protocol::Turn {
                             id: "turn".into(),
+                            root_turn_id: None,
                             items_view: codex_app_server_protocol::TurnItemsView::Full,
                             items: Vec::new(),
                             status: codex_app_server_protocol::TurnStatus::InProgress,
@@ -51,10 +52,8 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
             let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
             insta::assert_snapshot!(
                 "running_without_composer_hint",
-                crate::chatwidget::tests::helpers::normalize_status_elapsed(
-                    crate::chatwidget::tests::helpers::normalize_snapshot_paths(
-                        super::tests::buffer_text(buffer),
-                    ),
+                crate::chatwidget::tests::helpers::normalize_snapshot_paths(
+                    super::tests::buffer_text(buffer)
                 ),
             );
         }
@@ -87,10 +86,8 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
                     crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
                 insta::assert_snapshot!(
                     "running_follow_control_short_terminal",
-                    crate::chatwidget::tests::helpers::normalize_status_elapsed(
-                        crate::chatwidget::tests::helpers::normalize_snapshot_paths(
-                            super::tests::buffer_text(buffer),
-                        ),
+                    crate::chatwidget::tests::helpers::normalize_snapshot_paths(
+                        super::tests::buffer_text(buffer)
                     ),
                 );
             }
@@ -99,10 +96,8 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
         if running {
             insta::assert_snapshot!(
                 "running_follow_control",
-                crate::chatwidget::tests::helpers::normalize_status_elapsed(
-                    crate::chatwidget::tests::helpers::normalize_snapshot_paths(
-                        super::tests::buffer_text(buffer),
-                    ),
+                crate::chatwidget::tests::helpers::normalize_snapshot_paths(
+                    super::tests::buffer_text(buffer)
                 ),
             );
         }

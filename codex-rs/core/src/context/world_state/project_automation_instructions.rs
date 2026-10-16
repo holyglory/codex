@@ -1,6 +1,8 @@
 use super::PreviousSectionState;
+use super::SectionTransition;
 use super::WorldStateHash;
 use super::WorldStateSection;
+use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
@@ -21,9 +23,6 @@ impl ContextualUserFragment for ProjectAutomationInstructionsState {
     fn role(&self) -> &'static str {
         "developer"
     }
-    fn requires_separate_message(&self) -> bool {
-        true
-    }
     fn markers(&self) -> (&'static str, &'static str) {
         Self::type_markers()
     }
@@ -41,12 +40,6 @@ impl ContextualUserFragment for ProjectAutomationInstructionsState {
 impl WorldStateSection for ProjectAutomationInstructionsState {
     const ID: &'static str = "project_automation_instructions";
     type Snapshot = ProjectAutomationInstructionsSnapshot;
-    fn snapshot(&self) -> Self::Snapshot {
-        ProjectAutomationInstructionsSnapshot::Current {
-            enabled: self.0,
-            hash: WorldStateHash::from_fragment(self),
-        }
-    }
     fn matches_legacy_fragment(role: &str, text: &str) -> bool {
         role == "developer" && Self::matches_text(text)
     }
@@ -59,14 +52,33 @@ impl WorldStateSection for ProjectAutomationInstructionsState {
     fn render_diff(
         &self,
         previous: PreviousSectionState<'_, Self::Snapshot>,
-    ) -> Option<Box<dyn ContextualUserFragment>> {
-        if !self.0
-            || matches!(previous, PreviousSectionState::Known(ProjectAutomationInstructionsSnapshot::Current { enabled: true, hash }) if *hash == WorldStateHash::from_fragment(self))
-        {
-            None
-        } else {
-            Some(Box::new(*self))
+    ) -> SectionTransition<Self::Snapshot> {
+        if !self.0 {
+            return (
+                Some(ProjectAutomationInstructionsSnapshot::Current {
+                    enabled: false,
+                    hash: WorldStateHash::from_fragment(self),
+                }),
+                Vec::new(),
+            );
         }
+        if matches!(previous, PreviousSectionState::Known(ProjectAutomationInstructionsSnapshot::Current { enabled: true, hash }) if *hash == WorldStateHash::from_fragment(self))
+        {
+            return (
+                Some(ProjectAutomationInstructionsSnapshot::Current {
+                    enabled: true,
+                    hash: WorldStateHash::from_fragment(self),
+                }),
+                Vec::new(),
+            );
+        }
+        (
+            Some(ProjectAutomationInstructionsSnapshot::Current {
+                enabled: true,
+                hash: WorldStateHash::from_fragment(self),
+            }),
+            vec![WorldStateUpdate::fragment(*self)],
+        )
     }
 }
 

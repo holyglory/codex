@@ -1,7 +1,7 @@
 use super::apps_processor::APP_READ_MAX_IDS;
+use super::config_processor::reload_user_config;
 use super::*;
-use crate::effective_plugin_change::EffectivePluginChangeHandler;
-use crate::effective_plugin_change::reload_plugin_runtime_configs_without_mcp_prewarm;
+use crate::effective_plugin_change::EffectivePluginsChangedCallbackFactory;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use codex_analytics::PluginInstallSource;
@@ -44,6 +44,8 @@ use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::perform_oauth_login_silent;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 
 mod local;
 mod reconcile;
@@ -64,12 +66,12 @@ pub(crate) struct PluginRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
     config_manager: ConfigManager,
-    effective_plugin_change_handler: EffectivePluginChangeHandler,
+    effective_plugins_changed_callback_factory: EffectivePluginsChangedCallbackFactory,
 }
 
 fn plugin_skills_to_info<'a>(
     skills: impl IntoIterator<Item = &'a codex_skills::SkillMetadata>,
-    disabled_skill_paths: &HashSet<AbsolutePathBuf>,
+    disabled_skill_paths: &HashSet<PathUri>,
 ) -> Vec<SkillSummary> {
     skills
         .into_iter()
@@ -89,7 +91,7 @@ fn plugin_skills_to_info<'a>(
                     default_prompt: interface.default_prompt,
                 }
             }),
-            path: Some(skill.path_to_skills_md.clone()),
+            path: Some(skill.path_to_skills_md.clone().into()),
             enabled: !disabled_skill_paths.contains(&skill.path_to_skills_md),
         })
         .collect()
@@ -190,7 +192,6 @@ fn convert_configured_marketplace_plugin_to_plugin_summary(
 ) -> PluginSummary {
     let share_context = share_context_for_source(&plugin.source, shared_plugin_ids_by_local_path);
     PluginSummary {
-        extensions: None,
         id: plugin.id,
         remote_plugin_id: None,
         version: None,
@@ -406,7 +407,7 @@ impl PluginRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
         config_manager: ConfigManager,
-        effective_plugin_change_handler: EffectivePluginChangeHandler,
+        effective_plugins_changed_callback_factory: EffectivePluginsChangedCallbackFactory,
     ) -> Self {
         Self {
             profile_auth_router,
@@ -414,7 +415,7 @@ impl PluginRequestProcessor {
             outgoing,
             analytics_events_client,
             config_manager,
-            effective_plugin_change_handler,
+            effective_plugins_changed_callback_factory,
         }
     }
 
@@ -517,51 +518,22 @@ impl PluginRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
-    fn effective_plugins_changed_callback(
+    pub(crate) fn effective_plugins_changed_callback(
         &self,
-        auth_lease: &AuthManagerLease,
-        auth: Option<&CodexAuth>,
+        auth_lease: AuthManagerLease,
+        auth: Option<CodexAuth>,
     ) -> Arc<dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync> {
-        self.effective_plugin_change_handler
-            .callback(auth_lease.clone(), auth.cloned())
-    }
-
-    pub(crate) async fn start_startup_tasks_for_config(
-        &self,
-        config: &Config,
-        reload_config: codex_core_plugins::ConfigLayerReload,
-    ) {
-        let auth_lease = match self.operation_auth_lease().await {
-            Ok(auth_lease) => auth_lease,
-            Err(err) => {
-                warn!(error = %err.message, "failed to resolve plugin startup account");
-                return;
-            }
-        };
-        let auth = auth_lease.auth_manager().auth().await;
-        self.thread_manager
-            .plugins_manager()
-            .maybe_start_plugin_startup_tasks_for_config_with_captured_auth(
-                &config.plugins_config_input(),
-                reload_config,
-                auth_lease.clone(),
-                auth.clone(),
-                Some(self.effective_plugins_changed_callback(&auth_lease, auth.as_ref())),
-            );
+        self.effective_plugins_changed_callback_factory
+            .callback(auth_lease, auth)
     }
 
     async fn on_effective_plugins_changed(&self, auth_lease: &AuthManagerLease) {
         self.clear_plugin_related_caches();
-        reload_plugin_runtime_configs_without_mcp_prewarm(
-            &self.thread_manager,
-            &self.config_manager,
-        )
-        .await;
-        self.thread_manager
-            .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
-            .await;
         self.thread_manager
             .invalidate_mcp_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
+        self.thread_manager
+            .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
             .await;
     }
 
@@ -828,7 +800,7 @@ impl PluginRequestProcessor {
                     local_marketplaces,
                     remote_catalog_cache_refresh_scopes,
                 },
-                Some(self.effective_plugins_changed_callback(&auth_lease, auth.as_ref())),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             );
         }
 
@@ -896,7 +868,7 @@ impl PluginRequestProcessor {
             &context.global_config,
             auth_lease.clone(),
             auth.clone(),
-            Some(self.effective_plugins_changed_callback(&auth_lease, auth.as_ref())),
+            Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
         );
 
         let (mut data, marketplace_load_errors) = self
@@ -905,7 +877,7 @@ impl PluginRequestProcessor {
                 &config,
                 &context,
                 install_suggestion_plugin_names,
-                auth.clone(),
+                auth.as_ref(),
             )
             .await?;
 
@@ -935,7 +907,7 @@ impl PluginRequestProcessor {
         config: &Config,
         context: &PluginMarketplaceContext,
         install_suggestion_plugin_names: HashSet<String>,
-        auth: Option<CodexAuth>,
+        auth: Option<&CodexAuth>,
     ) -> Result<
         (
             Vec<PluginMarketplaceEntry>,
@@ -945,6 +917,7 @@ impl PluginRequestProcessor {
     > {
         let shared_plugin_ids_by_local_path = load_shared_plugin_ids_by_local_path(config)?;
         let context = context.clone();
+        let auth = auth.cloned();
         match tokio::task::spawn_blocking(move || {
             let outcome = plugins_manager.list_marketplaces_for_context_with_auth(
                 &context,
@@ -1021,11 +994,8 @@ impl PluginRequestProcessor {
         auth: Option<&CodexAuth>,
     ) -> Vec<PluginMarketplaceEntry> {
         let remote_marketplaces = if let Some(remote_marketplaces) = plugins_manager
-            .build_remote_installed_plugin_marketplaces_from_cache_with_auth(
-                plugins_input,
-                visible_marketplaces,
-                auth,
-            ) {
+            .build_remote_installed_plugin_marketplaces_from_cache(visible_marketplaces)
+        {
             Ok(remote_marketplaces)
         } else {
             plugins_manager
@@ -1033,7 +1003,9 @@ impl PluginRequestProcessor {
                     plugins_input,
                     auth,
                     visible_marketplaces,
-                    Some(self.effective_plugins_changed_callback(auth_lease, auth)),
+                    Some(
+                        self.effective_plugins_changed_callback(auth_lease.clone(), auth.cloned()),
+                    ),
                 )
                 .await
         };
@@ -1080,10 +1052,20 @@ impl PluginRequestProcessor {
             marketplace_path.as_path().parent().map(Path::to_path_buf)
         });
 
-        let config = self.load_latest_config(config_cwd).await?;
-        let plugins_input = config.plugins_config_input();
+        let mut config = self.load_latest_config(config_cwd).await?;
         let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
+        let plugins_input = config.plugins_config_input();
 
         let plugin = match read_source {
             Ok(marketplace_path) => {
@@ -1166,9 +1148,18 @@ impl PluginRequestProcessor {
                 let onboarding_skill = if outcome.plugin.enabled
                     && let Some(path) = outcome.plugin.onboarding_skill.as_ref()
                 {
+                    let path = PathUri::from_abs_path(path);
                     skills
                         .iter()
-                        .find(|skill| skill.enabled && skill.path.as_ref() == Some(path))
+                        .find(|skill| {
+                            skill.enabled
+                                && skill
+                                    .path
+                                    .as_ref()
+                                    .and_then(LegacyAppPathString::to_inferred_path_uri)
+                                    .as_ref()
+                                    == Some(&path)
+                        })
                         .cloned()
                 } else {
                     None
@@ -1177,7 +1168,6 @@ impl PluginRequestProcessor {
                     marketplace_name: outcome.marketplace_name,
                     marketplace_path: outcome.marketplace_path,
                     summary: PluginSummary {
-                        extensions: None,
                         id: outcome.plugin.id,
                         remote_plugin_id: None,
                         version: None,
@@ -1545,9 +1535,19 @@ impl PluginRequestProcessor {
             }
         };
         let config_cwd = marketplace_path.as_path().parent().map(Path::to_path_buf);
-        let config = self.load_latest_config(config_cwd.clone()).await?;
+        let mut config = self.load_latest_config(config_cwd.clone()).await?;
         let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
 
         let plugins_manager = self.thread_manager.plugins_manager();
         let marketplace_display = marketplace_path.display().to_string();
@@ -1558,7 +1558,7 @@ impl PluginRequestProcessor {
         };
 
         let result = match plugins_manager
-            .install_plugin_for_config(&config.plugins_config_input(), auth.as_ref(), request)
+            .install_plugin(&config.config_layer_stack, request)
             .await
         {
             Ok(result) => result,
@@ -1572,7 +1572,11 @@ impl PluginRequestProcessor {
             }
         };
         let config = match self.load_latest_config(config_cwd).await {
-            Ok(config) => config,
+            Ok(mut reloaded_config) => {
+                // Keep the policy captured with this installation's auth snapshot.
+                reloaded_config.application_network_policy = config.application_network_policy;
+                reloaded_config
+            }
             Err(err) => {
                 warn!(
                     "failed to reload config after plugin install, using current config: {err:?}"
@@ -1581,7 +1585,14 @@ impl PluginRequestProcessor {
             }
         };
 
-        self.on_effective_plugins_changed(&auth_lease).await;
+        self.clear_plugin_related_caches();
+        reload_user_config(&self.config_manager, &self.thread_manager).await;
+        self.thread_manager
+            .invalidate_mcp_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
+        self.thread_manager
+            .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
+            .await;
 
         let plugin_mcp_servers = load_configured_plugin_mcp_servers(
             result.installed_path.as_path(),
@@ -1594,8 +1605,8 @@ impl PluginRequestProcessor {
         if !plugin_mcp_servers.is_empty() {
             let redirect_mode = plugin_redirect_mode(result.installed_path.as_path());
             self.start_plugin_mcp_oauth_logins(
-                &auth_lease,
                 &config,
+                auth_lease.clone(),
                 &result.plugin_id,
                 plugin_mcp_servers,
                 redirect_mode,
@@ -1606,7 +1617,6 @@ impl PluginRequestProcessor {
         let plugin_app_declarations = load_plugin_apps(result.installed_path.as_path()).await;
         let apps_needing_auth = self
             .plugin_apps_needing_auth_for_install(
-                &auth_lease,
                 &config,
                 auth.as_ref(),
                 &result.plugin_id.as_key(),
@@ -1626,9 +1636,19 @@ impl PluginRequestProcessor {
         remote_plugin_id: String,
         install_attempt_id: Option<String>,
     ) -> Result<PluginInstallResponse, JSONRPCErrorError> {
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let mut config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let auth_lease = self.operation_auth_lease().await?;
-        let auth = auth_lease.auth_manager().auth().await;
+        let auth = match auth_lease
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
         let plugins_manager = self.thread_manager.plugins_manager();
         let installation = plugins_manager
             .install_remote_plugin_with_auth_lease(
@@ -1640,7 +1660,7 @@ impl PluginRequestProcessor {
                     remote_plugin_id: remote_plugin_id.clone(),
                     install_attempt_id,
                 },
-                Some(self.effective_plugins_changed_callback(&auth_lease, auth.as_ref())),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             )
             .await
             .map_err(|err| {
@@ -1708,8 +1728,8 @@ impl PluginRequestProcessor {
         if !plugin_mcp_servers.is_empty() {
             let redirect_mode = plugin_redirect_mode(result.installed_path.as_path());
             self.start_plugin_mcp_oauth_logins(
-                &auth_lease,
                 &config,
+                auth_lease.clone(),
                 &result.plugin_id,
                 plugin_mcp_servers,
                 redirect_mode,
@@ -1741,7 +1761,6 @@ impl PluginRequestProcessor {
         } else {
             let plugin_app_declarations = load_plugin_apps(result.installed_path.as_path()).await;
             self.plugin_apps_needing_auth_for_install(
-                &auth_lease,
                 &config,
                 auth.as_ref(),
                 &result.plugin_id.as_key(),
@@ -1794,7 +1813,6 @@ impl PluginRequestProcessor {
 
     async fn plugin_apps_needing_auth_for_install(
         &self,
-        auth_lease: &AuthManagerLease,
         config: &Config,
         auth: Option<&CodexAuth>,
         plugin_id: &str,
@@ -1819,16 +1837,13 @@ impl PluginRequestProcessor {
             })
             .collect();
         let environment_manager = self.thread_manager.environment_manager();
-        let auth_manager = Arc::clone(auth_lease.auth_manager());
         let (app_summaries, accessible_connectors_result) = tokio::join!(
             load_plugin_app_summaries(config, auth, &plugin_apps, &app_category_by_id),
-            connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager_and_auth(
+            connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager(
                 config,
                 /*force_refetch*/ true,
                 Arc::clone(&environment_manager),
                 self.thread_manager.mcp_manager(),
-                auth_manager,
-                auth.cloned(),
             ),
         );
 
@@ -1840,10 +1855,9 @@ impl PluginRequestProcessor {
                     "failed to load accessible apps after plugin install: {err:#}"
                 );
                 (
-                    connectors::list_cached_accessible_connectors_from_mcp_tools_with_auth(
-                        config, auth,
-                    )
-                    .unwrap_or_default(),
+                    connectors::list_cached_accessible_connectors_from_mcp_tools(config)
+                        .await
+                        .unwrap_or_default(),
                     false,
                 )
             }
@@ -1868,8 +1882,8 @@ impl PluginRequestProcessor {
 
     async fn start_plugin_mcp_oauth_logins(
         &self,
-        auth_lease: &AuthManagerLease,
         config: &Config,
+        auth_lease: AuthManagerLease,
         plugin_id: &PluginId,
         mut plugin_mcp_servers: HashMap<String, McpServerConfig>,
         redirect_mode: StreamableHttpRedirectMode,
@@ -1946,12 +1960,12 @@ impl PluginRequestProcessor {
             let notification_name = name.clone();
             let oauth_credential_name = server.oauth_credential_name(&name).into_owned();
             let thread_manager = Arc::clone(&self.thread_manager);
+            let auth_lease = auth_lease.clone();
             let http_client = Arc::clone(&http_client);
             let global_callback_url = config.mcp_oauth_callback_url.clone();
-            let auth_lease = auth_lease.clone();
 
             tokio::spawn(async move {
-                let oauth_client_id = server.oauth_client_id();
+                let oauth_client_config = server.oauth.as_ref();
                 let first_attempt = perform_oauth_login_silent(
                     &oauth_credential_name,
                     &oauth_config.url,
@@ -1960,7 +1974,7 @@ impl PluginRequestProcessor {
                     oauth_config.http_headers.clone(),
                     oauth_config.env_http_headers.clone(),
                     &resolved_scopes.scopes,
-                    oauth_client_id,
+                    oauth_client_config,
                     McpOAuthClientRegistration::Auto,
                     server.oauth_resource.as_deref(),
                     callback_port,
@@ -1981,7 +1995,7 @@ impl PluginRequestProcessor {
                             oauth_config.http_headers,
                             oauth_config.env_http_headers,
                             &[],
-                            oauth_client_id,
+                            oauth_client_config,
                             McpOAuthClientRegistration::Auto,
                             server.oauth_resource.as_deref(),
                             callback_port,
@@ -2009,6 +2023,7 @@ impl PluginRequestProcessor {
                     McpServerOauthLoginCompletedNotification {
                         name: notification_name,
                         thread_id: None,
+                        login_id: None,
                         success,
                         error,
                     },
@@ -2031,7 +2046,6 @@ impl PluginRequestProcessor {
         if is_valid_remote_plugin_id(&plugin_id) {
             return self.remote_plugin_uninstall_response(plugin_id).await;
         }
-        let auth_lease = self.operation_auth_lease().await?;
         let plugins_manager = self.thread_manager.plugins_manager();
 
         plugins_manager
@@ -2039,7 +2053,10 @@ impl PluginRequestProcessor {
             .await
             .map_err(Self::plugin_uninstall_error)?;
         match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(_) => self.on_effective_plugins_changed(&auth_lease).await,
+            Ok(_) => {
+                let auth_lease = self.operation_auth_lease().await?;
+                self.on_effective_plugins_changed(&auth_lease).await;
+            }
             Err(err) => {
                 warn!(
                     "failed to reload config after plugin uninstall, clearing plugin-related caches only: {err:?}"
@@ -2125,7 +2142,7 @@ impl PluginRequestProcessor {
                 auth_lease.clone(),
                 auth.clone(),
                 &plugin_id,
-                Some(self.effective_plugins_changed_callback(&auth_lease, auth.as_ref())),
+                Some(self.effective_plugins_changed_callback(auth_lease.clone(), auth.clone())),
             )
             .await
             .map_err(remote_plugin_operation_error_to_jsonrpc)?;
@@ -2237,7 +2254,6 @@ fn remote_marketplace_to_info(marketplace: RemoteMarketplace) -> PluginMarketpla
 
 fn remote_plugin_summary_to_info(summary: RemoteCatalogPluginSummary) -> PluginSummary {
     PluginSummary {
-        extensions: summary.extensions,
         id: summary.id,
         remote_plugin_id: Some(summary.remote_plugin_id),
         version: summary.version,

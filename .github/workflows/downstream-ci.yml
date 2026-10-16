@@ -36,6 +36,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+      - name: Install schema tooling
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -y

@@ -4,6 +4,7 @@
 //! initializing the server, listing raw tools, applying per-server tool filters,
 //! and exposing cached Codex Apps tools while a client is still connecting.
 //! Initialization capabilities survive tool-discovery failures and reset on a new attempt.
+//! Executor-discovered environment credentials remain executor-bound across those attempts.
 //! Higher-level aggregation and resource/tool APIs live in
 //! [`crate::connection_manager`].
 
@@ -36,6 +37,7 @@ use crate::pagination::collect_paginated_with_limit;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
+use crate::server::McpCredentialPolicy;
 use crate::server::has_explicit_http_authorization;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
 use crate::tool_catalog_cache::McpToolCatalogFetchTicket;
@@ -55,6 +57,7 @@ use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_exec_server::Environment;
 use codex_login::AuthChangeState;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -105,6 +108,7 @@ pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) const CODEX_APPS_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const CODEX_APPS_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+const MCP_MAX_CONSECUTIVE_RECONNECT_FAILURES: u32 = 3;
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -160,6 +164,7 @@ struct CodexAppsStartupReconnectState {
     current_client: Option<ManagedClient>,
     last_error: Option<StartupOutcomeError>,
     reconnect_in_flight: bool,
+    quarantined: bool,
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
 }
@@ -175,6 +180,7 @@ pub(crate) struct CodexAppsStartupReconnect {
     factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
     state: StdMutex<CodexAppsStartupReconnectState>,
     startup_status_context: Option<CodexAppsStartupStatusContext>,
+    cancel_token: Option<CancellationToken>,
 }
 
 impl CodexAppsStartupReconnect {
@@ -183,6 +189,7 @@ impl CodexAppsStartupReconnect {
             factory,
             state: StdMutex::new(CodexAppsStartupReconnectState::default()),
             startup_status_context: None,
+            cancel_token: None,
         }
     }
 
@@ -200,12 +207,48 @@ impl CodexAppsStartupReconnect {
         self
     }
 
+    pub(crate) fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
+        self.cancel_token = Some(cancel_token);
+        self
+    }
+
     fn current_client(&self) -> Option<ManagedClient> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .current_client
             .clone()
+    }
+
+    fn is_quarantined(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .quarantined
+    }
+
+    pub(crate) fn terminal_error(&self) -> Option<StartupOutcomeError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .quarantined
+            .then(|| state.last_error.clone())
+            .flatten()
+    }
+
+    fn record_initial_failure(&self, error: &StartupOutcomeError) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.last_error.is_none() {
+            state.last_error = Some(error.clone());
+        }
+        if error.is_authentication_required() {
+            state.quarantined = true;
+        }
     }
 
     fn reconnect_in_background(self: &Arc<Self>) {
@@ -215,6 +258,9 @@ impl CodexAppsStartupReconnect {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.current_client.is_some() || state.reconnect_in_flight {
+                return;
+            }
+            if state.quarantined {
                 return;
             }
             if state
@@ -230,6 +276,7 @@ impl CodexAppsStartupReconnect {
         tokio::spawn(async move {
             let result = (reconnect.factory)().await;
             let startup_status_context = reconnect.startup_status_context.clone();
+            let mut discarded_client = None;
             let recovered = {
                 let mut state = reconnect
                     .state
@@ -238,26 +285,70 @@ impl CodexAppsStartupReconnect {
                 state.reconnect_in_flight = false;
                 match result {
                     Ok(client) => {
-                        state.current_client = Some(client);
-                        state.last_error = None;
-                        state.consecutive_failures = 0;
-                        state.retry_not_before = None;
-                        true
+                        let cancelled = reconnect
+                            .cancel_token
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled);
+                        if cancelled || state.quarantined {
+                            discarded_client = Some(client);
+                            state.current_client = None;
+                            state.last_error = Some(StartupOutcomeError::Cancelled);
+                            state.quarantined = true;
+                            state.retry_not_before = None;
+                            false
+                        } else {
+                            state.current_client = Some(client);
+                            state.last_error = None;
+                            state.consecutive_failures = 0;
+                            state.retry_not_before = None;
+                            true
+                        }
                     }
                     Err(error) => {
                         state.last_error = Some(error.clone());
-                        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = codex_apps_reconnect_backoff(state.consecutive_failures);
-                        state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                        warn!(
-                            error = %error,
-                            retry_after_ms = retry_after.as_millis(),
-                            "Apps MCP startup reconnect failed; continuing with cached tools"
-                        );
+                        if error.is_authentication_required() {
+                            state.quarantined = true;
+                            state.retry_not_before = None;
+                            warn!(
+                                error = %error,
+                                "Apps MCP startup reconnect stopped after authentication failure; resolver turn is stale"
+                            );
+                        } else {
+                            state.consecutive_failures =
+                                state.consecutive_failures.saturating_add(1);
+                            if state.consecutive_failures >= MCP_MAX_CONSECUTIVE_RECONNECT_FAILURES
+                            {
+                                state.quarantined = true;
+                                state.retry_not_before = None;
+                                warn!(
+                                    error = %error,
+                                    "Apps MCP startup reconnect quarantined after bounded failures"
+                                );
+                            } else {
+                                let retry_after =
+                                    codex_apps_reconnect_backoff(state.consecutive_failures);
+                                state.retry_not_before = Some(TokioInstant::now() + retry_after);
+                                warn!(
+                                    error = %error,
+                                    retry_after_ms = retry_after.as_millis(),
+                                    "Apps MCP startup reconnect failed; continuing with cached tools"
+                                );
+                            }
+                        }
                         false
                     }
                 }
             };
+
+            if let Some(client) = discarded_client {
+                client.client.shutdown().await;
+            }
+
+            if reconnect.is_quarantined()
+                && let Some(cancel_token) = &reconnect.cancel_token
+            {
+                cancel_token.cancel();
+            }
 
             if recovered && let Some(context) = startup_status_context {
                 let _ = context
@@ -284,6 +375,7 @@ fn codex_apps_reconnect_backoff(consecutive_failures: u32) -> Duration {
 
 #[derive(Clone)]
 struct ManagedClientStartup {
+    originator: AuthStorageOriginator,
     server_name: String,
     server: EffectiveMcpServer,
     store_mode: OAuthCredentialsStoreMode,
@@ -308,12 +400,11 @@ struct ManagedClientStartup {
 
 impl ManagedClientStartup {
     fn start(&self) -> ManagedClientFuture {
-        // A new attempt must not expose capabilities from an earlier connection.
-        *self
-            .server_capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        // Keep initialized capabilities available for degraded status while this
+        // configuration retries discovery. A successful initialize replaces them;
+        // a different connection configuration owns a fresh capabilities slot.
         let Self {
+            originator,
             server_name,
             server,
             store_mode,
@@ -341,7 +432,7 @@ impl ManagedClientStartup {
             .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let cancel_token_for_fut = cancel_token;
-        async move {
+        let startup = async move {
             let tool_catalog_fetch_ticket = tool_catalog_cache_context
                 .as_ref()
                 .map(McpToolCatalogCacheContext::begin_fetch);
@@ -418,10 +509,12 @@ impl ManagedClientStartup {
 
             startup_complete.store(true, Ordering::Release);
             outcome
-        }
-        .in_current_span()
-        .boxed()
-        .shared()
+        };
+        originator
+            .scope(Box::pin(startup))
+            .in_current_span()
+            .boxed()
+            .shared()
     }
 }
 
@@ -478,6 +571,7 @@ impl AsyncManagedClient {
         let startup_complete = Arc::new(AtomicBool::new(false));
         let server_capabilities = Arc::new(StdMutex::new(None));
         let startup = Arc::new(ManagedClientStartup {
+            originator: AuthStorageOriginator::current(),
             server_name,
             server,
             store_mode,
@@ -500,16 +594,20 @@ impl AsyncManagedClient {
             server_capabilities: Arc::clone(&server_capabilities),
         });
         let client = startup.start();
-        let startup_reconnect = is_codex_apps_mcp_server.then(|| {
+        let startup_reconnect = Some({
             let startup = Arc::clone(&startup);
-            Arc::new(
-                CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
-                    .with_startup_status_context(
-                        startup_submit_id,
-                        reconnect_server_name,
-                        reconnect_tx_event,
-                    ),
-            )
+            let reconnect = CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
+                .with_cancel_token(cancel_token.clone());
+            let reconnect = if is_codex_apps_mcp_server {
+                reconnect.with_startup_status_context(
+                    startup_submit_id,
+                    reconnect_server_name,
+                    reconnect_tx_event,
+                )
+            } else {
+                reconnect
+            };
+            Arc::new(reconnect)
         });
         Self {
             client,
@@ -525,6 +623,9 @@ impl AsyncManagedClient {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
+        if let Some(error) = self.terminal_error() {
+            return Err(error);
+        }
         if let Some(client) = self
             .startup_reconnect
             .as_ref()
@@ -532,7 +633,19 @@ impl AsyncManagedClient {
         {
             return Ok(client);
         }
-        self.client.clone().await
+        let result = self.client.clone().await;
+        if let Err(error) = &result
+            && let Some(reconnect) = &self.startup_reconnect
+        {
+            reconnect.record_initial_failure(error);
+        }
+        result
+    }
+
+    pub(crate) fn terminal_error(&self) -> Option<StartupOutcomeError> {
+        self.startup_reconnect
+            .as_ref()
+            .and_then(|reconnect| reconnect.terminal_error())
     }
 
     /// Returns the current ready client, including its tool catalog and metadata,
@@ -560,14 +673,24 @@ impl AsyncManagedClient {
         if !self.startup_complete.load(Ordering::Acquire) {
             return;
         }
-        if matches!(self.client().await, Err(StartupOutcomeError::Failed { .. })) {
-            startup_reconnect.reconnect_in_background();
+        if let Err(error) = self.client().await {
+            if error.is_authentication_required() {
+                startup_reconnect.record_initial_failure(&error);
+                self.cancel_token.cancel();
+            } else if matches!(error, StartupOutcomeError::Failed { .. }) {
+                startup_reconnect.record_initial_failure(&error);
+                startup_reconnect.reconnect_in_background();
+            }
         }
     }
 
     pub(crate) async fn shutdown(&self) {
         self.cancel_token.cancel();
-        match self.client().await {
+        if let Some(client) = self.ready_client() {
+            client.client.shutdown().await;
+            return;
+        }
+        match self.client.clone().await {
             Ok(client) => client.client.shutdown().await,
             Err(StartupOutcomeError::Cancelled) => {}
             Err(error) => {
@@ -663,18 +786,13 @@ pub(crate) async fn list_tools_for_client_uncached(
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
     let fetch_start = Instant::now();
-    let protocol_mode = client.protocol_mode();
     let tools = collect_paginated_with_limit("tools/list", timeout, catalog_item_limit, |params| {
         let client = Arc::clone(client);
         async move {
             let response = client
                 .list_tools_with_connector_ids(params, timeout)
                 .await?;
-            let next_cursor = match protocol_mode {
-                McpProtocolMode::Legacy => None,
-                McpProtocolMode::V20260728 => response.next_cursor,
-            };
-            Ok((response.tools, next_cursor))
+            Ok((response.tools, response.next_cursor))
         }
     })
     .await?
@@ -870,10 +988,17 @@ fn is_untrusted_connector_meta_key(key: &str) -> bool {
 fn resolve_bearer_token(
     server_name: &str,
     bearer_token_env_var: Option<&str>,
+    credential_policy: McpCredentialPolicy,
 ) -> Result<Option<String>> {
     let Some(env_var) = bearer_token_env_var else {
         return Ok(None);
     };
+
+    if credential_policy == McpCredentialPolicy::ExecutorOnly {
+        return Err(anyhow!(
+            "MCP server '{server_name}' requires executor-side environment credential resolution; update the executor to a version that supports it (host fallback is disabled)"
+        ));
+    }
 
     match env::var(env_var) {
         Ok(value) => {
@@ -1167,6 +1292,23 @@ pub(crate) async fn make_rmcp_client(
     protocol_mode: McpProtocolMode,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
+    if server.credential_policy() == McpCredentialPolicy::ExecutorOnly {
+        // Executor HTTP declarations cannot acquire host header helpers through
+        // cached registration materialization.
+        let valid_transport = matches!(
+            &config.transport,
+            McpServerTransportConfig::StreamableHttp {
+                env_http_headers,
+                http_headers_helper: None,
+                ..
+            } if env_http_headers.as_ref().is_none_or(HashMap::is_empty)
+        );
+        if config.is_local_environment() || !valid_transport {
+            return Err(StartupOutcomeError::from(anyhow!(
+                "executor-discovered MCP server '{server_name}' requires a remote HTTP transport without host environment headers or helpers"
+            )));
+        }
+    }
     if matches!(config.auth, McpServerAuth::EmaAuth) {
         return Err(StartupOutcomeError::from(anyhow!(
             "EMA MCP connections are not enabled in this version"
@@ -1271,9 +1413,13 @@ pub(crate) async fn make_rmcp_client(
                     Some(StreamableHttpBearerToken::ProvidedByHttpClient),
                 )
             } else {
-                let token = resolve_bearer_token(server_name, bearer_token_env_var.as_deref())
-                    .map_err(StartupOutcomeError::from)?
-                    .map(StreamableHttpBearerToken::Resolved);
+                let token = resolve_bearer_token(
+                    server_name,
+                    bearer_token_env_var.as_deref(),
+                    server.credential_policy(),
+                )
+                .map_err(StartupOutcomeError::from)?
+                .map(StreamableHttpBearerToken::Resolved);
                 (http_client, token)
             };
             let redirect_mode = if server.is_agent_plugin() {
@@ -1287,6 +1433,7 @@ pub(crate) async fn make_rmcp_client(
                 resolved_bearer_token,
                 http_headers,
                 env_http_headers,
+                server.config().oauth.clone(),
                 store_mode,
                 keyring_backend_kind,
                 http_client,
@@ -1475,3 +1622,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "rmcp_client_credential_policy_tests.rs"]
+mod credential_policy_tests;

@@ -58,6 +58,7 @@ use codex_usage::UsageSummaryQuery;
 use codex_usage::UsageThreadRecord;
 use codex_usage::UsageToolListQuery;
 use codex_usage::UtcTimeRange;
+use codex_usage::WorktreeId;
 use codex_usage::redacted_account_profile_label;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -96,11 +97,15 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageSummaryParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, params.from_at, params.to_at)
+            .await?;
         Ok(Some(
             self.summary_response(
                 &store,
                 SummaryFilters {
                     repository_key: params.repository_key,
+                    worktree_keys: params.worktree_keys,
+                    include_unassigned: params.include_unassigned,
                     thread_id: params.thread_id,
                     account_id: params.account_id,
                     from_at: params.from_at,
@@ -117,6 +122,7 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, None, None).await?;
         let id = thread_id(params.thread_id)?;
         let record = store
             .read_thread(&id)
@@ -125,6 +131,8 @@ impl LocalUsageRequestProcessor {
             .ok_or_else(resource_not_found)?;
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: Some(id),
                 repository_id: None,
                 account_profile_ref: None,
@@ -176,6 +184,7 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageRepositoryReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, None, None).await?;
         let id = repository_id(params.repository_key)?;
         let record = store
             .read_repository(&id)
@@ -184,6 +193,8 @@ impl LocalUsageRequestProcessor {
             .ok_or_else(resource_not_found)?;
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: None,
                 repository_id: Some(record.id.clone()),
                 account_profile_ref: None,
@@ -377,12 +388,16 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageExportCreateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
+        self.ensure_report_ready(&store, params.from_at, params.to_at)
+            .await?;
         let created_at = now_seconds();
         let response = self
             .summary_response(
                 &store,
                 SummaryFilters {
                     repository_key: params.repository_key,
+                    worktree_keys: None,
+                    include_unassigned: None,
                     thread_id: params.thread_id,
                     account_id: None,
                     from_at: params.from_at,
@@ -422,6 +437,18 @@ impl LocalUsageRequestProcessor {
             .map(Arc::clone)
     }
 
+    async fn ensure_report_ready(
+        &self,
+        store: &UsageStore,
+        from_at: Option<i64>,
+        to_at: Option<i64>,
+    ) -> Result<(), JSONRPCErrorError> {
+        store
+            .require_report_ready(time_range(from_at, to_at)?)
+            .await
+            .map_err(store_error)
+    }
+
     async fn summary_response(
         &self,
         store: &UsageStore,
@@ -435,8 +462,13 @@ impl LocalUsageRequestProcessor {
             .as_ref()
             .map(|account| self.account_label(account))
             .transpose()?;
+        let worktree_ids = parse_worktree_keys(filters.worktree_keys)?;
+        let include_unassigned_worktrees =
+            filters.include_unassigned.unwrap_or(worktree_ids.is_none());
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids,
+                include_unassigned_worktrees,
                 thread_id: filters.thread_id.map(thread_id).transpose()?,
                 repository_id: filters.repository_key.map(repository_id).transpose()?,
                 account_profile_ref,
@@ -501,6 +533,8 @@ impl LocalUsageRequestProcessor {
     ) -> Result<LocalUsageRepository, JSONRPCErrorError> {
         let summary = store
             .usage_summary_query(UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
                 thread_id: None,
                 repository_id: Some(record.id.clone()),
                 account_profile_ref: None,
@@ -534,10 +568,35 @@ impl LocalUsageRequestProcessor {
 
 struct SummaryFilters {
     repository_key: Option<String>,
+    worktree_keys: Option<Vec<String>>,
+    include_unassigned: Option<bool>,
     thread_id: Option<String>,
     account_id: Option<String>,
     from_at: Option<i64>,
     to_at: Option<i64>,
+}
+
+fn parse_worktree_keys(
+    keys: Option<Vec<String>>,
+) -> Result<Option<Vec<WorktreeId>>, JSONRPCErrorError> {
+    const MAX_KEYS: usize = 256;
+    let Some(keys) = keys else {
+        return Ok(None);
+    };
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    if keys.len() > MAX_KEYS {
+        return Err(invalid_params("worktreeKeys must contain at most 256 keys"));
+    }
+    let mut ids = Vec::with_capacity(keys.len());
+    for key in keys {
+        let id = WorktreeId::new(key).map_err(|_| invalid_params("worktree key is invalid"))?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(Some(ids))
 }
 
 fn api_thread(
@@ -684,10 +743,21 @@ fn resource_not_found() -> JSONRPCErrorError {
 }
 
 fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
+    if matches!(
+        &error,
+        UsageStoreError::ReportTimedOut
+            | UsageStoreError::ReportBusy
+            | UsageStoreError::ReportWarming(_)
+    ) {
+        return report_error(error);
+    }
     match error {
         UsageStoreError::ReportTooLarge => invalid_params(
             "local usage summary exceeds its memory bound; narrow the scope or time range",
         ),
+        UsageStoreError::ReportTimedOut
+        | UsageStoreError::ReportBusy
+        | UsageStoreError::ReportWarming(_) => report_error(error),
         UsageStoreError::InvalidReviewCursor => invalid_params("invalid or expired usage cursor"),
         UsageStoreError::RepositoryMergeCycle => {
             invalid_params("repository merge would create a cycle")
@@ -716,6 +786,15 @@ fn store_error(error: UsageStoreError) -> JSONRPCErrorError {
             internal_error("local usage request could not be completed")
         }
     }
+}
+
+fn report_error(error: UsageStoreError) -> JSONRPCErrorError {
+    let Some(failure) = error.report_failure() else {
+        return internal_error("local usage report could not be completed");
+    };
+    let mut response = invalid_params(failure.message);
+    response.data = serde_json::to_value(failure).ok();
+    response
 }
 
 fn usage_phase(value: LocalUsagePhase) -> Phase {

@@ -19,6 +19,10 @@ use codex_app_server_protocol::LocalUsageExportCreateResponse;
 use codex_app_server_protocol::LocalUsageExportFormat;
 use codex_app_server_protocol::LocalUsagePhase;
 use codex_app_server_protocol::LocalUsageReport;
+use codex_app_server_protocol::LocalUsageReportCounts;
+use codex_app_server_protocol::LocalUsageReportTimeRange;
+use codex_app_server_protocol::LocalUsageReportWorktree;
+use codex_app_server_protocol::LocalUsageReportWorktreeCoverage;
 use codex_app_server_protocol::LocalUsageRepositoryListParams;
 use codex_app_server_protocol::LocalUsageRepositoryListResponse;
 use codex_app_server_protocol::LocalUsageRepositoryMergeParams;
@@ -146,16 +150,6 @@ async fn populated_summary_and_drilldowns_preserve_coverage() -> Result<()> {
     assert_eq!(summary.aggregate.model_requests, 1);
     assert_eq!(summary.aggregate.tool_calls, 2);
     assert_report_matches_structured(&summary.report, expected_all);
-    let mut legacy_wire = serde_json::to_value(&summary.report)?;
-    legacy_wire
-        .as_object_mut()
-        .expect("report object")
-        .remove("cost");
-    let mut legacy_report: LocalUsageReport = serde_json::from_value(legacy_wire)?;
-    assert_eq!(legacy_report.cost, None);
-    legacy_report.cost = summary.report.cost.clone();
-    assert_eq!(legacy_report, summary.report);
-
     assert!(
         summary
             .report
@@ -248,6 +242,523 @@ async fn populated_summary_and_drilldowns_preserve_coverage() -> Result<()> {
             && !event.event_id.contains('/')
             && !event.event_id.contains("prompt")
     }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_summary_preserves_token_ownership_filters_and_restart() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let seeded = seed_usage(codex_home.path()).await?;
+    let store = UsageStore::open(codex_home.path()).await?;
+    let mut workspaces = Vec::new();
+    let mut worktrees = Vec::new();
+    for label in ["checkout-one", "checkout-two"] {
+        let path = codex_home.path().join(label);
+        std::fs::create_dir(&path)?;
+        let workspace = CanonicalRepositoryPath::new(
+            std::fs::canonicalize(path)?.to_string_lossy().into_owned(),
+        )?;
+        let worktree = store.worktree_id_for_workspace(&seeded.repository_one, &workspace)?;
+        store
+            .ensure_worktree(
+                &worktree,
+                &seeded.repository_one,
+                &SafeRepositoryLabel::new(label)?,
+                STARTED_AT_MS,
+            )
+            .await?;
+        workspaces.push(workspace);
+        worktrees.push(worktree);
+    }
+    assert_ne!(worktrees[0], worktrees[1]);
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 43, STARTED_AT_MS)
+        .await?;
+    let root = ThreadId::new("thread-one")?;
+    let root_turn = TurnId::new("turn-one")?;
+    let root_agent = AgentId::new("agent-one")?;
+    let child = ThreadId::new("thread-child")?;
+    let child_turn = TurnId::new("turn-child")?;
+    let child_agent = AgentId::new("agent-child")?;
+    store
+        .ensure_thread(&NewThread {
+            id: child.clone(),
+            parent_thread_id: Some(root.clone()),
+            source_kind: ThreadSourceKind::new("subagent")?,
+            created_at_ms: STARTED_AT_MS + 900,
+        })
+        .await?;
+    store
+        .ensure_turn(&NewTurn {
+            id: child_turn.clone(),
+            thread_id: child.clone(),
+            account: AccountAttributionSnapshot::new(
+                Some(AccountProfileRef::new("profile-one")?),
+                Some(AccountAuthMode::Chatgpt),
+            ),
+            created_at_ms: STARTED_AT_MS + 900,
+        })
+        .await?;
+    store
+        .ensure_agent(&NewAgent {
+            id: child_agent.clone(),
+            thread_id: child.clone(),
+            parent_agent_id: Some(root_agent.clone()),
+            role_kind: AgentRoleKind::new("worker")?,
+            created_at_ms: STARTED_AT_MS + 900,
+        })
+        .await?;
+    let mut owners = vec![(seeded.model_operation_id, Some(worktrees[0].clone()))];
+    // All three operations overlap the finite window. Their receipts sit at its
+    // inclusive start, final millisecond, and exclusive end, respectively.
+    for (thread, turn, agent, worktree, started, observed, input, output) in [
+        (
+            &child,
+            &child_turn,
+            &child_agent,
+            Some(worktrees[1].clone()),
+            1_000,
+            2_000,
+            18,
+            12,
+        ),
+        (&root, &root_turn, &root_agent, None, 1_250, 2_999, 4, 1),
+        (
+            &root,
+            &root_turn,
+            &root_agent,
+            Some(worktrees[0].clone()),
+            1_500,
+            3_000,
+            60,
+            10,
+        ),
+    ] {
+        let op = operation(
+            process_id,
+            thread,
+            turn,
+            agent,
+            OperationKind::ModelRequest,
+            STARTED_AT_MS + started,
+        );
+        store.begin_operation(&op).await?;
+        let request_id = ModelRequestId::new();
+        store
+            .record_model_request(&NewModelRequest {
+                id: request_id,
+                operation_id: op.id,
+                provider_kind: ProviderKind::new("openai")?,
+                model: ModelName::new("test-model")?,
+                transport_kind: TransportKind::new("sse")?,
+                attempt_number: 1,
+                account: AccountAttributionSnapshot::new(
+                    Some(AccountProfileRef::new("profile-one")?),
+                    Some(AccountAuthMode::Chatgpt),
+                ),
+                client_origin: ClientOrigin::new("test")?,
+            })
+            .await?;
+        let source_event_id = FactEventId::new();
+        for (category, count) in [
+            ("input_tokens", input),
+            ("output_tokens", output),
+            ("total_tokens", input + output),
+        ] {
+            let receipt = NewTokenObservation {
+                id: FactEventId::new(),
+                source_event_id,
+                source: TokenObservationSource::ModelRequest(request_id),
+                category_path: TokenCategoryPath::new(category)?,
+                token_count: Some(count),
+                unit: TokenUnit::Tokens,
+                measurement_provenance: MeasurementProvenance::ProviderReported,
+                coverage_state: CoverageState::Complete,
+                repository_bucket: RepositoryBucket::Single(seeded.repository_one.clone()),
+                observed_at_ms: STARTED_AT_MS + observed,
+            };
+            store.record_token_observation(&receipt).await?;
+            store
+                .record_token_observation(&NewTokenObservation {
+                    id: FactEventId::new(),
+                    ..receipt
+                })
+                .await?;
+        }
+        finish(&store, op.id, STARTED_AT_MS + 4_000).await?;
+        owners.push((op.id, worktree));
+    }
+    let tool = operation(
+        process_id,
+        &child,
+        &child_turn,
+        &child_agent,
+        OperationKind::LocalTool,
+        STARTED_AT_MS + 1_600,
+    );
+    store.begin_operation(&tool).await?;
+    let tool_id = ToolInvocationId::new();
+    store
+        .record_tool_invocation(&NewToolInvocation {
+            id: tool_id,
+            operation_id: tool.id,
+            operation_kind: OperationKind::LocalTool,
+            tool_kind: ToolKind::new("shell")?,
+            safe_tool_name: ToolName::new("shell")?,
+            operation_family: OperationFamily::new("test")?,
+            observation_timing: ObservationTiming::new("before_dispatch")?,
+            covering_model_request_id: None,
+            execution_group_id: None,
+            execution_role: codex_usage::ToolExecutionRole::Standalone,
+        })
+        .await?;
+    let receipt = NewTokenObservation {
+        id: FactEventId::new(),
+        source_event_id: FactEventId::new(),
+        source: TokenObservationSource::ToolInvocation(tool_id),
+        category_path: TokenCategoryPath::new("total_tokens")?,
+        token_count: Some(7),
+        unit: TokenUnit::Tokens,
+        measurement_provenance: MeasurementProvenance::ProviderReported,
+        coverage_state: CoverageState::Complete,
+        repository_bucket: RepositoryBucket::Single(seeded.repository_one.clone()),
+        observed_at_ms: STARTED_AT_MS + 2_500,
+    };
+    store.record_token_observation(&receipt).await?;
+    store.record_token_observation(&receipt).await?;
+    finish(&store, tool.id, STARTED_AT_MS + 4_000).await?;
+    owners.push((tool.id, Some(worktrees[1].clone())));
+    // Replayed events and multiple attribution sources must not multiply usage.
+    for (operation_id, worktree_id) in owners {
+        for kind in [
+            RepositoryAttributionKind::Primary,
+            RepositoryAttributionKind::ObservedCwd,
+        ] {
+            let attribution = NewRepositoryAttribution {
+                event_id: FactEventId::new(),
+                operation_id,
+                repository_id: Some(seeded.repository_one.clone()),
+                worktree_id: worktree_id.clone(),
+                kind,
+                provenance: RepositoryAttributionProvenance::RuntimeObserved,
+                occurred_at_ms: STARTED_AT_MS + 1,
+            };
+            store.record_repository_attribution(&attribution).await?;
+            store.record_repository_attribution(&attribution).await?;
+        }
+    }
+    store.close().await;
+
+    let one = LocalUsageReportWorktree {
+        worktree_key: worktrees[0].as_str().to_string(),
+        repository_key: seeded.repository_one.as_str().to_string(),
+        label: "checkout-one".to_string(),
+        operation_count: 2,
+        model_request_count: 2,
+        tool_count: 0,
+        total_tokens: Some(85),
+        unknown_token_observations: 0,
+    };
+    let two = LocalUsageReportWorktree {
+        worktree_key: worktrees[1].as_str().to_string(),
+        repository_key: seeded.repository_one.as_str().to_string(),
+        label: "checkout-two".to_string(),
+        operation_count: 2,
+        model_request_count: 1,
+        tool_count: 1,
+        total_tokens: Some(37),
+        unknown_token_observations: 0,
+    };
+    let window_one = LocalUsageReportWorktree {
+        operation_count: 1,
+        model_request_count: 1,
+        total_tokens: None,
+        ..one.clone()
+    };
+    let finite = LocalUsageSummaryParams {
+        from_at: Some(STARTED_AT_MS / 1_000 + 2),
+        to_at: Some(STARTED_AT_MS / 1_000 + 3),
+        ..empty_summary_params()
+    };
+    // Count arrays are [operations, model requests, tools]; coverage arrays are
+    // [assigned operations, unassigned operations, assigned receipts, unassigned receipts].
+    let cases = [
+        (
+            "all",
+            empty_summary_params(),
+            [7, 4, 3],
+            Some(127),
+            vec![one.clone(), two.clone()],
+            [4, 3, 10, 3],
+        ),
+        (
+            "empty keys",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![]),
+                ..empty_summary_params()
+            },
+            [7, 4, 3],
+            Some(127),
+            vec![one.clone(), two.clone()],
+            [4, 3, 10, 3],
+        ),
+        (
+            "assigned only",
+            LocalUsageSummaryParams {
+                include_unassigned: Some(false),
+                ..empty_summary_params()
+            },
+            [4, 3, 1],
+            Some(122),
+            vec![one.clone(), two.clone()],
+            [4, 0, 10, 0],
+        ),
+        (
+            "empty keys with explicit exclusion",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![]),
+                include_unassigned: Some(false),
+                ..empty_summary_params()
+            },
+            [4, 3, 1],
+            Some(122),
+            vec![one.clone(), two.clone()],
+            [4, 0, 10, 0],
+        ),
+        (
+            "first checkout",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![one.worktree_key.clone()]),
+                ..empty_summary_params()
+            },
+            [2, 2, 0],
+            Some(85),
+            vec![one.clone()],
+            [2, 0, 6, 0],
+        ),
+        (
+            "second checkout",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![two.worktree_key.clone()]),
+                ..empty_summary_params()
+            },
+            [2, 1, 1],
+            Some(37),
+            vec![two.clone()],
+            [2, 0, 4, 0],
+        ),
+        (
+            "duplicate keys",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![
+                    two.worktree_key.clone(),
+                    one.worktree_key.clone(),
+                    one.worktree_key.clone(),
+                ]),
+                ..empty_summary_params()
+            },
+            [4, 3, 1],
+            Some(122),
+            vec![one.clone(), two.clone()],
+            [4, 0, 10, 0],
+        ),
+        (
+            "first checkout plus historical usage",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![one.worktree_key.clone()]),
+                include_unassigned: Some(true),
+                ..empty_summary_params()
+            },
+            [5, 3, 2],
+            Some(90),
+            vec![one.clone()],
+            [2, 3, 6, 3],
+        ),
+        (
+            "root without descendants",
+            LocalUsageSummaryParams {
+                thread_id: Some(root.as_str().to_string()),
+                ..empty_summary_params()
+            },
+            [5, 3, 2],
+            Some(90),
+            vec![one.clone()],
+            [2, 3, 6, 3],
+        ),
+        (
+            "child scope",
+            LocalUsageSummaryParams {
+                thread_id: Some(child.as_str().to_string()),
+                worktree_keys: Some(vec![two.worktree_key.clone()]),
+                ..empty_summary_params()
+            },
+            [2, 1, 1],
+            Some(37),
+            vec![two.clone()],
+            [2, 0, 4, 0],
+        ),
+        (
+            "finite window",
+            finite.clone(),
+            [4, 3, 1],
+            Some(42),
+            vec![window_one.clone(), two.clone()],
+            [3, 1, 4, 3],
+        ),
+        (
+            "finite first checkout",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![one.worktree_key.clone()]),
+                ..finite.clone()
+            },
+            [1, 1, 0],
+            None,
+            vec![window_one.clone()],
+            [1, 0, 0, 0],
+        ),
+        (
+            "finite second checkout",
+            LocalUsageSummaryParams {
+                worktree_keys: Some(vec![two.worktree_key.clone()]),
+                ..finite.clone()
+            },
+            [2, 1, 1],
+            Some(37),
+            vec![two.clone()],
+            [2, 0, 4, 0],
+        ),
+        (
+            "repository intersection",
+            LocalUsageSummaryParams {
+                repository_key: Some(seeded.repository_two.as_str().to_string()),
+                worktree_keys: Some(vec![one.worktree_key.clone(), two.worktree_key.clone()]),
+                include_unassigned: Some(true),
+                ..empty_summary_params()
+            },
+            [0, 0, 0],
+            None,
+            vec![],
+            [0, 0, 0, 0],
+        ),
+    ];
+    let mut server = initialized_server(codex_home.path()).await?;
+    let mut first_reports = Vec::new();
+    for restart in 0..2 {
+        for (index, (name, params, counts, total_tokens, rows, coverage)) in
+            cases.iter().enumerate()
+        {
+            let response: LocalUsageSummaryResponse = server
+                .request(|request_id| ClientRequest::LocalUsageSummary {
+                    request_id,
+                    params: params.clone(),
+                })
+                .await?;
+            let [operations, model_requests, tools] = *counts;
+            let [
+                assigned_operation_count,
+                unassigned_operation_count,
+                assigned_token_observation_count,
+                unassigned_token_observation_count,
+            ] = *coverage;
+            assert_eq!(
+                (
+                    response.aggregate.total_tokens,
+                    response.report.counts,
+                    response.report.worktrees.clone(),
+                    response.report.worktree_coverage
+                ),
+                (
+                    *total_tokens,
+                    LocalUsageReportCounts {
+                        operations,
+                        model_requests,
+                        tools
+                    },
+                    rows.clone(),
+                    LocalUsageReportWorktreeCoverage {
+                        assigned_operation_count,
+                        unassigned_operation_count,
+                        assigned_token_observation_count,
+                        unassigned_token_observation_count
+                    }
+                ),
+                "{name}, restart {restart}"
+            );
+            assert_eq!(
+                response.report.time_range,
+                params
+                    .from_at
+                    .zip(params.to_at)
+                    .map(|(start, end)| LocalUsageReportTimeRange {
+                        start_ms: start * 1_000,
+                        end_ms: end * 1_000
+                    })
+            );
+            let serialized = serde_json::to_string(&response.report)?;
+            assert!(!serialized.contains(&codex_home.path().to_string_lossy().to_string()));
+            assert!(!serialized.contains("/private/"));
+            let stable = (
+                response.aggregate,
+                response.token_categories,
+                response.report,
+            );
+            if restart == 0 {
+                first_reports.push(stable);
+            } else {
+                assert_eq!(stable, first_reports[index], "{name} after reopening");
+            }
+        }
+        assert!(server.shutdown_gracefully().await?.success());
+        if restart == 0 {
+            let reopened = UsageStore::open(codex_home.path()).await?;
+            for (workspace, id) in workspaces.iter().zip(&worktrees) {
+                assert_eq!(
+                    reopened
+                        .find_worktree_for_workspace(&seeded.repository_one, workspace)
+                        .await?,
+                    Some(id.clone())
+                );
+            }
+            reopened.close().await;
+            server = initialized_server(codex_home.path()).await?;
+        }
+    }
+    let mut server = initialized_server(codex_home.path()).await?;
+    let all_tools: LocalUsageToolListResponse = server
+        .request(|request_id| ClientRequest::LocalUsageToolList {
+            request_id,
+            params: LocalUsageToolListParams {
+                thread_id: None,
+                repository_key: Some(seeded.repository_one.as_str().to_string()),
+                ..tool_list_params(/*limit*/ Some(100), /*cursor*/ None)
+            },
+        })
+        .await?;
+    assert_eq!(all_tools.data.len(), 3);
+    let mut cursor = None;
+    let mut paged = Vec::new();
+    for _ in 0..all_tools.data.len() {
+        let page: LocalUsageToolListResponse = server
+            .request(|request_id| ClientRequest::LocalUsageToolList {
+                request_id,
+                params: LocalUsageToolListParams {
+                    thread_id: None,
+                    repository_key: Some(seeded.repository_one.as_str().to_string()),
+                    ..tool_list_params(/*limit*/ Some(1), cursor.take())
+                },
+            })
+            .await?;
+        assert_eq!(page.data.len(), 1);
+        paged.extend(page.data);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(paged, all_tools.data);
+    assert_eq!(cursor, None);
+    assert!(server.shutdown_gracefully().await?.success());
     Ok(())
 }
 
@@ -505,6 +1016,8 @@ async fn expected_reports(
     let store = UsageStore::open(codex_home).await?;
     let all = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: None,
             repository_id: None,
             account_profile_ref: None,
@@ -513,6 +1026,8 @@ async fn expected_reports(
         .await?;
     let thread = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: Some(ThreadId::new("thread-one")?),
             repository_id: None,
             account_profile_ref: None,
@@ -521,6 +1036,8 @@ async fn expected_reports(
         .await?;
     let repository = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id: None,
             repository_id: Some(repository_id.clone()),
             account_profile_ref: None,
@@ -559,6 +1076,8 @@ fn assert_report_matches_structured(report: &LocalUsageReport, expected: serde_j
 
 fn empty_summary_params() -> LocalUsageSummaryParams {
     LocalUsageSummaryParams {
+        worktree_keys: None,
+        include_unassigned: None,
         repository_key: None,
         thread_id: None,
         account_id: None,
@@ -787,6 +1306,7 @@ async fn attribute(store: &UsageStore, operation_id: OperationId, id: Repository
             event_id: FactEventId::new(),
             operation_id,
             repository_id: Some(id),
+            worktree_id: None,
             kind: RepositoryAttributionKind::Primary,
             provenance: RepositoryAttributionProvenance::RuntimeObserved,
             occurred_at_ms: STARTED_AT_MS + 1,

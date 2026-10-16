@@ -146,6 +146,31 @@ impl CodexThread {
 }
 
 impl crate::session::session::Session {
+    /// Moves wake inputs admitted during turn-start lifecycle callbacks into the
+    /// task's initial input, so a user turn consumes them in its first model
+    /// request instead of deferring them to a second sampling pass.
+    pub(crate) async fn take_pending_subscription_wake_inputs(
+        &self,
+        turn_state: &tokio::sync::Mutex<crate::state::TurnState>,
+    ) -> Vec<crate::session::TurnInput> {
+        let queued = self
+            .services
+            .thread_extension_data
+            .get_or_init(PendingSubscriptionInputs::default)
+            .0
+            .lock()
+            .await
+            .iter()
+            .map(|(item, _)| item.clone())
+            .collect::<Vec<_>>();
+        if queued.is_empty() {
+            return Vec::new();
+        }
+        self.input_queue
+            .take_pending_response_items_for_turn_state(turn_state, &queued)
+            .await
+    }
+
     async fn remember_subscription_wake_input(&self, item: &ResponseItem, wake: WakeBatch) -> bool {
         let Some(state) = self.state_db() else {
             return true;

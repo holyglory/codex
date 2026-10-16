@@ -9,12 +9,14 @@ target=x86_64-unknown-linux-musl
 : "${LOCAL_MUSL_PKG_CONFIG:?Provide the musl libcap pkg-config directory}"
 : "${LOCAL_PACKAGE_PYTHON:?Provide the package smoke-test virtualenv Python}"
 : "${LOCAL_RELEASE_TARGET:?Provide persistent release build storage}"
-for tool in cargo python3 x86_64-linux-musl-gcc strip sha256sum zstd; do
+for tool in cargo python3 pkg-config x86_64-linux-musl-gcc strip sha256sum zstd; do
   command -v "$tool" >/dev/null
 done
 test -f "$LOCAL_MUSL_V8_ARCHIVE"
 test -f "$LOCAL_MUSL_V8_BINDING"
 test -d "$LOCAL_MUSL_PKG_CONFIG"
+test -f "$LOCAL_MUSL_PKG_CONFIG/libcap.pc"
+PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$LOCAL_MUSL_PKG_CONFIG" pkg-config --exists libcap
 "$LOCAL_PACKAGE_PYTHON" -c 'import pytest, zstandard'
 if [[ "${1:-}" == --check ]]; then
   exit 0

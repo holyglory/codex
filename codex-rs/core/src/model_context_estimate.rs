@@ -23,7 +23,7 @@ pub(crate) fn model_context_estimate(
     request: &ResponsesApiRequest,
 ) -> Option<ModelContextEstimate> {
     model_context_estimate_parts(
-        &request.instructions,
+        "",
         request.tools.as_ref(),
         request.text.as_ref(),
         &request.input,

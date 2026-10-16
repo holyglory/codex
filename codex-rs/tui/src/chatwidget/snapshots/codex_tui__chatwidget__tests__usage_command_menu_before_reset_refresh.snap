@@ -1,11 +1,12 @@
 ---
 source: tui/src/chatwidget/tests/usage.rs
+assertion_line: 265
 expression: "render_bottom_popup(&chat, 80)"
 ---
   Usage
 
 
 › 1. Show usage                View recent account token usage.
-  2. Redeem usage limit reset  Check availability.
+  2. Redeem usage limit reset  Check availability
 
   enter open · esc back

@@ -4,6 +4,7 @@ use crate::command_exec::StartCommandExecParams;
 use crate::config_manager::ConfigManager;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::invalid_params;
+use crate::models::supported_models;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -460,8 +461,7 @@ use codex_protocol::protocol::ReviewTarget as CoreReviewTarget;
 use codex_protocol::protocol::SessionConfiguredEvent;
 #[cfg(test)]
 use codex_protocol::protocol::SessionMetaLine;
-use codex_protocol::protocol::TurnEnvironmentSelection;
-use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::protocol::TurnEnvironmentRequest;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::strip_user_message_prefix;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -472,7 +472,7 @@ use codex_rmcp_client::perform_oauth_login_return_url;
 use codex_rollout::InitialHistory;
 use codex_rollout::ResumedHistory;
 use codex_rollout::RolloutItem;
-use codex_rollout::is_persisted_rollout_item;
+use codex_rollout::persisted_rollout_item;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout::state_db::reconcile_rollout;
 use codex_state::ThreadMetadata;
@@ -484,6 +484,7 @@ use codex_thread_store::DeleteThreadsParams as StoreDeleteThreadsParams;
 use codex_thread_store::GitInfoPatch as StoreGitInfoPatch;
 use codex_thread_store::ItemSortKey as StoreItemSortKey;
 use codex_thread_store::ListItemsParams as StoreListItemsParams;
+use codex_thread_store::ListItemsPosition as StoreListItemsPosition;
 use codex_thread_store::ListThreadsParams as StoreListThreadsParams;
 use codex_thread_store::ListTimelineParams as StoreListTimelineParams;
 use codex_thread_store::ListTurnsParams as StoreListTurnsParams;
@@ -541,11 +542,15 @@ mod bedrock_auth;
 mod catalog_processor;
 mod command_exec_processor;
 mod config_processor;
+#[cfg(test)]
+#[path = "request_processors/config_reload_tests.rs"]
+mod config_reload_tests;
 mod diagnostics;
 mod environment_processor;
 mod event_subscription_processor;
 mod feedback_doctor_report;
 mod feedback_processor;
+mod feedback_rollout_history;
 mod feedback_thread_index;
 mod fs_processor;
 mod git_processor;
@@ -640,14 +645,14 @@ fn resolve_request_cwd(cwd: Option<PathBuf>) -> Result<Option<AbsolutePathBuf>, 
     .transpose()
 }
 
-fn resolve_turn_environment_selections(
+fn resolve_turn_environment_requests(
     thread_manager: &ThreadManager,
     environments: Option<Vec<TurnEnvironmentParams>>,
-) -> Result<Option<Vec<TurnEnvironmentSelection>>, JSONRPCErrorError> {
+) -> Result<Option<Vec<TurnEnvironmentRequest>>, JSONRPCErrorError> {
     let Some(environments) = environments else {
         return Ok(None);
     };
-    let mut selections = Vec::with_capacity(environments.len());
+    let mut requests = Vec::with_capacity(environments.len());
     for environment in environments {
         let environment_id = environment.environment_id;
         let cwd = environment
@@ -677,16 +682,21 @@ fn resolve_turn_environment_selections(
             })
             .transpose()?
             .unwrap_or_else(|| vec![cwd.clone()]);
-        selections.push(TurnEnvironmentSelection {
+        requests.push(TurnEnvironmentRequest {
             environment_id,
             cwd,
             workspace_roots,
             config: EnvironmentConfigState::FromThread,
         });
     }
-    validate_environment_ids_and_cwds(&thread_manager.environment_manager(), &selections)
-        .map_err(environment_selection_error)?;
-    Ok(Some(selections))
+    validate_environment_ids_and_cwds(
+        &thread_manager.environment_manager(),
+        requests
+            .iter()
+            .map(|request| (request.environment_id.as_str(), &request.cwd)),
+    )
+    .map_err(environment_selection_error)?;
+    Ok(Some(requests))
 }
 
 fn resolve_runtime_workspace_roots(workspace_roots: Vec<AbsolutePathBuf>) -> Vec<AbsolutePathBuf> {
@@ -725,8 +735,10 @@ pub(crate) use self::thread_summary::thread_settings_from_config_snapshot;
 pub(crate) fn build_legacy_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     let mut builder = ThreadHistoryBuilder::new();
     for item in items {
-        if is_persisted_rollout_item(item, codex_protocol::protocol::ThreadHistoryMode::Legacy) {
-            builder.handle_rollout_item(item);
+        if let Some(item) =
+            persisted_rollout_item(item, codex_protocol::protocol::ThreadHistoryMode::Legacy)
+        {
+            builder.handle_rollout_item(item.as_ref());
         }
     }
     builder.finish()

@@ -58,6 +58,11 @@ enum AccountManagementArgs {
         account: String,
         expected_generation: u64,
     },
+    SetCreditUsage {
+        account: String,
+        mode: AutoSelectionMode,
+        expected_generation: u64,
+    },
     SetAutoSelection {
         mode: AutoSelectionMode,
         expected_generation: u64,
@@ -110,6 +115,7 @@ struct AccountOutput {
     enabled: bool,
     authenticated: bool,
     priority: u32,
+    credit_usage_enabled: bool,
     is_default: bool,
     is_current_turn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -187,6 +193,22 @@ impl ToolExecutor<ToolInvocation> for AccountManagementHandler {
                 } => metadata::update(
                     &invocation,
                     ManagedAccountUpdate::SetDefault { account },
+                    expected_generation,
+                ),
+                AccountManagementArgs::SetCreditUsage {
+                    account,
+                    mode,
+                    expected_generation,
+                } => metadata::update(
+                    &invocation,
+                    match mode {
+                        AutoSelectionMode::Enabled => {
+                            ManagedAccountUpdate::EnableCreditUsage { account }
+                        }
+                        AutoSelectionMode::Disabled => {
+                            ManagedAccountUpdate::DisableCreditUsage { account }
+                        }
+                    },
                     expected_generation,
                 ),
                 AccountManagementArgs::SetAutoSelection {
@@ -295,6 +317,7 @@ fn account_output(account: &ManagedAccountSummary, routed_account: Option<&str>)
         enabled: account.enabled,
         authenticated: account.authenticated,
         priority: account.priority,
+        credit_usage_enabled: account.credit_usage_enabled,
         is_default: account.is_default,
         is_current_turn: routed_account == Some(account.alias.as_str()),
         service_usage: None,

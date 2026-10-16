@@ -162,6 +162,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let state = thread_state.lock().await;
                 let mut turn = state.active_turn_snapshot().unwrap_or_else(|| Turn {
                     id: payload.turn_id.clone(),
+                    root_turn_id: payload.root_turn_id.clone(),
                     items: Vec::new(),
                     items_view: TurnItemsView::NotLoaded,
                     error: None,
@@ -1054,11 +1055,6 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::StreamError(ev) => {
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
             // but we notify the client.
-            thread_state
-                .lock()
-                .await
-                .turn_summary
-                .record_stream_error_details(ev.additional_details.as_deref());
             let turn_error = TurnError {
                 misalignment: None,
                 message: ev.message,
@@ -1316,6 +1312,7 @@ async fn handle_turn_plan_update(
 
 struct TurnCompletionMetadata {
     status: TurnStatus,
+    root_turn_id: Option<String>,
     error: Option<TurnError>,
     last_agent_message: Option<ThreadItem>,
     started_at: Option<i64>,
@@ -1337,6 +1334,7 @@ async fn emit_turn_completed_with_status(
         thread_id: conversation_id.to_string(),
         turn: Turn {
             id: event_turn_id,
+            root_turn_id: turn_completion_metadata.root_turn_id,
             items,
             items_view,
             error: turn_completion_metadata.error,
@@ -1427,6 +1425,7 @@ async fn start_command_execution_item(
             item: ThreadItem::CommandExecution {
                 id: item_id,
                 model_context,
+                sandbox_type: None,
                 plugin_id,
                 script_path,
                 command,
@@ -1472,6 +1471,7 @@ async fn complete_command_execution_item(
     let item = ThreadItem::CommandExecution {
         id: item_id,
         model_context: completion_item.model_context,
+        sandbox_type: None,
         plugin_id: completion_item.plugin_id,
         script_path: completion_item.script_path,
         command: completion_item.command,
@@ -1510,28 +1510,11 @@ async fn handle_turn_complete(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let mut turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
+    let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
 
-    let (status, error, last_agent_message) = match turn_summary.last_error.take() {
-        Some(mut error) => {
-            if error.additional_details.is_none() {
-                error.additional_details = turn_summary.take_stream_error_details();
-            }
-            (TurnStatus::Failed, Some(error), None)
-        }
-        None => match turn_complete_event.error {
-            Some(error) => (
-                TurnStatus::Failed,
-                Some(TurnError {
-                    message: error.message,
-                    codex_error_info: error.codex_error_info.map(Into::into),
-                    additional_details: turn_summary.take_stream_error_details(),
-                    misalignment: error.misalignment.map(Into::into),
-                }),
-                None,
-            ),
-            None => (TurnStatus::Completed, None, turn_summary.last_agent_message),
-        },
+    let (status, error, last_agent_message) = match turn_summary.last_error {
+        Some(error) => (TurnStatus::Failed, Some(error), None),
+        None => (TurnStatus::Completed, None, turn_summary.last_agent_message),
     };
 
     emit_turn_completed_with_status(
@@ -1539,6 +1522,7 @@ async fn handle_turn_complete(
         event_turn_id,
         TurnCompletionMetadata {
             status,
+            root_turn_id: turn_complete_event.root_turn_id,
             error,
             last_agent_message,
             started_at: turn_summary.started_at,
@@ -1564,7 +1548,13 @@ async fn handle_turn_interrupted(
         event_turn_id,
         TurnCompletionMetadata {
             status: TurnStatus::Interrupted,
-            error: None,
+            root_turn_id: turn_aborted_event.root_turn_id,
+            error: turn_aborted_event.error.map(|error| TurnError {
+                message: error.message,
+                codex_error_info: error.codex_error_info.map(Into::into),
+                misalignment: error.misalignment.map(Into::into),
+                additional_details: None,
+            }),
             last_agent_message: None,
             started_at: turn_summary.started_at,
             completed_at: turn_aborted_event.completed_at,
@@ -1621,13 +1611,10 @@ async fn handle_token_count_event(
 
 async fn handle_error(
     _conversation_id: ThreadId,
-    mut error: TurnError,
+    error: TurnError,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
     let mut state = thread_state.lock().await;
-    if error.additional_details.is_none() {
-        error.additional_details = state.turn_summary.take_stream_error_details();
-    }
     state.turn_summary.last_error = Some(error);
 }
 
@@ -2197,6 +2184,7 @@ mod tests {
 
     fn turn_complete_event(turn_id: &str) -> TurnCompleteEvent {
         TurnCompleteEvent {
+            root_turn_id: None,
             turn_id: turn_id.to_string(),
             started_at: None,
             last_agent_message: None,
@@ -2209,9 +2197,11 @@ mod tests {
 
     fn turn_aborted_event(turn_id: &str) -> TurnAbortedEvent {
         TurnAbortedEvent {
+            root_turn_id: None,
             turn_id: Some(turn_id.to_string()),
             started_at: None,
             reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+            error: None,
             completed_at: Some(TEST_TURN_COMPLETED_AT),
             duration_ms: Some(TEST_TURN_DURATION_MS),
         }
@@ -2509,6 +2499,7 @@ mod tests {
                     payload.item,
                     ThreadItem::CommandExecution {
                         model_context: None,
+                        sandbox_type: None,
                         id: "cmd-1".to_string(),
                         plugin_id: completion_item.plugin_id.clone(),
                         script_path: completion_item.script_path.clone(),
@@ -3105,6 +3096,7 @@ mod tests {
             state.track_current_turn_event(
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_attribution: None,
                     turn_id: "turn-1".to_string(),
                     root_turn_id: None,
                     trace_id: None,
@@ -3141,6 +3133,7 @@ mod tests {
             Event {
                 id: "turn-1".to_string(),
                 msg: EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_attribution: None,
                     turn_id: "turn-1".to_string(),
                     root_turn_id: None,
                     trace_id: None,
@@ -3259,6 +3252,8 @@ mod tests {
                     thread_id: conversation_id,
                     turn_id: "turn-1".to_string(),
                     item: CoreTurnItem::SubAgentActivity(SubAgentActivityItem {
+                        model: None,
+                        reasoning_effort: None,
                         id: "activity-1".to_string(),
                         kind: SubAgentActivityKind::Interrupted,
                         agent_thread_id: child_thread_id,
@@ -3293,6 +3288,8 @@ mod tests {
             payload,
             ItemCompletedNotification {
                 item: ThreadItem::SubAgentActivity {
+                    model: None,
+                    reasoning_effort: None,
                     id: "activity-1".to_string(),
                     kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
                     agent_thread_id: child_thread_id_string,
@@ -3411,6 +3408,7 @@ mod tests {
             state.track_current_turn_event(
                 &event_turn_id,
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_attribution: None,
                     turn_id: event_turn_id.clone(),
                     root_turn_id: None,
                     trace_id: None,
@@ -3526,7 +3524,10 @@ mod tests {
         handle_turn_interrupted(
             conversation_id,
             event_turn_id.clone(),
-            turn_aborted_event(&event_turn_id),
+            TurnAbortedEvent {
+                root_turn_id: Some("root-a".to_string()),
+                ..turn_aborted_event(&event_turn_id)
+            },
             &outgoing,
             &thread_state,
         )
@@ -3536,6 +3537,7 @@ mod tests {
         match msg {
             ServerNotification::TurnCompleted(n) => {
                 assert_eq!(n.turn.id, event_turn_id);
+                assert_eq!(n.turn.root_turn_id.as_deref(), Some("root-a"));
                 assert_eq!(n.turn.status, TurnStatus::Interrupted);
                 assert_eq!(n.turn.error, None);
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
@@ -3603,65 +3605,6 @@ mod tests {
             other => bail!("unexpected message: {other:?}"),
         }
         assert!(rx.try_recv().is_err(), "no extra messages expected");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_terminal_error_includes_stream_diagnostics() -> Result<()> {
-        let conversation_id = ThreadId::new();
-        let event_turn_id = "complete_diag1".to_string();
-        let thread_state = new_thread_state();
-        thread_state
-            .lock()
-            .await
-            .turn_summary
-            .record_stream_error_details(Some("HTTP 503 request id req-123"));
-        handle_error(
-            conversation_id,
-            TurnError {
-                misalignment: None,
-                message: "terminal failure".to_string(),
-                codex_error_info: Some(V2CodexErrorInfo::InternalServerError),
-                additional_details: None,
-            },
-            &thread_state,
-        )
-        .await;
-        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
-        let outgoing = Arc::new(OutgoingMessageSender::new(
-            tx,
-            codex_analytics::AnalyticsEventsClient::disabled(),
-        ));
-        let outgoing = ThreadScopedOutgoingMessageSender::new(
-            outgoing,
-            vec![ConnectionId(1)],
-            ThreadId::new(),
-        );
-
-        handle_turn_complete(
-            conversation_id,
-            event_turn_id.clone(),
-            turn_complete_event(&event_turn_id),
-            &outgoing,
-            &thread_state,
-        )
-        .await;
-
-        match recv_broadcast_notification(&mut rx).await? {
-            ServerNotification::TurnCompleted(notification) => {
-                assert_eq!(
-                    notification
-                        .turn
-                        .error
-                        .and_then(|error| error.additional_details),
-                    Some(
-                        "stream error diagnostics:\nAttempt 1: HTTP 503 request id req-123"
-                            .to_string()
-                    )
-                );
-            }
-            other => bail!("unexpected message: {other:?}"),
-        }
         Ok(())
     }
 

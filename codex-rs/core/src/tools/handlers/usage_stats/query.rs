@@ -39,13 +39,35 @@ pub(super) async fn execute(
 ) -> Result<Value, FunctionCallError> {
     validate_args(&args)?;
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
+    if time_range.is_none_or(|range| !range.is_finite())
+        && matches!(
+            args.action,
+            UsageStatsAction::PerformanceReview
+                | UsageStatsAction::Summary
+                | UsageStatsAction::TaskTreeSummary
+        )
+    {
+        let cache = store.report_cache_status().await.map_err(|error| {
+            if let Some(failure) = error.report_failure() {
+                tool_error(
+                    &serde_json::to_string(&failure)
+                        .unwrap_or_else(|_| "Usage report unavailable".into()),
+                )
+            } else {
+                storage_error()
+            }
+        })?;
+        if !cache.ready {
+            return Ok(warming_response(args.action, cache));
+        }
+    }
     let mut value = match args.action {
         UsageStatsAction::Summary => summary(store, context, &args, time_range).await,
         UsageStatsAction::TaskTreeSummary => {
             task_tree_summary(store, context, &args, time_range).await
         }
         UsageStatsAction::PerformanceReview => {
-            let packet = store
+            let packet = match store
                 .performance_review_packet(codex_usage::PerformanceReviewQuery {
                     repository_id: optional_repository(store, context, args.repository.as_deref())
                         .await?,
@@ -56,12 +78,21 @@ pub(super) async fn execute(
                     outcome_limit: args.outcome_limit,
                 })
                 .await
-                .map_err(|error| match error {
-                    codex_usage::UsageStoreError::InvalidReviewCursor => {
-                        tool_error(&error.to_string())
-                    }
-                    _ => storage_error(),
-                })?;
+            {
+                Ok(packet) => packet,
+                Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
+                    return Ok(warming_response(
+                        UsageStatsAction::PerformanceReview,
+                        *cache,
+                    ));
+                }
+                Err(error @ codex_usage::UsageStoreError::InvalidReviewCursor)
+                | Err(error @ codex_usage::UsageStoreError::ReportTimedOut)
+                | Err(error @ codex_usage::UsageStoreError::ReportBusy) => {
+                    return Err(tool_error(&error.to_string()));
+                }
+                Err(_) => return Err(storage_error()),
+            };
             serde_json::to_value(packet).map_err(|_| storage_error())
         }
         UsageStatsAction::Repositories => query_lists::repositories(store, &args).await,
@@ -88,19 +119,54 @@ pub(super) async fn execute(
     Ok(value)
 }
 
+pub(super) fn warming_response(
+    action: UsageStatsAction,
+    cache: codex_usage::ReportCacheStatus,
+) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "kind": "usageReportWarming",
+        "action": action_name(action),
+        "freshness": cache.freshness,
+        "cache": cache,
+        "retryAfterMs": 1_000,
+        "message": "The rolled-up usage report is still warming. Retry shortly or provide from_at_ms and to_at_ms for a bounded window.",
+        "reportingOperationInProgress": false,
+    })
+}
+
+fn action_name(action: UsageStatsAction) -> &'static str {
+    match action {
+        UsageStatsAction::Summary => "summary",
+        UsageStatsAction::TaskTreeSummary => "task_tree_summary",
+        UsageStatsAction::PerformanceReview => "performance_review",
+        UsageStatsAction::Repositories => "repositories",
+        UsageStatsAction::Tools => "tools",
+        UsageStatsAction::Activities => "activities",
+        UsageStatsAction::Events => "events",
+        UsageStatsAction::Details => "details",
+    }
+}
+
 async fn task_tree_summary(
     store: &UsageStore,
     context: &UsageStatsContext,
     args: &UsageStatsArgs,
     time_range: Option<UtcTimeRange>,
 ) -> Result<Value, FunctionCallError> {
-    let root_thread_id = match args.root_thread_id.as_deref().unwrap_or("current") {
+    let root_thread_id = match args
+        .root_thread_id
+        .as_deref()
+        .ok_or_else(|| tool_error("root_thread_id is required"))?
+    {
         "current" => context.thread_id.clone(),
         value => ThreadId::new(value).map_err(|_| tool_error("root_thread_id is invalid"))?,
     };
-    let include_descendants = args.include_descendants.unwrap_or(true);
-    let time_range =
-        time_range.unwrap_or(UtcTimeRange::new(i64::MIN, i64::MAX).map_err(|_| storage_error())?);
+    let include_descendants = args
+        .include_descendants
+        .ok_or_else(|| tool_error("include_descendants is required"))?;
+    let time_range = time_range
+        .ok_or_else(|| tool_error("from_at_ms and to_at_ms are required for task_tree_summary"))?;
     let summary = store
         .task_tree_summary(codex_usage::TaskTreeSummaryQuery {
             root_thread_id,
@@ -132,6 +198,8 @@ async fn summary(
         .transpose()?;
     let summary = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id,
             repository_id,
             account_profile_ref: account.as_ref().map(|account| account.profile_ref.clone()),
@@ -408,6 +476,10 @@ fn validate_args(args: &UsageStatsArgs) -> Result<(), FunctionCallError> {
                 || args.thread_id.is_some()
                 || args.agent_id.is_some()
                 || args.detail.is_some()
+                || args.root_thread_id.is_none()
+                || args.include_descendants.is_none()
+                || args.from_at_ms.is_none()
+                || args.to_at_ms.is_none()
         }
         UsageStatsAction::PerformanceReview => {
             args.scope.is_some()

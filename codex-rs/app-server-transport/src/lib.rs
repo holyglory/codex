@@ -1,6 +1,7 @@
 pub mod daemon_recovery;
 #[cfg(any(windows, test))]
 mod daemon_shutdown;
+pub mod maintenance;
 #[cfg(windows)]
 pub use daemon_shutdown::DAEMON_SHUTDOWN_FILE_ENV;
 #[cfg(windows)]
@@ -35,12 +36,9 @@ pub use transport::TransportEvent;
 pub use transport::acquire_app_server_startup_lock;
 pub use transport::app_server_control_socket_path;
 pub use transport::app_server_startup_lock_path;
-pub use transport::auth;
 pub use transport::daemon_recovery_file_path;
 pub use transport::start_control_socket_acceptor;
 pub use transport::start_remote_control;
 pub use transport::start_stdio_connection;
 pub use transport::start_websocket_acceptor;
 pub use transport::take_remote_control_disabled_env;
-
-pub mod maintenance;

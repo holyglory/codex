@@ -34,7 +34,6 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
-use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -42,6 +41,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
+use tempfile::TempDir;
 use wiremock::MockServer;
 
 const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
@@ -206,10 +206,8 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     let request_log = mount_initial_flow(&server).await;
     let expected_model = "gpt-5.4";
     // 2. Start a new conversation and drive it through the compact/resume/fork steps.
-    let test = start_test_conversation(&server, Some(expected_model)).await;
-    let config = test.config.clone();
-    let manager = Arc::clone(&test.thread_manager);
-    let base = Arc::clone(&test.codex);
+    let (_home, config, manager, base) =
+        start_test_conversation(&server, Some(expected_model)).await;
 
     user_turn(&base, "hello world").await;
     compact_conversation(&base).await;
@@ -239,7 +237,9 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     // input after compact is a prefix of input after resume/fork
     let input_after_compact = json!(requests[requests.len() - 3]["input"]);
     let input_after_resume = json!(requests[requests.len() - 2]["input"]);
-    let input_after_fork = json!(requests[requests.len() - 1]["input"]);
+    let mut input_after_fork = json!(requests[requests.len() - 1]["input"]);
+    // The request prefix has a thread-scoped ID; retained history IDs stay unchanged.
+    input_after_fork[0]["id"] = input_after_compact[0]["id"].clone();
 
     let compact_arr = input_after_compact
         .as_array()
@@ -279,18 +279,16 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     let summary_after_compact = extract_summary_user_text(&requests[2], SUMMARY_TEXT);
     let summary_after_resume = extract_summary_user_text(&requests[3], SUMMARY_TEXT);
     let summary_after_fork = extract_summary_user_text(&requests[4], SUMMARY_TEXT);
-    let mut expected_after_compact_user_texts =
-        vec!["hello world".to_string(), summary_after_compact];
-    expected_after_compact_user_texts.extend_from_slice(seeded_user_prefix);
+    let mut expected_after_compact_user_texts = seeded_user_prefix.to_vec();
+    expected_after_compact_user_texts.extend(["hello world".to_string(), summary_after_compact]);
     expected_after_compact_user_texts.push("AFTER_COMPACT".to_string());
     assert_eq!(
         json_message_input_texts(&requests[2], "user"),
         expected_after_compact_user_texts
     );
 
-    let mut expected_after_resume_user_texts =
-        vec!["hello world".to_string(), summary_after_resume];
-    expected_after_resume_user_texts.extend_from_slice(seeded_user_prefix);
+    let mut expected_after_resume_user_texts = seeded_user_prefix.to_vec();
+    expected_after_resume_user_texts.extend(["hello world".to_string(), summary_after_resume]);
     expected_after_resume_user_texts.push("AFTER_COMPACT".to_string());
     let after_resume_user_texts = json_message_input_texts(&requests[3], "user");
     let (after_resume_last, after_resume_prefix) = after_resume_user_texts
@@ -319,9 +317,8 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     }
 
     let after_fork_user_texts = json_message_input_texts(&requests[4], "user");
-    let mut expected_after_fork_history_prefix =
-        vec!["hello world".to_string(), summary_after_fork];
-    expected_after_fork_history_prefix.extend_from_slice(seeded_user_prefix);
+    let mut expected_after_fork_history_prefix = seeded_user_prefix.to_vec();
+    expected_after_fork_history_prefix.extend(["hello world".to_string(), summary_after_fork]);
     expected_after_fork_history_prefix.push("AFTER_COMPACT".to_string());
     let (after_fork_last, after_fork_prefix) = after_fork_user_texts
         .split_last()
@@ -365,10 +362,7 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let request_log = mount_second_compact_sequence(&server).await;
 
     // 2. Drive the conversation through compact -> resume -> fork -> compact -> resume.
-    let test = start_test_conversation(&server, /*model*/ None).await;
-    let config = test.config.clone();
-    let manager = Arc::clone(&test.thread_manager);
-    let base = Arc::clone(&test.codex);
+    let (_home, config, manager, base) = start_test_conversation(&server, /*model*/ None).await;
 
     user_turn(&base, "hello world").await;
     compact_conversation(&base).await;
@@ -455,15 +449,19 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
         "hello world".to_string(),
         "AFTER_COMPACT".to_string(),
         "AFTER_RESUME".to_string(),
-        "AFTER_FORK".to_string(),
-        summary_after_second_compact.clone(),
     ];
     expected_after_second_compact_user_texts.extend_from_slice(seeded_user_prefix);
-    expected_after_second_compact_user_texts.push("AFTER_COMPACT_2".to_string());
-    let mut expected_fork_local_user_texts =
-        vec!["AFTER_FORK".to_string(), summary_after_second_compact];
-    expected_fork_local_user_texts.extend_from_slice(seeded_user_prefix);
-    expected_fork_local_user_texts.push("AFTER_COMPACT_2".to_string());
+    expected_after_second_compact_user_texts.extend([
+        "AFTER_FORK".to_string(),
+        summary_after_second_compact.clone(),
+        "AFTER_COMPACT_2".to_string(),
+    ]);
+    let mut expected_fork_local_user_texts = seeded_user_prefix.to_vec();
+    expected_fork_local_user_texts.extend([
+        "AFTER_FORK".to_string(),
+        summary_after_second_compact,
+        "AFTER_COMPACT_2".to_string(),
+    ]);
     let final_user_texts = json_message_input_texts(&requests[requests.len() - 1], "user");
     let (final_last, final_prefix) = final_user_texts
         .split_last()
@@ -616,7 +614,10 @@ async fn mount_second_compact_sequence(server: &MockServer) -> ResponseMock {
     mount_sse_sequence(server, vec![sse1, sse2, sse3, sse4, sse5, sse6, sse7, sse8]).await
 }
 
-async fn start_test_conversation(server: &MockServer, model: Option<&str>) -> TestCodex {
+async fn start_test_conversation(
+    server: &MockServer,
+    model: Option<&str>,
+) -> (Arc<TempDir>, Config, Arc<ThreadManager>, Arc<CodexThread>) {
     let base_url = format!("{}/v1", server.uri());
     let model = model.map(str::to_string);
     let mut extensions = ExtensionRegistryBuilder::new();
@@ -632,9 +633,10 @@ async fn start_test_conversation(server: &MockServer, model: Option<&str>) -> Te
                 config.model = Some(model);
             }
         });
-    Box::pin(builder.build(server))
+    let test = Box::pin(builder.build(server))
         .await
-        .expect("create conversation")
+        .expect("create conversation");
+    (test.home, test.config, test.thread_manager, test.codex)
 }
 
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
@@ -688,7 +690,7 @@ async fn resume_conversation(
     let auth_manager = codex_core::test_support::auth_manager_from_auth(
         codex_login::CodexAuth::from_api_key("dummy"),
     );
-    Box::pin(manager.resume_thread_from_rollout(
+    Box::pin(manager.resume_legacy_thread_from_rollout(
         config.clone(),
         path,
         auth_manager,
@@ -707,7 +709,7 @@ async fn fork_thread(
     path: std::path::PathBuf,
     nth_user_message: usize,
 ) -> Arc<CodexThread> {
-    Box::pin(manager.fork_thread(
+    Box::pin(manager.fork_legacy_thread(
         nth_user_message,
         codex_core::StartThreadOptions::new(config.clone()),
         path,

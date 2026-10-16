@@ -22,6 +22,7 @@ use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
 use crate::TypedRequestError;
+use crate::decode_typed_response;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
@@ -33,8 +34,6 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
-use codex_app_server_protocol::LocalUsageAccountingCapability;
-use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -44,7 +43,6 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -551,21 +549,8 @@ impl RemoteAppServerClient {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {
@@ -713,21 +698,8 @@ impl RemoteAppServerRequestHandle {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 }
 
@@ -853,17 +825,6 @@ fn remote_websocket_config() -> WebSocketConfig {
         .max_message_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
 }
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InitializeCapabilityFields {
-    #[serde(default)]
-    multi_account: Option<MultiAccountCapability>,
-    #[serde(default)]
-    local_usage_accounting: Option<LocalUsageAccountingCapability>,
-    #[serde(default)]
-    event_subscriptions: Option<codex_app_server_protocol::EventSubscriptionsCapability>,
-}
-
 async fn initialize_remote_connection<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
@@ -904,15 +865,8 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
-                            let advertised = serde_json::from_value::<InitializeCapabilityFields>(
-                                response.result.clone(),
-                            )
-                            .unwrap_or_default();
-                            server_capabilities = AppServerCapabilities::from_advertised(
-                                advertised.multi_account,
-                                advertised.local_usage_accounting,
-                                advertised.event_subscriptions,
-                            );
+                            server_capabilities =
+                                AppServerCapabilities::from_initialize_result(&response.result);
                             metadata.server_version = response
                                 .result
                                 .get("userAgent")

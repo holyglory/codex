@@ -8,7 +8,6 @@ use codex_account_registry::AccountRegistry;
 use codex_account_registry::DEFAULT_ACCOUNT_PRIORITY;
 use codex_account_registry::OpaqueServiceId;
 use codex_account_registry::RegistryStore;
-use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AccountAutoSelectionPolicy;
 use codex_app_server_protocol::AccountAutoSelectionReadParams;
 use codex_app_server_protocol::AccountAutoSelectionReadResponse;
@@ -34,17 +33,14 @@ use codex_app_server_protocol::AccountProfileRemoveParams;
 use codex_app_server_protocol::AccountProfileRemoveResponse;
 use codex_app_server_protocol::AccountProfileUpdateParams;
 use codex_app_server_protocol::AccountProfileUpdateResponse;
-use codex_app_server_protocol::AccountRoutingOverride;
 use codex_app_server_protocol::CancelLoginAccountStatus;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::GetAccountParams;
-use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::WorkspaceRouting;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::ConfigBuilder;
 use codex_login::AuthDotJson;
@@ -54,7 +50,6 @@ use codex_login::ProfileAuthStorage;
 use codex_login::login_with_api_key_to_profile;
 use codex_login::token_data::TokenData;
 use codex_login::token_data::parse_chatgpt_jwt_claims;
-use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -109,12 +104,14 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
                 alias: Some("secondary-renamed".to_string()),
                 enabled: None,
                 priority: Some(7),
+                credit_usage_enabled: Some(true),
                 note: Some("backup".to_string()),
                 clear_note: false,
             },
         })
         .await?;
     assert_eq!(updated.profile.alias, "secondary-renamed");
+    assert!(updated.profile.credit_usage_enabled);
     assert_eq!(updated.profile.note.as_deref(), Some("backup"));
 
     let activated: AccountProfileActivateResponse = server
@@ -157,7 +154,7 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         .await?;
     assert_eq!(auto_read.auto_selection, auto.auto_selection);
 
-    server.shutdown_gracefully().await?;
+    drop(server);
     let mut server = initialized_server(codex_home.path()).await?;
     let read: AccountProfileReadResponse = server
         .request(|request_id| ClientRequest::AccountProfileRead {
@@ -168,6 +165,7 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         })
         .await?;
     assert!(read.profile.is_active);
+    assert!(read.profile.credit_usage_enabled);
     assert_eq!(read.profile.alias, "secondary-renamed");
     let _: AccountProfileActivateResponse = server
         .request(|request_id| ClientRequest::AccountProfileActivate {
@@ -182,8 +180,6 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         .await?;
     assert!(second_change.generation > first_change.generation);
 
-    server.shutdown_gracefully().await?;
-    let mut server = initialized_server(codex_home.path()).await?;
     let removed: AccountProfileRemoveResponse = server
         .request(|request_id| ClientRequest::AccountProfileRemove {
             request_id,
@@ -289,17 +285,6 @@ async fn pinned_server_reports_and_logs_out_only_the_process_active_profile() ->
     assert!(!secondary.is_default);
     assert!(secondary.is_active);
 
-    // Complete the startup account read before testing an idle credential mutation.
-    let read_id = server
-        .send_get_account_request(GetAccountParams {
-            refresh_token: false,
-        })
-        .await?;
-    let _: GetAccountResponse =
-        timeout(Duration::from_secs(10), server.read_response(read_id)).await??;
-    let logout_id = server.send_logout_account_request().await?;
-    let _: LogoutAccountResponse =
-        timeout(Duration::from_secs(10), server.read_response(logout_id)).await??;
     let primary_storage = ProfileAuthStorage::new(
         codex_home.path(),
         first_id.parse()?,
@@ -312,7 +297,35 @@ async fn pinned_server_reports_and_logs_out_only_the_process_active_profile() ->
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
-    assert!(primary_storage.load()?.is_some());
+    let primary_before = primary_storage.load()?;
+    let mut expected_secondary = secondary_storage.load()?.expect("secondary credentials");
+    expected_secondary.openai_api_key = Some("replacement-secondary-key".into());
+    let login_id = server
+        .send_login_account_request(serde_json::json!({
+            "type": "apiKey",
+            "apiKey": "replacement-secondary-key"
+        }))
+        .await?;
+    let login: LoginAccountResponse =
+        timeout(Duration::from_secs(10), server.read_response(login_id)).await??;
+    assert_eq!(login, LoginAccountResponse::ApiKey {});
+    let changed: AccountProfileActiveChangedNotification = server
+        .read_notification("accountProfile/activeChanged")
+        .await?;
+    assert_eq!(changed.account_id, second_id);
+    assert_eq!(primary_storage.load()?, primary_before);
+    assert_eq!(secondary_storage.load()?, Some(expected_secondary));
+    assert!(!codex_home.path().join("auth.json").exists());
+
+    let logout_id = server.send_logout_account_request().await?;
+    let _: LogoutAccountResponse =
+        timeout(Duration::from_secs(10), server.read_response(logout_id)).await??;
+    let logged_out: AccountProfileActiveChangedNotification = server
+        .read_notification("accountProfile/activeChanged")
+        .await?;
+    assert_eq!(logged_out.account_id, second_id);
+    assert!(logged_out.generation > changed.generation);
+    assert_eq!(primary_storage.load()?, primary_before);
     assert_eq!(secondary_storage.load()?, None);
     Ok(())
 }
@@ -349,8 +362,6 @@ async fn activation_preserves_existing_lease_and_removal_rejects_in_use() -> Res
     assert_eq!(in_use.error.code, -32602);
     assert_eq!(in_use.error.message, "account profile is in use");
     drop(old_lease);
-    server.shutdown_gracefully().await?;
-    let mut server = initialized_server(codex_home.path()).await?;
     let _: AccountProfileRemoveResponse = server
         .request(|request_id| ClientRequest::AccountProfileRemove {
             request_id,
@@ -853,20 +864,6 @@ async fn profile_rate_limits_preserve_multiple_buckets() -> Result<()> {
     )?;
     let account_id = seed_chatgpt_profile(codex_home.path(), "chatgpt-token", "workspace-1")?;
     Mock::given(method("GET"))
-        .and(path("/api/codex/accounts/check"))
-        .and(header("authorization", "Bearer chatgpt-token"))
-        .and(header("chatgpt-account-id", "workspace-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "accounts": [{
-                "id": "workspace-1",
-                "workspace_backend_origin": "https://chatgpt.com",
-                "account_routing_override": "NO_CONSTRAINT"
-            }],
-            "default_account_id": "workspace-1"
-        })))
-        .mount(&backend)
-        .await;
-    Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .and(header("authorization", "Bearer chatgpt-token"))
         .and(header("chatgpt-account-id", "workspace-1"))
@@ -913,29 +910,6 @@ async fn profile_rate_limits_preserve_multiple_buckets() -> Result<()> {
     assert_eq!(limits.data.len(), 2);
     assert_eq!(limits.data[0].limit_id.as_deref(), Some("codex"));
     assert_eq!(limits.data[1].limit_id.as_deref(), Some("codex_other"));
-    let account: GetAccountResponse = server
-        .request(|request_id| ClientRequest::GetAccount {
-            request_id,
-            params: GetAccountParams {
-                refresh_token: false,
-            },
-        })
-        .await?;
-    assert_eq!(
-        account,
-        GetAccountResponse {
-            account: Some(Account::Chatgpt {
-                email: Some("profile@example.com".to_string()),
-                plan_type: AccountPlanType::Pro,
-            }),
-            requires_openai_auth: true,
-            workspace_routing: Some(WorkspaceRouting {
-                chatgpt_account_id: "workspace-1".to_string(),
-                backend_origin: "https://chatgpt.com".to_string(),
-                account_routing_override: AccountRoutingOverride::NoConstraint,
-            }),
-        }
-    );
     Ok(())
 }
 

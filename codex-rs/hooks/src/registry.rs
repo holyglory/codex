@@ -154,7 +154,6 @@ impl Hooks {
         self.engine.command_runtime.shutdown().await;
     }
 
-    /// Waits until every currently scheduled asynchronous hook has published its result.
     pub async fn wait_for_async_hooks(&self) {
         self.engine.command_runtime.wait_for_async_hooks().await;
     }
@@ -332,7 +331,7 @@ pub(crate) fn command_from_argv(
     if program.is_empty() {
         return None;
     }
-    let mut command = Command::new(program);
+    let mut command = Command::from(codex_utils_process::background_command(program));
     command.args(args);
     command.env_clear();
     command.envs(environment);

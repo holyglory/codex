@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::world_state::test_support::FragmentSectionTestExt;
 
 #[test]
 fn project_automation_instruction_updates_append_once_after_legacy_snapshots() {
@@ -6,14 +7,17 @@ fn project_automation_instruction_updates_append_once_after_legacy_snapshots() {
     let legacy: ProjectAutomationInstructionsSnapshot = serde_json::from_str("true").unwrap();
     assert!(
         current
-            .render_diff(PreviousSectionState::Known(&legacy))
+            .render_fragment_diff(PreviousSectionState::Known(&legacy))
+            .1
             .is_some()
     );
-    assert!(current.render_diff(PreviousSectionState::Unknown).is_some());
-    let saved = current.snapshot();
+    let (saved, fragment) = current.render_fragment_diff(PreviousSectionState::Unknown);
+    assert!(fragment.is_some());
+    let saved = saved.expect("persist current instruction state");
     assert!(
         current
-            .render_diff(PreviousSectionState::Known(&saved))
+            .render_fragment_diff(PreviousSectionState::Known(&saved))
+            .1
             .is_none()
     );
     let previous = ProjectAutomationInstructionsSnapshot::Current {
@@ -22,7 +26,8 @@ fn project_automation_instruction_updates_append_once_after_legacy_snapshots() {
     };
     assert!(
         current
-            .render_diff(PreviousSectionState::Known(&previous))
+            .render_fragment_diff(PreviousSectionState::Known(&previous))
+            .1
             .is_some()
     );
 }

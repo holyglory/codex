@@ -12,20 +12,14 @@ const RECAP_HEADING: &str = "Conversation recap";
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct UpdateAvailableHistoryCell {
-    current_version: &'static str,
     latest_version: String,
     update_action: Option<UpdateAction>,
 }
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
 impl UpdateAvailableHistoryCell {
-    pub(crate) fn new(
-        current_version: &'static str,
-        latest_version: String,
-        update_action: Option<UpdateAction>,
-    ) -> Self {
+    pub(crate) fn new(latest_version: String, update_action: Option<UpdateAction>) -> Self {
         Self {
-            current_version,
             latest_version,
             update_action,
         }
@@ -57,7 +51,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 "✨\u{200A}".bold().fg(accent_color()),
                 "Update available!".bold().fg(accent_color()),
                 " ",
-                format!("{} -> {}", self.current_version, self.latest_version).bold(),
+                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
             ],
             update_instruction,
             "",
@@ -83,10 +77,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         };
         vec![
             Line::from("Update available!"),
-            Line::from(format!(
-                "{} -> {}",
-                self.current_version, self.latest_version
-            )),
+            Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
             Line::from(update_instruction),
             Line::from(""),
             Line::from("Fork source and history:"),
@@ -189,12 +180,16 @@ pub(crate) fn new_cyber_policy_error_event(
                 ),
             ],
         ),
+        Notice::Disabled => (
+            "Daybreak is currently off. If you’re doing authorized security work, turn it on and try your request again.",
+            &[("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL)],
+        ),
         Notice::Astra => (
             "Daybreak isn’t available for Astra. Some cybersecurity requests may still be limited.",
             &[("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL)],
         ),
-        Notice::Limited => (
-            "We take extra care with some cybersecurity requests.",
+        Notice::Enabled => (
+            "Some cybersecurity requests are still limited, even when Daybreak is on.",
             &[("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL)],
         ),
     };

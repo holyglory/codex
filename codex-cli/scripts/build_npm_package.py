@@ -264,16 +264,16 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json = {
             "name": CODEX_NPM_NAME,
             "version": platform_version,
-            "description": codex_package_json.get("description"),
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
             "files": ["vendor", "NOTICE"],
             "repository": codex_package_json.get("repository"),
-            "homepage": codex_package_json.get("homepage"),
-            "bugs": codex_package_json.get("bugs"),
-            "publishConfig": codex_package_json.get("publishConfig"),
         }
+
+        for key in ("description", "homepage", "bugs", "publishConfig"):
+            if (value := codex_package_json.get(key)) is not None:
+                package_json[key] = value
 
         engines = codex_package_json.get("engines")
         if isinstance(engines, dict):

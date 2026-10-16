@@ -18,28 +18,6 @@ pub(super) fn local_aggregate(
     }
 }
 
-pub(super) fn local_thread_response(
-    coverage: protocol::LocalUsageCoverage,
-) -> protocol::LocalUsageThreadReadResponse {
-    protocol::LocalUsageThreadReadResponse {
-        thread: protocol::LocalUsageThread {
-            thread_id: "private-thread-id".to_string(),
-            repository_keys: vec!["private-repository-key".to_string()],
-            account_id: None,
-            started_at: 1,
-            updated_at: 2,
-            aggregate: local_aggregate(coverage),
-        },
-        token_categories: vec![protocol::LocalUsageTokenCategory {
-            category_key: "input_tokens".to_string(),
-            count: Some(120),
-            provenance: protocol::LocalUsageProvenance::ProviderReported,
-            coverage,
-        }],
-        report: local_report(coverage),
-    }
-}
-
 fn all_report(coverage: protocol::LocalUsageCoverage) -> protocol::LocalUsageReport {
     let mut report = local_report(coverage);
     report.scope = protocol::LocalUsageReportScope {
@@ -76,7 +54,13 @@ pub(super) fn local_report(coverage: protocol::LocalUsageCoverage) -> protocol::
             end_ms: 20,
         }),
         coverage: protocol::LocalUsageReportCoverage {
-            dimensions: None,
+            dimensions: protocol::LocalUsageReportCoverageDimensions {
+                recorded_tokens: "120".to_string(),
+                unfinished_operations: 0,
+                timing_unknown_intervals: 0,
+                activity_unattributed_operations: 0,
+                context: "complete".to_string(),
+            },
             state: coverage_state.to_string(),
             has_gaps: coverage != protocol::LocalUsageCoverage::Complete,
             events: vec![protocol::LocalUsageReportCoverageCount {
@@ -139,6 +123,13 @@ pub(super) fn local_report(coverage: protocol::LocalUsageCoverage) -> protocol::
             provenance: "agent_declared".to_string(),
             count: 5,
         }],
+        worktrees: Vec::new(),
+        worktree_coverage: protocol::LocalUsageReportWorktreeCoverage {
+            assigned_operation_count: 0,
+            unassigned_operation_count: 5,
+            assigned_token_observation_count: 0,
+            unassigned_token_observation_count: 1,
+        },
         repository_participation: protocol::LocalUsageReportRepositoryParticipation {
             operation_count: 5,
             tool_count: 3,

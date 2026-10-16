@@ -105,6 +105,10 @@ impl McpBinding {
         self.connections.has_servers()
     }
 
+    pub fn has_server(&self, server: &str) -> bool {
+        self.connections.contains_server(server)
+    }
+
     pub async fn list_resources(
         &self,
         server: &str,
@@ -197,8 +201,7 @@ impl fmt::Debug for McpBinding {
     }
 }
 
-/// A call bound to the exact client, tool, timeout, and server metadata seen by
-/// one [`McpBinding`].
+/// A call bound to an exact client, catalog revision, timeout, and permission authority.
 #[derive(Clone)]
 pub struct PreparedMcpCall {
     connections: Arc<McpConnectionSet>,

@@ -3,6 +3,7 @@
 //! A pause is owned by the caller's handle. Dropping the handle releases the
 //! same in-memory turn; it never interrupts a tool or marks user work stopped.
 
+use crate::session::maintenance_recovery::MaintenanceTurnContext;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -212,13 +213,13 @@ impl crate::CodexThread {
         &self,
         turn_id: String,
         options: crate::TurnStartOptions,
-        context: crate::MaintenanceTurnContext,
+        context: MaintenanceTurnContext,
         cancelled: &CancellationToken,
     ) -> codex_protocol::error::Result<crate::TurnInputSubmission> {
         tokio::select! {
             biased;
             _ = cancelled.cancelled() => return Ok(crate::TurnInputSubmission::NotSubmitted { reason: crate::NotSubmittedReason::Superseded }),
-            result = self.session.services.agent_control.ensure_execution_capacity_for_turn_start(self) => result?,
+            result = self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref()) => result?,
         }
         if cancelled.is_cancelled() {
             return Ok(crate::TurnInputSubmission::NotSubmitted {
@@ -231,7 +232,13 @@ impl crate::CodexThread {
             )),
         );
         self.io
-            .submit_recover_turn(Default::default(), options, /*trace*/ None, turn_id)
+            .submit_recover_turn(
+                Default::default(),
+                options,
+                /*trace*/ None,
+                turn_id,
+                None,
+            )
             .await
     }
 }

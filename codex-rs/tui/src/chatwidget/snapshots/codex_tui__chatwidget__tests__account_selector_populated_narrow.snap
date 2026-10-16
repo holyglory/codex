@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/account_profiles.rs
+assertion_line: 114
 expression: narrow
 ---
   Accounts

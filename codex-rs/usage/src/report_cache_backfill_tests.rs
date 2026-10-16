@@ -27,6 +27,23 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
             .await
             .expect("history");
     }
+    // Reproduce a historical correction fork: two unsuperseded roots for one
+    // operation must still produce one deterministic derived owner row.
+    for (event_id, occurred_at_ms, activity) in [
+        ("10000000-0000-4000-8000-000000000001", 1_050, "coding"),
+        ("10000000-0000-4000-8000-000000000002", 1_060, "diagnosis"),
+    ] {
+        sqlx::query(
+            "INSERT INTO classification_events(event_id, operation_id, taxonomy_version, phase, activity, activity_state, provenance, supersedes_event_id, occurred_at_ms) VALUES (?, ?, 1, 'implementation', ?, 'model_active', 'agent_declared', NULL, ?)",
+        )
+        .bind(event_id)
+        .bind(op.id.as_string())
+        .bind(activity)
+        .bind(occurred_at_ms)
+        .execute(&store.pool)
+        .await
+        .expect("forked classification root");
+    }
     let expected = store
         .usage_summary(UsageSummaryScope::All)
         .await
@@ -38,6 +55,55 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     crate::report_cache::prepare(&store.pool)
         .await
         .expect("start backfill");
+    let status = store.report_cache_status().await.expect("cache status");
+    assert!(!status.ready);
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        store.require_report_ready(None).await,
+        Err(UsageStoreError::ReportWarming(_))
+    ));
+    assert!(matches!(
+        store
+            .require_report_ready(Some(
+                UtcTimeRange::new(i64::MIN, 2000).expect("unbounded start")
+            ))
+            .await,
+        Err(UsageStoreError::ReportWarming(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    let finite = UtcTimeRange::new(1000, 2000).expect("finite window");
+    store
+        .require_report_ready(Some(finite))
+        .await
+        .expect("finite review during warming");
+    let review = store
+        .performance_review_packet(crate::PerformanceReviewQuery {
+            time_range: Some(finite),
+            ..Default::default()
+        })
+        .await
+        .expect("cold finite review");
+    assert_eq!(review.coverage.raw_operations, 1);
+    // The source-owned upgrade resumes exactly the saved frontier.
+    sqlx::query("UPDATE _usage_report_cache_meta SET schema_version = 7")
+        .execute(&store.pool)
+        .await
+        .expect("previous version");
+    crate::report_cache::prepare(&store.pool)
+        .await
+        .expect("compatible upgrade");
+    assert_eq!(
+        store
+            .report_cache_status()
+            .await
+            .expect("resumed status")
+            .progress,
+        status.progress
+    );
+
+    assert!(status.progress.iter().any(|progress| {
+        progress.source == "token_observations" && progress.high_water > progress.cursor
+    }));
     assert!(
         !crate::report_cache::is_ready(&store.pool)
             .await
@@ -121,6 +187,8 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         2_051
     );
     let scoped = UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
         thread_id: Some(ThreadId::new("backfill").expect("thread")),
         repository_id: None,
         account_profile_ref: None,

@@ -6,13 +6,13 @@ Scenario: additional context is inserted before the user turn input.
 
 ## Window 1
 -- request 1 (turn; Request) --
-00:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <USAGE_STATS_INSTRUCTIONS>
-    [03] <PROJECT_AUTOMATION_INSTRUCTIONS>
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
 01:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer:
     <automation_info>run one</automation_info>
-02:message/user:
-    <external_browser_info>tab one</external_browser_info>
 03:message/user:
+    <external_browser_info>tab one</external_browser_info>
+04:message/user:
     inspect the active tab

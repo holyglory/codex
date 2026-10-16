@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 
 use crate::attestation::app_server_attestation_provider;
@@ -13,6 +14,7 @@ use crate::current_time::app_server_time_provider;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use crate::error_code::invalid_request;
+use crate::error_code::method_not_found;
 use crate::event_subscriptions::AppServerSubscriptionWakeSink;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
@@ -94,6 +96,7 @@ use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_login::RouterExternalAuthState;
 use codex_login::SharedProfileAuthRouter;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::SessionSource;
@@ -150,6 +153,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 
 pub(crate) struct MessageProcessor {
     coordinator_event_bridge: Option<crate::coordinator_event_bridge::CoordinatorEventBridge>,
+    background_subscription_loader: Arc<OnceLock<Weak<ThreadRequestProcessor>>>,
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
@@ -157,7 +161,6 @@ pub(crate) struct MessageProcessor {
     turn_cost_worker: Option<TurnCostWorker>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: Arc<AccountRequestProcessor>,
-    account_profile_processor: AccountProfileRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
@@ -168,10 +171,11 @@ pub(crate) struct MessageProcessor {
     project_automation_processor: ProjectAutomationRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
+    local_usage_processor: LocalUsageRequestProcessor,
+    account_profile_processor: AccountProfileRequestProcessor,
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
-    local_usage_processor: LocalUsageRequestProcessor,
     marketplace_processor: MarketplaceRequestProcessor,
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
@@ -272,8 +276,8 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
-    pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) process_account: Option<String>,
+    pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) user_verification: Arc<crate::user_verification::Service>,
     pub(crate) installation_id: String,
     pub(crate) code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
@@ -281,6 +285,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
+    pub(crate) background_subscription_loader: Arc<OnceLock<Weak<ThreadRequestProcessor>>>,
 }
 
 fn router_external_auth_state(config: &Config) -> RouterExternalAuthState {
@@ -333,14 +338,15 @@ impl MessageProcessor {
             state_db,
             config_warnings,
             session_source,
-            auth_manager,
             process_account,
+            auth_manager,
             user_verification,
             installation_id,
             code_mode_session_provider,
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
+            background_subscription_loader,
         } = args;
         // Startup credential reads must not open a browser before initialize selects the policy.
         let gateway_login_control =
@@ -403,7 +409,6 @@ impl MessageProcessor {
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
         let mut queue_service = None;
         let mut event_subscription_service = None;
-        let background_subscription_loader = Arc::new(OnceLock::new());
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             queue_service = queue_store.map(|queue| {
                 Arc::new(QueuedItemService::new(
@@ -433,7 +438,6 @@ impl MessageProcessor {
                 thread_extensions(ThreadExtensionDependencies {
                     event_sink: Arc::clone(&extension_event_sink),
                     auth_manager: auth_manager.clone(),
-                    profile_auth_router: profile_auth_router.clone(),
                     state_db: state_db.clone(),
                     analytics_events_client: analytics_events_client.clone(),
                     thread_manager: thread_manager.clone(),
@@ -462,12 +466,12 @@ impl MessageProcessor {
                     outgoing.clone(),
                     thread_state_manager.clone(),
                 )),
-            )
-            .with_profile_auth_router(profile_auth_router.clone());
-            match code_mode_session_provider {
+            );
+            let manager = match code_mode_session_provider {
                 Some(provider) => manager.with_code_mode_session_provider(provider),
                 None => manager,
-            }
+            };
+            manager.with_profile_auth_router(profile_auth_router.clone())
         });
         let model_catalog = Arc::new(crate::model_catalog::ModelCatalog::new(
             config_manager.clone(),
@@ -498,8 +502,8 @@ impl MessageProcessor {
             thread_manager.clone(),
             analytics_events_client.clone(),
         );
-        let effective_plugin_change_handler =
-            crate::effective_plugin_change::EffectivePluginChangeHandler::new(
+        let on_effective_plugins_changed =
+            crate::effective_plugin_change::EffectivePluginsChangedCallbackFactory::new(
                 Arc::clone(&thread_manager),
                 config_manager.clone(),
                 config_processor.clone(),
@@ -513,13 +517,8 @@ impl MessageProcessor {
             config_manager.clone(),
             profile_auth_router.clone(),
         );
-        let account_profile_processor = AccountProfileRequestProcessor::new(
-            Arc::clone(&config),
-            profile_auth_router.clone(),
-            outgoing.clone(),
-        );
         let apps_processor = AppsRequestProcessor::new(
-            profile_auth_router.clone(),
+            auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             config_manager.clone(),
@@ -531,7 +530,6 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             Arc::clone(&config),
             config_manager.clone(),
-            profile_auth_router.clone(),
             model_catalog,
         );
         let command_exec_processor = CommandExecRequestProcessor::new(
@@ -553,6 +551,13 @@ impl MessageProcessor {
             log_db.clone(),
             state_db.clone(),
         );
+        let local_usage_processor =
+            LocalUsageRequestProcessor::new(config.codex_home.to_path_buf(), outgoing.clone());
+        let account_profile_processor = AccountProfileRequestProcessor::new(
+            Arc::clone(&config),
+            profile_auth_router.clone(),
+            outgoing.clone(),
+        );
         let git_processor = GitRequestProcessor::new();
         let initialize_processor = InitializeRequestProcessor::new(
             gateway_login_control,
@@ -564,27 +569,26 @@ impl MessageProcessor {
             public_event_subscriptions_enabled && event_subscription_service.is_some(),
             Arc::clone(&user_verification),
         );
-        let local_usage_processor =
-            LocalUsageRequestProcessor::new(config.codex_home.to_path_buf(), outgoing.clone());
         let marketplace_processor = MarketplaceRequestProcessor::new(
             Arc::clone(&config),
             config_manager.clone(),
             Arc::clone(&thread_manager),
         );
         let mcp_processor = McpRequestProcessor::new(
-            profile_auth_router.clone(),
+            auth_manager.clone(),
             Arc::clone(&thread_manager),
             thread_state_manager.clone(),
             outgoing.clone(),
             config_manager.clone(),
+            account_processor.clone(),
         );
         let plugin_processor = PluginRequestProcessor::new(
-            profile_auth_router,
+            profile_auth_router.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
             config_manager.clone(),
-            effective_plugin_change_handler,
+            on_effective_plugins_changed,
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
@@ -604,6 +608,11 @@ impl MessageProcessor {
             config_manager.clone(),
             queue_service,
         );
+        let project_processor = ProjectRequestProcessor::new(
+            Arc::clone(&thread_store),
+            outgoing.clone(),
+            Arc::clone(&thread_list_state_permit),
+        );
         let event_subscription_processor = EventSubscriptionRequestProcessor::new(
             event_subscription_service
                 .clone()
@@ -612,17 +621,6 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             state_db.clone(),
         );
-        let fs_watch_manager = FsWatchManager::new(outgoing.clone());
-        let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
-            state_db.as_ref().map(|state| {
-                crate::coordinator_event_bridge::CoordinatorEventBridge::spawn(
-                    Arc::new(state.event_subscriptions().clone()),
-                    Arc::new(service.clone()),
-                    config.codex_home.clone(),
-                    Arc::clone(&fs_watch_manager.file_watcher),
-                )
-            })
-        });
         let project_automation_processor = ProjectAutomationRequestProcessor::new(
             config.codex_home.clone(),
             state_db.clone(),
@@ -632,12 +630,7 @@ impl MessageProcessor {
             Arc::clone(&thread_store),
             Arc::clone(&thread_manager),
         );
-        let project_processor = ProjectRequestProcessor::new(
-            Arc::clone(&thread_store),
-            outgoing.clone(),
-            Arc::clone(&thread_list_state_permit),
-        );
-        let thread_processor = Arc::new(ThreadRequestProcessor::new(
+        let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -655,16 +648,9 @@ impl MessageProcessor {
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
             config_warnings,
-        ));
-        if event_subscription_service.is_some()
-            && background_subscription_loader
-                .set(Arc::downgrade(&thread_processor))
-                .is_err()
-        {
-            tracing::warn!("background subscription loader was already initialized");
-        }
+        );
         let turn_processor = TurnRequestProcessor::new(
-            auth_manager,
+            auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
@@ -686,12 +672,33 @@ impl MessageProcessor {
                     plugin_config_reload::defaults(config_manager.clone())
                 }
             };
+            let startup_thread_manager = Arc::clone(&thread_manager);
             let startup_plugin_processor = plugin_processor.clone();
+            let startup_profile_auth_router = profile_auth_router;
+            let startup_auth_manager = auth_manager;
             let startup_config = Arc::clone(&config);
             tokio::spawn(async move {
-                startup_plugin_processor
-                    .start_startup_tasks_for_config(&startup_config, reload_config)
-                    .await;
+                let startup_auth_lease = startup_profile_auth_router
+                    .lease_for_operation()
+                    .await
+                    .unwrap_or_else(|_| {
+                        codex_login::AuthManagerLease::legacy(startup_auth_manager.clone())
+                    });
+                let startup_auth = startup_auth_lease.auth_manager().auth().await;
+                let on_effective_plugins_changed = startup_plugin_processor
+                    .effective_plugins_changed_callback(
+                        startup_auth_lease.clone(),
+                        startup_auth.clone(),
+                    );
+                startup_thread_manager
+                    .plugins_manager()
+                    .maybe_start_plugin_startup_tasks_for_config_with_captured_auth(
+                        &startup_config.plugins_config_input(),
+                        reload_config,
+                        startup_auth_lease,
+                        startup_auth,
+                        Some(on_effective_plugins_changed),
+                    );
             });
         }
         let external_agent_config_processor =
@@ -701,7 +708,7 @@ impl MessageProcessor {
                 thread_store: Arc::clone(&thread_store),
                 config_manager: config_manager.clone(),
                 config_processor: config_processor.clone(),
-                state_db,
+                state_db: state_db.clone(),
                 analytics_events_client,
                 arg0_paths,
                 codex_home: config.codex_home.to_path_buf(),
@@ -710,7 +717,7 @@ impl MessageProcessor {
             EnvironmentRequestProcessor::new(thread_manager.environment_manager());
         let fs_processor = FsRequestProcessor::new(
             Arc::clone(&environment_manager_for_requests),
-            fs_watch_manager,
+            FsWatchManager::new(outgoing.clone()),
         );
         let windows_sandbox_processor = WindowsSandboxRequestProcessor::new(
             outgoing.clone(),
@@ -718,7 +725,23 @@ impl MessageProcessor {
             config_manager,
         );
 
+        let coordinator_event_bridge = event_subscription_service.as_ref().and_then(|service| {
+            state_db.as_ref().map(|state| {
+                let watcher = Arc::new(
+                    codex_file_watcher::FileWatcher::new()
+                        .unwrap_or_else(|_| codex_file_watcher::FileWatcher::noop()),
+                );
+                crate::coordinator_event_bridge::CoordinatorEventBridge::spawn(
+                    Arc::new(state.event_subscriptions().clone()),
+                    Arc::new(service.clone()),
+                    config.codex_home.clone(),
+                    watcher,
+                )
+            })
+        });
         Self {
+            coordinator_event_bridge,
+            background_subscription_loader,
             turn_admission,
             user_verification,
             outgoing,
@@ -726,7 +749,6 @@ impl MessageProcessor {
             turn_cost_worker,
             skills_watcher,
             account_processor,
-            account_profile_processor,
             apps_processor,
             catalog_processor,
             command_exec_processor,
@@ -735,13 +757,13 @@ impl MessageProcessor {
             environment_processor,
             event_subscription_processor,
             project_automation_processor,
-            coordinator_event_bridge,
             external_agent_config_processor,
             feedback_processor,
+            local_usage_processor,
+            account_profile_processor,
             fs_processor,
             git_processor,
             initialize_processor,
-            local_usage_processor,
             marketplace_processor,
             mcp_processor,
             plugin_processor,
@@ -750,11 +772,17 @@ impl MessageProcessor {
             search_processor,
             thread_goal_processor,
             thread_queue_processor,
-            thread_processor,
+            thread_processor: Arc::new(thread_processor),
             turn_processor,
             windows_sandbox_processor,
             request_serialization_queues,
         }
+    }
+
+    pub(crate) fn initialize_background_subscription_loader(self: &Arc<Self>) {
+        let _ = self
+            .background_subscription_loader
+            .set(Arc::downgrade(&self.thread_processor));
     }
 
     pub(crate) fn clear_runtime_references(&self) {
@@ -1186,15 +1214,21 @@ impl MessageProcessor {
                     return;
                 }
                 let processor_for_request = Arc::clone(&processor);
+                let originator = AuthStorageOriginator::from_client_name(
+                    session.app_server_client_name().unwrap_or("none"),
+                );
                 // Keep queued requests small to avoid large stack temporaries during construction.
-                let result = Box::pin(processor_for_request.handle_initialized_client_request(
-                    connection_request_id,
-                    codex_request,
-                    request_context,
-                    session,
-                    event_stream_ready,
-                ))
-                .await;
+                let result = originator
+                    .scope(Box::pin(
+                        processor_for_request.handle_initialized_client_request(
+                            connection_request_id,
+                            codex_request,
+                            request_context,
+                            session,
+                            event_stream_ready,
+                        ),
+                    ))
+                    .await;
                 if let Err(error) = result {
                     processor.outgoing.send_error(error_request_id, error).await;
                 }
@@ -1587,6 +1621,11 @@ impl MessageProcessor {
             ClientRequest::ThreadAttachmentList { params, .. } => {
                 self.thread_processor.thread_attachment_list(params).await
             }
+            ClientRequest::ThreadAttachmentOwnerList { params, .. } => {
+                self.thread_processor
+                    .thread_attachment_owner_list(params)
+                    .await
+            }
             ClientRequest::ThreadAttachmentRemove { params, .. } => {
                 self.thread_processor
                     .thread_attachment_remove(request_id.clone(), params)
@@ -1625,6 +1664,9 @@ impl MessageProcessor {
                     .thread_unarchive(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
+                "thread/prediction/request is not implemented yet",
+            )),
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
                     .thread_compact_start(&request_id, params)
@@ -1899,7 +1941,8 @@ impl MessageProcessor {
                 self.turn_processor.review_start(&request_id, params).await
             }
             ClientRequest::McpServerOauthLogin { params, .. } => {
-                self.mcp_processor.mcp_server_oauth_login(params).await
+                // Keep MCP discovery's large future from inflating every request.
+                Box::pin(self.mcp_processor.mcp_server_oauth_login(params)).await
             }
             ClientRequest::McpServerRefresh { params, .. } => {
                 self.mcp_processor.mcp_server_refresh(params).await
@@ -1955,6 +1998,11 @@ impl MessageProcessor {
             }
             ClientRequest::BedrockSetup { params, .. } => {
                 self.account_processor.bedrock_setup(params).await
+            }
+            ClientRequest::BedrockCheckGovCloudRequirements { .. } => {
+                self.account_processor
+                    .bedrock_check_gov_cloud_requirements()
+                    .await
             }
             ClientRequest::GatewayOAuthRead { .. } => {
                 Box::pin(self.account_processor.gateway_oauth_read())
@@ -2082,36 +2130,6 @@ impl MessageProcessor {
             ClientRequest::FeedbackUpload { params, .. } => {
                 self.feedback_processor.feedback_upload(params).await
             }
-            ClientRequest::AccountProfileList { params, .. } => {
-                self.account_profile_processor.list(params).await
-            }
-            ClientRequest::AccountProfileRead { params, .. } => {
-                self.account_profile_processor.read(params).await
-            }
-            ClientRequest::AccountProfileActivate { params, .. } => {
-                self.account_profile_processor.activate(params).await
-            }
-            ClientRequest::AccountProfileUpdate { params, .. } => {
-                self.account_profile_processor.update(params).await
-            }
-            ClientRequest::AccountProfileRemove { params, .. } => {
-                self.account_profile_processor.remove(params).await
-            }
-            ClientRequest::AccountProfileLoginStart { params, .. } => {
-                self.account_profile_processor.login_start(params).await
-            }
-            ClientRequest::AccountProfileLoginCancel { params, .. } => {
-                self.account_profile_processor.login_cancel(params).await
-            }
-            ClientRequest::AccountProfileRateLimitRead { params, .. } => {
-                self.account_profile_processor.rate_limits(params).await
-            }
-            ClientRequest::AccountAutoSelectionRead { params, .. } => {
-                self.account_profile_processor.auto_read(params).await
-            }
-            ClientRequest::AccountAutoSelectionWrite { params, .. } => {
-                self.account_profile_processor.auto_write(params).await
-            }
             ClientRequest::LocalUsageSummary { params, .. } => {
                 self.local_usage_processor.summary(params).await
             }
@@ -2147,6 +2165,36 @@ impl MessageProcessor {
             ClientRequest::LocalUsageExportCreate { params, .. } => {
                 self.local_usage_processor.export_create(params).await
             }
+            ClientRequest::AccountProfileList { params, .. } => {
+                self.account_profile_processor.list(params).await
+            }
+            ClientRequest::AccountProfileRead { params, .. } => {
+                self.account_profile_processor.read(params).await
+            }
+            ClientRequest::AccountProfileActivate { params, .. } => {
+                self.account_profile_processor.activate(params).await
+            }
+            ClientRequest::AccountProfileUpdate { params, .. } => {
+                self.account_profile_processor.update(params).await
+            }
+            ClientRequest::AccountProfileRemove { params, .. } => {
+                self.account_profile_processor.remove(params).await
+            }
+            ClientRequest::AccountProfileLoginStart { params, .. } => {
+                self.account_profile_processor.login_start(params).await
+            }
+            ClientRequest::AccountProfileLoginCancel { params, .. } => {
+                self.account_profile_processor.login_cancel(params).await
+            }
+            ClientRequest::AccountProfileRateLimitRead { params, .. } => {
+                self.account_profile_processor.rate_limits(params).await
+            }
+            ClientRequest::AccountAutoSelectionRead { params, .. } => {
+                self.account_profile_processor.auto_read(params).await
+            }
+            ClientRequest::AccountAutoSelectionWrite { params, .. } => {
+                self.account_profile_processor.auto_write(params).await
+            }
         };
 
         match result {
@@ -2171,3 +2219,7 @@ mod message_processor_tracing_tests;
 #[cfg(test)]
 #[path = "message_processor_gateway_oauth_tests.rs"]
 mod gateway_oauth_tests;
+
+#[cfg(test)]
+#[path = "message_processor_thread_lifecycle_tests.rs"]
+mod thread_lifecycle_tests;

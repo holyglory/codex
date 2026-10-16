@@ -129,7 +129,8 @@ function isPnpmOwnedCodexInstall(nodeModulesDir) {
     return (
       realpathSync(
         path.join(nodeModulesDir, CODEX_PACKAGE_SCOPE, CODEX_PACKAGE_BASENAME),
-      ) === codexPackageRoot
+      ) ===
+      codexPackageRoot
     );
   } catch {
     return false;

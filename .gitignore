@@ -10,7 +10,6 @@ node_modules
 # build
 dist/
 bazel-*
-!scripts/bazel-cache/
 user.bazelrc
 build/
 out/
@@ -37,7 +36,6 @@ AGENTS.override.md
 
 # caches
 .cache/
-**/.pytest_cache/
 .turbo/
 .parcel-cache/
 .eslintcache
@@ -96,10 +94,3 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
-
-# Local project state (database-backed completion ledger)
-/.state/
-/.devcoordinator/
-
-# Local code-indexing workspace state
-/.serena/

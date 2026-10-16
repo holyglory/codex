@@ -27,34 +27,38 @@ fn snapshots() {
 }
 
 #[test]
-fn existing_guidance_is_not_injected_again() {
-    let available = UsageStatsInstructionsState::new(/*available*/ true);
+fn legacy_guidance_is_not_injected_again() {
     let mut world_state = super::super::WorldState::default();
-    world_state.add_section(available);
-    let existing: ResponseItem = ContextualUserFragment::into(available);
+    world_state.add_section(UsageStatsInstructionsState::new(/*available*/ true));
+    let legacy: ResponseItem = ContextualUserFragment::into(UsageStatsInstructionsState::new(true));
 
     assert!(
         world_state
-            .render_history_diff(/*previous*/ None, &[existing])
+            .render_history_fragment_diff(/*previous*/ None, &[legacy])
+            .1
             .is_empty()
     );
 }
 
 #[test]
 fn persisted_guidance_is_restored_only_when_missing_from_history() {
-    let available = UsageStatsInstructionsState::new(/*available*/ true);
     let mut world_state = super::super::WorldState::default();
-    world_state.add_section(available);
-    let snapshot = world_state.snapshot();
-    let retained: ResponseItem = ContextualUserFragment::into(available);
+    world_state.add_section(UsageStatsInstructionsState::new(/*available*/ true));
+    let snapshot = world_state.render_full().0;
+    let retained: ResponseItem =
+        ContextualUserFragment::into(UsageStatsInstructionsState::new(true));
 
     assert_eq!(
-        world_state.render_history_diff(Some(&snapshot), &[]).len(),
+        world_state
+            .render_history_fragment_diff(Some(&snapshot), &[])
+            .1
+            .len(),
         1
     );
     assert!(
         world_state
-            .render_history_diff(Some(&snapshot), &[retained])
+            .render_history_fragment_diff(Some(&snapshot), &[retained])
+            .1
             .is_empty()
     );
 }

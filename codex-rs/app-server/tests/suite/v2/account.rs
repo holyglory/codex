@@ -11,7 +11,6 @@ use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
-use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::AccountUpdatedNotification;
@@ -45,7 +44,6 @@ use codex_http_client::HttpClientBuilder;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CLIENT_ID_OVERRIDE_ENV_VAR;
-use codex_login::ProfileAuthStorage;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::auth::BedrockAccessKeysAuth;
 use codex_login::auth::BedrockApiKeyAuth;
@@ -93,6 +91,9 @@ fn expected_workspace_routing(
         account_routing_override: codex_app_server_protocol::AccountRoutingOverride::NoConstraint,
     })
 }
+
+#[path = "account_enterprise_tests.rs"]
+mod enterprise_tests;
 
 // Helper to create a minimal config.toml for the app server
 #[derive(Default)]
@@ -283,23 +284,62 @@ async fn mock_oauth_token(server: &MockServer, id_token: &str) {
         .await;
 }
 
+#[test_case(false; "api_key")]
+#[test_case(true; "enterprise_cleanup_failure")]
 #[tokio::test]
-async fn logout_account_removes_auth_and_notifies() -> Result<()> {
+async fn logout_account_removes_auth_and_notifies(enterprise_cleanup_failure: bool) -> Result<()> {
+    let oauth_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/revoke"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(u64::from(enterprise_cleanup_failure))
+        .mount(&oauth_server)
+        .await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
 
-    login_with_api_key(
-        codex_home.path(),
-        "sk-test-key",
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
+    if enterprise_cleanup_failure {
+        write_chatgpt_auth(
+            codex_home.path(),
+            ChatGptAuthFixture::new("access-token")
+                .account_id(WORKSPACE_ID_INITIAL)
+                .chatgpt_user_id("enterprise-user"),
+            AuthCredentialsStoreMode::File,
+        )?;
+        let mut config = read_config_toml(codex_home.path())?;
+        config.as_table_mut().expect("config table").insert(
+            "mcp_enterprise_managed_auth".into(),
+            toml::toml! {
+                [idp]
+                issuer = "https://idp.example"
+                client_id = "enterprise-client"
+            }
+            .into(),
+        );
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            toml::to_string(&config)?,
+        )?;
+        // Fail credential cleanup before touching the platform keyring.
+        std::fs::write(codex_home.path().join("mcp-oauth-locks"), "not a directory")?;
+    } else {
+        login_with_api_key(
+            codex_home.path(),
+            "sk-test-key",
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?;
+    }
     assert!(codex_home.path().join("auth.json").exists());
 
+    let refresh_url = format!("{}/oauth/token", oauth_server.uri());
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()
-        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .with_env_overrides(&[
+            ("OPENAI_API_KEY", None),
+            (REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&refresh_url)),
+        ])
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await?;
 
@@ -2126,6 +2166,7 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
         },
     )?;
     write_models_cache(codex_home.path()).await?;
+    let collector = super::auth_storage_originator::configure_collector(codex_home.path()).await?;
 
     mock_device_code_usercode(&mock_server, /*interval_seconds*/ 0).await;
     mock_device_code_token_success(&mock_server).await;
@@ -2144,10 +2185,17 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
         .without_auto_env()
         .with_env_overrides(&[
             ("OPENAI_API_KEY", None),
+            ("OTEL_METRIC_EXPORT_INTERVAL", Some("200")),
             (LOGIN_ISSUER_ENV_VAR, Some(issuer.as_str())),
         ])
-        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .build()
         .await?;
+    mcp.initialize_with_client_info(ClientInfo {
+        name: "codex_vscode".into(),
+        title: None,
+        version: "1".into(),
+    })
+    .await?;
 
     let request_id = mcp.send_login_account_chatgpt_device_code_request().await?;
     let login: LoginAccountResponse =
@@ -2187,31 +2235,11 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
     };
     assert_eq!(payload.auth_mode, Some(AuthMode::Chatgpt));
     assert_eq!(payload.plan_type, Some(AccountPlanType::Pro));
-    let stored_auth = match load_auth_dot_json(
-        codex_home.path(),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::Direct,
-    )? {
-        Some(auth) => auth,
-        None => {
-            let registry = RegistryStore::new(codex_home.path()).read()?;
-            let account_id = registry
-                .default_account_id
-                .expect("successful singular login should select a persisted profile");
-            ProfileAuthStorage::new(
-                codex_home.path(),
-                account_id,
-                AuthCredentialsStoreMode::File,
-                AuthKeyringBackendKind::Direct,
-            )?
-            .load()?
-            .expect("successful singular login should persist profile credentials")
-        }
-    };
-    assert_eq!(
-        stored_auth.tokens.map(|tokens| tokens.access_token),
-        Some("access-token-123".to_string())
+    assert!(
+        codex_home.path().join("auth.json").exists(),
+        "auth.json should be created when device code login succeeds"
     );
+    super::auth_storage_originator::assert_saved_originators(&collector, &["codex_vscode"]).await?;
     Ok(())
 }
 
@@ -2454,7 +2482,14 @@ async fn login_account_chatgpt_device_code_failure_notifies_without_account_upda
     };
     assert_eq!(payload.login_id, Some(login_id));
     assert_eq!(payload.success, false);
-    assert_eq!(payload.error.as_deref(), Some("Login failed"));
+    assert!(
+        payload
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("device auth failed with status")),
+        "unexpected error: {:?}",
+        payload.error
+    );
 
     let maybe_updated = timeout(
         Duration::from_millis(500),
@@ -2570,8 +2605,8 @@ async fn login_account_chatgpt_start_can_be_cancelled() -> Result<()> {
         bail!("unexpected login response: {login:?}");
     };
     assert!(
-        auth_url.contains("redirect_uri=http%3A%2F%2Flocalhost"),
-        "auth_url should contain a redirect_uri to localhost"
+        auth_url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"),
+        "auth_url should contain a redirect_uri to 127.0.0.1"
     );
 
     let cancel_id = mcp
@@ -2662,6 +2697,7 @@ async fn login_account_chatgpt_uses_oauth_overrides() -> Result<()> {
         .query_pairs()
         .find_map(|(key, value)| (key == "state").then_some(value.into_owned()))
         .ok_or_else(|| anyhow::anyhow!("missing state"))?;
+    let token_redirect_uri = callback_url.clone();
     let mut callback_url = Url::parse(&callback_url)?;
     callback_url
         .query_pairs_mut()
@@ -2697,6 +2733,7 @@ async fn login_account_chatgpt_uses_oauth_overrides() -> Result<()> {
         token_form.get("client_id").map(String::as_str),
         Some("staging-client")
     );
+    assert_eq!(token_form.get("redirect_uri"), Some(&token_redirect_uri));
 
     let notification = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -3293,6 +3330,7 @@ async fn get_account_with_chatgpt() -> Result<()> {
     Ok(())
 }
 
+#[test_case("promax", AccountPlanType::ProMax; "pro_max")]
 #[test_case("self_serve_business_prolite", AccountPlanType::SelfServeBusinessProLite; "business_prolite")]
 #[test_case("edu_plus", AccountPlanType::EduPlus; "edu_plus")]
 #[test_case("edu_pro", AccountPlanType::EduPro; "edu_pro")]
@@ -3423,9 +3461,7 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
                 "code": "refresh_token_reused"
             }
         })))
-        // Startup refreshes through the cloud-config and runtime managers race
-        // with the lazily migrated profile manager used by this request.
-        .expect(1..=3)
+        .expect(1..=2)
         .mount(&server)
         .await;
 

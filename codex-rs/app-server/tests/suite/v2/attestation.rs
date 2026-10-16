@@ -24,6 +24,7 @@ use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
@@ -31,9 +32,12 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const ATTESTATION_HEADER: &str = "v1.integration-test";
 const APP_SERVER_ATTESTATION_HEADER: &str = r#"{"v":1,"s":0,"t":"v1.integration-test"}"#;
 
+#[test_case(ThreadStartParams::default(); "persistent")]
+#[test_case(ThreadStartParams { ephemeral: Some(true), ..Default::default() }; "ephemeral")]
 #[tokio::test]
-async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake() -> Result<()>
-{
+async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake(
+    thread_start_params: ThreadStartParams,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let websocket_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
@@ -95,17 +99,40 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
     };
 
     let thread_request_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(thread_start_params)
         .await?;
-    // Prewarm can ask for attestation before either startup response. Service it
-    // immediately instead of buffering it past the provider's response deadline.
+    let mut turn_request_id = None;
+    let mut turn_started = false;
+    let mut turn_completed = false;
     let mut attestation_requests = 0;
+    // Prewarming can request attestation before thread/start or turn/start responds.
+    // Service those requests immediately instead of buffering them behind RPC responses.
     timeout(DEFAULT_READ_TIMEOUT, async {
-        let mut turn_request_id = None;
-        let mut turn_started = false;
-        let mut completed = false;
-        while !turn_started || !completed {
+        loop {
             match mcp.read_next_message().await? {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(thread_request_id) =>
+                {
+                    let ThreadStartResponse { thread, .. } = to_response(response)?;
+                    turn_request_id = Some(RequestId::Integer(
+                        mcp.send_turn_start_request(TurnStartParams {
+                            thread_id: thread.id,
+                            client_user_message_id: None,
+                            input: vec![V2UserInput::Text {
+                                text: "Hello".to_string(),
+                                text_elements: Vec::new(),
+                            }],
+                            ..Default::default()
+                        })
+                        .await?,
+                    ));
+                }
+                JSONRPCMessage::Response(response)
+                    if turn_request_id.as_ref() == Some(&response.id) =>
+                {
+                    let _: TurnStartResponse = to_response(response)?;
+                    turn_started = true;
+                }
                 JSONRPCMessage::Request(request) => {
                     let request = ServerRequest::try_from(request)?;
                     let ServerRequest::AttestationGenerate { request_id, .. } = request else {
@@ -120,38 +147,17 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     )
                     .await?;
                 }
-                JSONRPCMessage::Response(response)
-                    if response.id == RequestId::Integer(thread_request_id) =>
-                {
-                    let ThreadStartResponse { thread, .. } = to_response(response)?;
-                    let id = mcp
-                        .send_turn_start_request(TurnStartParams {
-                            thread_id: thread.id,
-                            client_user_message_id: None,
-                            input: vec![V2UserInput::Text {
-                                text: "Hello".to_string(),
-                                text_elements: Vec::new(),
-                            }],
-                            ..Default::default()
-                        })
-                        .await?;
-                    turn_request_id = Some(RequestId::Integer(id));
-                }
-                JSONRPCMessage::Response(response)
-                    if Some(&response.id) == turn_request_id.as_ref() =>
-                {
-                    let _: TurnStartResponse = to_response(response)?;
-                    turn_started = true;
-                }
                 JSONRPCMessage::Notification(notification)
                     if notification.method == "turn/completed" =>
                 {
-                    completed = true;
+                    turn_completed = true;
                 }
                 _ => {}
             }
+            if turn_started && turn_completed {
+                break Ok(());
+            }
         }
-        Ok::<(), anyhow::Error>(())
     })
     .await??;
     assert!(attestation_requests > 0);

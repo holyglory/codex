@@ -94,6 +94,16 @@ fn certificate_errors_in_an_error_source_never_enable_fallback() {
 }
 
 #[test]
+fn nested_io_errors_preserve_protocol_version_fallback_detection() {
+    let error = io::Error::other(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "received fatal alert: ProtocolVersion",
+    ));
+
+    assert!(has_retryable_tls_error(&error));
+}
+
+#[test]
 fn rustls_fallback_decisions_are_scoped_to_origin_and_outbound_route() {
     let cache = RustlsClientCache::default();
     let destination = reqwest::Url::parse("https://mcp.example.com/first").expect("valid URL");

@@ -19,6 +19,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 
@@ -42,7 +43,6 @@ use crate::transport::RemoteControlStartConfig;
 use crate::transport::TransportEvent;
 use crate::transport::acquire_app_server_startup_lock;
 use crate::transport::app_server_startup_lock_path;
-use crate::transport::auth::policy_from_settings;
 use crate::transport::route_outgoing_envelope;
 use crate::transport::start_control_socket_acceptor;
 use crate::transport::start_remote_control;
@@ -62,12 +62,14 @@ use codex_core::ExecPolicyError;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::find_codex_home;
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecServerRuntimePaths;
+use codex_exec_server::ExecServerRuntimeOptions;
 use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db as rollout_state_db;
 use codex_state::log_db;
+use codex_websocket_auth::WebsocketAuthSettings;
+use codex_websocket_auth::policy_from_settings;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -77,11 +79,12 @@ use tracing::info;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 
-const SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY: &str = "Codex rebuilt its local database.";
+const SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY: &str = "Codex rebuilt its local database";
 
 fn is_unsupported_untrusted_approval_policy_error(err: &std::io::Error) -> bool {
     err.get_ref().is_some_and(
@@ -121,7 +124,10 @@ mod fuzzy_file_search;
 mod gateway_oauth_notifications;
 mod image_url;
 pub mod in_process;
+mod log_write_warning;
 mod maintenance_resumption;
+#[cfg(unix)]
+mod managed_daemon;
 mod mcp_refresh;
 mod message_processor;
 mod model_catalog;
@@ -150,9 +156,6 @@ pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 pub use crate::transport::AppServerTransport;
 pub use crate::transport::RemoteControlStartupMode;
 pub use crate::transport::app_server_control_socket_path;
-pub use crate::transport::auth::AppServerWebsocketAuthArgs;
-pub use crate::transport::auth::AppServerWebsocketAuthSettings;
-pub use crate::transport::auth::WebsocketAuthCliMode;
 pub use crate::transport::take_remote_control_disabled_env;
 
 const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
@@ -167,6 +170,10 @@ enum LogFormat {
 }
 
 type StderrLogLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
+
+fn stderr_span_events() -> FmtSpan {
+    FmtSpan::NEW | FmtSpan::CLOSE
+}
 
 /// Control-plane messages from the processor/transport side to the outbound router task.
 ///
@@ -447,7 +454,7 @@ pub async fn run_main(
         default_analytics_enabled,
         AppServerTransport::Stdio,
         SessionSource::VSCode,
-        AppServerWebsocketAuthSettings::default(),
+        WebsocketAuthSettings::default(),
         AppServerRuntimeOptions::default(),
     )
     .await
@@ -474,8 +481,9 @@ pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
-    pub process_account: Option<String>,
     pub managed_daemon: bool,
+    /// Optional account alias or id pinned to this app-server process.
+    pub process_account: Option<String>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -485,8 +493,8 @@ impl Default for AppServerRuntimeOptions {
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
-            process_account: None,
             managed_daemon: false,
+            process_account: None,
         }
     }
 }
@@ -500,11 +508,15 @@ pub async fn run_main_with_transport_options(
     default_analytics_enabled: bool,
     transport: AppServerTransport,
     session_source: SessionSource,
-    auth: AppServerWebsocketAuthSettings,
+    auth: WebsocketAuthSettings,
     runtime_options: AppServerRuntimeOptions,
 ) -> IoResult<AppServerExit> {
     #[cfg(target_os = "windows")]
     let _registered_core = codex_windows_sandbox::registered_core_requested();
+    let managed_daemon = matches!(&transport, AppServerTransport::UnixSocket { .. })
+        && runtime_options.managed_daemon;
+    #[cfg(unix)]
+    let nofile_limit_result = managed_daemon.then(managed_daemon::raise_nofile_limit);
     let loader_overrides = loader_overrides_with_test_user_config_file(
         loader_overrides,
         test_user_config_file_from_env(),
@@ -524,7 +536,7 @@ pub async fn run_main_with_transport_options(
         )
     })?;
     let codex_home = find_codex_home()?;
-    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+    let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
@@ -594,11 +606,6 @@ pub async fn run_main_with_transport_options(
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
     );
-    validate_event_subscription_transport_auth(
-        config.features.enabled(Feature::EventSubscriptions),
-        &transport,
-        &auth,
-    )?;
     let code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>> =
         match &runtime_options.code_mode_host_transport {
             CodeModeHostTransport::Local => None,
@@ -692,9 +699,10 @@ pub async fn run_main_with_transport_options(
             range: None,
         });
     }
-    if let Some(warning) =
-        codex_core::config::system_bwrap_warning(config.permissions.permission_profile())
-    {
+    if let Some(warning) = codex_core::config::system_bwrap_warning(
+        &config.permissions.effective_permission_profile(),
+        &config.cwd,
+    ) {
         config_warnings.push(ConfigWarningNotification {
             summary: warning,
             details: None,
@@ -703,28 +711,44 @@ pub async fn run_main_with_transport_options(
         });
     }
 
+    let analytics_events_client =
+        analytics_events_client_from_config(Arc::clone(&auth_manager), &config);
+    let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        analytics_events_client.clone(),
+    ));
     let feedback = CodexFeedback::new();
 
     // Install a simple subscriber so `tracing` output is visible. Users can
     // control the log level with `RUST_LOG` and switch to JSON logs with
     // `LOG_FORMAT=json`.
+    // SQLx enters the caller's span for each command. Skip enter/exit records
+    // that can block its worker on stderr while holding a write transaction.
+    // Preserve span boundaries, busy/idle timings, and explicit events.
     let stderr_fmt: StderrLogLayer = match log_format_from_env() {
         LogFormat::Json => tracing_subscriber::fmt::layer()
             .json()
             .with_writer(std::io::stderr)
-            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .with_span_events(stderr_span_events())
             .with_filter(EnvFilter::from_default_env())
             .boxed(),
         LogFormat::Default => tracing_subscriber::fmt::layer()
             .with_writer(std::io::stderr)
-            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .with_span_events(stderr_span_events())
             .with_filter(EnvFilter::from_default_env())
             .boxed(),
     };
 
+    let log_write_warning = log_write_warning::LogWriteWarningReporter::new(
+        feedback.clone(),
+        &outgoing_message_sender,
+        &config,
+    );
     let feedback_layer = feedback.logger_layer();
     let feedback_metadata_layer = feedback.metadata_layer();
-    let log_db = state_db.clone().map(log_db::start);
+    let log_db = state_db
+        .clone()
+        .map(|state_db| log_db::start(state_db, log_write_warning.clone()));
     let log_db_layer = log_db
         .clone()
         .map(|layer| layer.with_filter(log_db::default_filter()));
@@ -736,6 +760,10 @@ pub async fn run_main_with_transport_options(
         .with(log_db_layer)
         .with(otel_layers)
         .try_init();
+    #[cfg(unix)]
+    if let Some(Err(err)) = nofile_limit_result {
+        warn!(%err, "failed to raise managed app-server file descriptor limit");
+    }
     for warning in &config_warnings {
         match &warning.details {
             Some(details) => error!("{} {}", warning.summary, details),
@@ -773,8 +801,6 @@ pub async fn run_main_with_transport_options(
     let single_client_mode = matches!(&transport, AppServerTransport::Stdio);
     let graceful_signal_restart_enabled =
         runtime_options.install_shutdown_signal_handler && !single_client_mode;
-    let managed_daemon = matches!(&transport, AppServerTransport::UnixSocket { .. })
-        && runtime_options.managed_daemon;
     let mut app_server_client_name_rx = None;
 
     match &transport {
@@ -958,14 +984,9 @@ pub async fn run_main_with_transport_options(
     let recovery_file = daemon_recovery_file_path(&config.codex_home);
     let processor_handle = tokio::spawn({
         let auth_manager = Arc::clone(&auth_manager);
-        let analytics_events_client =
-            analytics_events_client_from_config(Arc::clone(&auth_manager), &config);
-        let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
-            outgoing_tx,
-            analytics_events_client.clone(),
-        ));
         let initialize_notification_sender = outgoing_message_sender.clone();
         let outbound_control_tx = outbound_control_tx;
+        let background_subscription_loader = Arc::new(OnceLock::new());
         let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
             outgoing: outgoing_message_sender,
             analytics_events_client,
@@ -974,15 +995,15 @@ pub async fn run_main_with_transport_options(
             config_manager,
             environment_manager,
             feedback: feedback.clone(),
-            log_db: log_db.clone(),
+            log_db,
             state_db: state_db.clone(),
             config_warnings,
             session_source,
+            process_account: runtime_options.process_account.clone(),
             user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
                 &auth_manager,
             ))),
             auth_manager,
-            process_account: runtime_options.process_account.clone(),
             installation_id,
             code_mode_session_provider,
             rpc_transport: analytics_rpc_transport(&transport),
@@ -992,7 +1013,9 @@ pub async fn run_main_with_transport_options(
                 PluginStartupTasks::Start
             )
             .then_some(plugin_startup_config),
+            background_subscription_loader,
         }));
+        processor.initialize_background_subscription_loader();
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut active_admissions_rx = processor.turn_admission.subscribe_active();
@@ -1378,30 +1401,7 @@ pub async fn run_main_with_transport_options(
         let _ = handle.await;
     }
 
-    if let Some(log_db) = &log_db {
-        log_db.flush().await;
-    }
-
     Ok(AppServerExit::Graceful)
-}
-
-/// Enforces the confirmed `security-assumptions.md` ingress boundary: every WebSocket publisher
-/// of provider-neutral events must cross the existing app-server bearer-authentication policy.
-fn validate_event_subscription_transport_auth(
-    event_subscriptions_enabled: bool,
-    transport: &AppServerTransport,
-    auth: &AppServerWebsocketAuthSettings,
-) -> IoResult<()> {
-    if event_subscriptions_enabled
-        && matches!(transport, AppServerTransport::WebSocket { .. })
-        && auth.config.is_none()
-    {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "event subscriptions require authenticated WebSocket transport; configure `--ws-auth capability-token` or `--ws-auth signed-bearer-token`",
-        ));
-    }
-    Ok(())
 }
 
 struct SqliteRecoveryNotice {
@@ -1421,74 +1421,71 @@ struct StateDbInitResult {
 async fn init_sqlite_state_db_with_fresh_start_on_corruption(
     config: &Config,
 ) -> anyhow::Result<StateDbInitResult> {
-    let mut attempted_backups = HashSet::new();
-    let mut recovered_databases = Vec::new();
-    loop {
-        let err = match rollout_state_db::try_init(config).await {
-            Ok(state_db) => {
-                let recovery_notice = sqlite_recovery_notice(&recovered_databases);
-                if recovery_notice.is_some() {
-                    emit_state_db_backup_warning(SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY);
-                    for recovered_database in &recovered_databases {
-                        emit_state_db_backup_warning(&format!(
-                            "Database path: {}",
-                            recovered_database.database_path
-                        ));
-                        emit_state_db_backup_warning(&format!(
-                            "Backup folder: {}",
-                            recovered_database.backup_folder
-                        ));
-                    }
-                }
-                return Ok(StateDbInitResult {
-                    state_db: Some(state_db),
-                    recovery_notice,
-                });
+    let (result, backups) = codex_state::collect_runtime_db_backups(async {
+        let mut attempted_backups = HashSet::new();
+        loop {
+            let err = match rollout_state_db::try_init(config).await {
+                Ok(state_db) => return Ok(state_db),
+                Err(err) => err,
+            };
+            let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
+                .unwrap_or_else(|| config.sqlite_config().state_db_path());
+            if !codex_state::is_sqlite_corruption_error(&err)
+                && !sqlite_home_is_blocking_file(database_path.as_path())
+            {
+                return Err(err);
             }
-            Err(err) => err,
-        };
-        let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
-            .unwrap_or_else(|| config.sqlite_config().state_db_path());
-        if !codex_state::is_sqlite_corruption_error(&err)
-            && !sqlite_home_is_blocking_file(database_path.as_path())
-        {
-            return Err(err);
-        }
 
-        if !attempted_backups.insert(database_path.clone()) {
-            return Err(anyhow::anyhow!(
-                "failed to initialize sqlite state runtime after moving damaged database file into a backup folder: {err}"
-            ));
-        }
+            if !attempted_backups.insert(database_path.clone()) {
+                return Err(anyhow::anyhow!(
+                    "failed to initialize sqlite state runtime after moving damaged database file into a backup folder: {err}"
+                ));
+            }
 
-        let original_error = err.to_string();
-        emit_state_db_backup_warning(&format!(
-            "Codex local database at {} appears damaged. Moving it into a backup folder so the app server can rebuild it from saved data.",
-            database_path.display()
-        ));
-        let backups = codex_state::backup_runtime_db_for_fresh_start(database_path.as_path())
-            .await
-            .map_err(|backup_err| {
-                anyhow::anyhow!(
-                    "failed to move damaged sqlite state database files into a backup folder: {backup_err}; original error: {original_error}"
-                )
-            })?;
-        for backup in &backups {
+            let original_error = err.to_string();
             emit_state_db_backup_warning(&format!(
-                "Moved damaged Codex local database file {} to {}",
-                backup.original_path.display(),
-                backup.backup_path.display()
+                "Codex local database at {} appears damaged. Moving it into a backup folder so the app server can rebuild it from saved data.",
+                database_path.display()
             ));
+            let backups = codex_state::backup_runtime_db_for_fresh_start(database_path.as_path())
+                .await
+                .map_err(|backup_err| {
+                    anyhow::anyhow!(
+                        "failed to move damaged sqlite state database files into a backup folder: {backup_err}; original error: {original_error}"
+                    )
+                })?;
+            for backup in &backups {
+                emit_state_db_backup_warning(&format!(
+                    "Moved damaged Codex local database file {} to {}",
+                    backup.original_path.display(),
+                    backup.backup_path.display()
+                ));
+            }
         }
-        if let Some(first_backup) = backups.first()
-            && let Some(backup_folder) = first_backup.backup_path.parent()
+    })
+    .await;
+    let state_db = result?;
+    let mut recovered_databases = Vec::new();
+    let mut backup_folders = HashSet::new();
+    for backup in backups {
+        if let Some(folder) = backup.backup_path.parent()
+            && backup_folders.insert(folder.to_path_buf())
         {
             recovered_databases.push(RecoveredSqliteDatabase {
-                database_path: first_backup.original_path.display().to_string(),
-                backup_folder: backup_folder.display().to_string(),
+                database_path: backup.original_path.display().to_string(),
+                backup_folder: folder.display().to_string(),
             });
         }
     }
+    let recovery_notice = sqlite_recovery_notice(&recovered_databases);
+    if let Some(notice) = &recovery_notice {
+        emit_state_db_backup_warning(SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY);
+        emit_state_db_backup_warning(&notice.details);
+    }
+    Ok(StateDbInitResult {
+        state_db: Some(state_db),
+        recovery_notice,
+    })
 }
 
 fn sqlite_home_is_blocking_file(database_path: &Path) -> bool {
@@ -1515,7 +1512,11 @@ fn sqlite_recovery_notice(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    Some(SqliteRecoveryNotice { details })
+    Some(SqliteRecoveryNotice {
+        details: format!(
+            "Damaged local databases were rebuilt. Saved conversations remain in rollout files and can restore the thread list and history. Some database-only metadata may be unavailable. The original database files were preserved at the backup locations below.\n\n{details}"
+        ),
+    })
 }
 
 fn emit_state_db_backup_warning(message: &str) {
@@ -1541,27 +1542,23 @@ fn test_user_config_file_from_env() -> Option<std::path::PathBuf> {
 }
 
 fn loader_overrides_with_test_user_config_file(
-    loader_overrides: LoaderOverrides,
+    mut loader_overrides: LoaderOverrides,
     test_user_config_file: Option<std::path::PathBuf>,
 ) -> IoResult<LoaderOverrides> {
     #[cfg(debug_assertions)]
-    let loader_overrides = {
-        let mut loader_overrides = loader_overrides;
-        if let Some(path) = test_user_config_file {
-            let path = AbsolutePathBuf::from_absolute_path(path).map_err(|err| {
-                std::io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("invalid test user config path: {err}"),
-                )
-            })?;
-            warn!(
-                path = %path.as_path().display(),
-                "using debug-only app-server test user config file"
-            );
-            loader_overrides.user_config_path = Some(path);
-        }
-        loader_overrides
-    };
+    if let Some(path) = test_user_config_file {
+        let path = AbsolutePathBuf::from_absolute_path(path).map_err(|err| {
+            std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid test user config path: {err}"),
+            )
+        })?;
+        warn!(
+            path = %path.as_path().display(),
+            "using debug-only app-server test user config file"
+        );
+        loader_overrides.user_config_path = Some(path);
+    }
 
     #[cfg(not(debug_assertions))]
     let _ = test_user_config_file;
@@ -1579,9 +1576,11 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 }
 
 #[cfg(test)]
+#[path = "stderr_logging_tests.rs"]
+mod stderr_logging_tests;
+
+#[cfg(test)]
 mod tests {
-    use super::AppServerTransport;
-    use super::AppServerWebsocketAuthSettings;
     use super::LogFormat;
     use super::ShutdownAction;
     use super::ShutdownSignal;
@@ -1589,9 +1588,6 @@ mod tests {
     #[cfg(debug_assertions)]
     use super::loader_overrides_with_test_user_config_file;
     use super::turn_admission::TurnAdmission;
-    use super::validate_event_subscription_transport_auth;
-    use crate::transport::auth::AppServerWebsocketAuthConfig;
-    use crate::transport::auth::AppServerWebsocketCapabilityTokenSource;
     #[cfg(debug_assertions)]
     use codex_config::LoaderOverrides;
     #[cfg(debug_assertions)]
@@ -1646,44 +1642,6 @@ mod tests {
         assert_eq!(LogFormat::from_env_value(Some("")), LogFormat::Default);
         assert_eq!(LogFormat::from_env_value(Some("text")), LogFormat::Default);
         assert_eq!(LogFormat::from_env_value(Some("jsonl")), LogFormat::Default);
-    }
-
-    #[test]
-    fn event_subscription_websocket_ingress_requires_existing_auth() {
-        let websocket = AppServerTransport::WebSocket {
-            bind_address: "127.0.0.1:0".parse().expect("loopback address"),
-        };
-        assert!(
-            validate_event_subscription_transport_auth(
-                /*event_subscriptions_enabled*/ true,
-                &websocket,
-                &AppServerWebsocketAuthSettings::default(),
-            )
-            .is_err()
-        );
-        let authenticated = AppServerWebsocketAuthSettings {
-            config: Some(AppServerWebsocketAuthConfig::CapabilityToken {
-                source: AppServerWebsocketCapabilityTokenSource::TokenSha256 {
-                    token_sha256: [7; 32],
-                },
-            }),
-        };
-        assert!(
-            validate_event_subscription_transport_auth(
-                /*event_subscriptions_enabled*/ true,
-                &websocket,
-                &authenticated,
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_event_subscription_transport_auth(
-                /*event_subscriptions_enabled*/ true,
-                &AppServerTransport::Stdio,
-                &AppServerWebsocketAuthSettings::default(),
-            )
-            .is_ok()
-        );
     }
 
     #[cfg(debug_assertions)]

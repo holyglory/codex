@@ -13,7 +13,7 @@ use codex_connectors::ConnectorDirectoryCacheKey;
 use codex_connectors::apps_config_from_layer_stack;
 use codex_connectors::connector_runtime_context_key;
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecServerRuntimePaths;
+use codex_exec_server::ExecServerRuntimeOptions;
 use codex_tools::DiscoverableTool;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -123,20 +123,13 @@ pub async fn list_cached_accessible_connectors_from_mcp_tools(
             .await
             .ok()?;
     let auth = auth_manager.auth().await;
-    list_cached_accessible_connectors_from_mcp_tools_with_auth(config, auth.as_ref())
-}
-
-pub fn list_cached_accessible_connectors_from_mcp_tools_with_auth(
-    config: &Config,
-    auth: Option<&CodexAuth>,
-) -> Option<Vec<AppInfo>> {
     if !config
         .features
-        .apps_enabled_for_auth(auth.is_some_and(CodexAuth::uses_codex_backend))
+        .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
     {
         return Some(Vec::new());
     }
-    let cache_key = accessible_connectors_cache_key(config, auth);
+    let cache_key = accessible_connectors_cache_key(config, auth.as_ref());
     read_cached_accessible_connectors(&cache_key)
 }
 
@@ -172,7 +165,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
     // TODO: Wire callers that already own an EnvironmentManager into
     // list_accessible_connectors_from_mcp_tools_with_environment_manager instead
     // of constructing a temporary manager here.
-    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+    let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
         config.codex_self_exe.clone(),
         config.codex_linux_sandbox_exe.clone(),
     )?;
@@ -220,25 +213,6 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
     let auth_manager =
         AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
     let auth = auth_manager.auth().await;
-    list_accessible_connectors_from_mcp_tools_with_mcp_manager_and_auth(
-        config,
-        force_refetch,
-        environment_manager,
-        mcp_manager,
-        auth_manager,
-        auth,
-    )
-    .await
-}
-
-pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager_and_auth(
-    config: &Config,
-    force_refetch: bool,
-    environment_manager: Arc<EnvironmentManager>,
-    mcp_manager: Arc<McpManager>,
-    auth_manager: Arc<AuthManager>,
-    auth: Option<CodexAuth>,
-) -> anyhow::Result<AccessibleConnectorsStatus> {
     if !config
         .features
         .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))

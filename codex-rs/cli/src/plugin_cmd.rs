@@ -192,9 +192,8 @@ pub async fn run_plugin_add(
         )?;
         context
             .manager
-            .install_plugin_for_config(
-                &context.plugins_input,
-                context.auth.as_ref(),
+            .install_plugin(
+                &context.plugins_input.config_layer_stack,
                 PluginInstallRequest {
                     plugin_name: selection.plugin_name,
                     marketplace_path: marketplace.path,

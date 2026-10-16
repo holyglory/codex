@@ -103,7 +103,6 @@ pub(super) fn summary(
 
 pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUsageReport {
     let StructuredUsageSummary {
-        cost,
         schema_version,
         kind,
         database_schema_version,
@@ -118,31 +117,13 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
         tools,
         time,
         classifications,
+        worktrees,
+        worktree_coverage,
         repository_participation,
+        cost,
         formulas,
     } = StructuredUsageSummary::new(summary, account);
     LocalUsageReport {
-        cost: cost.map(|cost| protocol::LocalUsageReportCost {
-            basis: cost.basis.to_string(),
-            currency: cost.currency.to_string(),
-            status: cost.status.to_string(),
-            processing_tier: cost.processing_tier.to_string(),
-            estimated_usd_micros: cost.estimated_usd_micros,
-            input_usd_micros: cost.input_usd_micros,
-            cached_input_usd_micros: cost.cached_input_usd_micros,
-            cache_write_usd_micros: cost.cache_write_usd_micros,
-            output_usd_micros: cost.output_usd_micros,
-            input_tokens: cost.input_tokens,
-            uncached_input_tokens: cost.uncached_input_tokens,
-            cached_input_tokens: cost.cached_input_tokens,
-            cache_write_tokens: cost.cache_write_tokens,
-            output_tokens: cost.output_tokens,
-            reasoning_tokens: cost.reasoning_tokens,
-            provider_total_tokens: cost.provider_total_tokens,
-            priced_observations: cost.priced_observations,
-            unknown_observations: cost.unknown_observations,
-            rate_card_refs: cost.rate_card_refs,
-        }),
         schema_version,
         kind: kind.to_string(),
         database_schema_version,
@@ -170,8 +151,53 @@ pub(super) fn report(summary: &UsageSummary, account: Option<String>) -> LocalUs
             .into_iter()
             .map(report_classification)
             .collect(),
+        worktrees: worktrees
+            .into_iter()
+            .map(|worktree| protocol::LocalUsageReportWorktree {
+                worktree_key: worktree.worktree_key,
+                repository_key: worktree.repository_key,
+                label: worktree.label,
+                operation_count: worktree.operation_count,
+                model_request_count: worktree.model_request_count,
+                tool_count: worktree.tool_count,
+                total_tokens: worktree.total_tokens,
+                unknown_token_observations: worktree.unknown_token_observations,
+            })
+            .collect(),
+        worktree_coverage: protocol::LocalUsageReportWorktreeCoverage {
+            assigned_operation_count: worktree_coverage.assigned_operation_count,
+            unassigned_operation_count: worktree_coverage.unassigned_operation_count,
+            assigned_token_observation_count: worktree_coverage.assigned_token_observation_count,
+            unassigned_token_observation_count: worktree_coverage
+                .unassigned_token_observation_count,
+        },
         repository_participation: report_repository_participation(repository_participation),
         formulas: report_formulas(formulas),
+        cost: cost.map(report_cost),
+    }
+}
+
+fn report_cost(value: codex_usage::UsageApiEquivalentCost) -> protocol::LocalUsageReportCost {
+    protocol::LocalUsageReportCost {
+        basis: value.basis.to_string(),
+        currency: value.currency.to_string(),
+        status: value.status.to_string(),
+        processing_tier: value.processing_tier.to_string(),
+        estimated_usd_micros: value.estimated_usd_micros,
+        input_usd_micros: value.input_usd_micros,
+        cached_input_usd_micros: value.cached_input_usd_micros,
+        cache_write_usd_micros: value.cache_write_usd_micros,
+        output_usd_micros: value.output_usd_micros,
+        input_tokens: value.input_tokens,
+        uncached_input_tokens: value.uncached_input_tokens,
+        cached_input_tokens: value.cached_input_tokens,
+        cache_write_tokens: value.cache_write_tokens,
+        output_tokens: value.output_tokens,
+        reasoning_tokens: value.reasoning_tokens,
+        provider_total_tokens: value.provider_total_tokens,
+        priced_observations: value.priced_observations,
+        unknown_observations: value.unknown_observations,
+        rate_card_refs: value.rate_card_refs,
     }
 }
 
@@ -191,13 +217,6 @@ fn report_time_range(value: StructuredTimeRange) -> protocol::LocalUsageReportTi
 
 fn report_coverage(value: StructuredCoverage) -> protocol::LocalUsageReportCoverage {
     protocol::LocalUsageReportCoverage {
-        dimensions: Some(protocol::LocalUsageReportCoverageDimensions {
-            recorded_tokens: value.dimensions.recorded_tokens.to_string(),
-            unfinished_operations: value.dimensions.unfinished_operations,
-            timing_unknown_intervals: value.dimensions.timing_unknown_intervals,
-            activity_unattributed_operations: value.dimensions.activity_unattributed_operations,
-            context: value.dimensions.context.to_string(),
-        }),
         state: value.state,
         has_gaps: value.has_gaps,
         events: value
@@ -210,6 +229,13 @@ fn report_coverage(value: StructuredCoverage) -> protocol::LocalUsageReportCover
             .into_iter()
             .map(report_coverage_count)
             .collect(),
+        dimensions: protocol::LocalUsageReportCoverageDimensions {
+            recorded_tokens: value.dimensions.recorded_tokens.to_string(),
+            unfinished_operations: value.dimensions.unfinished_operations,
+            timing_unknown_intervals: value.dimensions.timing_unknown_intervals,
+            activity_unattributed_operations: value.dimensions.activity_unattributed_operations,
+            context: value.dimensions.context.to_string(),
+        },
     }
 }
 

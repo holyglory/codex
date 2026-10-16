@@ -1,7 +1,3 @@
-#[path = "local_usage_cost.rs"]
-mod cost;
-pub use cost::LocalUsageReportCost;
-
 use crate::JsonSchema;
 use crate::TS;
 use serde::Deserialize;
@@ -135,7 +131,6 @@ pub struct LocalUsageTokenCategory {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct LocalUsageReport {
-    pub cost: Option<LocalUsageReportCost>,
     pub schema_version: u32,
     pub kind: String,
     pub database_schema_version: u64,
@@ -150,8 +145,36 @@ pub struct LocalUsageReport {
     pub tools: LocalUsageReportToolMetrics,
     pub time: LocalUsageReportTimeMetrics,
     pub classifications: Vec<LocalUsageReportClassificationCount>,
+    pub worktrees: Vec<LocalUsageReportWorktree>,
+    pub worktree_coverage: LocalUsageReportWorktreeCoverage,
     pub repository_participation: LocalUsageReportRepositoryParticipation,
     pub formulas: LocalUsageReportFormulas,
+    pub cost: Option<LocalUsageReportCost>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportCost {
+    pub basis: String,
+    pub currency: String,
+    pub status: String,
+    pub processing_tier: String,
+    pub estimated_usd_micros: Option<u64>,
+    pub input_usd_micros: Option<u64>,
+    pub cached_input_usd_micros: Option<u64>,
+    pub cache_write_usd_micros: Option<u64>,
+    pub output_usd_micros: Option<u64>,
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub provider_total_tokens: u64,
+    pub priced_observations: u64,
+    pub unknown_observations: u64,
+    pub rate_card_refs: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -180,7 +203,7 @@ pub struct LocalUsageReportCoverage {
     pub has_gaps: bool,
     pub events: Vec<LocalUsageReportCoverageCount>,
     pub token_observations: Vec<LocalUsageReportCoverageCount>,
-    pub dimensions: Option<LocalUsageReportCoverageDimensions>,
+    pub dimensions: LocalUsageReportCoverageDimensions,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -319,6 +342,12 @@ pub struct LocalUsageReportFormulas {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct LocalUsageSummaryParams {
+    /// Omitted or empty selects all worktrees, including historical unassigned usage.
+    #[ts(optional = nullable)]
+    pub worktree_keys: Option<Vec<String>>,
+    /// Include historical operations without a captured worktree identity.
+    #[ts(optional = nullable)]
+    pub include_unassigned: Option<bool>,
     #[ts(optional = nullable)]
     pub repository_key: Option<String>,
     #[ts(optional = nullable)]
@@ -651,4 +680,28 @@ pub struct LocalUsageUpdatedNotification {
     pub updated_at: i64,
     pub thread_id: Option<String>,
     pub repository_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportWorktree {
+    pub worktree_key: String,
+    pub repository_key: String,
+    pub label: String,
+    pub operation_count: u64,
+    pub model_request_count: u64,
+    pub tool_count: u64,
+    pub total_tokens: Option<i64>,
+    pub unknown_token_observations: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageReportWorktreeCoverage {
+    pub assigned_operation_count: u64,
+    pub unassigned_operation_count: u64,
+    pub assigned_token_observation_count: u64,
+    pub unassigned_token_observation_count: u64,
 }

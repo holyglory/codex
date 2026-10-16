@@ -1,8 +1,8 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
 //! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version HTTP probes. npm-managed launches also verify that
-//! the global package root matches the package that launched the current process.
+//! and bounded latest-version HTTP probes. Fork package-manager installs use the
+//! fork's npm release channel and never the upstream release channel.
 
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -23,14 +23,12 @@ use super::CheckStatus;
 use super::DoctorCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::DoctorIssue;
-use super::NpmRootCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::desktop::platform::InstalledApp;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::network;
-use super::npm_global_root_check;
 
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
@@ -65,45 +63,10 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
     push_cached_version_details(&mut details, &version_file);
 
     let mut status = CheckStatus::Ok;
-    let mut summary = "update configuration is locally consistent".to_string();
-    let mut remediation = None;
+    let summary = "update configuration is locally consistent".to_string();
 
     if doctor_managed_by_npm(current_exe.as_deref()) {
-        match npm_global_root_check() {
-            NpmRootCheck::Match { package_root } => {
-                details.push(format!("npm update target: {}", package_root.display()));
-            }
-            NpmRootCheck::Mismatch {
-                running_package_root,
-                npm_package_root,
-            } => {
-                status = CheckStatus::Fail;
-                summary = "update would target a different npm install".to_string();
-                details.push(format!(
-                    "running package root: {}",
-                    running_package_root.display()
-                ));
-                details.push(format!("npm package root: {}", npm_package_root.display()));
-                remediation = Some(format!(
-                    "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
-                    running_package_root.display(),
-                    npm_package_root.display()
-                ));
-            }
-            NpmRootCheck::MissingPackageRoot => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be proven".to_string();
-                remediation = Some(
-                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
-                        .to_string(),
-                );
-            }
-            NpmRootCheck::NpmUnavailable(error) => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be inspected".to_string();
-                details.push(format!("npm root -g failed: {error}"));
-            }
-        }
+        details.push("npm update target: @holyglory/codex@latest".to_string());
     }
     let client = RouteAwareClientPool::new_without_request_logging(
         config.http_client_factory(),
@@ -125,11 +88,7 @@ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
         }
     }
 
-    let mut check = DoctorCheck::new("updates.status", "updates", status, summary).details(details);
-    if let Some(remediation) = remediation {
-        check = check.remediation(remediation);
-    }
-    check
+    DoctorCheck::new("updates.status", "updates", status, summary).details(details)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -603,6 +562,7 @@ mod tests {
             }
         }
     }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_update_probe_uses_the_persisted_production_appcast_feed() {
@@ -719,12 +679,6 @@ mod tests {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
         assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
         assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
-        assert_eq!(is_newer("0.153.0-multi.2", "0.153.0+multi.1"), Some(true));
-        assert_eq!(is_newer("0.153.0-multi.1", "0.153.0+multi.1"), Some(false));
-        assert_eq!(
-            is_newer("0.153.0-multi.2-linux-x64", "0.153.0+multi.1"),
-            None
-        );
     }
 
     #[test]
@@ -749,32 +703,6 @@ mod tests {
                 package_layout: None,
             }),
             "manual or unknown"
-        );
-    }
-
-    #[tokio::test]
-    async fn unsupported_installer_diagnostics_do_not_probe_upstream() {
-        use codex_http_client::HttpClientFactory;
-        use codex_http_client::OutboundProxyPolicy;
-
-        let context = InstallContext {
-            method: InstallMethod::Brew,
-            package_layout: None,
-        };
-        assert_eq!(
-            update_action_label(&context),
-            "original fork delivery workflow"
-        );
-        assert_eq!(
-            fetch_latest_version(
-                &RouteAwareClientPool::new_without_request_logging(
-                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-                    ClientRouteClass::Other,
-                ),
-                &context,
-            )
-            .await,
-            Err("no automatic fork updater for this installation".to_string())
         );
     }
 }

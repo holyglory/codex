@@ -54,10 +54,10 @@ pub(crate) struct CustomPromptView {
     textarea: TextArea,
     textarea_state: RefCell<TextAreaState>,
     paste_burst: PasteBurst,
-    allow_empty_submit: bool,
     completion: Option<ViewCompletion>,
     pending_suggestion: Option<PendingTextSuggestion>,
     user_edited: bool,
+    allow_empty_submit: bool,
 }
 
 impl CustomPromptView {
@@ -82,14 +82,13 @@ impl CustomPromptView {
             textarea,
             textarea_state: RefCell::new(TextAreaState::default()),
             paste_burst: PasteBurst::default(),
-            allow_empty_submit: false,
             completion: None,
             pending_suggestion: None,
             user_edited: false,
+            allow_empty_submit: false,
         }
     }
 
-    /// Allow Enter to submit an empty value for prompts where clearing is meaningful.
     pub(crate) fn allow_empty_submit(mut self) -> Self {
         self.allow_empty_submit = true;
         self

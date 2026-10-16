@@ -70,6 +70,12 @@ pub enum UsageStoreError {
     TaskTreeTooLarge,
     #[error("usage summary exceeds its memory bound; narrow the scope or time range")]
     ReportTooLarge,
+    #[error("usage report exceeded its time budget; narrow the scope or time range")]
+    ReportTimedOut,
+    #[error("usage reporting is busy; retry the request")]
+    ReportBusy,
+    #[error("usage reporting cache is warming")]
+    ReportWarming(Box<crate::ReportCacheStatus>),
     #[error("outcome cursor expired or does not match this report; start a new first page")]
     InvalidReviewCursor,
 }
@@ -93,6 +99,30 @@ pub struct UsageStore {
 }
 
 impl UsageStore {
+    pub async fn report_cache_status(&self) -> Result<crate::ReportCacheStatus, UsageStoreError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::report_cache::status(&self.pool),
+        )
+        .await
+        .map_err(|_| UsageStoreError::ReportTimedOut)?
+        .map_err(UsageStoreError::Database)
+    }
+
+    /// Unbounded public requests must not scan raw history during rebuilding.
+    pub async fn require_report_ready(
+        &self,
+        range: Option<crate::UtcTimeRange>,
+    ) -> Result<(), UsageStoreError> {
+        if range.is_none_or(|range| !range.is_finite()) {
+            let status = self.report_cache_status().await?;
+            if !status.ready {
+                return Err(UsageStoreError::ReportWarming(Box::new(status)));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn activity_declaration(
         &self,
         thread_id: &str,
@@ -225,12 +255,29 @@ impl UsageStore {
 
     pub async fn open(codex_home: &Path) -> Result<Self, UsageStoreError> {
         let usage_dir = codex_home.join("usage");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let home_owner = std::fs::metadata(codex_home)
+                .ok()
+                .map(|metadata| metadata.uid());
+            tracing::debug!(
+                home_owner,
+                stage = "resolve_codex_home",
+                "usage storage initialization"
+            );
+        }
         ensure_private_directory(&usage_dir).map_err(private_storage_error)?;
         let database_path = usage_dir.join("usage.sqlite3");
+        tracing::debug!(stage = "open_usage_database", "opening usage database");
         let pool = open_sqlite_pool(&database_path, SqlitePoolProfile::DurableEvents)
             .await
             .map_err(UsageStoreError::Database)?;
         ensure_private_file(&database_path).map_err(private_storage_error)?;
+        tracing::debug!(
+            stage = "migrate_usage_database",
+            "usage storage initialization"
+        );
         if let Err(error) = MIGRATOR.run(&pool).await {
             pool.close().await;
             return Err(UsageStoreError::Migration(error));
@@ -240,17 +287,15 @@ impl UsageStore {
             .await
             .map_err(UsageStoreError::Database)?;
         let refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
-        if refresh_pending {
-            // Short-lived CLI readers must also advance durable backfill, even
-            // when their runtime exits before the shared worker gets scheduled.
-            let _ = crate::report_cache::backfill::step(&pool).await;
-        }
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [
             "CREATE INDEX IF NOT EXISTS token_observations_repository_total_observed_idx ON token_observations(repository_bucket, observed_at_ms, token_count, coverage_state, model_request_id, tool_invocation_id) WHERE category_path = 'total_tokens' AND measurement_provenance = 'provider_reported'",
             "CREATE INDEX IF NOT EXISTS model_requests_id_operation_idx ON model_requests(id, operation_id)",
+            "CREATE INDEX IF NOT EXISTS model_requests_operation_idx ON model_requests(operation_id, id)",
             "CREATE INDEX IF NOT EXISTS tool_invocations_id_operation_idx ON tool_invocations(id, operation_id)",
+            "CREATE INDEX IF NOT EXISTS tool_invocations_operation_idx ON tool_invocations(operation_id, id)",
+            "CREATE INDEX IF NOT EXISTS tool_invocations_covering_request_idx ON tool_invocations(covering_model_request_id, id)",
             "CREATE INDEX IF NOT EXISTS token_observations_observed_owner_idx ON token_observations(observed_at_ms, model_request_id, tool_invocation_id)",
             "CREATE INDEX IF NOT EXISTS coverage_events_observed_owner_idx ON coverage_events(occurred_at_ms, operation_id)",
             "CREATE INDEX IF NOT EXISTS operation_events_terminal_observed_idx ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1",
@@ -272,6 +317,10 @@ impl UsageStore {
                 return Err(error);
             }
         };
+        tracing::debug!(
+            stage = "verify_usage_storage",
+            "usage storage initialization"
+        );
         verify_sqlite_files(&database_path)?;
         let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path)
             .map_err(UsageStoreError::Filesystem)?;

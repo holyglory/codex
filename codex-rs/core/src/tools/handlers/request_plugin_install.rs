@@ -86,12 +86,21 @@ impl ToolExecutor<ToolInvocation> for RequestPluginInstallHandler {
     where
         ToolInvocation: 'a,
     {
-        Box::pin(self.handle_call(invocation))
+        self.handle_call(invocation)
     }
 }
 
 impl RequestPluginInstallHandler {
-    async fn handle_call(
+    // Erase this large future at the tool boundary. The nested plugin, MCP, and
+    // config branches otherwise exceed rustc's future layout depth on Windows.
+    fn handle_call<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+    ) -> codex_tools::ToolExecutorFuture<'a> {
+        Box::pin(self.handle_call_inner(invocation))
+    }
+
+    async fn handle_call_inner(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -188,10 +197,7 @@ impl RequestPluginInstallHandler {
             })?;
         let tool = if self.presentation == ToolSuggestPresentation::RecommendationContext {
             let plugin_id = tool.id().to_string();
-            let auth = match turn.auth_manager.as_ref() {
-                Some(auth_manager) => auth_manager.auth().await,
-                None => None,
-            };
+            let auth = session.services.auth_manager.auth().await;
             let plugins_config = turn.config.plugins_config_input();
             match codex_core_plugins::hydrate_selected_recommended_plugin_install_metadata(
                 &plugins_config,
@@ -267,10 +273,7 @@ impl RequestPluginInstallHandler {
             .as_ref()
             .is_some_and(|response| response.action == ElicitationAction::Accept);
 
-        let auth = match turn.auth_manager.as_ref() {
-            Some(auth_manager) => auth_manager.auth().await,
-            None => None,
-        };
+        let auth = session.services.auth_manager.auth().await;
         let completed = if user_confirmed {
             verify_request_plugin_install_completed(&session, &turn, mcp, &tool, auth.as_ref())
                 .await
@@ -345,7 +348,7 @@ fn recommended_plugin_metadata_retryable() -> FunctionCallError {
 impl CoreToolRuntime for RequestPluginInstallHandler {}
 
 async fn maybe_persist_disabled_install_request(
-    session: &Arc<crate::session::session::Session>,
+    session: &crate::session::session::Session,
     turn: &crate::session::turn_context::TurnContext,
     tool: &DiscoverableTool,
     response: &ElicitationResponse,
@@ -364,7 +367,6 @@ async fn maybe_persist_disabled_install_request(
     }
 
     session.reload_user_config_layer().await;
-    refresh_turn_plugin_runtimes(session, turn).await;
 }
 
 fn request_plugin_install_response_requests_persistent_disable(
@@ -451,13 +453,11 @@ async fn verify_request_plugin_install_completed(
             }
 
             session.reload_user_config_layer().await;
-            refresh_turn_plugin_runtimes(session, turn).await;
             let config = session.get_config().await;
             let completed = verified_plugin_install_completed(
                 plugin.id.as_str(),
                 config.as_ref(),
                 session.services.plugins_manager.as_ref(),
-                auth,
             );
             let _ = refresh_missing_requested_connectors(
                 session,
@@ -544,34 +544,15 @@ fn verified_plugin_install_completed(
     tool_id: &str,
     config: &crate::config::Config,
     plugins_manager: &codex_core_plugins::PluginsManager,
-    auth: Option<&codex_login::CodexAuth>,
 ) -> bool {
     let plugins_input = config.plugins_config_input();
     plugins_manager
-        .list_marketplaces_for_config_with_auth(
-            &plugins_input,
-            &[],
-            /*include_openai_curated*/ true,
-            auth,
-        )
+        .list_marketplaces_for_config(&plugins_input, &[], /*include_openai_curated*/ true)
         .ok()
         .into_iter()
         .flat_map(|outcome| outcome.marketplaces)
         .flat_map(|marketplace| marketplace.plugins.into_iter())
         .any(|plugin| plugin.id == tool_id && plugin.installed)
-}
-
-async fn refresh_turn_plugin_runtimes(
-    session: &Arc<crate::session::session::Session>,
-    turn: &crate::session::turn_context::TurnContext,
-) {
-    let Some(auth_lease) = turn.auth_lease() else {
-        return;
-    };
-    session.refresh_hooks_with_auth_lease(&auth_lease).await;
-    session
-        .refresh_mcp_if_dirty_with_auth_lease(&auth_lease)
-        .await;
 }
 
 #[cfg(test)]

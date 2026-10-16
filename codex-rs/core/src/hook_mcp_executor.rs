@@ -26,13 +26,14 @@ impl HookMcpExecutor for CoreHookMcpExecutor {
 
             let result = self
                 .runtime
-                .call_hook_tool(
+                .latest_call_tool(
                     &call.server,
                     &call.tool,
                     call.environment_id.as_deref(),
                     Some(Value::Object(call.input)),
                     Some(Value::Object(metadata)),
                     Some(call.timeout),
+                    /*wait_for_server*/ false,
                 )
                 .await?;
             let text = result

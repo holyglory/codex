@@ -28,34 +28,11 @@ pub enum UsageTerminalErrorCategory {
     Provider,
 }
 
-/// Typed terminal outcome for a tool execution, with no payload or error text.
+/// Typed terminal outcome for tool execution, without payload or error text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UsageTerminalOutcome {
     pub status: UsageTerminalStatus,
     pub error_category: Option<UsageTerminalErrorCategory>,
-}
-
-impl UsageTerminalOutcome {
-    pub const COMPLETED: Self = Self {
-        status: UsageTerminalStatus::Completed,
-        error_category: None,
-    };
-
-    pub const FAILED: Self = Self {
-        status: UsageTerminalStatus::Failed,
-        error_category: Some(UsageTerminalErrorCategory::Tool),
-    };
-
-    pub const TIMED_OUT: Self = Self {
-        status: UsageTerminalStatus::TimedOut,
-        error_category: Some(UsageTerminalErrorCategory::Timeout),
-    };
-
-    /// A bounded wait reached its requested deadline normally; this is not a tool failure.
-    pub const EXPECTED_EXPIRY: Self = Self {
-        status: UsageTerminalStatus::TimedOut,
-        error_category: None,
-    };
 }
 
 /// Model-facing output contract returned by executable tool runtimes.
@@ -68,19 +45,26 @@ pub trait ToolOutput: Send {
 
     fn success_for_logging(&self) -> bool;
 
-    /// Returns a content-free accounting outcome without inspecting model-facing output.
+    /// Returns the content-free terminal outcome for this tool result.
     fn usage_terminal_outcome(&self) -> UsageTerminalOutcome {
         if self.success_for_logging() {
-            UsageTerminalOutcome::COMPLETED
+            UsageTerminalOutcome {
+                status: UsageTerminalStatus::Completed,
+                error_category: None,
+            }
         } else {
-            UsageTerminalOutcome::FAILED
+            UsageTerminalOutcome {
+                status: UsageTerminalStatus::Failed,
+                error_category: Some(UsageTerminalErrorCategory::Tool),
+            }
         }
     }
 
-    /// Content-free provider usage returned by a nested tool-owned provider request, if any.
+    /// Returns the provider-reported token usage for a nested tool request, when available.
     fn provider_usage(&self) -> Option<&ProviderUsage> {
         None
     }
+
     /// Finalizes output using the same completed handler duration reported in tool-call logs.
     /// Called before recording model-visible history; implementations must not measure time here.
     fn set_handler_duration_ms(&mut self, _handler_duration_ms: u64) {}

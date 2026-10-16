@@ -318,6 +318,7 @@ async fn unavailable_accounting_never_blocks_tool_execution_and_replays_terminal
             turn_id: Some("tool-turn"),
             delegated: false,
             call_id: "tool-call",
+            alarm_tool_name: "test_tool",
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             descriptor: UsageToolDescriptor {
                 kind: "local",

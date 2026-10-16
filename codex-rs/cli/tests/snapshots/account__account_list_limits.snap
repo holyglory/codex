@@ -1,8 +1,7 @@
 ---
 source: cli/tests/account.rs
-assertion_line: 1098
 expression: "human.replace(countdown,\n\"[Codex reset countdown]\").replace(banked, \"[Banked reset]\")"
 ---
-ALIAS   PRIORITY  NOTE     BANKED RESETS  LIMITS                               RESET IN
-*alpha  1         primary  [Banked reset]   84%                                  [Codex reset countdown]
- beta   2                  unknown        unknown (unsupportedAuthentication)  unknown
+ALIAS   PRIORITY  NOTE     CREDITS  CREDIT USE  BANKED RESETS  LIMITS                               RESET IN
+*alpha  1         primary  9.99     disabled    [Banked reset]   84%                                  [Codex reset countdown]
+ beta   2                  unknown  disabled    unknown        unknown (unsupportedAuthentication)  unknown

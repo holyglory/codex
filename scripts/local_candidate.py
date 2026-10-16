@@ -19,6 +19,8 @@ import xml.etree.ElementTree as ET
 
 
 GATES = (
+    "toolchain",
+    "release-inclusion",
     "helpers",
     "format",
     "package-prerequisites",
@@ -30,7 +32,7 @@ GATES = (
     "native-inputs",
 )
 LANES = {
-    "rust": ("clippy", "rust-tests", "linux-package"),
+    "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
     "bazel": ("bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
@@ -81,7 +83,16 @@ def commands(root, state, directory):
     native_cargo = [*native, "run", "--state", str(state), "--"]
     bazel = ["bash", ".github/scripts/run-bazel-ci.sh", "--"]
     cache = f"--disk_cache={state / 'bazel-actions'}"
+    bazel_home = f"/tmp/codex-test-home-{directory.name}"
     return {
+        "toolchain": (
+            [sys.executable, "scripts/run_candidate_preflight.py", "--toolchain-only"],
+            root,
+        ),
+        "release-inclusion": (
+            [sys.executable, "scripts/check_release_inclusion.py"],
+            root,
+        ),
         "helpers": (
             [
                 "bash",
@@ -95,7 +106,10 @@ def commands(root, state, directory):
             ["bash", "scripts/build_local_linux_candidate.sh", "--check"],
             root,
         ),
-        "focused": ([sys.executable, "scripts/run_candidate_preflight.py"], root),
+        "focused": (
+            [sys.executable, "scripts/run_candidate_preflight.py"],
+            root,
+        ),
         "schemas": (
             [
                 "bash",
@@ -128,10 +142,11 @@ def commands(root, state, directory):
                 "--nocache_test_results",
                 "--test_tmpdir=/tmp/b",
                 "--sandbox_writable_path=/tmp",
+                "--sandbox_writable_path=/dev/pts",
                 "--sandbox_tmpfs_path=/tmp",
                 "--test_env=TMPDIR=/tmp",
                 "--test_env=TEST_TMPDIR=/tmp",
-                "--test_env=HOME=/tmp/codex-test-home",
+                f"--test_env=HOME={bazel_home}",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
                 "--test_env=INSTA_UPDATE=no",
@@ -158,7 +173,16 @@ def commands(root, state, directory):
         ),
         "native-inputs": ([*native, "prepare", "--state", str(state)], root),
         "rust-tests": (
-            [*native_cargo, "just", "test", "--locked", "--no-tests=fail"],
+            [
+                *native_cargo,
+                "just",
+                "test",
+                "--locked",
+                "--no-tests=fail",
+                "--workspace",
+                "--features",
+                "codex-v8-poc/sandbox",
+            ],
             root,
         ),
         "linux-package": (
@@ -169,17 +193,28 @@ def commands(root, state, directory):
             ],
             root,
         ),
+        "root-usage": (
+            [
+                os.environ.get("LOCAL_PACKAGE_PYTHON", sys.executable),
+                "scripts/check_root_usage.py",
+                "--binary",
+                str(directory / "linux-package/bin/codex"),
+            ],
+            root,
+        ),
         "bazel-tests": (
             [
                 *bazel,
                 "test",
                 cache,
+                "--nocache_test_results",
                 "--test_tmpdir=/tmp/b",
                 "--sandbox_writable_path=/tmp",
+                "--sandbox_writable_path=/dev/pts",
                 "--sandbox_tmpfs_path=/tmp",
                 "--test_env=TMPDIR=/tmp",
                 "--test_env=TEST_TMPDIR=/tmp",
-                "--test_env=HOME=/tmp/codex-test-home",
+                f"--test_env=HOME={bazel_home}",
                 "--keep_going",
                 "--test_env=RUST_TEST_THREADS=1",
                 "--test_env=RUST_MIN_STACK=16777216",
@@ -225,6 +260,26 @@ def run_step(name, command, cwd, environ, directory):
     }
     print(json.dumps(result), flush=True)
     return result
+
+
+def preserve_generated_test_artifacts(root, directory):
+    """Move known test-only outputs out of the frozen source checkout."""
+    status = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    for entry in status.split("\0"):
+        if not entry:
+            continue
+        state = entry[:2]
+        path = entry[3:]
+        if state != "??" or not (
+            path.endswith(".snap.new")
+            or path == "codex-rs/non-existent/.auth-credential-lock-v1"
+        ):
+            raise ValueError(
+                f"Acceptance run modified an unexpected source path: {path}"
+            )
+        target = directory / "generated" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(root / path), target)
 
 
 def execute(plan, environ, directory, unchanged, runner=run_step):
@@ -323,7 +378,9 @@ def check(root, state, cargo_target, release_target):
         CARGO_PROFILE_DEV_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
+        NEXTEST_RETRIES="3",
         CODEX_BAZEL_BATCH="1",
+        RUST_MIN_STACK="16777216",
         BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
         BAZEL_REPOSITORY_CACHE=str(state / "bazel-downloads"),
         LOCAL_BAZEL_CACHE=str(state / "bazel-actions"),
@@ -351,6 +408,7 @@ def check(root, state, cargo_target, release_target):
         results = execute(
             commands(root, state, directory), environ, directory, unchanged
         )
+        preserve_generated_test_artifacts(root, directory)
         receipt = {
             "schema": 1,
             "commit": commit,

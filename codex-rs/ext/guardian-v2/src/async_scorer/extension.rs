@@ -14,27 +14,144 @@ use codex_extension_api::ExtensionWarning;
 use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
+use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadStartInput;
+use codex_extension_api::ThreadStopInput;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
+use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::openai_models::AsyncClassifierMode;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::protocol::has_full_access;
 
 use super::config::GuardianV2Config;
+use super::conversation::ConversationBackend;
 use super::sampler::LunaSampler;
 use super::score::GuardianV2ScoreProgress;
-#[path = "auth_lifecycle.rs"]
-mod auth_lifecycle;
 use super::trusted_skills::TrustedSkillRoots;
 
 #[derive(Clone)]
 pub(super) struct GuardianV2Extension {
     auth_manager: Arc<AuthManager>,
-    pub(super) auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
     pub(super) event_sink: Arc<dyn ExtensionEventSink>,
     pub(super) thread_manager: Weak<ThreadManager>,
+}
+
+impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if !input.config.features.enabled(Feature::GuardianApproval) {
+                return;
+            }
+
+            let model = input.thread_store.get::<ModelInfo>();
+            let thread_id = input.thread_store.level_id().to_string();
+            let guardian_config = match GuardianV2Config::resolve(input.config) {
+                Ok(config) => config,
+                Err(error) => {
+                    self.event_sink.emit_warning(ExtensionWarning {
+                        thread_id,
+                        turn_id: None,
+                        message: error,
+                    });
+                    return;
+                }
+            };
+            let mut policy = guardian_config.policy_for_model(model.as_deref());
+            if let Some(model) = model.as_ref() {
+                input
+                    .config
+                    .config_layer_stack
+                    .requirements()
+                    .constrain_guardian_policy(&mut policy, &model.slug);
+            }
+            let scoring_enabled = policy.scoring_enabled();
+            let sampler_config = super::startup::sampler_config(
+                &input,
+                Arc::clone(&self.auth_manager),
+                self.thread_manager.upgrade(),
+            )
+            .await;
+
+            if scoring_enabled && guardian_config.transcript.include_images {
+                input
+                    .thread_store
+                    .get_or_init(NodeReplReviewEvidence::default)
+                    .enable_image_capture();
+            }
+            let mode = guardian_config.classifier_mode(
+                model
+                    .as_ref()
+                    .and_then(|model| model.model_messages.as_ref())
+                    .and_then(|messages| messages.guardian_v2.as_ref()),
+            );
+            input.thread_store.remove::<ConversationBackend>();
+            input.thread_store.remove::<LunaSampler>();
+            let sampler = input
+                .thread_store
+                .get_or_init(|| LunaSampler::new(sampler_config));
+            if mode == AsyncClassifierMode::Conversation {
+                input
+                    .thread_store
+                    .insert(ConversationBackend::new(Arc::clone(&sampler)));
+            }
+            input
+                .thread_store
+                .remove::<super::decisions::DecisionsSampler>();
+            if input
+                .config
+                .features
+                .enabled(Feature::GuardianV2DecisionsComparison)
+                && let Some(decisions_sampler) = super::startup::decisions_sampler(&input)
+            {
+                input.thread_store.insert(decisions_sampler);
+            }
+            input.thread_store.insert(guardian_config);
+            input.thread_store.insert(GuardianV2ScoreProgress::new(
+                input.extension_metrics.clone(),
+            ));
+            // Preserve the answer path selected by the host for this thread.
+            input
+                .thread_store
+                .get_or_init(GuardianReviewEvidence::default);
+            input
+                .thread_store
+                .insert(TrustedSkillRoots::from_config(input.config));
+            if scoring_enabled {
+                input.thread_store.insert(GuardianV2Enabled);
+            }
+
+            // Keep the sampler available for later automatic review, but do not
+            // prewarm while User approval mode or Full Access is selected.
+            if scoring_enabled
+                && input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
+                && !has_full_access(
+                    input.config.permissions.approval_policy.value(),
+                    &input.config.permissions.effective_permission_profile(),
+                    input
+                        .environments
+                        .iter()
+                        .map(|environment| &environment.config),
+                )
+            {
+                tokio::spawn(async move {
+                    sampler.prewarm().await;
+                });
+            }
+        })
+    }
+    fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            input.thread_store.remove::<ConversationBackend>();
+        })
+    }
 }
 
 impl SkillInvocationContributor for GuardianV2Extension {
@@ -81,33 +198,8 @@ pub fn install(
     auth_manager: Arc<AuthManager>,
     thread_manager: Weak<ThreadManager>,
 ) {
-    install_inner(
-        registry,
-        auth_manager,
-        /*auth_resolver*/ None,
-        thread_manager,
-    );
-}
-
-pub fn install_with_auth_resolver(
-    registry: &mut ExtensionRegistryBuilder<Config>,
-    auth_manager: Arc<AuthManager>,
-    auth_resolver: codex_login::SharedProfileAuthRouter,
-    thread_manager: Weak<ThreadManager>,
-) {
-    install_inner(registry, auth_manager, Some(auth_resolver), thread_manager);
-}
-
-fn install_inner(
-    registry: &mut ExtensionRegistryBuilder<Config>,
-    auth_manager: Arc<AuthManager>,
-    auth_resolver: Option<codex_login::SharedProfileAuthRouter>,
-    thread_manager: Weak<ThreadManager>,
-) {
-    let uses_turn_auth = auth_resolver.is_some();
     let extension = Arc::new(GuardianV2Extension {
         auth_manager,
-        auth_resolver,
         event_sink: registry.event_sink(),
         thread_manager,
     });
@@ -115,9 +207,6 @@ fn install_inner(
     registry.approval_review_contributor(Arc::new(super::approval::GuardianApprovalReviewer {
         thread_manager: extension.thread_manager.clone(),
     }));
-    if uses_turn_auth {
-        registry.turn_lifecycle_contributor(extension.clone());
-    }
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);
 }

@@ -32,7 +32,28 @@ enum ReportSource {
 impl UsageStore {
     pub(crate) async fn bounded_usage_summary(
         &self,
+        query: UsageSummaryQuery,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        let deadline = tokio::time::Instant::now() + crate::report_read::REPORT_BUDGET;
+        let mut reader = crate::report_read::ReportRead::acquire(
+            &self.pool,
+            &self.report_refresh.reader,
+            deadline,
+        )
+        .await?;
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.read_usage_summary(query, &mut reader.connection),
+        )
+        .await
+        .unwrap_or(Err(UsageStoreError::ReportTimedOut));
+        reader.finish(result, deadline).await
+    }
+
+    pub(crate) async fn read_usage_summary(
+        &self,
         mut query: UsageSummaryQuery,
+        connection: &mut SqliteConnection,
     ) -> Result<UsageSummary, UsageStoreError> {
         query.repository_id = match query.repository_id {
             Some(id) => Some(self.canonical_repository_id(&id).await?),
@@ -49,19 +70,14 @@ impl UsageStore {
         };
         let include_global = matches!(scope, UsageSummaryScope::All)
             && query.account_profile_ref.is_none()
-            && family.is_none();
-        let _reader = self
-            .report_refresh
-            .reader
-            .acquire()
-            .await
-            .map_err(|_| database_error(sqlx::Error::PoolClosed))?;
-        let mut connection = self.pool.acquire().await.map_err(database_error)?;
-        // Five store connections at 8 MiB each leave room for bounded returned
+            && family.is_none()
+            && query.worktree_ids.is_none()
+            && query.include_unassigned_worktrees;
+        // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.
         sqlx::raw_sql(
-            "PRAGMA temp_store = FILE; PRAGMA cache_size = -8192; PRAGMA temp.cache_size = -2048;",
+            "PRAGMA temp_store = FILE; PRAGMA cache_size = -2048; PRAGMA temp.cache_size = -512; PRAGMA cache_spill = ON;",
         )
         .execute(&mut *connection)
         .await
@@ -145,6 +161,8 @@ impl UsageStore {
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
         let cost = Some(cost::cost(&mut tx, &query, family.as_ref(), source).await?);
         let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
+        let (worktrees, worktree_coverage) =
+            crate::report_worktree::aggregates(&mut tx, query.time_range).await?;
         let has_evidence = !tokens.is_empty() || !event_counts.is_empty();
         let has_gaps = !has_evidence
             || tokens.iter().any(|t| t.exact_tokens.is_none())
@@ -199,6 +217,8 @@ impl UsageStore {
             tool_count: tools.count,
             tools,
             classifications,
+            worktrees,
+            worktree_coverage,
             aggregation: "checked sum of each stored observation once; merged repository source history resolves to its canonical target",
         })
     }

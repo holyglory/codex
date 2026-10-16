@@ -16,6 +16,10 @@ pub enum UpdateAction {
     VitePlusGlobalLatest,
     /// Update via `pnpm add -g @holyglory/codex@latest`.
     PnpmGlobalLatest,
+    /// Legacy standalone action retained for existing UI compatibility.
+    StandaloneUnix,
+    /// Legacy standalone action retained for existing UI compatibility.
+    StandaloneWindows,
 }
 
 impl UpdateAction {
@@ -42,6 +46,22 @@ impl UpdateAction {
                 ("vp", &["install", "-g", "@holyglory/codex@latest"])
             }
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@holyglory/codex@latest"]),
+            UpdateAction::StandaloneUnix => (
+                "sh",
+                &[
+                    "-c",
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+                ],
+            ),
+            UpdateAction::StandaloneWindows => (
+                "powershell",
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                ],
+            ),
         }
     }
 

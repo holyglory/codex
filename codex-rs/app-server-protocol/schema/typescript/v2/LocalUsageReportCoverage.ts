@@ -4,4 +4,4 @@
 import type { LocalUsageReportCoverageCount } from "./LocalUsageReportCoverageCount";
 import type { LocalUsageReportCoverageDimensions } from "./LocalUsageReportCoverageDimensions";
 
-export type LocalUsageReportCoverage = { state: string, hasGaps: boolean, events: Array<LocalUsageReportCoverageCount>, tokenObservations: Array<LocalUsageReportCoverageCount>, dimensions: LocalUsageReportCoverageDimensions | null, };
+export type LocalUsageReportCoverage = { state: string, hasGaps: boolean, events: Array<LocalUsageReportCoverageCount>, tokenObservations: Array<LocalUsageReportCoverageCount>, dimensions: LocalUsageReportCoverageDimensions, };

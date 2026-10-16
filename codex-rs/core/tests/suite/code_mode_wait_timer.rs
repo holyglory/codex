@@ -15,6 +15,7 @@ use codex_code_mode::StartedCell;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 pub(super) fn wait_timer_armed_provider(
     host_program: PathBuf,
@@ -69,30 +70,29 @@ impl CodeModeSession for WaitTimerArmedSession {
         &'a self,
         request: ExecuteRequest,
         delegate: Arc<dyn CodeModeSessionDelegate>,
+        preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, StartedCell> {
-        self.inner.execute(request, delegate)
+        self.inner.execute(request, delegate, preempt)
     }
 
-    fn wait<'a>(&'a self, request: WaitRequest) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        let mut wait = self.inner.wait(request);
-        let timer_armed = Arc::clone(&self.timer_armed);
-        Box::pin(async move {
-            std::future::poll_fn(move |context| {
-                let result = wait.as_mut().poll(context);
-                if result.is_pending()
-                    && let Some(timer_armed) = timer_armed
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                {
-                    // The initial exec has already opened this process-backed session. Reaching
-                    // the first pending poll therefore proves its client transport timer is armed.
-                    let _ = timer_armed.send(());
-                }
-                result
-            })
-            .await
-        })
+    fn wait<'a>(
+        &'a self,
+        request: WaitRequest,
+        preempt: Option<CancellationToken>,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        // The current host may reject a stale cell before polling the transport future. Signal
+        // entry before constructing that future so the fixture proves dispatch reached the wait
+        // path without depending on a particular host-side polling implementation.
+        if let Some(timer_armed) = self
+            .timer_armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = timer_armed.send(());
+        }
+        let wait = self.inner.wait(request, preempt);
+        Box::pin(wait)
     }
 
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {

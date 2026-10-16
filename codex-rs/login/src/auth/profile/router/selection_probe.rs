@@ -5,8 +5,10 @@ use chrono::Utc;
 use codex_account_registry::AccountId;
 use codex_account_registry::AccountRegistry;
 use codex_account_selection::AccountLimitCache;
-use codex_account_selection::Eligibility;
+use codex_account_selection::AutomaticCapacity;
 use codex_account_selection::SelectionError;
+use codex_account_selection::SelectionRequest;
+use codex_account_selection::select_account;
 use codex_account_selection::supports_automatic_selection;
 use codex_protocol::protocol::RateLimitSnapshot;
 
@@ -318,7 +320,28 @@ fn next_probe_target(
     state: &ProbeSelectionState,
     attempted: &HashSet<AccountId>,
 ) -> Option<AccountId> {
-    let mut highest_eligible_priority = None;
+    // Credit candidates cannot cut off probes while same-tier capacity is unknown.
+    let highest_eligible_priority = select_account(
+        &state.registry,
+        &state.cache,
+        SelectionRequest {
+            current_account_id: state.current_account_id.as_ref(),
+            pinned_account_id: None,
+            authenticated_accounts: &state.authenticated_accounts,
+            relevant_limit_id: None,
+            now: state.now,
+            max_limit_age_seconds: MAX_LIMIT_AGE_SECONDS,
+        },
+    )
+    .ok()
+    .and_then(|decision| {
+        state
+            .registry
+            .accounts
+            .iter()
+            .find(|account| account.id == decision.account_id)
+            .map(|account| account.priority)
+    });
     if let Some(current_id) = state.current_account_id.as_ref()
         && let Some(current) = state
             .registry
@@ -329,17 +352,17 @@ fn next_probe_target(
         && state.authenticated_accounts.contains(current_id)
         && supports_automatic_selection(current.auth_mode)
     {
-        match state.cache.eligibility(
-            current_id,
+        match state.cache.automatic_capacity(
+            current,
             /*relevant_limit_id*/ None,
             state.now,
             MAX_LIMIT_AGE_SECONDS,
         ) {
-            Eligibility::Eligible => highest_eligible_priority = Some(current.priority),
-            Eligibility::Unknown(_) if !attempted.contains(current_id) => {
+            AutomaticCapacity::Included | AutomaticCapacity::Credits => {}
+            AutomaticCapacity::Unknown(_) if !attempted.contains(current_id) => {
                 return Some(current_id.clone());
             }
-            Eligibility::Reached(_) | Eligibility::Unknown(_) => {}
+            AutomaticCapacity::Reached(_) | AutomaticCapacity::Unknown(_) => {}
         }
     }
 
@@ -355,17 +378,17 @@ fn next_probe_target(
         if highest_eligible_priority.is_some_and(|priority| account.priority < priority) {
             return None;
         }
-        match state.cache.eligibility(
-            &account.id,
+        match state.cache.automatic_capacity(
+            account,
             /*relevant_limit_id*/ None,
             state.now,
             MAX_LIMIT_AGE_SECONDS,
         ) {
-            Eligibility::Eligible => highest_eligible_priority = Some(account.priority),
-            Eligibility::Unknown(_) if !attempted.contains(&account.id) => {
+            AutomaticCapacity::Included | AutomaticCapacity::Credits => {}
+            AutomaticCapacity::Unknown(_) if !attempted.contains(&account.id) => {
                 return Some(account.id.clone());
             }
-            Eligibility::Reached(_) | Eligibility::Unknown(_) => {}
+            AutomaticCapacity::Reached(_) | AutomaticCapacity::Unknown(_) => {}
         }
     }
     None

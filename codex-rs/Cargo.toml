@@ -5,9 +5,11 @@ members = [
     "aws-auth",
     "analytics",
     "agent-graph-store",
+    "agent-message-board-client",
     "agent-identity",
     "agent-roles",
     "backend-client",
+    "cloud-client",
     "bwrap",
     "build-info",
     "ansi-escape",
@@ -46,6 +48,7 @@ members = [
     "skills",
     "core",
     "core-api",
+    "core-plugin-common",
     "core-plugins",
     "diagnostics",
     "guardian-context",
@@ -113,7 +116,9 @@ members = [
     "tools",
     "usage",
     "v8-poc",
+    "websocket-auth",
     "websocket-client",
+    "windows-sandbox-rs/tests/support",
     "windows-sandbox-service",
     "worktree",
     "workload-identity",
@@ -127,6 +132,7 @@ members = [
     "utils/image",
     "utils/json-to-toml",
     "utils/home-dir",
+    "utils/process",
     "utils/pty",
     "utils/readiness",
     "utils/redacted-string",
@@ -159,7 +165,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.157.1+multi.2"
+version = "0.162.1+multi.1"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -204,15 +210,18 @@ codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-code-mode-runtime = { path = "code-mode-runtime" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
+codex-websocket-auth = { path = "websocket-auth" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-agent-extension = { path = "ext/agent" }
 codex-agent-message-board-extension = { path = "ext/agent-message-board" }
+codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
+codex-core-plugin-common = { path = "core-plugin-common" }
 codex-core-plugins = { path = "core-plugins" }
 codex-diagnostics = { path = "diagnostics" }
 codex-exec = { path = "exec" }
@@ -305,6 +314,7 @@ codex-utils-output-truncation = { path = "utils/output-truncation" }
 codex-utils-path = { path = "utils/path-utils" }
 codex-utils-path-uri = { path = "utils/path-uri" }
 codex-utils-plugins = { path = "utils/plugins" }
+codex-utils-process = { path = "utils/process" }
 codex-utils-pty = { path = "utils/pty" }
 codex-utils-redacted-string = { path = "utils/redacted-string" }
 codex-utils-rustls-provider = { path = "utils/rustls-provider" }
@@ -318,12 +328,13 @@ codex-user-verification = { path = "user-verification" }
 codex-v8-poc = { path = "v8-poc" }
 codex-workload-identity = { path = "workload-identity" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
+codex-windows-sandbox-test-support = { path = "windows-sandbox-rs/tests/support" }
 core_test_support = { path = "core/tests/common" }
 
 # External
 learning_mode_windows = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
 wxc_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
-age = "0.11.1"
+age = "0.12.1"
 ansi-to-tui = "8.0.1"
 anyhow = "1"
 appcontainer_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
@@ -376,6 +387,7 @@ dunce = "1.0.4"
 ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
 encoding_rs = "0.8.35"
 eventsource-stream = "0.2.3"
+file-id = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
@@ -446,10 +458,11 @@ regex-automata = { version = "0.4.13", default-features = false, features = ["st
 regex-lite = "0.1.8"
 regex-syntax = "0.8.8"
 reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "=3.2.0", default-features = false }
+# rmcp-v3.3.0 includes enterprise authorization helpers (rust-sdk#1234).
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "3e636cab26c013eca5131103c03d20237f12c4df", version = "=3.3.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustix = { version = "1.1.4", features = ["net"] }
-rustls = { version = "0.23.45", default-features = false, features = [
+rustls = { version = "0.23.46", default-features = false, features = [
     "aws_lc_rs",
     "std",
 ] }
@@ -547,6 +560,7 @@ which = "8"
 whoami = "1.6.1"
 wildmatch = "2.6.1"
 winapi-util = "0.1.11"
+windows-sys = "0.61.2"
 zip = "2.4.2"
 zstd = "0.13"
 
@@ -604,9 +618,9 @@ ignored = [
 ]
 
 [profile.dev]
-# Keep line tables/backtraces while avoiding expensive full variable debug info
-# across local dev builds.
-debug = "limited"
+# The test profile inherits dev. Keep source locations in ordinary builds;
+# use CARGO_PROFILE_DEV_DEBUG=full (or CARGO_PROFILE_TEST_DEBUG=full) for locals.
+debug = "line-tables-only"
 
 [profile.dev-small]
 inherits = "dev"
@@ -633,7 +647,6 @@ strip = false
 
 [profile.ci-test]
 # Reduce binary size to reduce disk pressure.
-debug = "limited"
 inherits = "test"
 opt-level = 0
 

@@ -147,6 +147,7 @@ impl fmt::Debug for AuthProfileMetadata {
 }
 
 const AGENT_IDENTITY_BOOTSTRAP_FAILURE_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+const EXTERNAL_AUTH_RELOAD_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct CachedAgentIdentityBootstrapFailure {
@@ -1069,8 +1070,8 @@ fn read_non_empty_env_var(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
-/// if a file was removed, `Ok(false)` if no auth file was present.
+/// Delete credentials for `codex_home` through the selected storage backend.
+/// Returns `Ok(true)` if credentials were removed, `Ok(false)` if none were present.
 pub fn logout(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -1154,7 +1155,7 @@ pub async fn logout_profile_with_revoke(
     profile.delete_with_guard(&storage_guard)
 }
 
-/// Writes an `auth.json` that contains only the API key.
+/// Store API-key credentials through the selected storage backend.
 pub fn login_with_api_key(
     codex_home: &Path,
     api_key: &str,
@@ -1190,7 +1191,8 @@ fn api_key_auth(api_key: &str) -> AuthDotJson {
     }
 }
 
-/// Writes an `auth.json` that contains only the access token.
+/// Validate and store personal-access-token or Agent Identity credentials through
+/// the selected storage backend.
 pub async fn login_with_access_token(
     codex_home: &Path,
     access_token: &str,
@@ -1632,7 +1634,7 @@ fn logout_with_message(
     );
     let error_message = match removal_result {
         Ok(_) => message,
-        Err(err) => format!("{message}. Failed to remove auth.json: {err}"),
+        Err(err) => format!("{message}. Failed to remove stored credentials: {err}"),
     };
     Err(std::io::Error::other(error_message))
 }
@@ -2272,12 +2274,12 @@ impl UnauthorizedRecovery {
     }
 }
 
-/// Central manager providing a single source of truth for auth.json derived
+/// Central manager providing a single source of truth for stored
 /// authentication data. It loads once (or on preference change) and then
 /// hands out cloned `CodexAuth` values so the rest of the program has a
 /// consistent snapshot.
 ///
-/// External modifications to `auth.json` will NOT be observed until
+/// External modifications to stored credentials will NOT be observed until
 /// `reload()` is called explicitly. This matches the design goal of avoiding
 /// different parts of the program seeing inconsistent auth data mid‑run.
 pub struct AuthManager {
@@ -2378,10 +2380,7 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 impl AuthManager {
     /// Returns the application policy associated with this account owner.
     pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
-        self.auth_route_config
-            .http_client_factory()
-            .network_policy()
-            .clone()
+        self.auth_route_config.application_network_policy().clone()
     }
 
     /// Creates content clients bound to the account currently owned by this manager.
@@ -2670,24 +2669,40 @@ impl AuthManager {
         })
     }
 
-    /// Current cached auth (clone). May be `None` if not logged in or load failed.
-    /// For managed ChatGPT auth that needs a proactive refresh, first performs
-    /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
+    /// Resolves auth, reporting whether an external provider reload exceeded its deadline.
     #[instrument(level = "trace", skip_all)]
-    pub async fn auth(&self) -> Option<CodexAuth> {
+    pub async fn auth_with_external_reload_timeout(&self) -> (Option<CodexAuth>, bool) {
         if self.has_external_auth() {
-            self.reload().await;
-            return self.auth_cached();
+            let timed_out = tokio::time::timeout(EXTERNAL_AUTH_RELOAD_TIMEOUT, self.reload())
+                .await
+                .is_err();
+            if timed_out {
+                tracing::warn!(
+                    timeout_seconds = EXTERNAL_AUTH_RELOAD_TIMEOUT.as_secs(),
+                    "external auth reload timed out; using cached credentials"
+                );
+            }
+            return (self.auth_cached(), timed_out);
         }
 
-        let auth = self.auth_cached()?;
+        let Some(auth) = self.auth_cached() else {
+            return (None, false);
+        };
         if Self::should_refresh_proactively(&auth)
             && let Err(err) = self.refresh_token().await
         {
             tracing::error!("Failed to refresh token: {}", err);
-            return Some(auth);
+            return (Some(auth), false);
         }
-        self.auth_cached()
+        (self.auth_cached(), false)
+    }
+
+    /// Current cached auth (clone), refreshing the active source when needed.
+    /// For managed ChatGPT auth that needs a proactive refresh, first performs
+    /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
+    #[instrument(level = "trace", skip_all)]
+    pub async fn auth(&self) -> Option<CodexAuth> {
+        self.auth_with_external_reload_timeout().await.0
     }
 
     /// Refreshes auth, then captures credentials and their account-bound factory together.
@@ -2874,7 +2889,9 @@ impl AuthManager {
                             }
                             cached_auth
                         }
-                        RefreshTokenError::Transient(_) => None,
+                        // A transient provider failure must not erase usable cached
+                        // credentials. Keep the last known auth and retry resolution later.
+                        RefreshTokenError::Transient(_) => cached_auth,
                         RefreshTokenError::Policy(_) => cached_auth,
                     }
                 }
@@ -2945,8 +2962,7 @@ impl AuthManager {
                 auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
             if owner_changed {
                 self.auth_route_config
-                    .http_client_factory()
-                    .network_policy()
+                    .application_network_policy()
                     .invalidate();
             }
             if auth_changed_for_refresh {
@@ -3248,10 +3264,10 @@ impl AuthManager {
         result
     }
 
-    /// Log out by deleting the on‑disk auth.json (if present). Returns Ok(true)
-    /// if a file was removed, Ok(false) if no auth file existed. On success,
-    /// reloads the in‑memory auth cache so callers immediately observe the
-    /// unauthenticated state.
+    /// Log out by deleting credentials from the selected storage backend and the
+    /// ephemeral store. Returns `Ok(true)` if credentials were removed, `Ok(false)`
+    /// if none were present. On success, reloads the in-memory auth cache so
+    /// callers immediately observe the unauthenticated state.
     pub async fn logout(&self) -> std::io::Result<bool> {
         self.ensure_logout_allowed()?;
         let removed = logout_all_stores(
@@ -3260,7 +3276,7 @@ impl AuthManager {
             self.auth_storage_namespace,
             self.keyring_backend_kind,
         )?;
-        // Always reload to clear any cached auth (even if file absent).
+        // Always reload to clear cached auth, even if no stored credentials were present.
         self.clear_external_auth();
         self.reload().await;
         Ok(removed)
@@ -3281,7 +3297,7 @@ impl AuthManager {
             self.auth_storage_namespace,
             self.keyring_backend_kind,
         )?;
-        // Always reload to clear any cached auth (even if file absent).
+        // Always reload to clear cached auth, even if no stored credentials were present.
         self.clear_external_auth();
         self.reload().await;
         Ok(result)

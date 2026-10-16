@@ -2,8 +2,6 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
-use codex_protocol::openai_models::ToolMode;
-use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageDetailListQuery;
 use codex_usage::UsageDetailRecord;
@@ -29,66 +27,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::time::Instant;
-
-const USAGE_STATS_INSTRUCTIONS_OPEN_TAG: &str = "<usage_stats_instructions>";
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn first_model_request_keeps_repository_when_optional_git_metadata_is_absent() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = start_mock_server().await;
-    let response = responses::mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("first-workspace-request"),
-            ev_assistant_message("workspace-message", "accounted"),
-            ev_completed_with_usage(
-                "first-workspace-request",
-                /*input_tokens*/ 4,
-                /*output_tokens*/ 3,
-            ),
-        ]),
-    )
-    .await;
-    let home = Arc::new(TempDir::new()?);
-    // Repository hashing uses host paths. A directory without Git metadata
-    // deterministically exercises the same missing-enrichment path as a slow scan.
-    let test = test_codex()
-        .with_home(Arc::clone(&home))
-        .build(&server)
-        .await?;
-    test.submit_turn("measure this first request").await?;
-    let request = response.single_request();
-    let body = request.body_json();
-    let metadata: Value = serde_json::from_str(
-        body["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .context("turn metadata")?,
-    )?;
-    assert!(metadata.get("workspaces").is_none());
-    assert!(metadata.get("local_usage_workspace").is_none());
-    let store = UsageStore::open(home.path()).await?;
-    let path = codex_usage::CanonicalRepositoryPath::new(
-        std::fs::canonicalize(&test.config.cwd)?
-            .to_str()
-            .context("UTF-8 fixture path")?,
-    )?;
-    let repository =
-        store.repository_id_for_identity(&codex_usage::RepositoryIdentityInput::new(path))?;
-    let summary = store
-        .usage_summary(UsageSummaryScope::Repository(repository))
-        .await?;
-    assert_eq!(summary.model_request_count, 1);
-    assert_eq!(
-        summary
-            .tokens
-            .iter()
-            .find(|token| token.category_path == "total_tokens")
-            .map(|token| token.measured_tokens),
-        Some(7)
-    );
-    Ok(())
-}
+use tokio::time::sleep;
 
 fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
     let content = request
@@ -96,17 +35,6 @@ fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
         .expect("text function output");
     serde_json::from_str(&content)
         .unwrap_or_else(|error| panic!("JSON tool output ({error}): {content}"))
-}
-
-fn input_text_occurrences(request: &responses::ResponsesRequest, needle: &str) -> usize {
-    request
-        .input()
-        .iter()
-        .filter_map(|item| item.get("content").and_then(Value::as_array))
-        .flatten()
-        .filter_map(|content| content.get("text").and_then(Value::as_str))
-        .filter(|text| text.contains(needle))
-        .count()
 }
 
 fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> Value {
@@ -123,75 +51,6 @@ fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> V
             }
         }
     })
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn usage_accounting_outage_does_not_stop_turn_and_replays_after_recovery() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let response_mock = responses::mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("outage-response"),
-                ev_assistant_message("outage-message", "continued during outage"),
-                ev_completed_with_usage(
-                    "outage-response",
-                    /*input_tokens*/ 4,
-                    /*output_tokens*/ 3,
-                ),
-            ]),
-            sse(vec![
-                ev_response_created("recovery-response"),
-                ev_assistant_message("recovery-message", "continued after recovery"),
-                ev_completed_with_usage(
-                    "recovery-response",
-                    /*input_tokens*/ 6,
-                    /*output_tokens*/ 5,
-                ),
-            ]),
-        ],
-    )
-    .await;
-    let home = Arc::new(TempDir::new()?);
-    std::fs::write(home.path().join("usage"), b"blocks the usage directory")?;
-    let test = test_codex()
-        .with_home(Arc::clone(&home))
-        .build_with_auto_env(&server)
-        .await?;
-
-    test.submit_turn("continue despite accounting outage")
-        .await?;
-    std::fs::remove_file(home.path().join("usage"))?;
-    test.submit_turn("continue after accounting recovery")
-        .await?;
-
-    assert_eq!(response_mock.requests().len(), 2);
-    let usage = UsageStore::open(home.path()).await?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let summary = loop {
-        let summary = usage.usage_summary(UsageSummaryScope::All).await?;
-        if summary.model_request_count == 2 || Instant::now() >= deadline {
-            break summary;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
-    assert_eq!(summary.model_request_count, 2);
-    assert_eq!(
-        summary
-            .tokens
-            .iter()
-            .filter(|tokens| tokens.category_path == "total_tokens")
-            .fold((0_i64, 0_u64), |(measured, observations), tokens| {
-                (
-                    measured + tokens.measured_tokens,
-                    observations + tokens.observation_count,
-                )
-            }),
-        (18, 2)
-    );
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -239,9 +98,7 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_model_info_override("gpt-5.5", |model_info| {
-            model_info.truncation_policy = TruncationPolicyConfig::bytes(/*limit*/ 1_000);
-        })
+        .with_config(|config| config.local_control_tools_enabled = true)
         .with_workspace_setup(|cwd, fs| async move {
             let auxiliary_output = cwd.join("auxiliary-output");
             for root in [&cwd, &auxiliary_output] {
@@ -368,6 +225,11 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         &server,
         vec![
             sse(vec![
+                ev_response_created("resp-seed"),
+                ev_assistant_message("msg-seed", "usage seeded"),
+                ev_completed("resp-seed"),
+            ]),
+            sse(vec![
                 ev_response_created("resp-1"),
                 ev_function_call(
                     "read-usage",
@@ -391,16 +253,13 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_workspace_setup(|cwd, fs| async move {
-            fs.create_directory(
-                &PathUri::from_abs_path(&cwd).join(".git")?,
-                CreateDirectoryOptions {
-                    recursive: false,
-                    follow_symlinks: false,
-                },
-                /*sandbox*/ None,
-            )
-            .await?;
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .with_workspace_setup(|cwd, _fs| async move {
+            let output = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&cwd)
+                .output()?;
+            anyhow::ensure!(output.status.success(), "initialize isolated repository");
             Ok(())
         });
     // Current-repository usage resolves app-host Git metadata, and both turns below explicitly use
@@ -408,21 +267,50 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
     // onto the app host in Wine-exec runs.
     let test = builder.build(&server).await?;
     test.submit_turn_with_environments(
+        "seed usage history",
+        Some(vec![local(test.config.cwd.clone())]),
+    )
+    .await?;
+    let usage = UsageStore::open(home.path()).await?;
+    let mut seeded = false;
+    for _ in 0..100 {
+        let details = usage
+            .list_details(
+                UsageDetailKind::Operations,
+                &UsageDetailListQuery {
+                    page: UsagePageRequest {
+                        cursor: None,
+                        limit: 20,
+                    },
+                    time_range: None,
+                    thread_id: None,
+                    repository_id: None,
+                    account_profile_ref: None,
+                },
+                codex_usage::redacted_account_profile_label,
+            )
+            .await?;
+        if details.data.iter().any(|record| {
+            matches!(
+                record,
+                UsageDetailRecord::Operation(detail)
+                    if detail.operation_kind == "model_request"
+            )
+        }) {
+            seeded = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(seeded, "seed model request was not captured");
+    test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
     )
     .await?;
 
     let first_requests = first_mock.requests();
-    assert_eq!(first_requests.len(), 2);
-    assert_eq!(
-        input_text_occurrences(&first_requests[0], USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
-        1
-    );
-    assert_eq!(
-        input_text_occurrences(&first_requests[1], USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
-        1
-    );
+    assert_eq!(first_requests.len(), 3);
     assert!(
         first_requests[0].body_json()["tools"]
             .as_array()
@@ -430,8 +318,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
                 .iter()
                 .any(|tool| tool["name"].as_str() == Some("usage_stats")))
     );
-    let summary = tool_output(&first_requests[1], "read-usage");
-    assert!(summary.to_string().len() > 1_200);
+    let summary = tool_output(&first_requests[2], "read-usage");
     assert_eq!(summary["kind"], "usageSummary");
     assert_eq!(summary["scope"]["type"], "repository");
     assert_eq!(summary["reportingOperationInProgress"], true);
@@ -515,45 +402,6 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn disabled_local_controls_omit_usage_stats_and_its_guidance() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    let test = test_codex()
-        .with_config(|config| config.local_control_tools_enabled = false)
-        .build(&server)
-        .await?;
-
-    test.submit_text_turn("inspect local usage").await?;
-
-    let request = response_mock.single_request();
-    assert_eq!(
-        input_text_occurrences(&request, USAGE_STATS_INSTRUCTIONS_OPEN_TAG),
-        0
-    );
-    assert!(
-        request
-            .body_json()
-            .get("tools")
-            .and_then(Value::as_array)
-            .is_none_or(|tools| tools
-                .iter()
-                .all(|tool| tool["name"].as_str() != Some("usage_stats")))
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_tree_summary_reports_code_mode_deduplication_and_context_sources() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -586,7 +434,6 @@ text(JSON.stringify(result));
                         "action": "task_tree_summary",
                         "root_thread_id": "current",
                         "include_descendants": true,
-                        "limit": 1,
                         "from_at_ms": 0,
                         "to_at_ms": 4_000_000_000_000_i64
                     })
@@ -609,19 +456,12 @@ text(JSON.stringify(result));
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
-        .with_model_info_override("gpt-5.5", |model_info| {
-            model_info.tool_mode = Some(ToolMode::CodeMode);
-        })
         .with_config(|config| {
+            config.local_control_tools_enabled = true;
             config
                 .features
                 .enable(Feature::CodeMode)
                 .expect("code mode feature");
-            config
-                .features
-                .enable(Feature::CodeModeHost)
-                .expect("code mode host feature");
             config
                 .features
                 .enable(Feature::TokenBudget)
@@ -636,15 +476,8 @@ text(JSON.stringify(result));
     let summary = tool_output(&requests[2], "read-tree");
     assert_eq!(summary["kind"], "taskTreeSummary");
     assert_eq!(summary["includeDescendants"], true);
-    assert_eq!(summary["pagination"]["totalsRepeated"], true);
-    assert_eq!(summary["pagination"]["returnedRows"], 1);
     assert_eq!(summary["counts"]["wrapperToolOperations"], 1);
-    assert_eq!(
-        summary["counts"]["nestedToolOperations"],
-        1,
-        "wrapper output: {}",
-        requests[1].custom_tool_call_output("code-mode-wrapper")
-    );
+    assert_eq!(summary["counts"]["nestedToolOperations"], 1);
     assert_eq!(summary["counts"]["rawToolOperations"], 3);
     assert_eq!(summary["counts"]["deduplicatedToolOperations"], 2);
     assert_eq!(

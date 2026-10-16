@@ -91,7 +91,7 @@ fn install_helper(root: &Path) -> Result<CodexPackageLayout> {
     fs::write(&app, [])?;
     let source = cargo_bin("codex-voice-host")?;
     let helper = helper_dir.join(source.file_name().context("helper binary file name")?);
-    fs::copy(&source, &helper)?;
+    codex_utils_cargo_bin::copy_executable(&source, &helper)?;
     install_startup_libraries(helper_dir.parent().context("helper runtime directory")?)?;
     InstallContext::from_exe(
         /*is_macos*/ cfg!(target_os = "macos"),
@@ -160,7 +160,7 @@ async fn installed_client_accepts_non_utf8_package_path() -> Result<()> {
     let app = bin.join("codex");
     fs::write(&app, [])?;
     let source = cargo_bin("codex-voice-host")?;
-    fs::copy(&source, helper_dir.join(source.file_name().unwrap()))?;
+    codex_utils_cargo_bin::copy_executable(&source, &helper_dir.join(source.file_name().unwrap()))?;
     install_startup_libraries(helper_dir.parent().unwrap())?;
     let package = InstallContext::from_exe(
         /*is_macos*/ cfg!(target_os = "macos"),
@@ -266,7 +266,6 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
             let gathered = Arc::new(Notify::new());
             let mut settings = SettingEngine::default();
             settings.set_lite(/*lite*/ true);
-            settings.set_include_loopback_candidate(/*allow_loopback*/ true);
             let mut media = MediaEngine::default();
             media.register_default_codecs()?;
             let builder = PeerConnectionBuilder::new()

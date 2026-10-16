@@ -66,6 +66,7 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ThreadNameUpdated(_)
         | ServerNotification::ThreadAttachmentUpdated(_)
         | ServerNotification::ThreadGoalUpdated(_)
+        | ServerNotification::ThreadPredictionUpdated(_)
         | ServerNotification::ThreadGoalCleared(_)
         | ServerNotification::ThreadQueueChanged(_)
         | ServerNotification::ProjectChanged(_)
@@ -100,8 +101,6 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::McpServerEventStream(_)
         | ServerNotification::AccountUpdated(_)
         | ServerNotification::AccountRateLimitsUpdated(_)
-        | ServerNotification::AccountProfileActiveChanged(_)
-        | ServerNotification::LocalUsageUpdated(_)
         | ServerNotification::AppListUpdated(_)
         | ServerNotification::RemoteControlStatusChanged(_)
         | ServerNotification::ExternalAgentConfigImportProgress(_)
@@ -137,7 +136,9 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
         | ServerNotification::AccountLoginCompleted(_)
-        | ServerNotification::GatewayOAuthChanged(_) => notification,
+        | ServerNotification::GatewayOAuthChanged(_)
+        | ServerNotification::AccountProfileActiveChanged(_)
+        | ServerNotification::LocalUsageUpdated(_) => notification,
     }
 }
 

@@ -172,6 +172,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{}/metrics", protocol = "json" 
         channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
     .await?;
+    wait_for_cost_queries(&server, /*count*/ 1).await;
     let response = client
         .request(ClientRequest::ThreadStart {
             request_id: RequestId::Integer(1),
@@ -224,7 +225,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{}/metrics", protocol = "json" 
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(/*secs*/ 301)).await;
     tokio::time::resume();
-    wait_for_cost_queries(&server, /*count*/ 1).await;
+    wait_for_cost_queries(&server, /*count*/ 2).await;
     // Synchronize with actual recording, not just the backend receiving a request.
     timeout(Duration::from_secs(/*secs*/ 10), async {
         loop {
@@ -291,9 +292,9 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{}/metrics", protocol = "json" 
         .iter()
         .filter(|request| request.url.path() == COST_PATH)
         .collect();
-    assert_eq!(cost_requests.len(), 1);
+    assert_eq!(cost_requests.len(), 2);
     assert_eq!(
-        serde_json::from_slice::<Value>(&cost_requests[0].body)?,
+        serde_json::from_slice::<Value>(&cost_requests[1].body)?,
         json!({
             "threads": [{"thread_id": thread.id, "turn_ids": [turn.id]}], "include_settled_response_ids": true
         })

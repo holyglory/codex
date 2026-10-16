@@ -76,33 +76,10 @@ pub(crate) struct Transport {
 
 impl Transport {
     pub(crate) async fn new() -> Result<Self> {
-        Self::with_runtime(
-            Arc::new(crate::transport_runtime::VoiceRuntime::default()),
-            /*loopback*/ false,
-        )
-        .await
+        Self::with_runtime(Arc::new(crate::transport_runtime::VoiceRuntime::default())).await
     }
 
-    #[cfg(test)]
-    pub(crate) async fn new_for_tests() -> Result<Self> {
-        Self::with_runtime(
-            Arc::new(crate::transport_runtime::VoiceRuntime::default()),
-            /*loopback*/ true,
-        )
-        .await
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn with_runtime_for_tests(
-        runtime: Arc<dyn webrtc::runtime::Runtime>,
-    ) -> Result<Self> {
-        Self::with_runtime(runtime, /*loopback*/ true).await
-    }
-
-    async fn with_runtime(
-        runtime: Arc<dyn webrtc::runtime::Runtime>,
-        loopback: bool,
-    ) -> Result<Self> {
+    async fn with_runtime(runtime: Arc<dyn webrtc::runtime::Runtime>) -> Result<Self> {
         let (media, audio) = crate::audio_track::AudioTrack::new()?;
         let (incoming, ingress) = crate::incoming::Incoming::new();
         let gathered = Arc::new(Notify::new());
@@ -113,24 +90,15 @@ impl Transport {
             .map_err(|_| "invalid voice ICE attempt budget")?;
         let mut settings = webrtc::peer_connection::SettingEngine::default();
         settings.set_ice_connection_attempts(Some(check_interval), Some(attempts));
-        settings.set_include_loopback_candidate(/*allow_loopback*/ true);
-        let mut builder = PeerConnectionBuilder::new()
-            .with_interceptor_registry(rtc::interceptor::Registry::from(ingress))
-            .with_media_engine(media)
-            .with_runtime(runtime)
-            .with_setting_engine(settings)
-            .with_handler(Arc::new(Events(gathered.clone())));
-        if loopback {
-            builder = builder
-                .with_udp_addrs(vec!["127.0.0.1:0"])
-                .with_tcp_addrs(vec!["127.0.0.1:0"]);
-        } else {
-            builder = builder
-                .with_udp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"])
-                .with_tcp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"]);
-        }
         let connection: Arc<dyn PeerConnection> = Arc::new(
-            builder
+            PeerConnectionBuilder::new()
+                .with_interceptor_registry(rtc::interceptor::Registry::from(ingress))
+                .with_media_engine(media)
+                .with_runtime(runtime)
+                .with_setting_engine(settings)
+                .with_handler(Arc::new(Events(gathered.clone())))
+                .with_udp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"])
+                .with_tcp_addrs(vec!["0.0.0.0:0", "[::]:0", "127.0.0.1:0"])
                 .with_data_channel_send_buffer_limit(/*bytes*/ 64 * 1024)
                 .with_sctp_receive_buffer_size(/*size*/ 64 * 1024)
                 .build()

@@ -1,6 +1,6 @@
 //! TUI-only out-of-process reconnection. Each attempt initializes a fresh client and rejoins existing
-//! threads using ordinary resume/history semantics; no user operation is retried.
-//! Offline input and old async completions are quarantined.
+//! threads using ordinary resume/history semantics. Confirmed submissions are reconciled before
+//! unsent queues resume; uncertain submissions and old async completions remain quarantined.
 
 use super::*;
 use crate::app_server_session::ResumeModelSettings;
@@ -53,7 +53,7 @@ pub(super) async fn reconnect(
     // Connecting already has transport deadlines. Give healthy history/inventory hydration one
     // shared budget instead of repeatedly discarding its progress on a short per-attempt timer.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 120);
-    for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(8)) {
+    for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(/*elt*/ 8)) {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
             let client = crate::app_server_connection::connect(&target).await?;
@@ -147,7 +147,7 @@ pub(super) async fn reconnect(
         }
         // Transport errors can contain endpoint credentials. Do not render or log them.
     }
-    color_eyre::eyre::bail!("app-server session could not be restored")
+    color_eyre::eyre::bail!("Server connection could not be restored")
 }
 
 impl App {
@@ -175,6 +175,11 @@ impl App {
             && policy == cached.approval_policy
         {
             session.approval_policy = policy;
+        }
+        if let Some(reviewer) = self.runtime_approvals_reviewer_override
+            && reviewer == cached.approvals_reviewer
+        {
+            session.approvals_reviewer = reviewer;
         }
         if let Some(profile) = &self.runtime_permission_profile_override
             && profile.permission_profile == cached.permission_profile
@@ -220,6 +225,7 @@ impl App {
             }
             self.retire_background_voice();
             self.reconnect.offline = true;
+            self.account_email_request_id = None;
             // Cached blank sessions are usable only while this connection owns a subscription.
             self.agents_overview.blank_sessions.clear();
             self.reconnect.failed = false;
@@ -238,8 +244,11 @@ impl App {
                 task.abort();
             }
             self.agents_overview.request_id = None;
+            self.agents_overview.refresh_show_more = false;
+            self.agents_overview.active_refresh_thread_ids.clear();
             self.agents_overview.refresh_pending = false;
             self.agents_overview.refresh_notifications.clear();
+            self.agents_overview.pending_pin_change = None;
             self.agents_overview.pending_usage = None;
             self.agents_overview.usage_disabled = false;
             self.agents_overview.usage.clear();
@@ -284,14 +293,15 @@ impl App {
             bootstrap,
             thread,
         } = connected;
+        session.model_provider_override = self.harness_overrides.model_provider.clone();
         let selected = self
             .chat_widget
             .selected_index_for_present_view(agents_overview::AGENTS_OVERVIEW_VIEW_ID)
             .and_then(|index| self.agents_overview.visible_thread_ids.get(index).copied());
-        let mut displayed = self.current_displayed_thread_id();
+        let displayed = self.current_displayed_thread_id();
         let mut input = self.chat_widget.capture_thread_input_state();
         if let Some(input) = input.as_mut() {
-            input.recovered_queue = true;
+            input.reconnect_pending = true;
         }
         self.store_active_thread_receiver().await;
         // Old request handles stay attached to the dead connection. Rotating the event channel
@@ -314,6 +324,7 @@ impl App {
         self.agent_navigation.picker_refresh = None;
         self.last_subagent_backfill_attempt = None;
         self.rate_limit_refresh_state.invalidate_recovery();
+        session.worktree_source_config_builder = app_server.worktree_source_config_builder.clone();
         session.inherit_task_tool_capabilities(app_server);
         *app_server = session;
         #[cfg(any(target_os = "windows", test))]
@@ -337,7 +348,6 @@ impl App {
             !self.app_server_target.uses_remote_workspace()
                 && app_server.app_server_platform_os() == Some("windows");
         self.chat_widget.windows_sandbox_host = WindowsSandboxHost::Unknown;
-        self.chat_widget.cyber_policy_notice = Default::default();
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
@@ -354,16 +364,21 @@ impl App {
                 .with_collaboration_modes(bootstrap.collaboration_modes),
         );
         self.pending_app_server_requests.clear();
-        let pending_displayed_profile =
-            displayed.is_some_and(|id| self.pending_server_profiles.contains_key(&id));
-        if pending_displayed_profile {
-            self.runtime_approval_policy_override = None;
-            self.runtime_permission_profile_override = None;
-        }
         // The displayed task was resumed above. Keep offscreen selections pending until those
         // tasks can be resumed from the server too; their old confirmations cannot arrive.
-        if let Some(id) = displayed {
-            self.pending_server_profiles.remove(&id);
+        let pending_displayed_profile = displayed.and_then(|id| {
+            self.pending_server_profiles.remove(&id).or_else(|| {
+                self.agents_overview
+                    .requested_permission_profiles
+                    .remove(&id)
+            })
+        });
+        if let Some(selection) = &pending_displayed_profile {
+            self.runtime_approval_policy_override = None;
+            if selection.approvals_reviewer.is_some() {
+                self.runtime_approvals_reviewer_override = None;
+            }
+            self.runtime_permission_profile_override = None;
         }
         self.pending_primary_events.clear();
         self.pending_plugin_enabled_writes.clear();
@@ -375,9 +390,11 @@ impl App {
         self.sync_thread_title_progress();
         self.agents_overview.dispatched_requests.clear();
         self.agents_overview.request_id = None;
+        self.agents_overview.refresh_show_more = false;
+        self.agents_overview.active_refresh_thread_ids.clear();
         self.agents_overview.refresh_pending = false;
         for input in self.agents_overview.input_states.values_mut() {
-            input.recovered_queue = true;
+            input.reconnect_pending = true;
         }
         self.pending_startup_thread_start = false;
         // Move cached UI state into fresh channels. Old producers retain the old sender/store,
@@ -400,7 +417,7 @@ impl App {
                 .buffer
                 .retain(|event| matches!(event, ThreadBufferedEvent::Notification(_)));
             if let Some(input) = store.input_state.as_mut() {
-                input.recovered_queue = true;
+                input.reconnect_pending = true;
             }
             *replacement.store.lock().await = store;
             *channel = replacement;
@@ -408,22 +425,12 @@ impl App {
         if let Some(id) = self.current_displayed_thread_id()
             && let Some(mut input) = input.clone()
         {
-            input.recovered_queue = true;
+            input.reconnect_pending = true;
             self.agents_overview.input_states.insert(id, input);
         }
         if let Some(mut started) = thread {
             let id = started.session.thread_id;
-            if self.reconnect.presentation == ReconnectPresentation::RejectedFreshStart {
-                if let Some(worktree) = self.reconnect.startup_worktree.take() {
-                    worktree.bind(id)?;
-                }
-                displayed = Some(id);
-                self.primary_thread_id = Some(id);
-                if let Some(input) = input.as_mut() {
-                    input.recovered_queue = false;
-                }
-            }
-            if !pending_displayed_profile
+            if pending_displayed_profile.is_none()
                 && let Some(channel) = self.thread_event_channels.get(&id)
                 && let Some(cached) = channel.store.lock().await.session.as_ref()
             {
@@ -486,7 +493,7 @@ impl App {
                 /*initial_user_message*/ None,
             );
             self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-            self.chat_widget.restore_reconnected_input(input);
+            self.chat_widget.restore_reconnected_input(input, &[]);
         }
         // Discover tasks whose notifications were missed, without clearing retained rows.
         // A hidden overview performs this discovery when it is next opened.
@@ -522,17 +529,16 @@ impl App {
             matches!(bootstrap.auth_mode, Some(TelemetryAuthMode::Chatgpt)),
         );
         if self.chat_widget.has_chatgpt_account() {
-            crate::daybreak::prefetch_notice(
+            crate::security_setup::prefetch(
                 &self.config,
                 app_server,
-                self.chat_widget.cyber_policy_notice.clone(),
+                self.app_event_tx.clone(),
+                self.chat_widget.security_setup_request_id,
             );
         }
         self.feedback_audience = bootstrap.feedback_audience;
-        if self.reconnect.presentation != ReconnectPresentation::RejectedFreshStart {
-            self.chat_widget.add_info_message(
-            "Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.".into(), /*hint*/ None,
-        );
+        if displayed.is_some_and(|id| !self.thread_unavailable(id)) {
+            self.chat_widget.maybe_send_next_queued_input();
         }
         let connected_notice_key = crate::status::remote_connection::server_version_notice_key(
             &self.app_server_target,

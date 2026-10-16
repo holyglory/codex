@@ -9,8 +9,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 const MAX_CUR_PROJECT_PATH_PROBES: usize = 128;
-const MAX_CUR_PROJECT_ANCESTOR_PARTS: usize = 3;
-const MAX_CUR_PROJECT_LEAF_PARTS: usize = 4;
 const CUR_PROJECT_SEPARATORS: [&str; 11] =
     ["-", "_", ".", " ", "--", "..", "__", "  ", "+", "@", "&"];
 
@@ -101,46 +99,25 @@ fn cur_project_cwd(project_storage: &Path, external_agent_home: &Path) -> Option
 
 fn decode_cur_project_path(encoded: &str) -> Option<PathBuf> {
     #[cfg(not(windows))]
-    let root = PathBuf::from("/");
+    let mut path = PathBuf::from("/");
 
     #[cfg(windows)]
-    let (encoded, root) = {
+    let (encoded, mut path) = {
         let (drive, encoded) = decode_cur_windows_project_drive(encoded)?;
         (encoded, PathBuf::from(format!("{drive}:\\")))
     };
 
-    decode_cur_project_path_from_root(encoded, &root)
-}
-
-fn decode_cur_project_path_from_root(encoded: &str, root: &Path) -> Option<PathBuf> {
     let encoded = encoded.strip_prefix('-').unwrap_or(encoded);
-    let components = encoded.split('-').collect::<Vec<_>>();
-    for component in &components {
+    for component in encoded.split('-') {
         if component.is_empty()
-            || matches!(*component, "." | "..")
+            || matches!(component, "." | "..")
             || component.contains(['/', '\\', ':'])
         {
             return None;
         }
+        path.push(component);
     }
 
-    let direct_path = components
-        .iter()
-        .fold(root.to_path_buf(), |path, component| path.join(component));
-    // Preserve the historical bounded resolver for ordinary deep paths and paths with one
-    // punctuated component. The broader traversal is needed only when that search is inconclusive.
-    if let Some(path) = decode_cur_project_path_with_single_punctuation(direct_path) {
-        return Some(path);
-    }
-
-    let mut matched_path = None;
-    let mut probes = 0;
-    probe_cur_project_paths(root, &components, &mut probes, &mut matched_path)
-        .then_some(matched_path)
-        .flatten()
-}
-
-fn decode_cur_project_path_with_single_punctuation(path: PathBuf) -> Option<PathBuf> {
     let mut matched_path = None;
     let mut probes = 0;
     let mut inspect = |candidate: PathBuf| {
@@ -161,7 +138,7 @@ fn decode_cur_project_path_with_single_punctuation(path: PathBuf) -> Option<Path
     };
     inspect(path.clone())?;
 
-    for suffix_length in 2..=MAX_CUR_PROJECT_LEAF_PARTS {
+    for suffix_length in 2..=4 {
         let mut parent = path.as_path();
         let mut suffix = Vec::with_capacity(suffix_length);
         for _ in 0..suffix_length {
@@ -230,55 +207,6 @@ fn decode_cur_project_path_with_single_punctuation(path: PathBuf) -> Option<Path
     }
 
     matched_path
-}
-
-fn probe_cur_project_paths(
-    parent: &Path,
-    components: &[&str],
-    probes: &mut usize,
-    matched_path: &mut Option<PathBuf>,
-) -> bool {
-    let max_component_parts = if components.len() <= MAX_CUR_PROJECT_LEAF_PARTS {
-        components.len()
-    } else {
-        MAX_CUR_PROJECT_ANCESTOR_PARTS
-    };
-    for component_parts in 1..=max_component_parts {
-        let separators = if component_parts == 1 {
-            &[""][..]
-        } else {
-            &CUR_PROJECT_SEPARATORS
-        };
-        for separator in separators {
-            if *probes >= MAX_CUR_PROJECT_PATH_PROBES {
-                return false;
-            }
-            *probes += 1;
-
-            let candidate = parent.join(components[..component_parts].join(separator));
-            if !candidate.is_dir() {
-                continue;
-            }
-
-            if component_parts == components.len() {
-                if matched_path
-                    .as_ref()
-                    .is_some_and(|matched_path| matched_path != &candidate)
-                {
-                    return false;
-                }
-                *matched_path = Some(candidate);
-            } else if !probe_cur_project_paths(
-                &candidate,
-                &components[component_parts..],
-                probes,
-                matched_path,
-            ) {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 #[cfg(any(windows, test))]

@@ -202,6 +202,7 @@ def stage_python_runtime_package(
 
     package_version = normalize_codex_version(codex_version)
     _copy_package_tree(python_runtime_root(), staging_dir)
+    _normalize_runtime_package_modes(staging_dir)
 
     pyproject_path = staging_dir / "pyproject.toml"
     pyproject_text = pyproject_path.read_text()
@@ -214,10 +215,19 @@ def stage_python_runtime_package(
     runtime_package_root = staged_runtime_package_root(staging_dir)
     if package_source.is_dir():
         shutil.copytree(package_source, runtime_package_root, dirs_exist_ok=True)
+        _normalize_runtime_package_modes(runtime_package_root)
         _validate_codex_package_layout(runtime_package_root, package_source)
     else:
         _extract_codex_package_archive(package_source, runtime_package_root)
     return staging_dir
+
+
+def _normalize_runtime_package_modes(package_dir: Path) -> None:
+    """Match safe tar extraction modes while preserving executable payloads."""
+    for path in package_dir.rglob("*"):
+        if path.is_file():
+            mode = path.stat().st_mode
+            path.chmod(0o755 if mode & 0o111 else 0o644)
 
 
 def _extract_codex_package_archive(package_archive: Path, runtime_package_root: Path) -> None:
@@ -284,6 +294,18 @@ def _flatten_string_enum_one_of(definition: dict[str, Any]) -> bool:
     if isinstance(title, str):
         definition["title"] = title
     return True
+
+
+def _normalize_open_ended_enum(definition: dict[str, Any]) -> None:
+    variants = definition.pop("oneOf", definition.get("anyOf", []))
+    definition["anyOf"] = [
+        variant
+        for variant in variants
+        if "enum" in variant or variant.get("type") not in ("string", ["string", "object"])
+    ]
+    object_fallback = {"type": "object", "additionalProperties": {}}
+    if object_fallback not in definition["anyOf"]:
+        definition["anyOf"].append(object_fallback)
 
 
 DISCRIMINATOR_KEYS = ("type", "method", "mode", "state", "status", "role", "reason", "action")
@@ -522,8 +544,10 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
     _preserve_guardian_approval_path_wrappers(schema)
     definitions = schema.get("definitions", {})
     if isinstance(definitions, dict):
-        for definition in definitions.values():
+        for name, definition in definitions.items():
             if isinstance(definition, dict):
+                if name == "CodexErrorInfo":
+                    _normalize_open_ended_enum(definition)
                 _flatten_string_enum_one_of(definition)
     # Normalize the schema into something datamodel-code-generator can map to
     # stable class names instead of anonymous numbered helpers.
@@ -580,9 +604,10 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_field(
         out_path, "McpResourceReadTarget", r"link_id: Annotated\[\n(?:        .*\n)+    \]"
     )
+    _preserve_open_enum(out_path, "CodexErrorInfoValue", allow_empty=True)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
-    _preserve_plan_type_enum(out_path)
+    _preserve_open_enum(out_path, "PlanType")
     _normalize_generated_timestamps(out_path)
 
 
@@ -687,27 +712,30 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
 
 
-def _preserve_plan_type_enum(out_path: Path) -> None:
-    """Keep the public plan constants while accepting values from newer runtimes."""
+def _preserve_open_enum(out_path: Path, name: str, *, allow_empty: bool = False) -> None:
+    """Keep generated enum constants while accepting values from newer runtimes."""
     source = out_path.read_text()
-    class_start = source.find("class PlanType(Enum):")
+    class_start = source.find(f"class {name}(Enum):")
     if class_start == -1:
-        raise RuntimeError("Generated SDK is missing PlanType")
+        raise RuntimeError(f"Generated SDK is missing {name}")
     class_end = source.find("\n\nclass ", class_start)
     if class_end == -1:
         class_end = len(source)
 
     class_source = source[class_start:class_end]
     class_source = class_source.replace(
-        "class PlanType(Enum):",
-        "class PlanType(str, Enum):",
+        f"class {name}(Enum):",
+        f"class {name}(str, Enum):",
         1,
     ).rstrip()
-    class_source += """
+    invalid_value = "not isinstance(value, str)"
+    if not allow_empty:
+        invalid_value += " or not value"
+    class_source += f"""
 
     @classmethod
-    def _missing_(cls, value: object) -> PlanType | None:
-        if not isinstance(value, str) or not value:
+    def _missing_(cls, value: object) -> {name} | None:
+        if {invalid_value}:
             return None
         member = str.__new__(cls, value)
         member._name_ = value

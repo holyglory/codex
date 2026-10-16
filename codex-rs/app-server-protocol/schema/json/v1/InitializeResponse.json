@@ -44,6 +44,11 @@
         "supportsAutoSelection": {
           "type": "boolean"
         },
+        "supportsCreditUsage": {
+          "default": false,
+          "description": "Whether profile updates accept the per-account automatic credit permission.",
+          "type": "boolean"
+        },
         "supportsManagedLogin": {
           "type": "boolean"
         },
@@ -80,7 +85,7 @@
         }
       ],
       "default": null,
-      "description": "Advertises the additive provider-neutral event-subscription extension."
+      "description": "Advertises durable provider-neutral event subscriptions and event ingress."
     },
     "localUsageAccounting": {
       "anyOf": [

@@ -16,6 +16,7 @@
 //! runtime remain bounded; the local consumer event queue is unbounded so
 //! unread notifications cannot prevent request responses from being delivered.
 
+mod capabilities;
 mod path;
 mod remote;
 
@@ -38,12 +39,9 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
-use codex_app_server_protocol::EventSubscriptionsCapability;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
-use codex_app_server_protocol::LocalUsageAccountingCapability;
-use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -55,7 +53,7 @@ use codex_config::NoopThreadConfigLoader;
 use codex_core::config::Config;
 pub use codex_core::otel_init::build_provider as build_otel_provider;
 pub use codex_exec_server::EnvironmentManager;
-pub use codex_exec_server::ExecServerRuntimePaths;
+pub use codex_exec_server::ExecServerRuntimeOptions;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -66,6 +64,7 @@ use tokio::time::timeout;
 use toml::Value as TomlValue;
 use tracing::warn;
 
+pub use crate::capabilities::AppServerCapabilities;
 pub use crate::path::AppServerPath;
 pub use crate::remote::RemoteAppServerClient;
 pub use crate::remote::RemoteAppServerConnectArgs;
@@ -139,8 +138,8 @@ pub enum TypedRequestError {
 }
 
 impl TypedRequestError {
-    /// True only for an explicit admission rejection before request effects.
-    /// Transport failures and unrelated invalid requests are never replay proof.
+    /// Returns true only when the server explicitly rejected the request while
+    /// draining for a cooperative handover, before applying request effects.
     pub fn is_server_switching(&self) -> bool {
         matches!(self, Self::Server { source, .. } if source.code == -32600
             && (source.data.as_ref().is_some_and(|data| data.get("reason").and_then(serde_json::Value::as_str) == Some("serverSwitching"))
@@ -182,6 +181,29 @@ impl Error for TypedRequestError {
     }
 }
 
+// Await transport in a separate statement before calling this: dropping the
+// completed future must precede any caller-provided Deserialize implementation.
+fn decode_typed_response<T>(
+    method: &str,
+    response: IoResult<RequestResult>,
+) -> Result<T, TypedRequestError>
+where
+    T: DeserializeOwned,
+{
+    let response = response.map_err(|source| TypedRequestError::Transport {
+        method: method.to_string(),
+        source,
+    })?;
+    let result = response.map_err(|source| TypedRequestError::Server {
+        method: method.to_string(),
+        source,
+    })?;
+    serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
+        method: method.to_string(),
+        source,
+    })
+}
+
 #[derive(Clone)]
 pub struct InProcessClientStartArgs {
     /// Resolved argv0 dispatch paths used by command execution internals.
@@ -212,7 +234,7 @@ pub struct InProcessClientStartArgs {
     pub session_source: SessionSource,
     /// Whether auth loading should honor the `CODEX_API_KEY` environment variable.
     pub enable_codex_api_key_env: bool,
-    /// Optional local account profile pin owned by this embedded server process.
+    /// Optional local account profile pinned to this embedded server process.
     pub process_account: Option<String>,
     /// Client name reported during initialize.
     pub client_name: String,
@@ -325,60 +347,6 @@ pub struct InProcessAppServerClient {
     server_capabilities: AppServerCapabilities,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AppServerCapabilities {
-    multi_account: Option<MultiAccountCapability>,
-    local_usage_accounting: Option<LocalUsageAccountingCapability>,
-    event_subscriptions: Option<EventSubscriptionsCapability>,
-}
-
-impl AppServerCapabilities {
-    pub(crate) fn advertised_v1() -> Self {
-        Self {
-            multi_account: Some(MultiAccountCapability {
-                version: 2,
-                supports_managed_login: true,
-                supports_auto_selection: true,
-            }),
-            local_usage_accounting: Some(LocalUsageAccountingCapability { version: 2 }),
-            event_subscriptions: None,
-        }
-    }
-
-    pub(crate) fn from_advertised(
-        multi_account: Option<MultiAccountCapability>,
-        local_usage_accounting: Option<LocalUsageAccountingCapability>,
-        event_subscriptions: Option<EventSubscriptionsCapability>,
-    ) -> Self {
-        Self {
-            multi_account: multi_account.filter(|capability| capability.version == 2),
-            local_usage_accounting: local_usage_accounting
-                .filter(|capability| capability.version == 2),
-            event_subscriptions: event_subscriptions.filter(|capability| capability.version == 1),
-        }
-    }
-
-    pub fn multi_account(&self) -> Option<&MultiAccountCapability> {
-        self.multi_account.as_ref()
-    }
-
-    pub fn local_usage_accounting(&self) -> Option<&LocalUsageAccountingCapability> {
-        self.local_usage_accounting.as_ref()
-    }
-
-    pub fn supports_multi_account(&self) -> bool {
-        self.multi_account.is_some()
-    }
-
-    pub fn supports_local_usage_accounting(&self) -> bool {
-        self.local_usage_accounting.is_some()
-    }
-
-    pub fn supports_event_subscriptions(&self) -> bool {
-        self.event_subscriptions.is_some()
-    }
-}
-
 #[derive(Clone)]
 pub struct InProcessAppServerRequestHandle {
     command_tx: mpsc::Sender<ClientCommand>,
@@ -404,6 +372,13 @@ impl InProcessAppServerClient {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let server_capabilities = handle
+            .initialize_response()
+            .and_then(|response| {
+                let response = serde_json::to_value(response).ok()?;
+                AppServerCapabilities::from_initialize_result(&response).into()
+            })
+            .unwrap_or_else(AppServerCapabilities::advertised_v1);
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
@@ -511,7 +486,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
-            server_capabilities: AppServerCapabilities::advertised_v1(),
+            server_capabilities,
         })
     }
 
@@ -562,21 +537,8 @@ impl InProcessAppServerClient {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 
     /// Sends a typed client notification.
@@ -733,21 +695,8 @@ impl InProcessAppServerRequestHandle {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 }
 
@@ -763,14 +712,20 @@ impl AppServerRequestHandle {
     where
         T: DeserializeOwned,
     {
-        match self {
-            Self::InProcess(handle) => handle.request_typed(request).await,
-            Self::Remote(handle) => handle.request_typed(request).await,
-        }
+        let method = request.method_name();
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 }
 
 impl AppServerClient {
+    pub fn server_capabilities(&self) -> &AppServerCapabilities {
+        match self {
+            Self::InProcess(client) => client.server_capabilities(),
+            Self::Remote(client) => client.server_capabilities(),
+        }
+    }
+
     /// App-server platform family, which can differ from the executor's platform.
     /// Older remote servers may omit this metadata.
     pub fn platform_family(&self) -> Option<&str> {
@@ -785,13 +740,6 @@ impl AppServerClient {
         match self {
             Self::InProcess(_) => Some(std::env::consts::OS),
             Self::Remote(client) => client.platform_os(),
-        }
-    }
-
-    pub fn server_capabilities(&self) -> &AppServerCapabilities {
-        match self {
-            Self::InProcess(client) => client.server_capabilities(),
-            Self::Remote(client) => client.server_capabilities(),
         }
     }
 
@@ -815,10 +763,9 @@ impl AppServerClient {
     where
         T: DeserializeOwned,
     {
-        match self {
-            Self::InProcess(client) => client.request_typed(request).await,
-            Self::Remote(client) => client.request_typed(request).await,
-        }
+        let method = request.method_name();
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {
@@ -896,6 +843,7 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use futures::SinkExt;
     use futures::StreamExt;
+    use futures::poll;
     use pretty_assertions::assert_eq;
     use std::ops::Deref;
     use std::path::Path;
@@ -1061,38 +1009,6 @@ mod tests {
         .await;
     }
 
-    async fn expect_remote_initialize_capabilities<S>(
-        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
-        multi_account_version: Option<u32>,
-        local_usage_version: Option<u32>,
-        event_subscriptions_version: Option<u32>,
-    ) where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    {
-        let mut metadata = serde_json::json!({
-            "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
-            "codexHome": "/server/.codex",
-        });
-        if let Some(version) = multi_account_version {
-            metadata["multiAccount"] = serde_json::json!({
-                "version": version,
-                "supportsManagedLogin": true,
-                "supportsAutoSelection": true,
-            });
-        }
-        if let Some(version) = local_usage_version {
-            metadata["localUsageAccounting"] = serde_json::json!({"version": version});
-        }
-        if let Some(version) = event_subscriptions_version {
-            metadata["eventSubscriptions"] = serde_json::json!({
-                "version": version,
-                "supportsHeartbeats": true,
-                "supportsEventIngress": true,
-            });
-        }
-        expect_remote_initialize_with_metadata(websocket, metadata).await;
-    }
-
     async fn expect_remote_initialize_with_metadata<S>(
         websocket: &mut tokio_tungstenite::WebSocketStream<S>,
         metadata: serde_json::Value,
@@ -1117,6 +1033,31 @@ mod tests {
             panic!("expected initialized notification");
         };
         assert_eq!(notification.method, "initialized");
+    }
+
+    async fn expect_remote_initialize_capabilities<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        multi_account_version: Option<u32>,
+        local_usage_version: Option<u32>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut metadata = serde_json::json!({
+            "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+            "codexHome": "/server/.codex",
+        });
+        if let Some(version) = multi_account_version {
+            metadata["multiAccount"] = serde_json::json!({
+                "version": version,
+                "supportsManagedLogin": true,
+                "supportsAutoSelection": true,
+                "supportsCreditUsage": true,
+            });
+        }
+        if let Some(version) = local_usage_version {
+            metadata["localUsageAccounting"] = serde_json::json!({"version": version});
+        }
+        expect_remote_initialize_with_metadata(websocket, metadata).await;
     }
 
     async fn read_websocket_message<S>(
@@ -1203,6 +1144,7 @@ mod tests {
             thread_id: "thread".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: codex_app_server_protocol::TurnStatus::Completed,
@@ -1240,6 +1182,42 @@ mod tests {
                 .expect("initialize capabilities")
                 .mcp_server_openai_form_elicitation
         );
+    }
+
+    #[tokio::test]
+    async fn typed_request_drop_cancels_waiting_send_and_reply() {
+        let (command_tx, mut commands) = mpsc::channel(/*buffer*/ 1);
+        let handle =
+            AppServerRequestHandle::InProcess(InProcessAppServerRequestHandle { command_tx });
+        let request = ClientRequest::ConfigRequirementsRead {
+            request_id: RequestId::String("typed-request".to_string()),
+            params: None,
+        };
+        let mut pending = Box::pin(handle.request_typed::<serde_json::Value>(request.clone()));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(poll!(&mut pending).is_pending());
+        let mut blocked = Box::pin(handle.request_typed::<serde_json::Value>(request.clone()));
+        assert!(poll!(&mut blocked).is_pending());
+        drop(blocked);
+
+        let ClientCommand::Request {
+            request: sent,
+            response_tx,
+        } = commands.try_recv().expect("first request should be queued")
+        else {
+            panic!("expected request command");
+        };
+        assert_eq!(*sent, request);
+        assert!(!response_tx.is_closed());
+        drop(pending);
+        assert!(response_tx.is_closed());
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -1464,21 +1442,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_capabilities_handle_stock_enhanced_reconnect_and_unknown_versions() {
-        for (multi_version, usage_version, event_version, expected) in [
-            (None, None, None, (false, false, false)),
-            (Some(2), Some(2), Some(1), (true, true, true)),
-            (Some(1), Some(1), Some(2), (false, false, false)),
-            (Some(99), Some(99), Some(99), (false, false, false)),
+    async fn remote_capabilities_require_supported_advertised_versions() {
+        for (multi_version, usage_version, expected_multi, expected_usage) in [
+            (None, None, false, false),
+            (Some(2), Some(2), true, true),
+            (Some(1), Some(1), false, false),
+            (Some(99), Some(99), false, false),
         ] {
             let websocket_url = start_test_remote_server(move |mut websocket| async move {
-                expect_remote_initialize_capabilities(
-                    &mut websocket,
-                    multi_version,
-                    usage_version,
-                    event_version,
-                )
-                .await;
+                expect_remote_initialize_capabilities(&mut websocket, multi_version, usage_version)
+                    .await;
                 websocket.close(None).await.expect("close should succeed");
             })
             .await;
@@ -1487,17 +1460,13 @@ mod tests {
                 .expect("remote client should connect");
             assert_eq!(
                 client.server_capabilities().supports_multi_account(),
-                expected.0
+                expected_multi
             );
             assert_eq!(
                 client
                     .server_capabilities()
                     .supports_local_usage_accounting(),
-                expected.1
-            );
-            assert_eq!(
-                client.server_capabilities().supports_event_subscriptions(),
-                expected.2
+                expected_usage
             );
             client.shutdown().await.expect("shutdown should complete");
         }
@@ -1534,6 +1503,7 @@ mod tests {
 
         assert_eq!(client.server_version(), Some("9.8.7-test"));
         assert_eq!(client.codex_home(), Some("/server/.codex"));
+        let client = AppServerClient::Remote(client);
         let response: GetAccountResponse = client
             .request_typed(ClientRequest::GetAccount {
                 request_id: RequestId::Integer(1),
@@ -2173,7 +2143,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_event_surfaces_lagged_markers() {
-        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (command_tx, _) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let worker_handle = tokio::spawn(async {});
         event_tx
@@ -2206,7 +2176,7 @@ mod tests {
             EnvironmentManager::create_for_tests(
                 Some("ws://127.0.0.1:8765".to_string()),
                 Some(
-                    ExecServerRuntimePaths::new(
+                    ExecServerRuntimeOptions::new(
                         std::env::current_exe().expect("current exe"),
                         /*codex_linux_sandbox_exe*/ None,
                     )
@@ -2265,12 +2235,6 @@ mod tests {
     #[tokio::test]
     async fn shutdown_completes_promptly_without_retained_managers() {
         let client = start_test_client(SessionSource::Cli).await;
-        assert!(client.server_capabilities().supports_multi_account());
-        assert!(
-            client
-                .server_capabilities()
-                .supports_local_usage_accounting()
-        );
 
         timeout(Duration::from_secs(1), client.shutdown())
             .await

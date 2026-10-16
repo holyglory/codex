@@ -59,10 +59,11 @@ Hosted engines still run in parallel on their separate machines.
 Both the focused backend-layout checks and the full graph use the same short,
 neutral `/tmp/b` test root inside the isolated mount namespace.
 
-For this Linux VPS, `scripts/run_local_candidate.sh` creates a private mount
-namespace and mounts an isolated test `/tmp` on the build disk, plus an empty read-only
-system configuration directory. It drops to the invoking account before running
-any validation. This avoids loading installed user configuration and keeps Unix
+For this Linux VPS, `scripts/run_local_candidate.sh` uses bubblewrap to create an
+unprivileged private mount namespace and mounts an isolated test `/tmp` on the
+build disk, plus an empty read-only system configuration directory. It keeps
+validation in the invoking non-root account and creates a private tmpfs for
+daemon sockets. This avoids loading installed user configuration and keeps Unix
 socket paths short. It does not modify the host mounts or installed release.
 The state directory must already exist and be writable by the invoking account.
 Its backing test directories stay stable so a warm Bazel server sees the same
@@ -80,8 +81,7 @@ Keep these prerequisite files on the build disk, **not the host `/tmp`**, becaus
 the isolated `/tmp` hides host temporary files. With those variables configured:
 
 ```sh
-sudo --preserve-env=CODEX_BAZEL_BIN,RUSTY_V8_ARCHIVE,RUSTY_V8_SRC_BINDING_PATH,LOCAL_MUSL_V8_ARCHIVE,LOCAL_MUSL_V8_BINDING,LOCAL_MUSL_PKG_CONFIG,LOCAL_PACKAGE_PYTHON \
-  bash scripts/run_local_candidate.sh /mnt/build-storage/codex/state/local-first
+bash scripts/run_local_candidate.sh /mnt/build-storage/codex/state/local-first
 ```
 
 Install repository tool prerequisites once before this command, including the

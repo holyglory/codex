@@ -35,6 +35,8 @@ pub struct StructuredUsageSummary {
     pub tools: StructuredToolMetrics,
     pub time: StructuredTimeMetrics,
     pub classifications: Vec<StructuredClassificationCount>,
+    pub worktrees: Vec<StructuredWorktreeAggregate>,
+    pub worktree_coverage: StructuredWorktreeCoverage,
     pub repository_participation: StructuredRepositoryParticipation,
     pub formulas: StructuredUsageFormulas,
 }
@@ -187,6 +189,30 @@ impl StructuredUsageSummary {
                     count: classification.count,
                 })
                 .collect(),
+            worktrees: summary
+                .worktrees
+                .iter()
+                .map(|worktree| StructuredWorktreeAggregate {
+                    worktree_key: worktree.id.as_str().to_string(),
+                    repository_key: worktree.repository_id.as_str().to_string(),
+                    label: worktree.label.clone(),
+                    operation_count: worktree.operation_count,
+                    model_request_count: worktree.model_request_count,
+                    tool_count: worktree.tool_count,
+                    total_tokens: worktree.total_tokens,
+                    unknown_token_observations: worktree.unknown_token_observations,
+                })
+                .collect(),
+            worktree_coverage: StructuredWorktreeCoverage {
+                assigned_operation_count: summary.worktree_coverage.assigned_operation_count,
+                unassigned_operation_count: summary.worktree_coverage.unassigned_operation_count,
+                assigned_token_observation_count: summary
+                    .worktree_coverage
+                    .assigned_token_observation_count,
+                unassigned_token_observation_count: summary
+                    .worktree_coverage
+                    .unassigned_token_observation_count,
+            },
             repository_participation: StructuredRepositoryParticipation {
                 operation_count: summary.repository_participation.operation_count,
                 tool_count: summary.repository_participation.tool_count,
@@ -350,4 +376,26 @@ pub struct StructuredUsageFormulas {
     pub tokens: &'static str,
     pub concurrency: &'static str,
     pub repository: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredWorktreeAggregate {
+    pub worktree_key: String,
+    pub repository_key: String,
+    pub label: String,
+    pub operation_count: u64,
+    pub model_request_count: u64,
+    pub tool_count: u64,
+    pub total_tokens: Option<i64>,
+    pub unknown_token_observations: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredWorktreeCoverage {
+    pub assigned_operation_count: u64,
+    pub unassigned_operation_count: u64,
+    pub assigned_token_observation_count: u64,
+    pub unassigned_token_observation_count: u64,
 }

@@ -1,4 +1,5 @@
 use crate::provider_usage::ProviderUsage;
+use codex_protocol::models::ImageReference;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -18,7 +19,7 @@ pub struct ImageGenerationRequest {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ImageEditRequest {
-    pub images: Vec<ImageUrl>,
+    pub images: Vec<ImageReference>,
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<ImageBackground>,
@@ -29,11 +30,6 @@ pub struct ImageEditRequest {
     pub quality: Option<ImageQuality>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ImageUrl {
-    pub image_url: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

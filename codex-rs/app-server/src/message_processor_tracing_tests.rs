@@ -49,6 +49,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -160,8 +161,6 @@ impl TracingHarness {
             )
             .await;
         assert!(harness.session.initialized());
-        // This harness calls MessageProcessor directly; lib.rs normally registers the
-        // initialized connection before dispatching thread input and subscriptions.
         harness
             .processor
             .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
@@ -236,7 +235,6 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 
     Ok(ConfigBuilder::default()
         .codex_home(codex_home.to_path_buf())
-        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .build()
         .await?)
 }
@@ -278,16 +276,17 @@ pub(super) async fn build_test_processor(
         state_db: None,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
+        process_account: None,
         user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
             &auth_manager,
         ))),
         auth_manager,
-        process_account: None,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         code_mode_session_provider: None,
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
         plugin_startup_tasks: Some(PluginStartupConfig::Current),
+        background_subscription_loader: Arc::new(OnceLock::new()),
     }));
     (processor, outgoing_rx)
 }
@@ -448,8 +447,16 @@ pub(super) async fn read_response<T: serde::de::DeserializeOwned>(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> T {
+    read_response_from(outgoing_rx, TEST_CONNECTION_ID, request_id).await
+}
+
+pub(super) async fn read_response_from<T: serde::de::DeserializeOwned>(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+    request_id: i64,
+) -> T {
     loop {
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+        let envelope = tokio::time::timeout(Duration::from_secs(/*secs*/ 30), outgoing_rx.recv())
             .await
             .expect("timed out waiting for response")
             .expect("outgoing channel closed");
@@ -461,8 +468,13 @@ pub(super) async fn read_response<T: serde::de::DeserializeOwned>(
         else {
             continue;
         };
-        if connection_id != TEST_CONNECTION_ID {
+        if connection_id != expected_connection_id {
             continue;
+        }
+        if let crate::outgoing_message::OutgoingMessage::Error(error) = &message
+            && error.id == RequestId::Integer(request_id)
+        {
+            panic!("request {request_id} failed: {:?}", error.error);
         }
         let crate::outgoing_message::OutgoingMessage::Response(response) = message else {
             continue;
@@ -683,6 +695,8 @@ async fn turn_start_jsonrpc_span_parents_core_turn_spans() -> Result<()> {
                         text_elements: Vec::new(),
                     }],
                     turn_trigger: None,
+                    parent_turn_id: None,
+                    root_turn_id: None,
                     tool_output: None,
                     responsesapi_client_metadata: None,
                     additional_context: None,

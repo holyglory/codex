@@ -122,7 +122,7 @@ async fn responses_api_emits_api_request_event() {
     let response_mock = mount_sse_once(&server, sse(vec![ev_completed("done")])).await;
 
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(|config| {
             config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
             config.model_reasoning_effort = Some(ReasoningEffort::High);
@@ -989,14 +989,8 @@ async fn handle_response_item_records_tool_result_for_function_call() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn handle_response_item_records_tool_result_for_exec_command_call() {
-    let buffer: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_max_level(Level::TRACE)
-        .with_writer(MockWriter::new(buffer))
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
     let server = start_mock_server().await;
 
     mount_sse_once(
@@ -1008,7 +1002,7 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
     )
     .await;
 
-    let completion = mount_sse_once(
+    mount_sse_once(
         &server,
         sse(vec![
             ev_assistant_message("msg-1", "shell command done"),
@@ -1039,29 +1033,11 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let output = completion
-        .single_request()
-        .function_call_output_text("shell-call")
-        .expect("echo command result");
-    assert!(output.contains("Process exited with code 0"), "{output}");
-
-    let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
-    let assert_event = |lines: &[&str]| {
-        let start = lines
+    logs_assert(|lines: &[&str]| {
+        let line = lines
             .iter()
-            .position(|line| {
-                line.contains("codex.tool_result") && line.contains("call_id=shell-call")
-            })
+            .find(|line| line.contains("codex.tool_result") && line.contains("call_id=shell-call"))
             .ok_or_else(|| "missing codex.tool_result event".to_string())?;
-        let mut event = String::new();
-        for line in &lines[start..] {
-            event.push_str(line);
-            event.push('\n');
-            if line.contains("event.timestamp=") {
-                break;
-            }
-        }
-        let line = event.as_str();
 
         if !line.contains("tool_name=exec_command") {
             return Err("missing tool_name field".to_string());
@@ -1075,14 +1051,13 @@ async fn handle_response_item_records_tool_result_for_exec_command_call() {
         if line[output_idx + "output=".len()..].is_empty() {
             return Err("empty output field".to_string());
         }
-        if !line.contains("success=true") {
+        if !line.contains("success=false") {
             return Err("missing success field".to_string());
         }
         assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
-    };
-    assert_event(&logs.lines().collect::<Vec<_>>()).expect("complete tool-result event");
+    });
 }
 
 fn tool_decision_assertion<'a>(

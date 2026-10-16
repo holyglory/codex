@@ -35,34 +35,15 @@ impl ContextContributor for GitAttributionExtension {
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
-            let auth_lease = input.turn_store.get::<codex_login::AuthManagerLease>();
-            let auth_manager = auth_lease
-                .as_ref()
-                .map(|lease| Arc::clone(lease.auth_manager()))
-                .unwrap_or_else(|| Arc::clone(&self.auth_manager));
-            let profile_scoped = auth_lease
-                .as_ref()
-                .is_some_and(|lease| lease.is_profile_scoped());
             let enabled = loop {
-                let current_auth_generation = auth_generation(auth_manager.as_ref());
-                let cached = if profile_scoped {
-                    input
-                        .turn_store
-                        .get::<GitAttributionPolicy>()
-                        .filter(|policy| policy.auth_generation == current_auth_generation)
-                        .map(|policy| policy.as_ref().clone())
-                } else {
-                    cached_attribution_policy(
-                        input.thread_store,
-                        input.turn_store,
-                        current_auth_generation,
-                    )
-                };
-                let policy = match cached {
+                let current_auth_generation = auth_generation(self.auth_manager.as_ref());
+                let policy = match cached_attribution_policy(
+                    input.thread_store,
+                    input.turn_store,
+                    current_auth_generation,
+                ) {
                     Some(policy) => policy,
-                    None if !profile_scoped
-                        && retry_deferred(input.thread_store, current_auth_generation) =>
-                    {
+                    None if retry_deferred(input.thread_store, current_auth_generation) => {
                         GitAttributionPolicy {
                             auth_generation: current_auth_generation,
                             enabled: false,
@@ -70,18 +51,14 @@ impl ContextContributor for GitAttributionExtension {
                     }
                     None => {
                         match resolve_attribution_policy(
-                            &auth_manager,
+                            &self.auth_manager,
                             &self.base_url,
                             &self.http_client_factory,
                         )
                         .await
                         {
                             Ok(Some(policy)) => {
-                                if profile_scoped {
-                                    input.turn_store.insert(policy.clone());
-                                } else {
-                                    input.thread_store.insert(policy.clone());
-                                }
+                                input.thread_store.insert(policy.clone());
                                 policy
                             }
                             Ok(None) => {
@@ -93,8 +70,8 @@ impl ContextContributor for GitAttributionExtension {
                                 policy
                             }
                             Err(_) => {
-                                let auth_generation = auth_generation(auth_manager.as_ref());
-                                if !profile_scoped && auth_generation == current_auth_generation {
+                                let auth_generation = auth_generation(self.auth_manager.as_ref());
+                                if auth_generation == current_auth_generation {
                                     input.thread_store.insert(GitAttributionRetry {
                                         auth_generation,
                                         retry_at: Instant::now() + POLICY_RETRY_DELAY,
@@ -108,7 +85,7 @@ impl ContextContributor for GitAttributionExtension {
                         }
                     }
                 };
-                if policy.auth_generation == auth_generation(auth_manager.as_ref()) {
+                if policy.auth_generation == auth_generation(self.auth_manager.as_ref()) {
                     break policy.enabled;
                 }
             };

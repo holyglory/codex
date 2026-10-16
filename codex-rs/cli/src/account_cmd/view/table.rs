@@ -37,7 +37,13 @@ pub(super) fn print(mut entries: Vec<AccountListEntry<'_>>) {
         headers.push("NOTE");
     }
     if has_limits {
-        headers.extend(["BANKED RESETS", "LIMITS", "RESET IN"]);
+        headers.extend([
+            "CREDITS",
+            "CREDIT USE",
+            "BANKED RESETS",
+            "LIMITS",
+            "RESET IN",
+        ]);
     }
     let mut rows = vec![
         headers
@@ -69,6 +75,16 @@ pub(super) fn print(mut entries: Vec<AccountListEntry<'_>>) {
             ));
         }
         if has_limits {
+            row.push((super::credits::label(entry.limits), plain));
+            row.push((
+                (if account.credit_usage_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                })
+                .to_string(),
+                plain,
+            ));
             if let Some(limits) = entry.limits {
                 let banked = match &limits.banked_resets {
                     Some(resets) if resets.available_count > 0 => {

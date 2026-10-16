@@ -5,6 +5,7 @@ pub(crate) mod execute_spec;
 mod output;
 mod response_adapter;
 mod telemetry;
+mod tool_definitions;
 mod wait_handler;
 pub(crate) mod wait_spec;
 
@@ -55,6 +56,7 @@ use delegate::CodeModeDispatchWorker;
 pub(crate) use execute_handler::CodeModeExecuteHandler;
 use output::CodeModeToolOutput;
 use response_adapter::into_function_call_output_content_items;
+pub(crate) use tool_definitions::prepare_code_mode_tool_definitions;
 pub(crate) use wait_handler::CodeModeWaitHandler;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
@@ -93,8 +95,8 @@ impl CodeModeService {
         let dispatch_broker = Arc::new(CodeModeDispatchBroker::new(thread_id, executed_tool_calls));
         let availability = session_provider.availability();
         Self {
-            session: OnceCell::new(),
             event_waits: event_wait::EventWaitRegistry::default(),
+            session: OnceCell::new(),
             session_provider,
             availability,
             dispatch_broker,
@@ -140,18 +142,23 @@ impl CodeModeService {
         request
             .yield_time_ms
             .get_or_insert(self.default_exec_yield_time_ms);
+        let preempt = step_context.preempt.clone();
         let delegate = Arc::new(CodeModeCellDelegate {
             broker: Arc::clone(&self.dispatch_broker),
             step_context,
         });
-        self.session().await?.execute(request, delegate).await
+        self.session()
+            .await?
+            .execute(request, delegate, preempt)
+            .await
     }
 
     pub(crate) async fn wait(
         &self,
         request: codex_code_mode::WaitRequest,
+        preempt: Option<CancellationToken>,
     ) -> Result<codex_code_mode::WaitOutcome, String> {
-        self.session().await?.wait(request).await
+        self.session().await?.wait(request, preempt).await
     }
 
     pub(crate) async fn terminate(
@@ -283,9 +290,13 @@ async fn handle_runtime_response(
         let RuntimeResponse::Yielded { cell_id, .. } = &response else {
             break;
         };
-        response = match exec.session.services.code_mode_service.wait(codex_code_mode::WaitRequest {
-            cell_id: cell_id.clone(), yield_time_ms: DEFAULT_WAIT_YIELD_TIME_MS,
-        }).await? {
+        response = match exec.session.services.code_mode_service.wait(
+            codex_code_mode::WaitRequest {
+                cell_id: cell_id.clone(),
+                yield_time_ms: DEFAULT_WAIT_YIELD_TIME_MS,
+            },
+            /*preempt*/ None,
+        ).await? {
             codex_code_mode::WaitOutcome::LiveCell(response) => response,
             codex_code_mode::WaitOutcome::MissingCell(_) => return Err("the code cell for this event wait is no longer available; inspect the persisted wait before retrying".into()),
         };

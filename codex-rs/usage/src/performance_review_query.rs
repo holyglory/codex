@@ -12,6 +12,8 @@ pub(crate) enum ClassificationSource {
 pub(crate) struct Selection {
     pub classification: ClassificationSource,
     pub operation_ids: Option<Vec<String>>,
+    pub scope_materialized: bool,
+    pub materialized: bool,
 }
 
 pub(crate) async fn long_lived_declaration_count(
@@ -70,12 +72,14 @@ pub(crate) async fn window_operation_ids(
     }
     // Put bounds first so SQLite can seek time indexes before reading collector rows.
     let mut builder = selection(query, source);
-    builder.push(", candidates(id) AS (SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT operation_id FROM bounds CROSS JOIN operation_events WHERE terminal = 1 AND occurred_at_ms > lower_ms
-        UNION ");
+    builder.push(", candidates(id) AS (");
     builder.push(match source.classification {
-        ClassificationSource::Cache => "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms",
-        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)",
+        // Apply the requested scope before walking historical interval indexes;
+        // otherwise every repository report scans the entire collector first.
+        ClassificationSource::Cache => "SELECT operation.id FROM bounds CROSS JOIN scoped operation WHERE operation.started_at_ms >= lower_ms AND operation.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms > lower_ms AND cached.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms IS NULL AND cached.started_at_ms < upper_ms",
+        ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
         " UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
@@ -83,11 +87,13 @@ pub(crate) async fn window_operation_ids(
         LEFT JOIN model_requests request ON request.id = token.model_request_id
         LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
         LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
+        JOIN scoped operation ON operation.id = COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
         WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
           AND token.category_path NOT GLOB 'attribution.items.*'
-        UNION SELECT operation_id FROM bounds CROSS JOIN coverage_events
-          WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
-        SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001",
+        UNION SELECT coverage.operation_id FROM bounds CROSS JOIN coverage_events coverage
+          JOIN scoped operation ON operation.id = coverage.operation_id
+          WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms)
+        SELECT id FROM candidates ORDER BY id LIMIT 200001",
     );
     let ids = builder
         .build_query_scalar::<String>()
@@ -104,16 +110,38 @@ pub(crate) fn selection(
     query: &PerformanceReviewQuery,
     source: &Selection,
 ) -> QueryBuilder<Sqlite> {
-    let mut builder = QueryBuilder::new(
-        "WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ",
-    );
+    selection_with_prefix(query, source, "")
+}
+
+fn selection_with_prefix(
+    query: &PerformanceReviewQuery,
+    source: &Selection,
+    prefix: &'static str,
+) -> QueryBuilder<Sqlite> {
+    if source.materialized {
+        let mut builder = QueryBuilder::new(prefix);
+        builder.push("WITH scoped AS NOT MATERIALIZED (SELECT * FROM temp._review_scoped), selected AS NOT MATERIALIZED (SELECT * FROM temp._review_selected), effective AS NOT MATERIALIZED (SELECT * FROM temp._review_effective), bounds AS (SELECT ")
+            .push_bind(query.time_range.map_or(i64::MIN, crate::UtcTimeRange::start_ms))
+            .push(" AS lower_ms, ")
+            .push_bind(query.time_range.map_or(i64::MAX, crate::UtcTimeRange::end_ms))
+            .push(" AS upper_ms)");
+        return builder;
+    }
+    let mut builder = QueryBuilder::new(prefix);
+    builder.push("WITH RECURSIVE review_threads(id) AS (SELECT id FROM threads WHERE id = ");
     builder.push_bind(query.thread_id.as_ref().map(crate::ThreadId::as_str));
     builder.push(" UNION SELECT child.id FROM threads child JOIN review_threads parent ON child.parent_thread_id = parent.id WHERE ")
         .push_bind(query.include_descendants).push("), repository_family(id) AS (SELECT ")
         .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
         .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
             JOIN repository_family family ON merge.target_repository_id = family.id),
-            scoped AS (SELECT operation.* FROM operations operation WHERE 1=1");
+            scoped AS MATERIALIZED (SELECT operation.* FROM ");
+    builder.push(if source.scope_materialized {
+        "temp._review_scoped"
+    } else {
+        "operations"
+    });
+    builder.push(" operation WHERE 1=1");
     if let Some(ids) = &source.operation_ids {
         builder
             .push(" AND operation.id IN (SELECT value FROM json_each(")
@@ -167,17 +195,17 @@ pub(crate) fn selection(
 // bound the read. Covered tool observations still deduplicate with their model request.
 pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN token_observations token ON token.model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN token_observations token ON token.model_request_id = request.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
     CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
-    JOIN token_observations token ON token.tool_invocation_id = tool.id
+    CROSS JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
 ), token_facts AS (
     SELECT token.operation_id,
            token.source_event_id, token.category_path, token.measurement_provenance,
@@ -223,9 +251,65 @@ pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
     UNION ALL
     SELECT span.activity_state, CASE WHEN ended.occurred_at_ms IS NOT NULL THEN
       MAX(0, MIN(ended.occurred_at_ms, upper_ms) - MAX(span.started_at_ms, lower_ms)) END
-    FROM activity_spans span JOIN effective ON effective.id = span.operation_id CROSS JOIN bounds
+    FROM effective CROSS JOIN activity_spans span ON span.operation_id = effective.id CROSS JOIN bounds
     LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
     WHERE effective.effective_state NOT IN ('user_wait', 'external_wait', 'blocked_wait')
       AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms)
 ) SELECT category, COUNT(*) count, COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms,
     SUM(interval_ms IS NULL) unknown_intervals FROM waits GROUP BY category ORDER BY category";
+
+pub(crate) fn token_facts(source: &Selection) -> &'static str {
+    if source.materialized {
+        ", token_facts AS NOT MATERIALIZED (SELECT * FROM temp._review_tokens)"
+    } else {
+        TOKEN_FACTS
+    }
+}
+
+pub(crate) async fn materialize(
+    connection: &mut sqlx::SqliteConnection,
+    query: &PerformanceReviewQuery,
+    source: &mut Selection,
+) -> Result<(), crate::UsageStoreError> {
+    use crate::UsageStoreError;
+    tracing::debug!(stage = "materialize_scoped", "usage report progress");
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_scoped AS ");
+    builder
+        .push(" SELECT * FROM scoped")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE UNIQUE INDEX temp._review_scoped_id ON _review_scoped(id)")
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_selected", "usage report progress");
+    source.scope_materialized = true;
+    let mut builder =
+        selection_with_prefix(query, source, "CREATE TEMP TABLE _review_selected AS ");
+    builder
+        .push(" SELECT * FROM selected")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::raw_sql("CREATE INDEX temp._review_selected_group ON _review_selected(execution_group_id, execution_role);
+        CREATE TEMP TABLE _review_effective AS SELECT selected.* FROM _review_selected selected
+        WHERE NOT (COALESCE(execution_role, 'standalone') = 'wrapper' AND execution_group_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM _review_selected nested WHERE nested.execution_group_id = selected.execution_group_id AND nested.execution_role = 'nested'));
+        CREATE UNIQUE INDEX temp._review_effective_id ON _review_effective(id);")
+        .execute(&mut *connection).await.map_err(UsageStoreError::Database)?;
+    tracing::debug!(stage = "materialize_tokens", "usage report progress");
+    source.materialized = true;
+    let mut builder = selection_with_prefix(query, source, "CREATE TEMP TABLE _review_tokens AS ");
+    builder
+        .push(TOKEN_FACTS)
+        .push(" SELECT * FROM token_facts")
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(UsageStoreError::Database)?;
+    sqlx::query("CREATE INDEX temp._review_tokens_owner ON _review_tokens(operation_id,category_path,measurement_provenance)").execute(connection).await.map_err(UsageStoreError::Database)?;
+    Ok(())
+}

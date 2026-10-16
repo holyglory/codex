@@ -214,16 +214,13 @@ impl InitializeRequestProcessor {
 
         let user_agent = get_codex_user_agent();
         let response = InitializeResponse {
-            user_agent,
-            codex_home,
-            platform_family: std::env::consts::FAMILY.to_string(),
-            platform_os: std::env::consts::OS.to_string(),
             multi_account: (self.config.cli_auth_credentials_store_mode
                 != codex_config::types::AuthCredentialsStoreMode::Ephemeral)
                 .then_some(codex_app_server_protocol::MultiAccountCapability {
                     version: 2,
                     supports_managed_login: true,
                     supports_auto_selection: true,
+                    supports_credit_usage: true,
                 }),
             local_usage_accounting: Some(
                 codex_app_server_protocol::LocalUsageAccountingCapability { version: 2 },
@@ -235,6 +232,10 @@ impl InitializeRequestProcessor {
                     supports_event_ingress: true,
                 },
             ),
+            user_agent,
+            codex_home,
+            platform_family: std::env::consts::FAMILY.to_string(),
+            platform_os: std::env::consts::OS.to_string(),
         };
 
         self.outgoing

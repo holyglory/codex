@@ -75,23 +75,27 @@ class BuildNpmPackageTest(unittest.TestCase):
             source_package = json.loads(
                 (REPO_ROOT / "codex-cli" / "package.json").read_text()
             )
+            expected = {
+                "name": "@holyglory/codex",
+                "version": "1.2.3-multi.4-linux-x64",
+                "license": "Apache-2.0",
+                "os": ["linux"],
+                "cpu": ["x64"],
+                "files": ["vendor", "NOTICE"],
+                "repository": source_package["repository"],
+            }
+            for key in (
+                "description",
+                "homepage",
+                "bugs",
+                "publishConfig",
+                "engines",
+                "packageManager",
+            ):
+                if key in source_package:
+                    expected[key] = source_package[key]
             self.assertEqual(
-                json.loads((staging_dir / "package.json").read_text()),
-                {
-                    "name": "@holyglory/codex",
-                    "version": "1.2.3-multi.4-linux-x64",
-                    "description": source_package["description"],
-                    "license": "Apache-2.0",
-                    "os": ["linux"],
-                    "cpu": ["x64"],
-                    "files": ["vendor", "NOTICE"],
-                    "repository": source_package["repository"],
-                    "homepage": source_package["homepage"],
-                    "bugs": source_package["bugs"],
-                    "publishConfig": source_package["publishConfig"],
-                    "engines": source_package["engines"],
-                    "packageManager": source_package["packageManager"],
-                },
+                json.loads((staging_dir / "package.json").read_text()), expected
             )
 
     def test_rejects_semver_build_metadata_that_npm_would_strip(self) -> None:

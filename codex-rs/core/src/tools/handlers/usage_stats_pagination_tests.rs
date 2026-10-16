@@ -3,14 +3,26 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn task_tree_pages_preserve_totals_and_every_agent() {
-    let agents = (0..143).map(|i| json!({
-        "agentId": format!("agent-{i:03}"), "role": "worker", "operations": 3,
-        "providerTotalTokens": {"measuredTokens":10,"exactTokens":10,"unknownObservations":0},
-        "wallTime": {"measuredNs":1000,"exactNs":1000,"unknownIntervals":0}
-    })).collect::<Vec<_>>();
-    let original = json!({"kind":"taskTreeSummary","rootThreadId":"root","includeDescendants":true,
-        "timeRange":{"startMs":0,"endMs":2000},"counts":{"agents":143},
-        "totals":{"providerTotalTokens":{"measuredTokens":1430}},"agents":agents});
+    let agents = (0..143)
+        .map(|i| {
+            json!({
+                "agentId": format!("agent-{i:03}"),
+                "role": "worker",
+                "operations": 3,
+                "providerTotalTokens": {"measuredTokens": 10, "exactTokens": 10, "unknownObservations": 0},
+                "wallTime": {"measuredNs": 1000, "exactNs": 1000, "unknownIntervals": 0}
+            })
+        })
+        .collect::<Vec<_>>();
+    let original = json!({
+        "kind": "taskTreeSummary",
+        "rootThreadId": "root",
+        "includeDescendants": true,
+        "timeRange": {"startMs": 0, "endMs": 2000},
+        "counts": {"agents": 143},
+        "totals": {"providerTotalTokens": {"measuredTokens": 1430}},
+        "agents": agents
+    });
     let mut request = args();
     request.action = UsageStatsAction::TaskTreeSummary;
     let mut restored = Vec::new();
@@ -33,9 +45,13 @@ fn task_tree_pages_preserve_totals_and_every_agent() {
 
 #[test]
 fn summary_pages_cross_dimension_boundaries_and_reject_foreign_cursors() {
-    let original = json!({"kind":"usageSummary","scope":{"type":"repository","id":"one"},
-        "counts":{"operations":3},"providerTokensByActivity":[{"activity":"coding"},{"activity":"testing"}],
-        "classifications":[{"activity":"coding"},{"activity":"testing"}]});
+    let original = json!({
+        "kind": "usageSummary",
+        "scope": {"type": "repository", "id": "one"},
+        "counts": {"operations": 3},
+        "providerTokensByActivity": [{"activity": "coding"}, {"activity": "testing"}],
+        "classifications": [{"activity": "coding"}, {"activity": "testing"}]
+    });
     let mut request = args();
     request.action = UsageStatsAction::Summary;
     request.limit = Some(3);
@@ -45,7 +61,7 @@ fn summary_pages_cross_dimension_boundaries_and_reject_foreign_cursors() {
         first["providerTokensByActivity"],
         original["providerTokensByActivity"]
     );
-    assert_eq!(first["classifications"], json!([{"activity":"coding"}]));
+    assert_eq!(first["classifications"], json!([{"activity": "coding"}]));
     request.cursor_id = Some(
         first["pagination"]["nextCursor"]["id"]
             .as_str()
@@ -55,7 +71,7 @@ fn summary_pages_cross_dimension_boundaries_and_reject_foreign_cursors() {
     request.cursor_sort_value = first["pagination"]["nextCursor"]["sortValue"].as_i64();
     let mut second = original.clone();
     pagination::paginate(&mut second, &request).expect("second page");
-    assert_eq!(second["classifications"], json!([{"activity":"testing"}]));
+    assert_eq!(second["classifications"], json!([{"activity": "testing"}]));
     assert_eq!(second["pagination"]["nextCursor"], Value::Null);
     let mut foreign = original;
     foreign["scope"]["id"] = json!("two");

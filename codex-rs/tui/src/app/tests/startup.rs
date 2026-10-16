@@ -1394,14 +1394,35 @@ async fn startup_thread_started_does_not_replay_resolved_approval() -> Result<()
 }
 
 #[tokio::test]
-async fn owned_subagent_approval_before_thread_started_is_preserved() -> Result<()> {
+async fn subagent_approval_respects_root_ownership() -> Result<()> {
+    check_subagent_approval_routing(ApprovalRouting::OwnedApprovalFirst).await?;
+    check_subagent_approval_routing(ApprovalRouting::OwnedAfterMcp).await?;
+    check_subagent_approval_routing(ApprovalRouting::ForeignAfterMcp).await
+}
+
+enum ApprovalRouting {
+    OwnedApprovalFirst,
+    OwnedAfterMcp,
+    ForeignAfterMcp,
+}
+
+async fn check_subagent_approval_routing(routing: ApprovalRouting) -> Result<()> {
+    let owned_parent = !matches!(&routing, ApprovalRouting::ForeignAfterMcp);
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let parent = app_server.start_thread(&app.config).await?;
-    let parent_thread_id = parent.session.thread_id;
+    let parent_thread_id = if owned_parent {
+        parent.session.thread_id
+    } else {
+        app_server
+            .start_thread(&app.config)
+            .await?
+            .session
+            .thread_id
+    };
     app.enqueue_primary_thread_session(parent.session, parent.turns)
         .await?;
     let child_thread_id = ThreadId::from_string(
@@ -1439,18 +1460,52 @@ async fn owned_subagent_approval_before_thread_started_is_preserved() -> Result<
         /*approval_id*/ None,
     );
 
+    if matches!(&routing, ApprovalRouting::ForeignAfterMcp) {
+        send_failed_mcp_startup(&mut app, &app_server, parent_thread_id).await;
+    }
+    if !matches!(&routing, ApprovalRouting::OwnedApprovalFirst) {
+        send_failed_mcp_startup(&mut app, &app_server, child_thread_id).await;
+        let has_channel = app.thread_event_channels.contains_key(&child_thread_id);
+        assert_eq!(has_channel, owned_parent);
+    }
+
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ServerRequest(Box::new(request.clone())),
     )
     .await;
 
-    assert!(
-        app.pending_app_server_requests
-            .contains_server_request(&request)
-    );
-    assert!(app.thread_event_channels.contains_key(&child_thread_id));
+    let requests = &app.pending_app_server_requests;
+    assert_eq!(requests.contains_server_request(&request), owned_parent);
+    assert_eq!(app.chat_widget.has_active_view(), owned_parent);
+    if !owned_parent {
+        let popup = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+        let approval = popup
+            .lines()
+            .find(|line| line.contains("Would you like to run"));
+        insta::assert_snapshot!(approval.unwrap_or_default(), @"");
+    }
     Ok(())
+}
+
+async fn send_failed_mcp_startup(
+    app: &mut App,
+    app_server: &AppServerSession,
+    thread_id: ThreadId,
+) {
+    app.handle_app_server_event(
+        app_server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
+                thread_id: Some(thread_id.to_string()),
+                name: "fixture".to_string(),
+                status: McpServerStartupState::Failed,
+                error: Some("fixture failed".to_string()),
+                failure_reason: None,
+            }),
+        )),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1707,133 +1762,5 @@ async fn windows_sandbox_config_refresh_uses_connected_server() -> Result<()> {
     assert!(app.chat_widget.has_active_view());
     recovered.shutdown().await?;
     server.shutdown().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn maintenance_rejected_fresh_start_preserves_draft_for_reconnect() -> Result<()> {
-    use crate::app::reconnect::ReconnectPresentation;
-    use crate::app::reconnect::reconnect;
-    for lose_retry_response in [false, true] {
-        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-        app.pending_startup_thread_start = true;
-        app.config.model = Some("gpt-test".into());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
-        app.app_server_target = AppServerTarget::Remote {
-            endpoint: endpoint.clone(),
-        };
-        app.chat_widget
-            .restore_user_message_to_composer("preserve my request".into());
-        let id = ThreadId::new();
-        let cwd = app.config.cwd.clone();
-        let thread = serde_json::json!({"id":id, "sessionId":id, "preview":"", "ephemeral":false,
-            "modelProvider":"test-provider", "createdAt":1,"updatedAt":2,"status":{"type":"idle"},
-            "cwd":cwd,"cliVersion":"0.0.0","source":"cli","turns":[]});
-        let server = tokio::spawn(async move {
-            let mut methods = Vec::new();
-            let mut connections = tokio::task::JoinSet::new();
-            for attempt in 0..3 {
-                let (stream, _) = listener.accept().await?;
-                let thread = thread.clone();
-                let cwd = cwd.clone();
-                connections.spawn(async move { super::disconnect::serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
-                    "thread/start" if attempt < 2 => Some(serde_json::json!({"error":{"code":-32600,"message":"Server is preparing an upgrade","data":{"reason":"serverSwitching"}}})),
-                    "thread/start" if lose_retry_response => None,
-                    "thread/start" => Some(serde_json::json!({"result":{"thread":thread,"model":"gpt-test","modelProvider":"test-provider","cwd":cwd,
-                        "approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"reasoningEffort":null}})),
-                    "thread/read" => Some(serde_json::json!({"result":{"thread":thread}})),
-                    "thread/list" | "thread/loaded/list" => Some(serde_json::json!({"result":{"data":[],"nextCursor":null}})),
-                    "thread/goal/get" => Some(serde_json::json!({"result":{"goal":null}})),
-                    "skills/list" => Some(serde_json::json!({"result":{"data":[]}})),
-                    "plugin/list" => Some(serde_json::json!({"result":{"marketplaces":[],"marketplaceLoadErrors":[],"featuredPluginIds":[]}})),
-                    "turn/start" => {
-                        assert_eq!(request.params.as_ref().expect("turn/start parameters")["input"][0]["text"], "preserve my request");
-                        Some(serde_json::json!({"result":{"turn":{"id":"accepted","items":[],"status":"inProgress"}}}))
-                    }
-                    method => panic!("unexpected maintenance reconnect request: {method}"),
-                })).await });
-            }
-            while let Some(result) = connections.join_next().await {
-                methods.extend(result??);
-            }
-            Ok::<_, color_eyre::Report>(methods)
-        });
-        let mut session = AppServerSession::new(
-            crate::connect_remote_app_server(endpoint).await?,
-            ThreadParamsMode::Remote,
-        );
-        let result = crate::app_server_session::start_thread_with_request_handle(
-            session.request_handle(),
-            &app.local_settings,
-            app.config.clone(),
-            ThreadParamsMode::Remote,
-            /*remote_cwd_override*/ None,
-            session.thread_tool_transport(),
-        )
-        .await;
-        app.handle_startup_thread_started(&mut session, result)
-            .await?;
-        assert!(app.reconnect.offline);
-        assert!(app.reconnect.presentation == ReconnectPresentation::RejectedFreshStart);
-        insta::allow_duplicates! {
-            insta::assert_snapshot!("maintenance_rejected_start", render_bottom_popup(&app.chat_widget, /*width*/ 80));
-        }
-        let connected = reconnect(
-            app.app_server_target.clone(),
-            app.config.clone(),
-            app.local_settings.clone(),
-            /*thread_id*/ None,
-            /*remote_cwd*/ None,
-            session.thread_tool_transport(),
-            ReconnectPresentation::RejectedFreshStart,
-        )
-        .await;
-        if lose_retry_response {
-            assert!(
-                connected.is_err(),
-                "a lost create response must not be replayed"
-            );
-            assert_eq!(
-                app.chat_widget.composer_text_with_pending(),
-                "preserve my request"
-            );
-        } else {
-            let mut tui = crate::tui::test_support::make_test_tui()?;
-            app.finish_reconnect(&mut tui, &mut session, &mut events, connected?, "2.0.0")
-                .await?;
-            assert!(!app.reconnect.offline);
-            assert_eq!(app.primary_thread_id, Some(id));
-            assert_eq!(
-                app.chat_widget.composer_text_with_pending(),
-                "preserve my request"
-            );
-            app.handle_tui_event(
-                &mut tui,
-                &mut session,
-                TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            )
-            .await?;
-            while let Ok(event) = events.try_recv() {
-                app.handle_event(&mut tui, &mut session, event).await?;
-            }
-        }
-        session.shutdown().await?;
-        let methods = server.await??;
-        assert_eq!(
-            methods
-                .iter()
-                .filter(|method| *method == "thread/start")
-                .count(),
-            3
-        );
-        assert_eq!(
-            methods
-                .iter()
-                .filter(|method| *method == "turn/start")
-                .count(),
-            usize::from(!lose_retry_response)
-        );
-    }
     Ok(())
 }

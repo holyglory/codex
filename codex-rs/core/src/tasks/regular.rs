@@ -6,14 +6,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::session::TurnInput;
 use crate::session::session::Session;
+use crate::session::startup_prewarm::SessionStartupPrewarmResolution;
 use crate::session::turn::McpStartupRequirements;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
-use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::WarningEvent;
 use codex_thread_store::PersistContext;
 use tracing::Instrument;
 use tracing::trace_span;
@@ -50,7 +48,7 @@ impl SessionTask for RegularTask {
         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
         // not wait on startup prewarm resolution.
         let prewarmed_client_session = async {
-            sess.emit_turn_started(&ctx).await;
+            sess.emit_turn_started(&ctx, TaskKind::Regular).await;
             // Regular-start contributors run once, after the task is visible and interruptible.
             let prepares_mcp = sess
                 .services
@@ -120,17 +118,6 @@ impl SessionTask for RegularTask {
                 return Ok(last_agent_message);
             }
             if !sess.input_queue.has_pending_input(&sess.active_turn).await {
-                if ctx.automatic_account_switched() {
-                    sess.send_event(
-                        ctx.as_ref(),
-                        EventMsg::Warning(WarningEvent {
-                            message:
-                                "Automatically selected another eligible account for this turn."
-                                    .to_string(),
-                        }),
-                    )
-                    .await;
-                }
                 return Ok(last_agent_message);
             }
             next_input = Vec::new();

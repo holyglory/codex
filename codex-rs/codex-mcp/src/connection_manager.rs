@@ -5,6 +5,8 @@
 //! events, keeps server metadata, and aggregates tools and resources across
 //! running RMCP clients.
 
+#[path = "connection_manager/catalog_telemetry.rs"]
+mod catalog_telemetry;
 #[path = "connection_manager/required.rs"]
 mod required;
 #[path = "connection_manager/resources.rs"]
@@ -26,7 +28,9 @@ pub use tool_catalog::tool_is_model_visible;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -62,8 +66,10 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use codex_config::McpServerTransportConfig;
+use codex_config::McpStartupReadiness;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -86,10 +92,22 @@ pub(crate) struct McpServerConnection {
     // Startup-only budget; changing it must not replace a ready connection.
     startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
+    quarantined: AtomicBool,
+    latest_error: Mutex<Option<StartupOutcomeError>>,
     _diagnostics_guard: GaugeGuard,
 }
 
 impl McpServerConnection {
+    async fn quarantine(&self, error: &StartupOutcomeError) {
+        self.quarantined.store(true, Ordering::Release);
+        *self
+            .latest_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+        self.client.cancel_token.cancel();
+        self.client.shutdown().await;
+    }
+
     async fn reusable_client(
         &self,
         desired: &McpServerConnectionIdentity,
@@ -128,10 +146,47 @@ impl McpServerConnection {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
+        if self.quarantined.load(Ordering::Acquire) {
+            return Err(self
+                .latest_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or_else(|| StartupOutcomeError::Failed {
+                    error: "MCP server is quarantined after a terminal startup failure".to_string(),
+                    is_authentication_required: false,
+                }));
+        }
+        if let Some(error) = self.client.terminal_error() {
+            self.quarantine(&error).await;
+            return Err(error);
+        }
         if let Some(startup_trigger) = &self.startup_trigger {
             startup_trigger.send_replace(true);
         }
-        self.client.client().await
+        match self.client.client().await {
+            Ok(client) => Ok(client),
+            Err(error) if error.is_authentication_required() => {
+                self.quarantine(&error).await;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn is_quarantined(&self) -> bool {
+        self.quarantined.load(Ordering::Acquire)
+    }
+
+    fn quarantine_error(&self) -> StartupOutcomeError {
+        self.latest_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| StartupOutcomeError::Failed {
+                error: "MCP server is quarantined after a terminal startup failure".to_string(),
+                is_authentication_required: false,
+            })
     }
 
     async fn shutdown(&self) {
@@ -161,6 +216,7 @@ impl Drop for McpServerConnection {
 struct McpServerView {
     connection: Arc<McpServerConnection>,
     protocol_mode: crate::McpProtocolMode,
+    startup_readiness: McpStartupReadiness,
     metadata: McpServerMetadata,
     tool_filter: ToolFilter,
     tool_timeout: Option<Duration>,
@@ -168,11 +224,50 @@ struct McpServerView {
 }
 
 impl McpServerView {
+    fn allows_cached_startup(&self) -> bool {
+        self.startup_readiness == McpStartupReadiness::Catalog
+            || self.connection.startup_is_dormant()
+    }
+
+    fn cached_startup_tools(&self, fallback: Option<Vec<ToolInfo>>) -> Option<Vec<ToolInfo>> {
+        if self.connection.is_quarantined() || self.connection.client.terminal_error().is_some() {
+            return None;
+        }
+        self.connection
+            .client
+            .cached_tools_or(fallback)
+            .filter(|tools| self.accepts_cached_tools(tools))
+    }
+
+    fn accepts_cached_tools(&self, tools: &[ToolInfo]) -> bool {
+        self.connection.client.is_codex_apps_mcp_server
+            || match self.startup_readiness {
+                McpStartupReadiness::Connection => !tools.is_empty(),
+                McpStartupReadiness::Catalog => tools.iter().any(|tool| {
+                    self.tool_filter.allows(&tool.tool.name) && tool_is_model_visible(tool)
+                }),
+            }
+    }
+
     async fn listed_tools(
         &self,
         tool_plugin_context: &ToolPluginContext,
     ) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
-        let tools = self.connection.client.listed_tools().await?;
+        if self.connection.is_quarantined() {
+            return Err(self.connection.quarantine_error());
+        }
+        if let Some(error) = self.connection.client.terminal_error() {
+            self.connection.quarantine(&error).await;
+            return Err(error);
+        }
+        let tools = match self.connection.client.listed_tools().await {
+            Ok(tools) => tools,
+            Err(error) if error.is_authentication_required() => {
+                self.connection.quarantine(&error).await;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let tools = filter_tools(tools, &self.tool_filter);
         Ok(if self.connection.client.is_codex_apps_mcp_server {
             prepare_codex_apps_tools_for_model(tools, tool_plugin_context)
@@ -463,22 +558,17 @@ impl McpConnectionSet {
                     && previous_view.catalog_item_limit == catalog_item_limit
                     && expected_protocol_mode.is_some()
                     && previous_view.protocol_mode == protocol_mode;
-                let unchanged_auth_failure = if connection.identity.as_ref()
+                let unchanged_failure = if connection.identity.as_ref()
                     == Some(&connection_identity)
-                    && connection_identity.oauth_store_was_contended
                     && previous_view.protocol_mode == protocol_mode
                     && connection.client.startup_complete.load(Ordering::Acquire)
                 {
-                    connection
-                        .client()
-                        .await
-                        .err()
-                        .filter(StartupOutcomeError::is_authentication_required)
+                    connection.client().await.err()
                 } else {
                     None
                 };
                 if reusable_pending_startup
-                    || unchanged_auth_failure.is_some()
+                    || unchanged_failure.is_some()
                     || connection
                         .reusable_client(&connection_identity)
                         .await
@@ -496,17 +586,19 @@ impl McpConnectionSet {
                         McpServerView {
                             connection,
                             protocol_mode,
+                            startup_readiness: configured_config.startup_readiness,
                             metadata,
                             tool_filter: configured_tool_filter,
                             tool_timeout: configured_tool_timeout,
                             catalog_item_limit,
                         },
                     );
-                    if let Some(error) = unchanged_auth_failure {
+                    if let Some(error) = unchanged_failure {
                         let reason = connection_identity
                             .oauth_credentials()
                             .ok()
                             .flatten()
+                            .filter(|_| error.is_authentication_required())
                             .map(|_| McpStartupFailureReason::ReauthenticationRequired);
                         let status = McpStartupStatus::Failed {
                             error: mcp_init_error_display(
@@ -622,17 +714,21 @@ impl McpConnectionSet {
             } else {
                 (None, None)
             };
+            let connection = Arc::new(McpServerConnection {
+                identity: Some(connection_identity),
+                client: async_managed_client.clone(),
+                startup_timeout,
+                startup_trigger,
+                quarantined: AtomicBool::new(false),
+                latest_error: Mutex::new(None),
+                _diagnostics_guard: LIVE_CONNECTIONS.track(),
+            });
             servers.insert(
                 server_name.clone(),
                 McpServerView {
-                    connection: Arc::new(McpServerConnection {
-                        identity: Some(connection_identity),
-                        client: async_managed_client.clone(),
-                        startup_timeout,
-                        startup_trigger,
-                        _diagnostics_guard: LIVE_CONNECTIONS.track(),
-                    }),
+                    connection: Arc::clone(&connection),
                     protocol_mode,
+                    startup_readiness: configured_config.startup_readiness,
                     metadata,
                     tool_filter: configured_tool_filter,
                     tool_timeout: configured_tool_timeout,
@@ -642,6 +738,7 @@ impl McpConnectionSet {
             let tx_event = tx_event.clone();
             let submit_id = startup_submit_id.clone();
             let publication_gate = publication_gate.clone();
+            let connection_for_startup = Arc::clone(&connection);
             let startup = async move {
                 if let Some(mut startup_receiver) = startup_receiver
                     && tokio::select! {
@@ -740,12 +837,19 @@ impl McpConnectionSet {
                     outcome = Err(StartupOutcomeError::Cancelled);
                 }
 
+                if let Err(error) = &outcome
+                    && error.is_authentication_required()
+                {
+                    connection_for_startup.quarantine(error).await;
+                }
+
                 if matches!(&outcome, Err(StartupOutcomeError::Failed { .. })) {
                     async_managed_client.reconnect_failed_startup().await;
                 }
 
                 (server_name, outcome)
             };
+            let startup = AuthStorageOriginator::current().scope(startup);
             if defer_startup {
                 // Dormant servers must not hold the initial startup summary open.
                 tokio::spawn(startup);
@@ -867,15 +971,18 @@ impl McpConnectionSet {
             return Vec::new();
         }
 
+        let originator = AuthStorageOriginator::current();
         match tokio::task::spawn_blocking(move || {
-            candidates
-                .into_iter()
-                .filter_map(|(server_name, identity, config)| {
-                    identity
-                        .oauth_credentials_changed(&server_name, &config)
-                        .then_some(server_name)
-                })
-                .collect()
+            originator.sync_scope(|| {
+                candidates
+                    .into_iter()
+                    .filter_map(|(server_name, identity, config)| {
+                        identity
+                            .oauth_credentials_changed(&server_name, &config)
+                            .then_some(server_name)
+                    })
+                    .collect()
+            })
         })
         .await
         {
@@ -1023,9 +1130,12 @@ impl McpConnectionSet {
     /// Returns presentation metadata from the current connection.
     /// Codex Apps metadata may come from its existing cache; regular MCP server information is
     /// connection-specific, so pending regular clients are awaited.
-    pub(crate) async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
+    pub(crate) async fn list_available_server_infos(
+        &self,
+        include_server: impl Fn(&str) -> bool,
+    ) -> HashMap<String, McpServerInfo> {
         let mut server_infos = HashMap::new();
-        for (server_name, view) in &self.servers {
+        for (server_name, view) in self.servers.iter().filter(|(name, _)| include_server(name)) {
             let client = &view.connection.client;
             if !client.startup_complete.load(Ordering::Acquire)
                 && let Some(server_info) = client.cached_server_info.clone()

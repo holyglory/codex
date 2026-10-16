@@ -73,7 +73,6 @@ pub(crate) struct UsageRuntime {
     process_id: ProcessId,
     process_started_at_ms: i64,
     store: OnceCell<Arc<UsageStore>>,
-    alarm_store: StdOnceLock<codex_state::SqliteEventSubscriptionStore>,
     faulted: AtomicBool,
     fault_generation: AtomicU64,
     fault_recovery_allowed: AtomicBool,
@@ -85,6 +84,7 @@ pub(crate) struct UsageRuntime {
     repository_state: repository::TurnRepositoryState,
     tool_state: tool::ToolRuntimeState,
     work_contexts: Mutex<HashMap<String, codex_usage::OperationWorkContext>>,
+    alarm_store: StdOnceLock<codex_state::SqliteEventSubscriptionStore>,
 }
 
 impl fmt::Debug for UsageRuntime {
@@ -171,6 +171,7 @@ pub(crate) struct UsageAttempt {
     hosted_seen: std::sync::Mutex<HashSet<String>>,
     repository_ids: Vec<codex_usage::RepositoryId>,
     repository_bucket: RepositoryBucket,
+    worktree_id: Option<codex_usage::WorktreeId>,
     pending: Arc<buffer::PendingModelAttempt>,
     durable: bool,
 }
@@ -182,7 +183,6 @@ impl UsageRuntime {
             process_id: ProcessId::new(),
             process_started_at_ms: now_ms(),
             store: OnceCell::new(),
-            alarm_store: StdOnceLock::new(),
             faulted: AtomicBool::new(false),
             fault_generation: AtomicU64::new(0),
             fault_recovery_allowed: AtomicBool::new(true),
@@ -194,7 +194,73 @@ impl UsageRuntime {
             repository_state: repository::TurnRepositoryState::default(),
             tool_state: tool::ToolRuntimeState::default(),
             work_contexts: Mutex::new(HashMap::new()),
+            alarm_store: StdOnceLock::new(),
         })
+    }
+
+    /// Records the durable thread and turn boundary before model work begins.
+    ///
+    /// Usage capture is observational: callers may ignore failures here and continue the model
+    /// request. The boundary lets reports account for turns that never reach a provider request.
+    pub(crate) async fn record_turn_started(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        parent_thread_id: Option<&str>,
+        created_at_ms: i64,
+    ) -> Result<(), CodexErr> {
+        let store = self.store().await?;
+        let thread = ThreadId::new(thread_id).map_err(|_| self.reject_invalid_metadata())?;
+        let parent_thread = parent_thread_id
+            .map(ThreadId::new)
+            .transpose()
+            .map_err(|_| self.reject_invalid_metadata())?;
+        let parent_thread = match parent_thread {
+            Some(parent)
+                if self
+                    .write_required(store.thread_created_at(&parent).await)?
+                    .is_some() =>
+            {
+                Some(parent)
+            }
+            Some(_) | None => None,
+        };
+        self.ensure_thread(
+            &store,
+            NewThread {
+                id: thread.clone(),
+                parent_thread_id: parent_thread,
+                source_kind: ThreadSourceKind::new(if parent_thread_id.is_some() {
+                    "delegated"
+                } else {
+                    "root"
+                })
+                .map_err(|_| self.reject_invalid_metadata())?,
+                created_at_ms,
+            },
+        )
+        .await?;
+        let turn = TurnId::new(turn_id).map_err(|_| self.reject_invalid_metadata())?;
+        self.ensure_turn(
+            &store,
+            NewTurn {
+                id: turn.clone(),
+                thread_id: thread,
+                account: AccountAttributionSnapshot::default(),
+                created_at_ms,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_turn_finished(
+        &self,
+        turn_id: &str,
+        _status: TerminalStatus,
+    ) -> Result<(), CodexErr> {
+        let _ = TurnId::new(turn_id).map_err(|_| self.reject_invalid_metadata())?;
+        Ok(())
     }
 
     async fn begin_model_attempt_once(
@@ -426,6 +492,7 @@ impl UsageRuntime {
             hosted_seen: std::sync::Mutex::new(HashSet::new()),
             repository_ids: repository_resolution.ids,
             repository_bucket: repository_resolution.bucket,
+            worktree_id: repository_resolution.worktree_id,
             pending,
             durable: true,
         })
@@ -688,12 +755,6 @@ impl UsageAttempt {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.runtime
-            .alarm_work(
-                self.operation_id,
-                codex_event_subscriptions::AlarmWorkEvent::Finish,
-            )
-            .await;
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let Some(finish) = self.pending.finish(
             status,
@@ -872,6 +933,8 @@ pub(crate) fn usage_account_snapshot(
 #[path = "usage_runtime_tests.rs"]
 mod tests;
 
+#[path = "usage_runtime_alarm.rs"]
+mod alarm;
 #[path = "usage_runtime_buffer.rs"]
 mod buffer;
 #[path = "usage_runtime_recovery.rs"]
@@ -885,7 +948,5 @@ pub(crate) use repository::model_repository_candidates;
 pub(crate) use repository::repository_safe_label;
 pub(crate) use tool::ToolAttemptContext;
 pub(crate) use tool::UsageActivityRelation;
+pub(crate) use tool::UsageToolAttempt;
 pub(crate) use tool::UsageToolDescriptor;
-
-#[path = "usage_runtime_alarm.rs"]
-mod alarm;

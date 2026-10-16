@@ -133,7 +133,9 @@ pub(super) async fn cost(
     let compact = source != super::ReportSource::Canonical
         && query.time_range.is_none()
         && family.is_none()
-        && query.account_profile_ref.is_none();
+        && query.account_profile_ref.is_none()
+        && query.include_unassigned_worktrees
+        && query.worktree_ids.is_none();
     let mut sql = QueryBuilder::<Sqlite>::new("WITH bounds AS (SELECT ");
     sql.push_bind(query.time_range.map(crate::UtcTimeRange::start_ms))
         .push(" AS start_ms, ")

@@ -1,15 +1,16 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use codex_analytics::TurnAnalyticsMetadata;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::TurnStartPhase;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 
 use crate::session::session::Session;
-use crate::session::turn::TurnErrorAfterResponseStarted;
 use crate::session::turn_context::TurnContext;
 
 impl Session {
@@ -23,9 +24,7 @@ impl Session {
             .services
             .thread_extension_data
             .get_or_init(codex_event_subscriptions::SubscriptionRunState::default);
-        wake_run
-            .running
-            .store(/*val*/ true, std::sync::atomic::Ordering::Release);
+        wake_run.running.store(true, Ordering::Release);
         if let Some(origin) = turn_context
             .extension_data
             .get::<codex_event_subscriptions::SubscriptionWorkOrigin>()
@@ -35,7 +34,7 @@ impl Session {
                     *origin,
                     codex_event_subscriptions::SubscriptionWorkOrigin::UserWork
                 ),
-                std::sync::atomic::Ordering::Release,
+                Ordering::Release,
             );
         }
         if turn_context
@@ -106,11 +105,8 @@ impl Session {
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return;
         }
-        self.services
-            .thread_extension_data
-            .get_or_init(codex_event_subscriptions::SubscriptionRunState::default)
-            .running
-            .store(/*val*/ false, std::sync::atomic::Ordering::Release);
+
+        wake_run.running.store(/*val*/ false, Ordering::Release);
         self.clear_subscription_wake_inputs().await;
         drop(active_turn);
         drop(dispatch);
@@ -147,18 +143,37 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         error: CodexErrorInfo,
+        error_details: &CodexErrorDetails,
     ) {
-        let retryable_before_response = turn_context
-            .extension_data
-            .get::<TurnErrorAfterResponseStarted>()
-            .is_none();
+        if matches!(&error, CodexErrorInfo::ServerOverloaded)
+            && matches!(error_details, CodexErrorDetails::ServerOverloaded)
+        {
+            turn_context
+                .extension_data
+                .insert(codex_event_subscriptions::CapacityRetryContext {
+                    retryable_before_response: turn_context
+                        .extension_data
+                        .get::<codex_api::ResponseId>()
+                        .is_none(),
+                    guardian_review: matches!(
+                        &turn_context.session_source,
+                        codex_protocol::protocol::SessionSource::Internal(
+                            codex_protocol::protocol::InternalSessionSource::Guardian
+                        )
+                    ) || matches!(
+                        &turn_context.session_source,
+                        codex_protocol::protocol::SessionSource::SubAgent(
+                            codex_protocol::protocol::SubAgentSource::Other(label)
+                        ) if label == "guardian"
+                    ),
+                });
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {
                     turn_id: turn_context.sub_id.as_str(),
                     error: error.clone(),
-                    session_source: &turn_context.session_source,
-                    retryable_before_response,
+                    error_details,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),

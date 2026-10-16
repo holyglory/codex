@@ -4,6 +4,7 @@
 //! limits, add-credit nudges, and feedback uploads. Results are routed back through `AppEvent` so
 //! the main event loop remains single-threaded.
 
+use super::feedback_upload::fetch_feedback_upload;
 use super::plugin_mentions::fetch_plugin_mentions;
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
@@ -63,6 +64,7 @@ use codex_app_server_protocol::MarketplaceRemoveParams;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
+use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::RequestId;
 
 use crate::hooks_rpc::fetch_hooks_list;
@@ -80,8 +82,36 @@ const RATE_LIMIT_RESET_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const WORKSPACE_HEADLINE_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(/*millis*/ 2000);
+const SKILLS_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(/*secs*/ 15);
 
 impl App {
+    pub(super) fn start_mcp_login(
+        &self,
+        app_server: &AppServerSession,
+        request_id: String,
+        name: String,
+        thread_id: ThreadId,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = request_handle
+                .request_typed(ClientRequest::McpServerOauthLogin {
+                    request_id: RequestId::String(request_id.clone()),
+                    params: McpServerOauthLoginParams {
+                        name,
+                        thread_id: Some(thread_id.to_string()),
+                        client_registration: None,
+                        scopes: None,
+                        timeout_secs: None,
+                    },
+                })
+                .await
+                .map_err(|error| error.to_string());
+            app_event_tx.send(AppEvent::McpLoginStarted { request_id, result });
+        });
+    }
+
     pub(super) fn fetch_mcp_inventory(
         &mut self,
         app_server: &AppServerSession,
@@ -324,9 +354,18 @@ impl App {
         let app_event_tx = self.app_event_tx.clone();
         let cwd = self.config.cwd.to_path_buf();
         tokio::spawn(async move {
-            let result = fetch_skills_list(request_handle, cwd.clone())
-                .await
-                .map_err(|err| format!("{err:#}"));
+            let result = match tokio::time::timeout(
+                SKILLS_FETCH_TIMEOUT,
+                fetch_skills_list(request_handle, cwd.clone()),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|err| format!("{err:#}")),
+                Err(_) => Err(format!(
+                    "skills/list exceeded the {} second startup budget",
+                    SKILLS_FETCH_TIMEOUT.as_secs()
+                )),
+            };
             app_event_tx.send(AppEvent::SkillsListLoaded { cwd, result });
         });
     }
@@ -700,8 +739,10 @@ impl App {
             turn_id,
             include_logs,
         );
+        let codex_home = app_server.codex_home_path(&self.config.codex_home);
+        let feedback = self.feedback.clone();
         tokio::spawn(async move {
-            let result = fetch_feedback_upload(request_handle, params)
+            let result = fetch_feedback_upload(request_handle, codex_home, params, feedback)
                 .await
                 .map(|response| response.thread_id)
                 .map_err(|err| err.to_string());
@@ -842,23 +883,6 @@ impl App {
     }
 }
 
-fn classify_account_profiles_error(error: &str) -> AccountProfilesError {
-    let error = error.to_ascii_lowercase();
-    if error.contains("account alias is already in use") {
-        AccountProfilesError::AliasInUse
-    } else if error.contains("account alias is invalid") {
-        AccountProfilesError::AliasInvalid
-    } else if error.contains("account note is invalid")
-        || error.contains("note and clearnote cannot be used together")
-    {
-        AccountProfilesError::NoteInvalid
-    } else if error.contains("account priority is invalid") {
-        AccountProfilesError::PriorityInvalid
-    } else {
-        AccountProfilesError::Unavailable
-    }
-}
-
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
     detail: McpServerStatusDetail,
@@ -878,6 +902,7 @@ pub(super) async fn fetch_all_mcp_server_statuses(
                     limit: Some(100),
                     detail: Some(detail),
                     thread_id: thread_id.clone(),
+                    server_name: None,
                 },
             })
             .await
@@ -945,6 +970,23 @@ pub(super) async fn fetch_thread_usage(
         .unwrap_or(ThreadUsageOutcome::Disabled))
 }
 
+fn classify_account_profiles_error(error: &str) -> AccountProfilesError {
+    let error = error.to_ascii_lowercase();
+    if error.contains("account alias is already in use") {
+        AccountProfilesError::AliasInUse
+    } else if error.contains("account alias is invalid") {
+        AccountProfilesError::AliasInvalid
+    } else if error.contains("account note is invalid")
+        || error.contains("note and clearnote cannot be used together")
+    {
+        AccountProfilesError::NoteInvalid
+    } else if error.contains("account priority is invalid") {
+        AccountProfilesError::PriorityInvalid
+    } else {
+        AccountProfilesError::Unavailable
+    }
+}
+
 async fn fetch_local_usage(
     request_handle: AppServerRequestHandle,
     query: LocalUsageQuery,
@@ -955,6 +997,8 @@ async fn fetch_local_usage(
             .request_typed::<LocalUsageSummaryResponse>(ClientRequest::LocalUsageSummary {
                 request_id,
                 params: LocalUsageSummaryParams {
+                    worktree_keys: None,
+                    include_unassigned: None,
                     repository_key: None,
                     thread_id: None,
                     account_id: None,
@@ -1646,17 +1690,6 @@ pub(super) fn build_feedback_upload_params(
     }
 }
 
-pub(super) async fn fetch_feedback_upload(
-    request_handle: AppServerRequestHandle,
-    params: FeedbackUploadParams,
-) -> Result<FeedbackUploadResponse> {
-    let request_id = RequestId::String(format!("feedback-upload-{}", Uuid::new_v4()));
-    request_handle
-        .request_typed(ClientRequest::FeedbackUpload { request_id, params })
-        .await
-        .wrap_err("feedback/upload failed in TUI")
-}
-
 /// Convert flat `McpServerStatus` responses into the per-server maps used by the
 /// in-process MCP subsystem (tools keyed as `mcp__{server}__{tool}`, plus
 /// per-server resource/template/auth maps). Test-only because the TUI
@@ -2068,25 +2101,5 @@ mod tests {
         assert_eq!(params.tags, None);
         assert_eq!(params.include_logs, false);
         assert_eq!(params.extra_log_files, None);
-    }
-
-    #[test]
-    fn account_profile_errors_are_reduced_to_content_free_editor_categories() {
-        assert_eq!(
-            classify_account_profiles_error("rpc failed: account alias is already in use"),
-            AccountProfilesError::AliasInUse
-        );
-        assert_eq!(
-            classify_account_profiles_error("rpc failed: account alias is invalid"),
-            AccountProfilesError::AliasInvalid
-        );
-        assert_eq!(
-            classify_account_profiles_error("rpc failed: account note is invalid"),
-            AccountProfilesError::NoteInvalid
-        );
-        assert_eq!(
-            classify_account_profiles_error("private backend detail"),
-            AccountProfilesError::Unavailable
-        );
     }
 }

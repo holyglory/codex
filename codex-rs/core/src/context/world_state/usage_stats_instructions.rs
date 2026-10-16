@@ -1,5 +1,7 @@
 use super::PreviousSectionState;
+use super::SectionTransition;
 use super::WorldStateSection;
+use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
@@ -26,10 +28,6 @@ impl ContextualUserFragment for UsageStatsInstructionsState {
         "developer"
     }
 
-    fn requires_separate_message(&self) -> bool {
-        true
-    }
-
     fn markers(&self) -> (&'static str, &'static str) {
         Self::type_markers()
     }
@@ -47,10 +45,6 @@ impl WorldStateSection for UsageStatsInstructionsState {
     const ID: &'static str = "usage_stats_instructions";
     type Snapshot = bool;
 
-    fn snapshot(&self) -> Self::Snapshot {
-        self.available
-    }
-
     fn matches_legacy_fragment(role: &str, text: &str) -> bool {
         role == "developer" && Self::matches_text(text)
     }
@@ -66,15 +60,18 @@ impl WorldStateSection for UsageStatsInstructionsState {
     fn render_diff(
         &self,
         previous: PreviousSectionState<'_, Self::Snapshot>,
-    ) -> Option<Box<dyn ContextualUserFragment>> {
+    ) -> SectionTransition<Self::Snapshot> {
         if !self.available
             || matches!(previous, PreviousSectionState::Known(previous) if *previous)
             || matches!(previous, PreviousSectionState::Unknown)
         {
-            return None;
+            return (Some(self.available), Vec::new());
         }
 
-        Some(Box::new(*self))
+        (
+            Some(self.available),
+            vec![WorldStateUpdate::fragment(*self)],
+        )
     }
 }
 

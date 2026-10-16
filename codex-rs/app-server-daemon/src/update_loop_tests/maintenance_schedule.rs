@@ -74,7 +74,7 @@ async fn manual_update_schedules_cooperative_activation_without_claiming_serving
     let result = manual_update_once(
         &no_op,
         &daemon,
-        &executable_identity_from_bytes(b"updater"),
+        &executable_identity_from_reader(&b"updater"[..]).expect("updater identity"),
         &mut test_terminate(),
         super::super::UpdateTrigger::Manual,
     )

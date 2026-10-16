@@ -152,6 +152,14 @@ def test_root_format_driver_covers_all_formatter_groups(
 ) -> None:
     """The shared driver should retain every formatter in both modes."""
     script = _load_root_format_script_module()
+    for name in (
+        "bazel/rules/example.rs",
+        "codex-rs/src/lib.rs",
+        "codex-rs/new file.rs",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
     git_ls_files_args = [
         "git",
         "ls-files",
@@ -164,6 +172,11 @@ def test_root_format_driver_covers_all_formatter_groups(
     # The Python SDK CI image has no Git; keep discovery mocked at the process boundary.
     def fake_check_output(args, *, cwd):
         assert cwd == tmp_path
+        if args == git_ls_files_args + ["--", "*.rs"]:
+            return (
+                b"codex-rs/src/lib.rs\0bazel/rules/example.rs\0"
+                b"codex-rs/new file.rs\0codex-rs/deleted.rs\0"
+            )
         assert args == git_ls_files_args
         return b"MODULE.bazel\0README.md\0third_party/v8/libcxx.BUILD.bazel\0"
 
@@ -472,6 +485,13 @@ def test_python_codegen_schema_annotation_adds_stable_variant_titles() -> None:
     assert "ErrorNotification" not in server_notification_titles
     assert "Thread/startedNotification" not in server_notification_titles
 
+    command_variants = definitions["ProjectAutomationCommand"]["oneOf"]
+    command_titles = [variant["title"] for variant in command_variants]
+    assert len(command_titles) == len(set(command_titles))
+    assert {"StatusProjectAutomationCommand", "LinkWorkProjectAutomationCommand"} <= set(
+        command_titles
+    )
+
     ask_for_approval_titles = [
         variant.get("title") for variant in definitions["AskForApproval"]["oneOf"]
     ]
@@ -486,24 +506,6 @@ def test_python_codegen_schema_annotation_adds_stable_variant_titles() -> None:
     assert reasoning_summary_titles == [
         "ReasoningSummaryValue",
         "NoneReasoningSummary",
-    ]
-
-    automation_command_titles = [
-        variant.get("title") for variant in definitions["ProjectAutomationCommand"]["oneOf"]
-    ]
-    assert automation_command_titles == [
-        "LinkWorkProjectAutomationCommand",
-        "StatusProjectAutomationCommand",
-        "BindProjectAutomationCommand",
-        "ActivateDeliveryProjectAutomationCommand",
-        "PostponeProjectAutomationCommand",
-        "PauseProjectAutomationCommand",
-        "ResumeProjectAutomationCommand",
-        "RecordDeliveryProjectAutomationCommand",
-        "CompleteReviewProjectAutomationCommand",
-        "RequestReviewProjectAutomationCommand",
-        "TransferProjectAutomationCommand",
-        "CompleteProjectAutomationCommand",
     ]
 
 

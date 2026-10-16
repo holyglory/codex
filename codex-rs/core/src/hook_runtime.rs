@@ -725,22 +725,35 @@ pub(crate) async fn record_pending_input(
         TurnInput::UserInput {
             content,
             client_id,
-            acceptance_order,
+            metadata,
         } => {
             sess.record_user_prompt_and_emit_turn_item(
                 turn_context.as_ref(),
                 model_info,
                 content.as_slice(),
                 client_id,
-                acceptance_order,
+                metadata,
                 persist_context,
             )
             .await;
         }
         TurnInput::ResponseItem(item) => {
-            sess.record_annotated_conversation_items(turn_context, model_info, vec![item.clone()])
+            let wake_item = item.item.clone();
+            let is_subscription_wake = matches!(
+                &item.item,
+                ResponseItem::Message { role, content, .. }
+                    if role == "developer"
+                        && content.iter().any(|content| matches!(
+                            content,
+                            codex_protocol::models::ContentItem::InputText { text }
+                                if crate::context::EventSubscriptionWakeContext::matches_text(text)
+                        ))
+            );
+            sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
                 .await;
-            sess.record_subscription_wake_delivery(&item.item).await;
+            if is_subscription_wake {
+                sess.record_subscription_wake_delivery(&wake_item).await;
+            }
         }
         TurnInput::FunctionCallOutput(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item.clone()])
@@ -767,6 +780,7 @@ pub(crate) async fn record_pending_input(
         TurnInput::InterAgentCommunication(communication) => {
             sess.record_inter_agent_communication(turn_context, model_info, communication)
                 .await;
+            sess.ensure_rollout_materialized(persist_context).await;
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;

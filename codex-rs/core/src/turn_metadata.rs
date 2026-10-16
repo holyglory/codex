@@ -50,6 +50,10 @@ const REASONING_EFFORT_KEY: &str = "reasoning_effort";
 const USER_INPUT_REQUESTED_DURING_TURN_KEY: &str = "user_input_requested_during_turn";
 const WORKSPACE_KIND_KEY: &str = "workspace_kind";
 
+fn is_targeted_continuation(value: &str) -> bool {
+    serde_json::from_str::<Value>(value).is_ok_and(|value| value.get("review_target").is_some())
+}
+
 /// Captured execution settings shared by Responses and MCP metadata.
 pub(crate) struct ExecutionMetadata<'a> {
     pub(crate) model: &'a str,
@@ -140,7 +144,6 @@ pub async fn detached_memory_responses_metadata(
         turn_trigger: Some("memory_consolidation".to_owned()),
         subagent_header: subagent_header_value(session_source),
         sandbox: sandbox.map(ToString::to_string),
-        local_usage_workspace: Some(cwd.clone()),
         workspaces: memory_workspaces(
             cwd,
             thread_manager.git_root_discovery().discover(cwd.clone()),
@@ -274,6 +277,14 @@ impl TurnMetadataState {
         execution: ExecutionMetadata<'_>,
     ) -> Option<serde_json::Value> {
         let mut responses_metadata = self.mcp_metadata_template();
+        if responses_metadata
+            .extra
+            .get("misalignment_override")
+            .is_some_and(|value| is_targeted_continuation(value))
+        {
+            // A review target is for Responses admission, not external tools or hooks.
+            responses_metadata.extra.remove("misalignment_override");
+        }
         execution.apply_to(&mut responses_metadata);
         // Never serialize harness-owned tool inventory for external MCP servers.
         responses_metadata.tool_namespaces_info = None;
@@ -307,11 +318,22 @@ impl TurnMetadataState {
         window_id: String,
         request_kind: CodexResponsesRequestKind,
     ) -> CodexResponsesMetadata {
+        let mut metadata = self.responses_metadata_template();
+        if matches!(request_kind, CodexResponsesRequestKind::Compaction(_))
+            && metadata
+                .extra
+                .get("misalignment_override")
+                .is_some_and(|value| is_targeted_continuation(value))
+        {
+            // Target-based intent belongs to the pending turn, not compaction. Preserve the
+            // legacy timestamp path until servers can admit pre-turn compaction separately.
+            metadata.extra.remove("misalignment_override");
+        }
         CodexResponsesMetadata {
             installation_id,
             window_id,
             request_kind: Some(request_kind),
-            ..self.responses_metadata_template()
+            ..metadata
         }
     }
 
@@ -361,43 +383,36 @@ impl TurnMetadataState {
         self.root_turn_id.get().cloned()
     }
 
-    pub(crate) fn can_start_root_turn(&self, session_source: &SessionSource) -> bool {
-        if session_source.is_non_root_agent() {
-            return false;
-        }
-        match &self.thread_source {
-            Some(
-                ThreadSource::Subagent
-                | ThreadSource::GuardianReview
-                | ThreadSource::MemoryConsolidation,
-            ) => false,
-            Some(ThreadSource::Feature(feature)) => {
-                !matches!(feature.as_str(), "system" | "title") && !feature.starts_with("ambient")
-            }
-            Some(ThreadSource::User) | None => true,
-        }
-    }
-
     pub(crate) fn set_responsesapi_client_metadata(
         &self,
         responsesapi_client_metadata: HashMap<String, String>,
     ) {
-        *self
+        let mut metadata = filter_extra_metadata(responsesapi_client_metadata);
+        let mut current = self
             .responsesapi_client_metadata
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            filter_extra_metadata(responsesapi_client_metadata);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(continuation) = current
+            .get("misalignment_override")
+            .filter(|value| is_targeted_continuation(value))
+        {
+            // Steering may update other metadata, but cannot replace the reviewed block.
+            metadata.insert("misalignment_override".to_string(), continuation.clone());
+        }
+        *current = metadata;
     }
 
     pub(crate) fn set_responses_api_metadata(
         &self,
         responses_api_metadata: BTreeMap<String, String>,
     ) {
+        let mut metadata = filter_extra_metadata(responses_api_metadata);
+        // Only explicit per-turn metadata can acknowledge a reviewed block.
+        metadata.remove("misalignment_override");
         *self
             .responses_api_metadata
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            filter_extra_metadata(responses_api_metadata);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
     }
 
     pub(crate) fn workspace_kind(&self) -> Option<String> {
@@ -459,7 +474,6 @@ impl TurnMetadataState {
             auto_review_enabled: Some(self.auto_review_enabled),
             node_repl_auto_review_required: Some(self.node_repl_auto_review_required),
             node_repl_disabled: Some(self.node_repl_disabled),
-            local_usage_workspace: Some(self.cwd.clone()),
             workspaces: self.current_workspaces(),
             tool_namespaces_info: None,
             turn_started_at_unix_ms: self.current_turn_started_at_unix_ms(),

@@ -14,8 +14,12 @@ async fn private_tmp_mount_preserves_daemon_socket_isolation() {
     let private = tempfile::tempdir_in("/tmp").unwrap();
     let test_executable = std::env::current_exe().unwrap();
     // Keep both executables available after the original /tmp is hidden.
-    std::fs::copy(&test_executable, private.path().join("test")).unwrap();
-    std::fs::copy(codex_linux_sandbox_exe(), private.path().join("sandbox")).unwrap();
+    codex_utils_cargo_bin::copy_executable(&test_executable, &private.path().join("test")).unwrap();
+    codex_utils_cargo_bin::copy_executable(
+        &codex_linux_sandbox_exe(),
+        &private.path().join("sandbox"),
+    )
+    .unwrap();
     let (_, test_module) = module_path!().split_once("::").unwrap();
     let fixture_test = format!("{test_module}::private_tmp_fixture");
     // Mount setup needs capabilities, which bubblewrap only accepts as namespace root.
@@ -76,15 +80,6 @@ fn private_tmp_fixture() {
         .unwrap();
     assert!(mount.status.success(), "{mount:?}");
     let root = codex_uds::prepare_shared_daemon_socket_directory().unwrap();
-    // The outer test runner may back /tmp with a disk also mounted elsewhere.
-    // Isolate the reserved socket root so the valid case has no such alias;
-    // the explicit alias below still exercises fail-closed detection.
-    let mount = std::process::Command::new("mount")
-        .args(["-t", "tmpfs", "-o", "mode=0700", "tmpfs"])
-        .arg(&root)
-        .output()
-        .unwrap();
-    assert!(mount.status.success(), "{mount:?}");
     let endpoint = root.join("rpc.sock");
     let _daemon = UnixListener::bind(&endpoint).unwrap();
     let _other = UnixListener::bind("/tmp/other.sock").unwrap();
@@ -129,13 +124,7 @@ fn private_tmp_fixture() {
     let alias_endpoint = PathBuf::from("/tmp/build")
         .join(root.file_name().unwrap())
         .join("rpc.sock");
-    if let Err(error) = UnixStream::connect(&alias_endpoint) {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            eprintln!("skipping private tmp alias check: bind mount did not expose the alias");
-            std::process::exit(77);
-        }
-        panic!("host can reach ancestor alias: {error}");
-    }
+    UnixStream::connect(&alias_endpoint).expect("host can reach ancestor alias");
     command
         .env("CODEX_TEST_DAEMON_ALIAS_SOCKET", &alias_endpoint)
         .env("CODEX_TEST_OTHER_ALIAS_SOCKET", "/tmp/build/other.sock");

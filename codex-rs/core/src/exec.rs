@@ -1033,7 +1033,11 @@ async fn consume_output(
             match outcome {
                 Some(ExecExpirationOutcome::TimedOut) => {
                     kill_child_process_group(&mut child)?;
-                    child.start_kill()?;
+                    if let Err(error) = child.start_kill()
+                        && error.kind() != io::ErrorKind::NotFound
+                    {
+                        return Err(error.into());
+                    }
                     (
                         synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE),
                         true,
@@ -1066,7 +1070,14 @@ async fn consume_output(
                             if let Some(process_group_id) = process_group_id {
                                 kill_process_group(process_group_id)?;
                             }
-                            child.start_kill()?;
+                            // The process-group kill can reap the leader before
+                            // Tokio's direct kill reaches it. Treat that expected
+                            // cleanup race as success and preserve other errors.
+                            if let Err(error) = child.start_kill()
+                                && error.kind() != io::ErrorKind::NotFound
+                            {
+                                return Err(error.into());
+                            }
                         }
                     }
                     (synthetic_exit_status_for_code(/*code*/ 1), false)

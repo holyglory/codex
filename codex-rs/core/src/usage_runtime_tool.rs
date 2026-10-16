@@ -69,6 +69,8 @@ pub(crate) struct ToolAttemptContext<'a> {
     pub(crate) turn_id: Option<&'a str>,
     pub(crate) delegated: bool,
     pub(crate) call_id: &'a str,
+    /// Exact routing name used only for result alarms, never as a usage fact.
+    pub(crate) alarm_tool_name: &'a str,
     pub(crate) cancellation_token: tokio_util::sync::CancellationToken,
     pub(crate) descriptor: UsageToolDescriptor,
     pub(crate) execution_group_id: Option<ToolExecutionGroupId>,
@@ -340,14 +342,14 @@ impl UsageRuntime {
             runtime: Arc::clone(self),
             operation_id,
             key,
-            source_event_id: FactEventId::new(),
-            started: Instant::now(),
-            finished: AtomicBool::new(false),
             alarm_context: (
                 context.thread_id.into(),
                 context.call_id.into(),
-                context.descriptor.safe_name.into(),
+                context.alarm_tool_name.into(),
             ),
+            source_event_id: FactEventId::new(),
+            started: Instant::now(),
+            finished: AtomicBool::new(false),
             cancellation_token: context.cancellation_token.clone(),
             repository_bucket: repository_resolution.bucket,
             pending,
@@ -444,11 +446,6 @@ impl UsageRuntime {
             finished: AtomicBool::new(false),
             event_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         };
-        self.alarm_work(
-            active.operation_id,
-            codex_event_subscriptions::AlarmWorkEvent::Wait,
-        )
-        .await;
         if !active.durable {
             tracing::warn!(
                 stage = "tool_wait_span",
@@ -713,10 +710,6 @@ fn promote_staged_activity(declaration: &mut ActivityDeclaration) {
 }
 
 impl UsageToolAttempt {
-    pub(crate) fn set_alarm_tool_name(&mut self, name: &str) {
-        self.alarm_context.2 = name.to_owned();
-    }
-
     pub(crate) async fn record_provider_usage(&self, usage: &ProviderUsage) {
         let observations = self.pending.record_provider_usage(
             self.source_event_id,
@@ -957,14 +950,7 @@ impl UsageWaitSpan {
     }
 
     async fn record_event(&self, kind: codex_usage::ActivitySpanEventKind) {
-        if matches!(kind, codex_usage::ActivitySpanEventKind::Ended) {
-            self.runtime
-                .alarm_work(
-                    self.operation_id,
-                    codex_event_subscriptions::AlarmWorkEvent::Resume,
-                )
-                .await;
-        }
+        matches!(kind, codex_usage::ActivitySpanEventKind::Ended);
         if !self.record_detail {
             return;
         }
@@ -1002,12 +988,6 @@ impl Drop for UsageWaitSpan {
         let operation_id = self.operation_id;
         let event_gate = Arc::clone(&self.event_gate);
         drop(handle.spawn(async move {
-            runtime
-                .alarm_work(
-                    operation_id,
-                    codex_event_subscriptions::AlarmWorkEvent::Resume,
-                )
-                .await;
             if !record_detail {
                 return;
             }
@@ -1133,6 +1113,7 @@ impl UsageAttempt {
         let repository_resolution = repository::RepositoryResolution {
             ids: self.repository_ids.clone(),
             bucket: self.repository_bucket.clone(),
+            worktree_id: self.worktree_id.clone(),
         };
         let writes = async {
             store

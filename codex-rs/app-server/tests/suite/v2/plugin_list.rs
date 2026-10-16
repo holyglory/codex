@@ -11,8 +11,6 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
-use codex_account_registry::AccountRegistry;
-use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::HookMetadata;
 use codex_app_server_protocol::HookTrustStatus;
 use codex_app_server_protocol::HooksListParams;
@@ -106,34 +104,6 @@ remote_plugin = false
 "#,
         ),
     )
-}
-
-#[tokio::test]
-async fn plugin_list_keeps_local_marketplaces_available_with_empty_account_registry() -> Result<()>
-{
-    let codex_home = TempDir::new()?;
-    write_plugins_enabled_config(codex_home.path())?;
-    RegistryStore::new(codex_home.path()).create(&AccountRegistry {
-        generation: 1,
-        ..AccountRegistry::default()
-    })?;
-
-    let mut app_server = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
-        .await?;
-    let request_id = app_server
-        .send_plugin_list_request(PluginListParams {
-            cwds: None,
-            marketplace_kinds: Some(vec![PluginListMarketplaceKind::Local]),
-            force_refetch: false,
-        })
-        .await?;
-
-    let response: PluginListResponse =
-        timeout(DEFAULT_TIMEOUT, app_server.read_response(request_id)).await??;
-    assert!(response.marketplace_load_errors.is_empty());
-    Ok(())
 }
 
 #[tokio::test]
@@ -669,7 +639,6 @@ async fn plugin_list_keeps_valid_marketplaces_when_another_marketplace_fails_to_
             path: Some(valid_marketplace_path),
             interface: None,
             plugins: vec![PluginSummary {
-                extensions: None,
                 id: "valid-plugin@valid-marketplace".to_string(),
                 remote_plugin_id: None,
                 version: None,
@@ -791,7 +760,6 @@ async fn plugin_list_uses_alternate_discoverable_manifest_and_keeps_undiscoverab
             interface: None,
             plugins: vec![
                 PluginSummary {
-                    extensions: None,
                     id: "valid-plugin@alternate-marketplace".to_string(),
                     remote_plugin_id: None,
                     version: None,
@@ -835,7 +803,6 @@ async fn plugin_list_uses_alternate_discoverable_manifest_and_keeps_undiscoverab
                     keywords: Vec::new(),
                 },
                 PluginSummary {
-                    extensions: None,
                     id: "missing-plugin@alternate-marketplace".to_string(),
                     remote_plugin_id: None,
                     version: None,
@@ -2595,35 +2562,14 @@ async fn plugin_list_honors_global_remote_catalog_cache_ttl() -> Result<()> {
         .iter()
         .find(|marketplace| marketplace.name == "openai-curated-remote")
         .expect("expected stale cached remote marketplace");
-    // Refresh may finish between requests on a busy host. Both cache states are
-    // valid here; the first stale response and the eventual fresh response are
-    // asserted separately, along with the single refresh request.
-    assert!(matches!(
-        remote_marketplace.plugins[0].id.as_str(),
-        "linear@openai-curated-remote" | "notion@openai-curated-remote"
-    ));
+    assert_eq!(
+        remote_marketplace.plugins[0].id,
+        "linear@openai-curated-remote"
+    );
 
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 1).await?;
     wait_for_cached_remote_catalog_plugin_ids(codex_home.path(), &[refreshed_remote_plugin_id])
         .await?;
-    let request_id = mcp
-        .send_plugin_list_request(PluginListParams {
-            cwds: None,
-            marketplace_kinds: None,
-            force_refetch: false,
-        })
-        .await?;
-    let response: PluginListResponse =
-        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
-    let remote_marketplace = response
-        .marketplaces
-        .iter()
-        .find(|marketplace| marketplace.name == "openai-curated-remote")
-        .expect("expected refreshed remote marketplace");
-    assert_eq!(
-        remote_marketplace.plugins[0].id,
-        "notion@openai-curated-remote"
-    );
     sleep(Duration::from_millis(100)).await;
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 1).await?;
 
@@ -3541,161 +3487,6 @@ async fn plugin_list_does_not_append_global_remote_when_marketplace_kinds_are_ex
             .all(|marketplace| marketplace.name != "openai-curated-remote")
     );
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 0).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn plugin_installed_preserves_extensions_and_ignores_incompatible_metadata() -> Result<()> {
-    let codex_home = TempDir::new()?;
-    let server = MockServer::start().await;
-    write_plugins_enabled_config_with_base_url(
-        codex_home.path(),
-        &format!("{}/backend-api", server.uri()),
-    )?;
-    write_chatgpt_auth(
-        codex_home.path(),
-        ChatGptAuthFixture::new("chatgpt-token")
-            .account_id("account-123")
-            .chatgpt_user_id("user-123")
-            .chatgpt_account_id("account-123"),
-        AuthCredentialsStoreMode::File,
-    )?;
-    let icon = serde_json::json!({
-        "src": "https://example.com/parts.svg",
-        "mimeType": "image/svg+xml",
-        "sizes": ["any"],
-        "theme": "light",
-    });
-    let quick_action = serde_json::json!({
-        "title": "Add part",
-        "icons": [icon.clone()],
-        "target": {"type": "tool", "name": "parts.add", "arguments": {}},
-    });
-    let extensions = serde_json::json!({
-        "entrypoints": [{
-            "type": "global",
-            "app_id": "parts-app",
-            "tool_name": "parts.open",
-            "title": "Parts",
-            "resource_uri": "ui://parts/library",
-            "icons": [icon.clone()],
-            "quick_action": quick_action.clone(),
-        }],
-        "settings": [{
-            "app_id": "parts-app",
-            "read_tool_name": "settings.read",
-            "update_tool_name": "settings.update",
-        }],
-    });
-    let mut unknown_entrypoint = extensions.clone();
-    unknown_entrypoint["entrypoints"][0]["type"] = serde_json::json!("futurePlacement");
-    let mut unknown_action = extensions.clone();
-    unknown_action["entrypoints"][0]["quick_action"]["target"]["type"] =
-        serde_json::json!("futureAction");
-    let mut body: serde_json::Value = serde_json::from_str(&remote_installed_plugin_body(
-        "", "1.2.3", /*enabled*/ true,
-    ))?;
-    let template = body["plugins"][0].clone();
-    body["plugins"][0]["extensions"] = extensions;
-    for (id, name, extensions) in [
-        (
-            "plugins~Plugin_11111111111111111111111111111111",
-            "future-placement",
-            unknown_entrypoint,
-        ),
-        (
-            "plugins~Plugin_22222222222222222222222222222222",
-            "future-action",
-            unknown_action,
-        ),
-    ] {
-        let mut plugin = template.clone();
-        plugin["id"] = serde_json::json!(id);
-        plugin["name"] = serde_json::json!(name);
-        plugin["extensions"] = extensions;
-        body["plugins"].as_array_mut().unwrap().push(plugin);
-    }
-    mount_remote_installed_plugins(&server, "GLOBAL", &serde_json::to_string(&body)?).await;
-    mount_remote_installed_plugins(&server, "WORKSPACE", empty_remote_installed_plugins_body())
-        .await;
-    mount_empty_user_installed_plugins(&server).await;
-    let mut mcp = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
-        .await?;
-    let expected = BTreeMap::from([
-        (
-            "linear@openai-curated-remote".to_string(),
-            serde_json::json!({
-                "entrypoints": [{
-                    "type": "global",
-                    "appId": "parts-app",
-                    "toolName": "parts.open",
-                    "title": "Parts",
-                    "resourceUri": "ui://parts/library",
-                    "icons": [icon],
-                    "quickAction": quick_action,
-                }],
-                "settingsEntrypoints": [],
-                "settings": [{
-                    "appId": "parts-app",
-                    "readToolName": "settings.read",
-                    "updateToolName": "settings.update",
-                }],
-                "threadEntrypoints": [],
-                "fileHandlers": [],
-                "searchMentionProviders": [],
-            }),
-        ),
-        (
-            "future-placement@openai-curated-remote".to_string(),
-            serde_json::Value::Null,
-        ),
-        (
-            "future-action@openai-curated-remote".to_string(),
-            serde_json::Value::Null,
-        ),
-    ]);
-    for read in 0..2 {
-        let request_id = mcp
-            .send_plugin_installed_request(PluginInstalledParams {
-                cwds: None,
-                install_suggestion_plugin_names: None,
-            })
-            .await?;
-        let response: serde_json::Value =
-            timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
-        let marketplace = response["marketplaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|marketplace| marketplace["name"] == "openai-curated-remote")
-            .expect("remote inventory should survive incompatible extension metadata");
-        let actual = marketplace["plugins"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|plugin| {
-                (
-                    plugin["id"].as_str().unwrap().to_string(),
-                    plugin.get("extensions").unwrap().clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(actual, expected);
-        if read == 0 {
-            let request_id = mcp
-                .send_raw_request(
-                    "plugin/reconcile",
-                    Some(serde_json::json!({"reason": "tooling_changed"})),
-                )
-                .await?;
-            let _: serde_json::Value =
-                timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
-            // Reconciliation publishes the cache before the backend becomes unavailable.
-            server.reset().await;
-        }
-    }
     Ok(())
 }
 

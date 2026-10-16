@@ -6,6 +6,7 @@
 use super::*;
 use codex_app_server_protocol::AccountRoutingOverride;
 use codex_backend_client::AccountEntry;
+use codex_login::AuthManager;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
@@ -13,40 +14,19 @@ use codex_model_provider::ProviderAccount;
 use codex_model_provider::ProviderAccountError;
 use codex_model_provider::ProviderAccountState;
 use std::future::Future;
-use std::hash::Hash;
-use std::hash::Hasher;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::Semaphore;
 use url::Url;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct WorkspaceRoutingKey {
-    owner: WorkspaceRoutingOwner,
     auth_generation: u64,
     chatgpt_account_id: String,
     effective_chatgpt_base_url: String,
     required_chatgpt_base_url: Option<String>,
-}
-
-// Retain the owner while its cache key exists, so distinct profile managers
-// cannot share discoveries even when their account and generation match.
-#[derive(Clone)]
-struct WorkspaceRoutingOwner(Arc<AuthManager>);
-
-impl PartialEq for WorkspaceRoutingOwner {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for WorkspaceRoutingOwner {}
-
-impl Hash for WorkspaceRoutingOwner {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
 }
 
 // Results live through same-key waiters, even if another key replaces the cache.
@@ -128,14 +108,11 @@ pub(super) enum WorkspaceRoutingError {
 impl WorkspaceRoutingResolver for AccountRequestProcessor {
     fn resolve(
         &self,
-        auth_manager: Arc<AuthManager>,
+        _auth_manager: Arc<AuthManager>,
         request: WorkspaceRoutingRequest,
     ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>> {
         Box::pin(async move {
-            let mut processor = self.clone();
-            processor.auth_manager = auth_manager;
-            processor
-                .read_account(Some(&request))
+            self.read_account(Some(&request))
                 .await
                 .map(|account| account.workspace_routing)
                 .map_err(|error| match error {
@@ -156,12 +133,12 @@ impl WorkspaceRoutingResolver for AccountRequestProcessor {
 impl AccountRequestProcessor {
     pub(crate) fn notify_workspace_routing_to_connection(&self, connection_id: ConnectionId) {
         let processor = self.clone();
+        let auth_changes = self.auth_manager.auth_change_state_receiver();
+        let owner_generation = auth_changes.borrow().owner_generation;
         tokio::spawn(async move {
-            let Ok((processor, _lease)) = processor.active_profile_view().await else {
+            if auth_changes.borrow().owner_generation != owner_generation {
                 return;
-            };
-            let auth_changes = processor.auth_manager.auth_change_state_receiver();
-            let owner_generation = auth_changes.borrow().owner_generation;
+            }
             if let Ok(response) = processor.read_account(/*request*/ None).await
                 && response.workspace_routing.is_some()
                 && auth_changes.borrow().owner_generation == owner_generation
@@ -184,11 +161,8 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let (processor, _lease) = self.active_profile_view().await?;
-        processor
-            .refresh_token_if_requested(params.refresh_token)
-            .await;
-        let read = processor
+        self.refresh_token_if_requested(params.refresh_token).await;
+        let read = self
             .read_account(/*request*/ None)
             .await
             .map_err(|error| match error {
@@ -280,7 +254,6 @@ impl AccountRequestProcessor {
                     .chatgpt_base_url
                     .clone();
                 let key = WorkspaceRoutingKey {
-                    owner: WorkspaceRoutingOwner(Arc::clone(&self.auth_manager)),
                     auth_generation: auth_state.generation,
                     chatgpt_account_id: account_id.clone(),
                     effective_chatgpt_base_url: config.chatgpt_base_url.clone(),

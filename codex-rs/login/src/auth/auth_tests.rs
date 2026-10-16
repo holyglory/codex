@@ -1487,6 +1487,28 @@ struct FailingExternalAuth {
     resolve_count: AtomicUsize,
 }
 
+struct TransientFailingExternalAuth {
+    auth: CodexAuth,
+    resolve_count: AtomicUsize,
+}
+
+impl ExternalAuth for TransientFailingExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        let resolve_count = self.resolve_count.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if resolve_count == 0 {
+                Ok(self.auth.clone())
+            } else {
+                Err(std::io::Error::other("transient external auth failure"))
+            }
+        })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Err(std::io::Error::other("transient external auth failure")) })
+    }
+}
+
 impl ExternalAuth for FailingExternalAuth {
     fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
         let resolve_count = self.resolve_count.fetch_add(1, Ordering::SeqCst);
@@ -1538,6 +1560,26 @@ async fn external_auth_keeps_cached_credentials_after_permanent_reload_failure()
 
     assert_eq!(manager.auth().await, Some(auth));
     assert_eq!(external_auth.resolve_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn external_auth_keeps_cached_credentials_after_transient_reload_failure() {
+    let manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("seed"));
+    let auth = CodexAuth::from_api_key("configured-token");
+    let external_auth = Arc::new(TransientFailingExternalAuth {
+        auth: auth.clone(),
+        resolve_count: AtomicUsize::new(0),
+    });
+    manager
+        .set_external_auth(external_auth.clone())
+        .await
+        .expect("external auth should install");
+
+    assert_eq!(manager.auth().await, Some(auth.clone()));
+    assert_eq!(external_auth.resolve_count.load(Ordering::SeqCst), 2);
+    assert_eq!(manager.auth_cached(), Some(auth.clone()));
+    assert_eq!(manager.auth().await, Some(auth.clone()));
+    assert_eq!(manager.auth_cached(), Some(auth));
 }
 
 #[tokio::test]
@@ -1745,7 +1787,7 @@ impl ProviderAuthScript {
         #[cfg(unix)]
         let (command, args) = {
             let script_path = tempdir.path().join("print-token.sh");
-            std::fs::write(
+            codex_utils_cargo_bin::write_executable(
                 &script_path,
                 r#"#!/bin/sh
 if [ -f fail-once ]; then
@@ -1758,12 +1800,6 @@ tail -n +2 tokens.txt > tokens.next
 mv tokens.next tokens.txt
 "#,
             )?;
-            let mut permissions = std::fs::metadata(&script_path)?.permissions();
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o755);
-            }
-            std::fs::set_permissions(&script_path, permissions)?;
             ("./print-token.sh".to_string(), Vec::new())
         };
 
@@ -1812,18 +1848,12 @@ move /y tokens.next tokens.txt >nul
         #[cfg(unix)]
         let (command, args) = {
             let script_path = tempdir.path().join("fail.sh");
-            std::fs::write(
+            codex_utils_cargo_bin::write_executable(
                 &script_path,
                 r#"#!/bin/sh
 exit 1
 "#,
             )?;
-            let mut permissions = std::fs::metadata(&script_path)?.permissions();
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o755);
-            }
-            std::fs::set_permissions(&script_path, permissions)?;
             ("./fail.sh".to_string(), Vec::new())
         };
 

@@ -28,7 +28,7 @@ struct ChangedBootstrap {
 impl WorkspaceRoutingResolver for ChangedBootstrap {
     fn resolve(
         &self,
-        _auth_manager: Arc<AuthManager>,
+        _auth: Arc<AuthManager>,
         request: WorkspaceRoutingRequest,
     ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>> {
         Box::pin(async move {
@@ -93,7 +93,7 @@ async fn concurrent_discovery_cannot_forget_established_routing() {
 impl WorkspaceRoutingResolver for Routing {
     fn resolve(
         &self,
-        _auth_manager: Arc<AuthManager>,
+        _auth: Arc<AuthManager>,
         request: WorkspaceRoutingRequest,
     ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>> {
         Box::pin(async move {

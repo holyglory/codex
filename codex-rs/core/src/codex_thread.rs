@@ -1,4 +1,6 @@
+use crate::WithTurnExtensionData;
 use crate::agent::AgentStatus;
+use crate::agent::api::AgentControl;
 use crate::config::ConstraintResult;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
@@ -8,9 +10,9 @@ use crate::session::SessionSettingsUpdate;
 use crate::session::Submission;
 use crate::session::new_submission_id;
 use crate::session::session::Session;
+use crate::session::startup_prewarm::PrewarmInput;
 use crate::session::step_settings::StepSettingsUpdate;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
-use anyhow::Context as _;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_exec_server::SelectedCapabilityRootsStatus;
@@ -18,6 +20,7 @@ use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
@@ -45,9 +48,11 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
@@ -69,6 +74,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use rmcp::model::ReadResourceRequestParams;
+use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -83,6 +89,8 @@ static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
+    /// Host data inherited by future turns; not included in persisted settings.
+    pub turn_extension_init: codex_extension_api::ExtensionDataInit,
     pub model: String,
     pub model_provider_id: String,
     pub service_tier: Option<String>,
@@ -141,7 +149,9 @@ impl ThreadConfigSnapshot {
 /// Thread settings overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
-    pub environments: Option<TurnEnvironmentSelections>,
+    /// Replaces the data captured by future turns. Omission preserves it.
+    pub turn_extension_init: Option<codex_extension_api::ExtensionDataInit>,
+    pub environments: Option<TurnEnvironmentRequests>,
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
     pub approval_policy: Option<AskForApproval>,
@@ -159,6 +169,18 @@ pub struct CodexThreadSettingsOverrides {
     pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
+/// Result of publishing a loaded configuration snapshot for a thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum ConfigRefreshOutcome {
+    /// The resolved configuration was published.
+    Published,
+    /// The captured owner changed; the caller must reload before retrying.
+    Stale,
+    /// Resolution failed and a configuration disabling enterprise MCP was published.
+    Rejected,
+}
+
 pub use codex_guardian_context::GuardianRootMessage;
 
 /// Authorization state that changes on genuine user input or history resets.
@@ -166,8 +188,6 @@ pub use codex_guardian_context::GuardianRootMessage;
 pub struct GuardianAuthorizationVersion {
     /// User-message/reset revision, preserved across compaction and internal context.
     pub user_message_revision: u64,
-    /// Successful host answers captured by the temporary legacy path.
-    pub user_input_response_count: usize,
     /// False when required retained answers or root instructions are unavailable.
     pub retained_context_complete: bool,
 }
@@ -177,7 +197,11 @@ pub struct GuardianAuthorizationVersion {
 pub struct GuardianRootSnapshot {
     /// Authoritative root from which this evidence was captured.
     pub root_thread_id: ThreadId,
+    /// Distinguishes a history reset from additional authorization in the same history.
+    pub(crate) history_reset_version: u64,
     pub authorization_version: GuardianAuthorizationVersion,
+    /// Confirmed assistant context is relevant to review but cannot authorize an action.
+    pub review_context_revision: u64,
     pub messages: Vec<GuardianRootMessage>,
     pub trusted_skill_paths: Vec<String>,
 }
@@ -241,6 +265,24 @@ impl CodexThread {
         self.session.services.session_telemetry.clone()
     }
 
+    /// Schedule the same background model warmup used at startup for an idle thread.
+    /// The next turn consumes the warmup through the existing startup handoff.
+    /// Call after installing host services such as the thread's attestation routing.
+    pub async fn prewarm(&self) {
+        self.session
+            .schedule_startup_prewarm(PrewarmInput::Base)
+            .await;
+    }
+
+    /// Schedule an idle-thread warmup with existing history when the connection needs preparation.
+    /// Sends `generate: false`; the next turn reuses the prepared response only if its prompt
+    /// still extends this history and its request settings match. Uses the same handoff as `prewarm`.
+    pub async fn prewarm_with_history(&self) {
+        self.session
+            .schedule_startup_prewarm(PrewarmInput::History)
+            .await;
+    }
+
     /// Whether analytics is enabled for this thread after configuration and host overrides.
     pub fn analytics_enabled(&self) -> bool {
         self.session.services.analytics_events_client.is_enabled()
@@ -251,17 +293,28 @@ impl CodexThread {
         &self.session.services.thread_extension_data
     }
 
-    /// Returns the immutable authentication lease captured for one currently active turn.
-    pub async fn auth_manager_lease_for_turn(
-        &self,
-        turn_id: &str,
-    ) -> Option<codex_login::AuthManagerLease> {
-        let turn = self.session.turn_context_for_sub_id(turn_id).await?;
-        let auth_manager = turn.auth_manager.as_ref()?;
-        Some(turn.account_lease.clone().map_or_else(
-            || codex_login::AuthManagerLease::legacy(Arc::clone(auth_manager)),
-            codex_login::AuthManagerLease::profile,
-        ))
+    /// Returns data captured by the named running turn, not newer thread settings.
+    pub async fn current_turn_extension_data<T>(&self, expected_turn_id: &str) -> Option<Arc<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        if task.turn_context.sub_id != expected_turn_id || task.cancellation_token.is_cancelled() {
+            return None;
+        }
+        task.turn_context.extension_data.get::<T>()
+    }
+
+    /// Returns the model selected for the named running turn's next step, not future turns.
+    /// Returns `None` if that turn is no longer running.
+    pub async fn current_turn_model(&self, expected_turn_id: &str) -> Option<String> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        if task.turn_context.sub_id != expected_turn_id || task.cancellation_token.is_cancelled() {
+            return None;
+        }
+        Some(task.turn_context.capture_current_model_info().slug.clone())
     }
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
@@ -356,7 +409,7 @@ impl CodexThread {
     /// User input and named standalone function-call outputs are accepted.
     pub async fn start_or_steer_turn(
         &self,
-        request: TurnInputRequest,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
     ) -> CodexResult<TurnInputSubmission> {
         self.submit_turn_input_with_mode(request, TurnInputMode::StartOrSteer)
             .await
@@ -368,15 +421,19 @@ impl CodexThread {
     /// work cannot start.
     pub async fn start_turn_if_idle(
         &self,
-        request: TurnInputRequest,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
     ) -> CodexResult<StartIfIdleSubmission> {
         match self
             .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
             .await?
         {
-            TurnInputSubmission::Started { turn_id } => {
-                Ok(StartIfIdleSubmission::Started { turn_id })
-            }
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => Ok(StartIfIdleSubmission::Started {
+                turn_id,
+                root_turn_id,
+            }),
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(StartIfIdleSubmission::NotSubmitted { reason })
             }
@@ -391,7 +448,7 @@ impl CodexThread {
     /// The input must be a response item; it is never treated as user authorization.
     pub async fn continue_turn_if_idle(
         &self,
-        request: TurnInputRequest,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         expected_previous_turn_id: String,
     ) -> CodexResult<TurnInputSubmission> {
         self.submit_turn_input_with_mode(
@@ -409,38 +466,42 @@ impl CodexThread {
     /// already recorded for the interrupted turn.
     pub async fn recover_turn_if_idle(
         &self,
-        request: RecoverTurnRequest,
+        request: impl Into<WithTurnExtensionData<RecoverTurnRequest>>,
     ) -> CodexResult<StartIfIdleSubmission> {
-        self.session
-            .services
-            .agent_control
-            .ensure_execution_capacity_for_turn_start(self)
+        self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref())
             .await?;
+        let WithTurnExtensionData {
+            request,
+            turn_extension_init,
+        } = request.into();
         let RecoverTurnRequest {
             turn_id,
             thread_settings,
             trace,
             cyber_access_program,
         } = request;
-        let root_turn_id = self
-            .session
-            .reference_context_item()
-            .await
-            .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()))
-            .and_then(|context| context.root_turn_id);
         let start_options = TurnStartOptions {
             cyber_access_program,
-            root_turn_id,
-            ..Default::default()
+            ..self.session.recovered_turn_start_options(&turn_id).await
         };
         match self
             .io
-            .submit_recover_turn(thread_settings, start_options, trace, turn_id)
+            .submit_recover_turn(
+                thread_settings,
+                start_options,
+                trace,
+                turn_id,
+                turn_extension_init,
+            )
             .await?
         {
-            TurnInputSubmission::Started { turn_id } => {
-                Ok(StartIfIdleSubmission::Started { turn_id })
-            }
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => Ok(StartIfIdleSubmission::Started {
+                turn_id,
+                root_turn_id,
+            }),
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(StartIfIdleSubmission::NotSubmitted { reason })
             }
@@ -476,6 +537,7 @@ impl CodexThread {
             .send(Submission {
                 id: new_submission_id(),
                 op: Op::SuspendTurnAndShutdown { reply },
+                turn_extension_init: None,
                 trace: current_span_w3c_trace_context(),
                 parent_turn_id: None,
                 root_turn_id: None,
@@ -495,14 +557,16 @@ impl CodexThread {
     /// Steers only if `expected_turn_id` is still the active regular turn.
     pub async fn steer_turn(
         &self,
-        request: TurnInputRequest,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         expected_turn_id: String,
     ) -> CodexResult<SteerSubmission> {
         match self
             .submit_turn_input_with_mode(request, TurnInputMode::Steer { expected_turn_id })
             .await?
         {
-            TurnInputSubmission::Steered { turn_id } => Ok(SteerSubmission::Steered { turn_id }),
+            TurnInputSubmission::Steered { turn_id, .. } => {
+                Ok(SteerSubmission::Steered { turn_id })
+            }
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(SteerSubmission::NotSubmitted { reason })
             }
@@ -514,15 +578,14 @@ impl CodexThread {
 
     async fn submit_turn_input_with_mode(
         &self,
-        request: TurnInputRequest,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
         if !matches!(mode, TurnInputMode::Steer { .. }) {
-            self.session
-                .services
-                .agent_control
-                .ensure_execution_capacity_for_turn_start(self)
-                .await?;
+            self.ensure_execution_capacity_for_turn_start(
+                self.session.services.agent_control.as_ref(),
+            )
+            .await?;
         }
         self.io.submit_turn_input(request, mode).await
     }
@@ -542,6 +605,31 @@ impl CodexThread {
         items: Vec<ResponseItem>,
     ) -> Result<(), Vec<ResponseItem>> {
         self.session.inject_if_running(items).await
+    }
+
+    /// Environment selections captured by the active turn, before later settings updates.
+    /// Includes environments that are still starting or have failed. Hosts use this snapshot
+    /// to authorize steering against every executor that the active turn selected.
+    pub async fn active_turn_environment_selections(
+        &self,
+    ) -> Option<Vec<TurnEnvironmentSelection>> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        Some(task.turn_context.initial_environments.all_selections())
+    }
+
+    /// Returns the named running turn's current selections, including environments that are
+    /// still starting or have failed. Returns `None` if that turn is no longer running.
+    pub async fn current_turn_environment_selections(
+        &self,
+        expected_turn_id: &str,
+    ) -> Option<Vec<TurnEnvironmentSelection>> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        if task.turn_context.sub_id != expected_turn_id || task.cancellation_token.is_cancelled() {
+            return None;
+        }
+        Some(self.session.services.turn_environments.selections())
     }
 
     /// Captures a regular turn only after its input is recorded. The caller must flush the rollout.
@@ -581,8 +669,31 @@ impl CodexThread {
         &self,
         overrides: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
-        let updates = Self::thread_settings_update(overrides);
+        let updates = self.thread_settings_update(overrides);
         self.session.preview_settings(&updates).await
+    }
+
+    /// Queues settings for future turns and waits for Core to accept or reject them.
+    /// Rejections are returned to the caller instead of emitted as thread errors.
+    pub async fn update_thread_settings(
+        &self,
+        thread_settings: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
+    ) -> CodexResult<()> {
+        let (reply, result) = oneshot::channel();
+        let WithTurnExtensionData {
+            request: thread_settings,
+            turn_extension_init,
+        } = thread_settings.into();
+        self.io
+            .submit(WithTurnExtensionData {
+                request: Op::ThreadSettings {
+                    thread_settings,
+                    reply: Some(reply),
+                },
+                turn_extension_init,
+            })
+            .await?;
+        result.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
 
     /// Restores thread-owned mutable settings captured from another loaded runtime.
@@ -593,7 +704,7 @@ impl CodexThread {
         &self,
         settings: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<()> {
-        let updates = Self::thread_settings_update(settings);
+        let updates = self.thread_settings_update(settings);
         self.session.update_settings(updates).await.map(|_| ())
     }
 
@@ -604,9 +715,13 @@ impl CodexThread {
         self.session.checkpoint_thread_settings().await
     }
 
-    fn thread_settings_update(overrides: CodexThreadSettingsOverrides) -> SessionSettingsUpdate {
+    fn thread_settings_update(
+        &self,
+        overrides: CodexThreadSettingsOverrides,
+    ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
-            environments,
+            turn_extension_init,
+            environments: environment_requests,
             runtime_workspace_roots,
             profile_workspace_roots,
             approval_policy,
@@ -624,6 +739,7 @@ impl CodexThread {
             disabled_plugin_ids,
         } = overrides;
         SessionSettingsUpdate {
+            turn_extension_init,
             step_settings: StepSettingsUpdate {
                 model,
                 effort,
@@ -634,7 +750,8 @@ impl CodexThread {
                 approval_policy,
                 approvals_reviewer,
             },
-            environments,
+            environments: environment_requests
+                .map(|requests| requests.select(&self.session.services.selected_capability_roots)),
             runtime_workspace_roots,
             profile_workspace_roots,
             sandbox_policy,
@@ -691,6 +808,15 @@ impl CodexThread {
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
             .await;
+    }
+
+    /// Records an explicit user goal mutation without scheduling a model response.
+    pub async fn record_user_goal_update(
+        &self,
+        update: crate::context::UserGoalUpdate,
+    ) -> CodexResult<()> {
+        self.session.record_user_goal_update(update).await?;
+        Ok(())
     }
 
     /// Record raw Responses API items without starting a new turn.
@@ -902,30 +1028,6 @@ impl CodexThread {
         (Arc::new(mcp_config), runtime_context)
     }
 
-    /// Captures MCP config and environment bindings under one operation authority.
-    pub async fn current_mcp_config_and_runtime_context_for_operation(
-        &self,
-        auth_lease: &codex_login::AuthManagerLease,
-    ) -> (Arc<codex_mcp::McpConfig>, codex_mcp::McpRuntimeContext) {
-        let config = self.session.get_config().await;
-        let (mcp_config, runtime_context) = self
-            .session
-            .runtime_mcp_config_and_context_with_auth_lease(&config, auth_lease)
-            .await;
-        (Arc::new(mcp_config), runtime_context)
-    }
-
-    /// Resolves caller-supplied MCP config under one operation authority.
-    pub async fn runtime_mcp_config_and_context_for_operation(
-        &self,
-        config: &crate::config::Config,
-        auth_lease: &codex_login::AuthManagerLease,
-    ) -> (codex_mcp::McpConfig, codex_mcp::McpRuntimeContext) {
-        self.session
-            .runtime_mcp_config_and_context_with_auth_lease(config, auth_lease)
-            .await
-    }
-
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.session.multi_agent_version()
     }
@@ -948,30 +1050,42 @@ impl CodexThread {
         self.session
             .services
             .agent_control
-            .root_user_authorization(self.session.thread_id)
+            .get_guardian_package(self.session.thread_id)
             .await
     }
 
     /// Refresh the thread's layer-backed user config state from a caller-supplied
     /// config snapshot. Thread-scoped layers and session-static settings remain
-    /// unchanged.
-    pub async fn refresh_runtime_config(&self, next_config: crate::config::Config) {
-        self.session.refresh_runtime_config(next_config).await;
+    /// unchanged. A stale owner requires reloading from the current config before retrying.
+    pub async fn refresh_runtime_config(
+        &self,
+        expected_config: Arc<crate::config::Config>,
+        next_config: crate::config::Config,
+    ) -> ConfigRefreshOutcome {
+        Box::pin(
+            self.session
+                .refresh_runtime_config(expected_config, next_config),
+        )
+        .await
     }
 
-    /// Refreshes layer-backed config while leaving hooks and MCP dirty for exact-authority refresh.
-    pub async fn refresh_runtime_config_without_mcp_prewarm(
-        &self,
-        next_config: crate::config::Config,
-    ) {
-        self.session
-            .refresh_runtime_config_without_mcp_prewarm(next_config)
-            .await;
+    /// Revokes enterprise MCP authority from the current owner after a failed reload.
+    pub async fn disable_mcp_enterprise_auth(&self) {
+        self.session.disable_mcp_enterprise_auth().await;
     }
 
     /// Refresh MCP configuration and managed requirements without reloading unrelated settings.
-    pub async fn refresh_mcp_config(&self, next_config: crate::config::Config) {
-        self.session.refresh_mcp_config(next_config).await;
+    /// A stale owner requires reloading from the current config before retrying.
+    pub async fn refresh_mcp_config(
+        &self,
+        expected_config: Arc<crate::config::Config>,
+        next_config: crate::config::Config,
+    ) -> ConfigRefreshOutcome {
+        Box::pin(
+            self.session
+                .refresh_mcp_config(expected_config, next_config),
+        )
+        .await
     }
 
     /// Refreshes this thread's Apps tools before returning their runtime state.
@@ -979,20 +1093,6 @@ impl CodexThread {
         &self,
     ) -> anyhow::Result<codex_mcp::CodexAppsToolSnapshot> {
         self.session.refresh_codex_apps_tools().await
-    }
-
-    /// Applies MCP config and publishes it under one captured operation authority.
-    pub async fn refresh_mcp_config_with_auth_lease(
-        &self,
-        next_config: crate::config::Config,
-        auth_lease: &codex_login::AuthManagerLease,
-    ) {
-        self.session
-            .refresh_mcp_config_without_prewarm(next_config)
-            .await;
-        self.session
-            .refresh_mcp_if_dirty_with_auth_lease(auth_lease)
-            .await;
     }
 
     /// Returns the environments configured for future turns.
@@ -1028,26 +1128,33 @@ impl CodexThread {
         server: &str,
         params: ReadResourceRequestParams,
     ) -> anyhow::Result<serde_json::Value> {
-        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
-        self.read_mcp_resource_for_operation(&auth_lease, server, params)
-            .await
-    }
-
-    /// Reads an MCP resource under one explicit operation-scoped authentication lease.
-    pub async fn read_mcp_resource_for_operation(
-        &self,
-        auth_lease: &codex_login::AuthManagerLease,
-        server: &str,
-        params: ReadResourceRequestParams,
-    ) -> anyhow::Result<serde_json::Value> {
-        let binding = self
+        self.session.refresh_mcp_if_dirty().await;
+        let result = self
             .session
-            .mcp_binding_for_auth_lease(auth_lease, server)
-            .await
-            .with_context(|| format!("unknown MCP server '{server}'"))?;
-        let result = binding.read_resource(server, params).await?;
+            .services
+            .mcp_runtime
+            .latest_read_resource(server, params)
+            .await?;
 
         Ok(serde_json::to_value(result)?)
+    }
+
+    /// Inspects one server through this thread's current MCP connection.
+    pub async fn mcp_server_status_snapshot(
+        &self,
+        server: &str,
+        detail: codex_mcp::McpSnapshotDetail,
+    ) -> anyhow::Result<(
+        Arc<codex_mcp::McpConfig>,
+        codex_mcp::McpServerStatusSnapshot,
+    )> {
+        self.session.refresh_mcp_if_dirty().await;
+        let runtime_context = self.session.current_mcp_runtime_context().await;
+        self.session
+            .services
+            .mcp_runtime
+            .server_status_snapshot(server, detail, &runtime_context)
+            .await
     }
 
     /// Reads an app resource using the current authority of its originating tool call.
@@ -1056,67 +1163,42 @@ impl CodexThread {
         call_id: &str,
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
-        if let Some(result) = self
+        self.session.refresh_mcp_if_dirty().await;
+        let result = match self
             .session
             .services
             .mcp_runtime
-            .read_resource_for_call_with_bound_authority(self.session.thread_id, call_id, uri)
-            .await?
+            .read_resource_for_call(self.session.thread_id, call_id, uri)
+            .await
         {
-            return Ok(serde_json::to_value(result)?);
-        }
-
-        let account_id = self
-            .session
-            .services
-            .mcp_runtime
-            .resource_origin_account_id(call_id)?;
-        let auth_lease = match account_id {
-            Some(account_id) => {
+            Ok(result) => result,
+            Err(error) if error.to_string() == "MCP resource authority is unavailable" => {
+                let binding = self
+                    .session
+                    .services
+                    .mcp_runtime
+                    .current_binding_for_call(CODEX_APPS_MCP_SERVER_NAME)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("MCP resource authority is unavailable"))?;
                 self.session
                     .services
-                    .profile_auth_router
-                    .as_ref()
-                    .context("originating account profile router is unavailable")?
-                    .lease_for_account_id(&account_id)
+                    .mcp_runtime
+                    .read_resource_for_call_with_binding(
+                        &binding,
+                        self.session.thread_id,
+                        call_id,
+                        uri,
+                    )
                     .await?
             }
-            None => match &self.session.services.profile_auth_router {
-                Some(router) => router.legacy_lease_if_profiles_unconfigured().await?,
-                None => codex_login::AuthManagerLease::legacy(Arc::clone(
-                    &self.session.services.auth_manager,
-                )),
-            },
+            Err(error) => return Err(error),
         };
-        let binding = self
-            .session
-            .mcp_binding_for_auth_lease(&auth_lease, codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
-            .await
-            .context("codex_apps MCP server is unavailable")?;
-        let result = self
-            .session
-            .services
-            .mcp_runtime
-            .read_resource_for_call_with_binding(&binding, self.session.thread_id, call_id, uri)
-            .await?;
 
         Ok(serde_json::to_value(result)?)
     }
 
     pub async fn start_mcp_event_stream(
         &self,
-        name: &str,
-        arguments: serde_json::Value,
-        meta: Option<serde_json::Value>,
-    ) -> anyhow::Result<codex_mcp::McpEventStream> {
-        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
-        self.start_mcp_event_stream_for_operation(&auth_lease, name, arguments, meta)
-            .await
-    }
-
-    pub async fn start_mcp_event_stream_for_operation(
-        &self,
-        auth_lease: &codex_login::AuthManagerLease,
         name: &str,
         arguments: serde_json::Value,
         meta: Option<serde_json::Value>,
@@ -1128,15 +1210,10 @@ impl CodexThread {
             }
             None => None,
         };
-        let binding = self
-            .session
-            .mcp_binding_for_auth_lease(auth_lease, codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
-            .await
-            .context("codex_apps MCP server is unavailable")?;
-        self.session
-            .services
-            .mcp_runtime
-            .open_event_stream_with_binding(binding.as_ref(), name, &arguments, meta)
+        let _ = self.session.services.auth_manager.auth().await;
+        self.session.refresh_mcp_if_dirty().await;
+        codex_mcp::McpResourceClient::new(Arc::clone(&self.session.services.mcp_runtime))
+            .open_event_stream(name, &arguments, meta)
             .await
     }
 
@@ -1147,27 +1224,11 @@ impl CodexThread {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        let auth_lease = self.session.current_mcp_auth_manager_lease().await;
-        self.call_mcp_tool_for_operation(&auth_lease, server, tool, arguments, meta)
-            .await
-    }
-
-    /// Calls an MCP tool under one explicit operation-scoped authentication lease.
-    pub async fn call_mcp_tool_for_operation(
-        &self,
-        auth_lease: &codex_login::AuthManagerLease,
-        server: &str,
-        tool: &str,
-        arguments: Option<serde_json::Value>,
-        meta: Option<serde_json::Value>,
-    ) -> anyhow::Result<CallToolResult> {
-        let binding = self
-            .session
-            .mcp_binding_for_auth_lease(auth_lease, server)
-            .await
-            .with_context(|| format!("unknown MCP server '{server}'"))?;
-        binding
-            .call_tool(
+        self.session.refresh_mcp_if_dirty().await;
+        self.session
+            .services
+            .mcp_runtime
+            .latest_call_tool(
                 server, tool, /*environment_id*/ None, arguments, meta,
                 /*requested_timeout*/ None, /*wait_for_server*/ true,
             )
@@ -1203,5 +1264,19 @@ impl CodexThread {
             elicitations.registration = None;
         }
         Ok(elicitations.count)
+    }
+
+    pub(crate) async fn ensure_execution_capacity_for_turn_start(
+        &self,
+        control: &dyn AgentControl,
+    ) -> CodexResult<()> {
+        if self.session.active_turn.lock().await.is_some() {
+            return Ok(());
+        }
+        let config = self.session.get_config().await;
+        let multi_agent_version = self
+            .multi_agent_version()
+            .unwrap_or_else(|| config.multi_agent_version_from_features());
+        control.check_turn_admission(multi_agent_version, &self.session_source)
     }
 }

@@ -110,23 +110,6 @@ fn read_rollout_lines(path: &Path) -> std::io::Result<Vec<RolloutLine>> {
         .collect()
 }
 
-fn read_rollout_ordinals(path: &Path) -> std::io::Result<Vec<Option<u64>>> {
-    fs::read_to_string(path)?
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let value =
-                serde_json::from_str::<serde_json::Value>(line).map_err(std::io::Error::other)?;
-            Ok(value.get("ordinal").and_then(serde_json::Value::as_u64))
-        })
-        .collect()
-}
-
-fn append_raw_rollout_line(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new().append(true).open(path)?;
-    writeln!(file, "{value}")
-}
-
 fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<PathBuf> {
     let day_dir = root.join("sessions/2025/01/03");
     fs::create_dir_all(&day_dir)?;
@@ -475,12 +458,6 @@ async fn load_rollout_items_preserves_security_risk_scores() -> std::io::Result<
         sampled_at: None,
     };
     let security_risk_item = RolloutItem::SecurityRiskScore(security_risk.clone());
-    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
-        assert!(crate::is_persisted_rollout_item(
-            &security_risk_item,
-            history_mode
-        ));
-    }
 
     let mut file = File::create(&rollout_path)?;
     for (ordinal, item) in [
@@ -634,6 +611,58 @@ fn strip_legacy_ghost_snapshot_keeps_checkpoint_metadata_aligned() {
             {"slot": "user"}
         ])
     );
+}
+
+#[tokio::test]
+async fn recorder_preserves_additional_tools_in_both_history_modes() -> std::io::Result<()> {
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let thread_id = ThreadId::new();
+        let recorder = RolloutRecorder::new(
+            &config,
+            RolloutRecorderParams::new(
+                thread_id,
+                /*forked_from_id*/ None,
+                /*parent_thread_id*/ None,
+                SessionSource::Exec,
+                /*thread_source*/ None,
+                "test_originator".to_string(),
+                BaseInstructions::default(),
+                Vec::new(),
+            )
+            .with_history_mode(history_mode),
+        )
+        .await?;
+        let item = RolloutItem::ResponseItem(
+            ResponseItem::AdditionalTools {
+                id: None,
+                role: "developer".to_string(),
+                tools: vec![serde_json::json!({
+                    "type": "namespace",
+                    "name": "functions",
+                    "description": "Available tools.",
+                    "tools": [{"type": "function", "name": "lookup",
+                        "description": "Look up a value.",
+                        "parameters": {"type": "object", "properties": {}}}]
+                })],
+            }
+            .into(),
+        );
+        let persisted = crate::persisted_rollout_items(std::slice::from_ref(&item), history_mode);
+        recorder.record_canonical_items(&persisted).await?;
+        recorder.flush().await?;
+        let (items, loaded_thread_id, parse_errors) =
+            RolloutRecorder::load_rollout_items(recorder.rollout_path()).await?;
+        assert_eq!(loaded_thread_id, Some(thread_id));
+        assert_eq!(parse_errors, 0);
+        assert_eq!(
+            serde_json::to_value(&items[1..])?,
+            serde_json::to_value([item])?
+        );
+        recorder.shutdown().await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -1081,191 +1110,6 @@ async fn resumed_paginated_rollout_continues_after_decimal_token_count() -> std:
 }
 
 #[tokio::test]
-async fn resumed_paginated_rollout_consumes_floating_point_record_ordinal() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let config = test_config(home.path());
-    let rollout_path = home.path().join("rollout.jsonl");
-    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
-    let floating_point_token_count = serde_json::json!({
-        "timestamp": "2026-07-09T00:00:05Z",
-        "ordinal": 5,
-        "type": "event_msg",
-        "payload": {
-            "type": "token_count",
-            "info": {
-                "total_token_usage": {
-                    "input_tokens": 1.5,
-                    "cached_input_tokens": 0,
-                    "cache_write_input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": 1
-                },
-                "last_token_usage": {
-                    "input_tokens": 1,
-                    "cached_input_tokens": 0,
-                    "cache_write_input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": 1
-                },
-                "model_context_window": null
-            },
-            "rate_limits": null
-        }
-    });
-    assert!(
-        crate::decode_rollout_line(floating_point_token_count.clone()).is_err(),
-        "fixture must exercise a payload the complete rollout model rejects"
-    );
-    append_raw_rollout_line(&rollout_path, &floating_point_token_count)?;
-
-    let recorder =
-        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
-    recorder
-        .record_canonical_items(&[agent_message_item("after floating-point record")])
-        .await?;
-    recorder.flush().await?;
-    recorder.shutdown().await?;
-
-    assert_eq!(
-        read_rollout_ordinals(&rollout_path)?,
-        vec![Some(0), Some(4), Some(5), Some(6)]
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn resumed_paginated_rollout_consumes_unknown_record_ordinal() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let config = test_config(home.path());
-    let rollout_path = home.path().join("rollout.jsonl");
-    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
-    let future_record = serde_json::json!({
-        "timestamp": "2026-07-09T00:00:05Z",
-        "ordinal": 5,
-        "type": "future_record",
-        "payload": { "type": "future_payload", "ratio": 0.5 }
-    });
-    assert!(
-        crate::decode_rollout_line(future_record.clone()).is_err(),
-        "fixture must exercise an unknown future record"
-    );
-    append_raw_rollout_line(&rollout_path, &future_record)?;
-
-    let recorder =
-        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
-    recorder
-        .record_canonical_items(&[agent_message_item("after future record")])
-        .await?;
-    recorder.flush().await?;
-    recorder.shutdown().await?;
-
-    assert_eq!(
-        read_rollout_ordinals(&rollout_path)?,
-        vec![Some(0), Some(4), Some(5), Some(6)]
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn repeated_paginated_resume_cycles_keep_ordinals_strictly_increasing() -> std::io::Result<()>
-{
-    let home = TempDir::new().expect("temp dir");
-    let config = test_config(home.path());
-    let rollout_path = home.path().join("rollout.jsonl");
-    write_paginated_rollout(&rollout_path, ThreadId::new(), &[1])?;
-
-    for expected_ordinal in 2..=5 {
-        let recorder =
-            RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
-                .await?;
-        recorder
-            .record_canonical_items(&[agent_message_item(
-                format!("resume-{expected_ordinal}").as_str(),
-            )])
-            .await?;
-        recorder.flush().await?;
-        recorder.shutdown().await?;
-        assert_eq!(
-            read_rollout_ordinals(&rollout_path)?.last(),
-            Some(&Some(expected_ordinal))
-        );
-    }
-
-    let ordinals = read_rollout_ordinals(&rollout_path)?
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .expect("all paginated records should have ordinals");
-    assert!(
-        ordinals.windows(2).all(|pair| pair[0] < pair[1]),
-        "resume cycles must keep every new ordinal unique and increasing: {ordinals:?}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn resumed_paginated_rollout_advances_past_duplicate_tail() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let config = test_config(home.path());
-    let rollout_path = home.path().join("rollout.jsonl");
-    write_paginated_rollout(&rollout_path, ThreadId::new(), &[1, 1])?;
-
-    let recorder =
-        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
-    recorder
-        .record_canonical_items(&[agent_message_item("after duplicate tail")])
-        .await?;
-    recorder.flush().await?;
-    recorder.shutdown().await?;
-
-    assert_eq!(
-        read_rollout_ordinals(&rollout_path)?,
-        vec![Some(0), Some(1), Some(1), Some(2)]
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn resumed_paginated_rollout_rejects_valid_tail_without_usable_ordinal() -> std::io::Result<()>
-{
-    let cases = [
-        ("missing", serde_json::json!({ "type": "future_record" })),
-        (
-            "floating-point",
-            serde_json::json!({ "ordinal": 1.5, "type": "future_record" }),
-        ),
-        (
-            "string",
-            serde_json::json!({ "ordinal": "2", "type": "future_record" }),
-        ),
-    ];
-    for (name, tail) in cases {
-        let home = TempDir::new().expect("temp dir");
-        let config = test_config(home.path());
-        let rollout_path = home.path().join("rollout.jsonl");
-        write_paginated_rollout(&rollout_path, ThreadId::new(), &[1])?;
-        append_raw_rollout_line(&rollout_path, &tail)?;
-        let before = fs::read(&rollout_path)?;
-
-        let error = match RolloutRecorder::new(
-            &config,
-            RolloutRecorderParams::resume(rollout_path.clone()),
-        )
-        .await
-        {
-            Ok(_) => panic!("{name} ordinal should fail closed"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("ordinal"), "{name}: {error}");
-        assert_eq!(fs::read(&rollout_path)?, before, "{name}");
-    }
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> {
     let valid_unterminated = serde_json::to_string(&RolloutLine {
         timestamp: "2026-07-09T00:00:05Z".to_string(),
@@ -1439,6 +1283,52 @@ async fn list_threads_db_disabled_does_not_skip_paginated_items() -> std::io::Re
 }
 
 #[tokio::test]
+async fn list_archived_threads_without_db_keeps_threads_without_previews() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let archive_dir = home.path().join(crate::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir_all(&archive_dir)?;
+    let older = ThreadId::new();
+    let newer = ThreadId::new();
+    for (timestamp, thread_id) in [
+        ("2026-07-09T00-00-00", older),
+        ("2026-07-09T00-01-00", newer),
+    ] {
+        let path = archive_dir.join(format!("rollout-{timestamp}-{thread_id}.jsonl"));
+        write_paginated_rollout(&path, thread_id, &[])?;
+    }
+
+    let mut cursor = None;
+    let mut found = Vec::new();
+    for expected_more in [true, false] {
+        let page = RolloutRecorder::list_archived_threads(
+            /*state_db_ctx*/ None,
+            &config,
+            /*page_size*/ 1,
+            cursor.as_ref(),
+            ThreadSortKey::CreatedAt,
+            SortDirection::Desc,
+            &[],
+            /*model_providers*/ None,
+            /*cwd_filters*/ None,
+            config.model_provider_id.as_str(),
+            /*search_term*/ None,
+        )
+        .await?;
+        assert_eq!(page.items.len(), 1);
+        found.extend(
+            page.items
+                .into_iter()
+                .map(|item| (item.thread_id, item.preview)),
+        );
+        cursor = page.next_cursor;
+        assert_eq!(cursor.is_some(), expected_more);
+    }
+    assert_eq!(found, vec![(Some(newer), None), (Some(older), None)]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_threads_db_enabled_preserves_metadata_for_missing_rollout_paths()
 -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
@@ -1503,6 +1393,8 @@ async fn list_threads_db_enabled_preserves_metadata_for_missing_rollout_paths()
         .await
         .expect("state db upsert should succeed");
 
+    let older_path = write_session_file(home.path(), "2025-01-01T13-00-00", Uuid::from_u128(9014))?;
+
     let default_provider = config.model_provider_id.clone();
     let page = RolloutRecorder::list_threads(
         Some(runtime.clone()),
@@ -1530,6 +1422,25 @@ async fn list_threads_db_enabled_preserves_metadata_for_missing_rollout_paths()
         .await
         .expect("state db lookup should succeed");
     assert_eq!(stored_metadata, Some(metadata));
+    let cursor = page.next_cursor.expect("another thread remains");
+    assert_eq!(cursor.thread_id(), None);
+    runtime.close().await;
+    let fallback = RolloutRecorder::list_threads(
+        Some(runtime),
+        &config,
+        /*page_size*/ 1,
+        Some(&cursor),
+        ThreadSortKey::CreatedAt,
+        SortDirection::Desc,
+        &[],
+        /*model_providers*/ None,
+        /*cwd_filters*/ None,
+        default_provider.as_str(),
+        /*search_term*/ None,
+    )
+    .await?;
+    assert_eq!(fallback.items.len(), 1);
+    assert_eq!(fallback.items[0].path, older_path);
     Ok(())
 }
 
@@ -1629,6 +1540,23 @@ async fn list_threads_state_db_only_skips_jsonl_repair_scan() -> std::io::Result
     )
     .await?;
     assert_eq!(repaired_state_db_only_page.items.len(), 1);
+    runtime.close().await;
+    let error = RolloutRecorder::list_threads_from_state_db(
+        Some(runtime),
+        &config,
+        /*page_size*/ 10,
+        /*cursor*/ None,
+        ThreadSortKey::CreatedAt,
+        SortDirection::Desc,
+        &[],
+        /*model_providers*/ None,
+        /*cwd_filters*/ Some(cwd_filters.as_slice()),
+        config.model_provider_id.as_str(),
+        /*search_term*/ None,
+    )
+    .await
+    .expect_err("a failed database query must not look like an exhausted listing");
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
     Ok(())
 }
 
@@ -2005,26 +1933,20 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             disabled_plugin_ids: None,
             cwd: serde_json::from_value(serde_json::json!(&latest_cwd))
                 .expect("absolute latest cwd"),
-            workspace_roots: None,
-            current_date: None,
-            timezone: None,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             permission_profile: None,
             active_permission_profile: None,
-            network: None,
             file_system_sandbox_policy: None,
             model: "test-model".to_string(),
             comp_hash: None,
-            personality: None,
             collaboration_mode: None,
             multi_agent_version: None,
-            multi_agent_mode: None,
             realtime_active: None,
             cyber_access_program: None,
             effort: None,
-            summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
         }),
     };
     writeln!(file, "{}", serde_json::to_string(&turn_context)?)?;

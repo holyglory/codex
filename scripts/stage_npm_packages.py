@@ -19,7 +19,7 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "codex-cli" / "scripts" / "build_npm_package.py"
 WORKFLOW_NAME = ".github/workflows/rust-release.yml"
-GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "holyglory/codex")
+GITHUB_REPO = "openai/codex"
 BINARY_TARGETS = (
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
@@ -219,11 +219,8 @@ def install_from_workflow_artifacts(
     components: Sequence[str],
     vendor_dir: Path,
 ) -> None:
-    if local_artifacts_cover_components(artifacts_dir, components):
-        print("Using complete local native artifact set", flush=True)
-    else:
-        artifacts = select_target_artifacts(workflow_id, components)
-        download_artifacts(workflow_id, artifacts_dir, artifacts)
+    artifacts = select_target_artifacts(workflow_id, components)
+    download_artifacts(workflow_id, artifacts_dir, artifacts)
     install_from_downloaded_artifacts(artifacts_dir, components, vendor_dir)
 
 
@@ -251,12 +248,10 @@ def local_artifacts_cover_components(
         artifact_dir = artifact_dir_for_target(artifacts_dir, target)
         if not artifact_dir.is_dir():
             return False
-
         if CODEX_PACKAGE_COMPONENT in components:
             archive = artifact_dir / f"codex-package-{target}.tar.gz"
             if not archive.is_file():
                 return False
-
         for component_name in components:
             component = BINARY_COMPONENTS.get(component_name)
             if component is None:
@@ -265,7 +260,6 @@ def local_artifacts_cover_components(
                 binary_archive_path(artifact_dir, component.artifact_prefix, target)
             except FileNotFoundError:
                 return False
-
     return True
 
 

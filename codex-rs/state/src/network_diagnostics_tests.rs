@@ -1,6 +1,7 @@
 use super::*;
 use crate::StateRuntime;
 use crate::log_db;
+use crate::log_db::LogWriteFailureReporter;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -8,12 +9,20 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+struct PanicOnLogWriteFailure;
+
+impl LogWriteFailureReporter for PanicOnLogWriteFailure {
+    fn report_failure(&self, diagnostic: &str) {
+        panic!("log write failed: {diagnostic}");
+    }
+}
+
 #[tokio::test]
 async fn batching_retains_sizes_without_request_content() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(dir.path())?);
     let runtime = StateRuntime::init(sqlite.clone(), "test".to_string()).await?;
-    let layer = log_db::start(runtime);
+    let layer = log_db::start(runtime, std::sync::Arc::new(PanicOnLogWriteFailure));
     let guard = tracing_subscriber::registry()
         .with(layer.clone())
         .set_default();
@@ -113,7 +122,7 @@ async fn incident_history_survives_log_pruning_and_reopening_without_payloads() 
     let dir = tempfile::tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(dir.path())?);
     let runtime = StateRuntime::init(sqlite.clone(), "test".to_string()).await?;
-    let layer = log_db::start(runtime.clone());
+    let layer = log_db::start(runtime.clone(), std::sync::Arc::new(PanicOnLogWriteFailure));
     let guard = tracing_subscriber::registry()
         .with(layer.clone().with_filter(log_db::default_filter()))
         .set_default();
@@ -280,7 +289,7 @@ async fn unknown_events_and_upstream_error_bodies_are_not_retained() -> anyhow::
     let dir = tempfile::tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(dir.path())?);
     let runtime = StateRuntime::init(sqlite.clone(), "test".to_string()).await?;
-    let layer = log_db::start(runtime.clone());
+    let layer = log_db::start(runtime.clone(), std::sync::Arc::new(PanicOnLogWriteFailure));
     let guard = tracing_subscriber::registry()
         .with(layer.clone().with_filter(log_db::default_filter()))
         .set_default();

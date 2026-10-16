@@ -79,21 +79,21 @@ impl ThreadRequestProcessor {
             _ => None,
         });
         let Some(previous_context) = previous_context else {
-            return Err("turnContextUnavailable");
+            return Ok(None);
         };
         let config = thread.config_snapshot().await;
         let [environment] = config.environment_selections() else {
-            return Err("environmentChanged");
+            return Ok(None);
         };
         if environment.environment_id != codex_exec_server::LOCAL_ENVIRONMENT_ID
             || environment.config != EnvironmentConfigState::FromThread
             || saved.local_environment.as_ref() != Some(&ThreadEnvironment::from(environment))
         {
-            return Err("environmentChanged");
+            return Ok(None);
         }
         // Recovery must not override a stricter saved or newly configured policy.
         if previous_context.permission_profile() != config.permission_profile {
-            return Err("permissionsChanged");
+            return Ok(None);
         }
         let options = TurnStartOptions {
             turn_trigger: Some("daemon_recovery".to_string()),
@@ -110,7 +110,7 @@ impl ThreadRequestProcessor {
         }))
     }
 
-    pub(crate) async fn continue_daemon_turn(
+    pub(super) async fn continue_daemon_turn(
         &self,
         thread_id: &str,
         saved: InterruptedTurn,
@@ -130,12 +130,13 @@ impl ThreadRequestProcessor {
         ));
         let request =
             TurnInputRequest::new(TurnInput::ResponseItem(continuation)).on_start(options);
-        // Close the old turn in persisted history before exposing a new running turn.
-        if let Err(err) = thread
+        if let Err(error) = thread
             .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::TurnAborted(
                 TurnAbortedEvent {
-                    turn_id: Some(turn_id.clone()),
+                    root_turn_id: None,
+                    turn_id: Some(turn_id.to_string()),
                     reason: TurnAbortReason::Interrupted,
+                    error: None,
                     started_at: None,
                     completed_at: None,
                     duration_ms: None,
@@ -143,7 +144,7 @@ impl ThreadRequestProcessor {
             ))])
             .await
         {
-            tracing::warn!(%thread_id, %err, "failed to close interrupted turn history");
+            tracing::warn!(%thread_id, %error, "failed to close interrupted turn history");
             return Err("persistenceFailed");
         }
         match thread.continue_turn_if_idle(request, turn_id).await {
@@ -168,8 +169,8 @@ impl ThreadRequestProcessor {
                 }
             }
             Ok(TurnInputSubmission::Steered { .. }) => unreachable!("continuation cannot steer"),
-            Err(err) => {
-                tracing::warn!(%thread_id, %err, "recovery continuation failed");
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "recovery continuation failed");
                 return Err("continuationFailed");
             }
         }

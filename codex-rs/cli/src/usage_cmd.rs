@@ -245,7 +245,8 @@ async fn execute(
                                 "kind": "usageRepositoryIdentity",
                                 "databaseSchemaVersion": store.database_schema_version().await?,
                                 "taxonomyVersion": codex_usage::TAXONOMY_VERSION,
-                                "scope": { "type": "repository", "id": repository.as_str() }
+                                "scope": { "type": "repository", "id": repository.as_str() },
+                                "worktreeKey": current_worktree_key(store, &repository).await?
                             })
                         );
                     } else {
@@ -542,12 +543,19 @@ async fn build_summary(
         .as_deref()
         .map(|reference| resolve_account_filter(registry_store, reference))
         .transpose()?;
+    let time_range = filters.time_range()?;
+    store
+        .require_report_ready(time_range)
+        .await
+        .map_err(UsageCommandError::from)?;
     let summary = store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id,
             repository_id,
             account_profile_ref: account.as_ref().map(|account| account.profile_ref.clone()),
-            time_range: filters.time_range()?,
+            time_range,
         })
         .await
         .map_err(UsageCommandError::from)?;
@@ -897,6 +905,8 @@ async fn coverage_header(
 ) -> Result<String, UsageCommandError> {
     Ok(store
         .usage_summary_query(UsageSummaryQuery {
+            worktree_ids: None,
+            include_unassigned_worktrees: true,
             thread_id,
             repository_id,
             account_profile_ref: None,
@@ -984,6 +994,25 @@ async fn resolve_current_repository(
         .find_repository_for_identity(&identity)
         .await?
         .ok_or_else(|| UsageCommandError::new(error::UsageErrorKind::NotFound))
+}
+
+async fn current_worktree_key(
+    store: &UsageStore,
+    repository: &RepositoryId,
+) -> Result<Option<String>, UsageCommandError> {
+    let current = std::env::current_dir()
+        .map_err(|_| UsageCommandError::new(error::UsageErrorKind::NotFound))?;
+    let workspace = std::fs::canonicalize(&current)
+        .map_err(|_| UsageCommandError::new(error::UsageErrorKind::NotFound))?;
+    let workspace = workspace
+        .to_str()
+        .ok_or_else(|| UsageCommandError::new(error::UsageErrorKind::Input))?;
+    let workspace = CanonicalRepositoryPath::new(workspace)
+        .map_err(|_| UsageCommandError::new(error::UsageErrorKind::Input))?;
+    Ok(store
+        .find_worktree_for_workspace(repository, &workspace)
+        .await?
+        .map(|id| id.as_str().to_string()))
 }
 
 async fn resolve_optional_repository(

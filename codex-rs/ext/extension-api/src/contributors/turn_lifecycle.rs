@@ -1,8 +1,8 @@
 //! Turn lifecycle inputs and scheduling phases for host-owned contributors.
 
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
-use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 
@@ -61,12 +61,8 @@ pub struct TurnErrorInput<'a> {
     pub turn_id: &'a str,
     /// Error surfaced by the host for this turn.
     pub error: CodexErrorInfo,
-    /// Session origin of the turn, used to exclude internal review sessions
-    /// from user-work retry policies.
-    pub session_source: &'a SessionSource,
-    /// Whether a terminal capacity error can safely repeat the whole pending
-    /// operation without replaying output or tool side effects.
-    pub retryable_before_response: bool,
+    /// Original error details, including backend metadata omitted from the public category.
+    pub error_details: &'a CodexErrorDetails,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

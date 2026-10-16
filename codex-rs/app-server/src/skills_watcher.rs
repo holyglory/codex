@@ -111,11 +111,7 @@ impl SkillsWatcher {
 
         let plugins_input = config.plugins_config_input();
         let plugins_manager = thread_manager.plugins_manager();
-        // Listener attachment has no originating turn. Watch only the local projection;
-        // authenticated remote roots are resolved by exact operation and turn leases.
-        let plugin_outcome = plugins_manager
-            .plugins_for_config_with_auth(&plugins_input, /*auth*/ None)
-            .await;
+        let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
         let skills_input = HostSkillsLoadInput::new(
             config.cwd.clone(),
             plugin_outcome.effective_plugin_skill_roots(),

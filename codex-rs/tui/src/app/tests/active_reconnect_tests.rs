@@ -12,24 +12,32 @@ use tokio::net::TcpListener;
 use super::disconnect::serve_reconnect_requests;
 
 #[tokio::test]
-async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
-    for (
-        recovered_queue,
-        edit_offline,
-        resume_error_code,
-        deferred_notice,
-        notice_enabled,
-        maintenance,
-    ) in [
-        (true, false, -32603, false, false, false),
-        (true, false, -32603, false, true, false),
-        (false, false, -32603, false, false, false),
-        (true, true, -32603, false, false, false),
-        (true, false, -32600, false, false, false),
-        (false, false, -32600, false, false, false),
-        (true, true, -32600, false, false, false),
-        (true, false, -32603, true, true, false),
-        (true, false, -32600, false, false, true),
+async fn reconnect_restores_launch_reviewer_without_a_profile_override() -> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let mut cached = test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf());
+    cached.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    app.primary_thread_id = Some(cached.thread_id);
+    app.config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    app.harness_overrides.approvals_reviewer = Some(ApprovalsReviewer::AutoReview);
+    app.remember_launch_permissions();
+    let mut resumed = cached.clone();
+    resumed.approvals_reviewer = ApprovalsReviewer::User;
+    app.restore_runtime_permissions(&mut resumed, &cached);
+    assert_eq!(resumed, cached);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Result<()> {
+    for (recovered_queue, edit_offline, resume_error_code, deferred_notice, notice_enabled) in [
+        (true, false, -32603, false, false),
+        (true, false, -32603, false, true),
+        (false, false, -32603, false, false),
+        (true, true, -32603, false, false),
+        (true, false, -32600, false, false),
+        (false, false, -32600, false, false),
+        (true, true, -32600, false, false),
+        (true, false, -32603, true, true),
     ] {
         let pending_profile = !recovered_queue && resume_error_code == -32600;
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
@@ -130,8 +138,7 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
                 let (stream, _) = listener.accept().await?;
                 methods.extend(serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| std::future::ready(match request.method.as_str() {
                     "thread/resume" if attempt == 0 => Some(json!({"error": {"code": resume_error_code, "message":
-                        if maintenance { "Server is draining; retry after reconnecting".into() }
-                        else if resume_error_code == -32600 {
+                        if resume_error_code == -32600 {
                             format!("thread {id} is closing; retry thread/resume after the thread is closed")
                         } else {
                             "temporarily unavailable".into()
@@ -152,9 +159,9 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
                     "thread/list" | "thread/loaded/list" => Some(json!({"result": {"data": [], "nextCursor": null}})),
                     "thread/goal/get" => Some(json!({"result": {"goal": null}})),
                     "turn/start" => {
-                        assert!(!recovered_queue);
+                        assert!(!edit_offline);
                         let params = request.params.as_ref().unwrap();
-                        assert_eq!(params["input"][0]["text"], "fresh follow-up");
+                        assert_eq!(params["input"][0]["text"], if recovered_queue { "old queued input" } else { "fresh follow-up" });
                         assert_eq!(params["approvalPolicy"], if pending_profile { "never" } else { "on-request" });
                         assert_eq!(params["sandboxPolicy"]["type"], if pending_profile { json!(null) } else { json!("readOnly") });
                         assert_eq!(params["collaborationMode"], json!(expected_submitted_mode));
@@ -177,9 +184,14 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             crate::dynamic_tools_mcp::DynamicToolMcpServer::start(
                 session.request_handle(),
                 codex_app_server_protocol::ThreadStartParams::default(),
+                app.config.features.get().clone(),
                 app.app_event_tx.clone(),
                 app.dynamic_tool_status_updates.clone(),
                 /*managed_requirement*/ None,
+                crate::dynamic_tools_mcp::ToolServices {
+                    task_tools: true,
+                    worktrees: None,
+                },
             )
             .await?,
         ));
@@ -214,7 +226,8 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             );
         let mut tui = crate::tui::test_support::make_test_tui()?;
         if pending_profile {
-            app.pending_server_profiles.insert(
+            app.runtime_approvals_reviewer_override = Some(ApprovalsReviewer::User);
+            app.agents_overview.requested_permission_profiles.insert(
                 id,
                 PermissionProfileSelection {
                     profile_id: "server-only".into(),
@@ -311,6 +324,16 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             );
         }
         assert!(app.pending_server_profiles.is_empty());
+        assert!(app.agents_overview.requested_permission_profiles.is_empty());
+        if pending_profile {
+            assert_eq!(
+                app.resume_permission_overrides(&app.config),
+                crate::resume_permissions::ResumePermissions {
+                    approvals_reviewer: true,
+                    ..Default::default()
+                }
+            );
+        }
         assert!(!app.pending_managed_worktree_creation);
         assert!(
             !app.agents_overview
@@ -332,8 +355,9 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
         );
         assert!(app.agent_navigation.begin_picker_refresh(id).is_some());
         assert!(
-            !app.agent_navigation
+            app.agent_navigation
                 .finish_picker_refresh(id, stale_picker_refresh)
+                .is_none()
         );
         // Let the rebound timer become due without depending on machine uptime.
         tokio::time::pause();
@@ -388,42 +412,41 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
         let notices = history
             .lines()
             .filter(|line| {
-                line.contains("Reconnected.") || line.contains("background Codex service")
+                line.contains("Couldn't confirm whether")
+                    || line.contains("background Codex service")
             })
             .collect::<Vec<_>>()
             .join("\n");
         if deferred_notice {
             assert_snapshot!(notices, @r###"
-• Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.
 ⚠ A background Codex service is running v2.0.0, older than your Codex CLI
 "###);
+        } else if edit_offline {
+            assert!(notices.contains("unacknowledged prompt"));
         } else {
-            insta::allow_duplicates! {
-                assert_snapshot!(notices, @"• Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.");
-            }
+            assert_eq!(notices, "");
         }
         assert_eq!(history.matches("only once").count(), 1);
-        if recovered_queue {
+        if edit_offline {
             assert!(app.chat_widget.has_queued_follow_up_messages());
             assert!(!app.chat_widget.maybe_send_next_queued_input());
-            if edit_offline {
-                app.handle_tui_event(
-                    &mut tui,
-                    &mut session,
-                    TuiEvent::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
-                )
-                .await?;
-                assert_eq!(
-                    app.chat_widget.composer_text_with_pending(),
-                    "unacknowledged prompt"
-                );
-                assert!(ops.try_recv().is_err());
-            } else {
-                assert_snapshot!(
-                    "restored_conversation",
-                    render_bottom_popup(&app.chat_widget, /*width*/ 80)
-                );
-            }
+            app.handle_tui_event(
+                &mut tui,
+                &mut session,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+            )
+            .await?;
+            assert_eq!(
+                app.chat_widget.composer_text_with_pending(),
+                "unacknowledged prompt"
+            );
+            assert!(ops.try_recv().is_err());
+        } else if recovered_queue {
+            assert!(!app.chat_widget.has_queued_follow_up_messages());
+            assert_snapshot!(
+                "restored_conversation",
+                render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            );
         } else {
             app.chat_widget
                 .handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
@@ -434,6 +457,9 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             while let Ok(event) = events.try_recv() {
                 app.handle_event(&mut tui, &mut session, event).await?;
             }
+        }
+        while let Ok(event) = events.try_recv() {
+            app.handle_event(&mut tui, &mut session, event).await?;
         }
         session.shutdown().await?;
         let methods = server.await??;
@@ -449,7 +475,7 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
                 .iter()
                 .filter(|method| *method == "turn/start")
                 .count(),
-            usize::from(!recovered_queue)
+            usize::from(!edit_offline)
         );
     }
     Ok(())
@@ -525,7 +551,7 @@ async fn reconnect_reconciles_offscreen_pending_profile_before_restoring_permiss
                 "thread/read" => json!({"result": {"thread": thread(primary)}}),
                 "turn/start" => {
                     let params = request.params.as_ref().unwrap();
-                    assert_eq!(params["permissions"], "server-only");
+                    assert_eq!(params["permissions"], serde_json::Value::Null);
                     assert_eq!(params["approvalPolicy"], "on-request");
                     assert_eq!(params["sandboxPolicy"], json!(null));
                     json!({"result": {"turn": {"id": "fresh", "items": [], "status": "inProgress"}}})
@@ -627,8 +653,7 @@ async fn reconnect_exhaustion_and_unknown_initial_thread_stay_offline() -> Resul
             .is_err()
         );
     }
-    // Refused connections retry through the same total recovery budget as maintenance.
-    assert!((120..=125).contains(&start.elapsed().as_secs()));
+    assert_eq!(start.elapsed().as_secs(), 120);
     app.begin_reconnect();
     app.chat_widget.reconnect_failed();
     assert_snapshot!(
@@ -752,13 +777,10 @@ pub(super) async fn drain_history(
     events: &mut mpsc::UnboundedReceiver<AppEvent>,
 ) -> Result<String> {
     while let Ok(event) = events.try_recv() {
-        assert!(!matches!(
-            event,
-            AppEvent::CodexOp(AppCommand::UserTurn { .. })
-        ));
         if matches!(
             event,
             AppEvent::InsertHistoryCell(_)
+                | AppEvent::CodexOp(AppCommand::UserTurn { .. })
                 | AppEvent::BeginThreadSwitchHistoryReplayBuffer
                 | AppEvent::EndInitialHistoryReplayBuffer
         ) {

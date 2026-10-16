@@ -37,21 +37,6 @@ impl SelectionDescriptionLayout {
     }
 }
 
-pub(super) fn line_to_owned(line: Line<'_>) -> Line<'static> {
-    Line {
-        style: line.style,
-        alignment: line.alignment,
-        spans: line
-            .spans
-            .into_iter()
-            .map(|span| Span {
-                style: span.style,
-                content: Cow::Owned(span.content.into_owned()),
-            })
-            .collect(),
-    }
-}
-
 fn combined_description(
     row: &GenericDisplayRow,
     description_layout: SelectionDescriptionLayout,
@@ -187,7 +172,23 @@ pub(super) fn build_full_line(
     Line::from(spans)
 }
 
-/// Preserve factual descriptions below the label when a narrow column cannot fit them.
+pub(super) fn line_to_owned(line: Line<'_>) -> Line<'static> {
+    Line {
+        style: line.style,
+        alignment: line.alignment,
+        spans: line
+            .spans
+            .into_iter()
+            .map(|span| Span {
+                style: span.style,
+                content: Cow::Owned(span.content.into_owned()),
+            })
+            .collect(),
+    }
+}
+
+/// Keep factual descriptions visible below a label when the description column
+/// is too narrow to display useful values.
 pub(super) fn wrap_stacked_row(row: &GenericDisplayRow, width: u16) -> Vec<Line<'static>> {
     let width = width.max(1);
     let prefix_width = line_width(&Line::from(row.name_prefix_spans.clone()))

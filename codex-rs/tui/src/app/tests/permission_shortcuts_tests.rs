@@ -35,7 +35,6 @@ async fn permission_shortcut_rejections_leave_state_unchanged() -> Result<()> {
             /*log_db*/ None,
             /*state_db*/ None,
             Arc::clone(&app.environment_manager),
-            /*process_account*/ None,
             Default::default(),
             |mut args| {
                 args.experimental_api = experimental_api;
@@ -106,7 +105,11 @@ async fn permission_shortcut_confirms_without_persisting() -> Result<()> {
         RuntimePermissionProfileOverride::from_config(app.chat_widget.config_ref()),
         before
     );
-    assert!(app.pending_server_profiles.contains_key(&thread_id));
+    assert!(
+        app.agents_overview
+            .requested_permission_profiles
+            .contains_key(&thread_id)
+    );
     insta::assert_snapshot!(
         next_history_message(&mut events),
         @"• Permission selection requested: Read Only"

@@ -13,6 +13,7 @@ use super::account_page;
 use super::all_priorities_output;
 use super::encode_output;
 use super::service_usage;
+use super::validated_limit;
 
 fn account(alias: &str, priority: u32) -> ManagedAccountSummary {
     ManagedAccountSummary {
@@ -22,6 +23,7 @@ fn account(alias: &str, priority: u32) -> ManagedAccountSummary {
         enabled: true,
         authenticated: true,
         priority,
+        credit_usage_enabled: false,
         is_default: alias == "alpha",
     }
 }
@@ -56,6 +58,7 @@ fn account_output_is_bounded_and_omits_internal_identity() {
                 "enabled": true,
                 "authenticated": true,
                 "priority": 1000,
+                "creditUsageEnabled": false,
                 "isDefault": true,
                 "isCurrentTurn": true
             }],
@@ -93,9 +96,7 @@ fn tool_contract_explains_priority_direction_and_security_boundary() {
         "set_priority",
         "set_all_priorities",
         "higher numbers drain first",
-        "never returns credentials",
-        "email",
-        "set_default",
+        "never returns credentials, email",
     ] {
         assert!(encoded.contains(required), "missing {required}");
     }
@@ -125,6 +126,14 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     let encoded_list = encode_output(&list).expect("maximal account list stays bounded");
     assert!(encoded_list.len() < MAX_TOOL_OUTPUT_BYTES);
 
+    // Exercise the same page selection as the tool: ten requested accounts may
+    // produce a smaller page so complete usage facts fit without truncation.
+    let limit = validated_limit(Some(10), /*refresh_service_usage*/ true).expect("usage limit");
+    assert_eq!(
+        validated_limit(/*limit*/ None, /*refresh_service_usage*/ true)
+            .expect("default usage limit"),
+        limit
+    );
     let mut usage = account_page(
         ManagedAccountSnapshot {
             generation: u64::MAX,
@@ -134,7 +143,7 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
                 .collect(),
         },
         /*offset*/ 0,
-        super::validated_limit(Some(10), /*refresh_service_usage*/ true).unwrap(),
+        limit,
         /*routed_account*/ None,
     )
     .expect("maximal service usage page");
@@ -142,9 +151,9 @@ fn worst_case_outputs_fit_and_encoding_rejects_above_sixteen_kibibytes() {
     for account in &mut usage.accounts {
         account.service_usage = Some(service_usage::maximal_service_usage());
     }
-    assert_eq!(usage.next_offset, Some(usage.accounts.len() as u32));
-    let encoded_usage =
-        encode_output(&usage).expect("refreshed page stays bounded with reset dates");
+    assert_eq!(usage.accounts.len(), limit as usize);
+    assert_eq!(usage.next_offset, Some(limit));
+    let encoded_usage = encode_output(&usage).expect("bounded page preserves all eight buckets");
     assert!(encoded_usage.len() < MAX_TOOL_OUTPUT_BYTES);
 
     assert!(encode_output(&"x".repeat(MAX_TOOL_OUTPUT_BYTES)).is_err());

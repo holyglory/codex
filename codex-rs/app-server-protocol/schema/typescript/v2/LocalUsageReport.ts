@@ -13,6 +13,8 @@ import type { LocalUsageReportTimeMetrics } from "./LocalUsageReportTimeMetrics"
 import type { LocalUsageReportTimeRange } from "./LocalUsageReportTimeRange";
 import type { LocalUsageReportTokenAggregate } from "./LocalUsageReportTokenAggregate";
 import type { LocalUsageReportToolMetrics } from "./LocalUsageReportToolMetrics";
+import type { LocalUsageReportWorktree } from "./LocalUsageReportWorktree";
+import type { LocalUsageReportWorktreeCoverage } from "./LocalUsageReportWorktreeCoverage";
 
 /**
  * Versioned, full-fidelity local usage report.
@@ -21,4 +23,4 @@ import type { LocalUsageReportToolMetrics } from "./LocalUsageReportToolMetrics"
  * measurement, attribution, and timing facts separate so clients do not need
  * to infer unsupported totals.
  */
-export type LocalUsageReport = { cost: LocalUsageReportCost | null, schemaVersion: number, kind: string, databaseSchemaVersion: bigint, taxonomyVersion: bigint, scope: LocalUsageReportScope, account: string | null, timeRange: LocalUsageReportTimeRange | null, coverage: LocalUsageReportCoverage, counts: LocalUsageReportCounts, providerTokens: Array<LocalUsageReportTokenAggregate>, providerTokensByActivity: Array<LocalUsageReportActivityTokenAggregate>, tools: LocalUsageReportToolMetrics, time: LocalUsageReportTimeMetrics, classifications: Array<LocalUsageReportClassificationCount>, repositoryParticipation: LocalUsageReportRepositoryParticipation, formulas: LocalUsageReportFormulas, };
+export type LocalUsageReport = { schemaVersion: number, kind: string, databaseSchemaVersion: bigint, taxonomyVersion: bigint, scope: LocalUsageReportScope, account: string | null, timeRange: LocalUsageReportTimeRange | null, coverage: LocalUsageReportCoverage, counts: LocalUsageReportCounts, providerTokens: Array<LocalUsageReportTokenAggregate>, providerTokensByActivity: Array<LocalUsageReportActivityTokenAggregate>, tools: LocalUsageReportToolMetrics, time: LocalUsageReportTimeMetrics, classifications: Array<LocalUsageReportClassificationCount>, worktrees: Array<LocalUsageReportWorktree>, worktreeCoverage: LocalUsageReportWorktreeCoverage, repositoryParticipation: LocalUsageReportRepositoryParticipation, formulas: LocalUsageReportFormulas, cost: LocalUsageReportCost | null, };

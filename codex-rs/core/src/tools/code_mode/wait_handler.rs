@@ -93,7 +93,6 @@ impl CodeModeWaitHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let originating_item_id = invocation.originating_call().await;
         let handler_span = tracing::Span::current();
         let ToolInvocation {
             session,
@@ -106,8 +105,7 @@ impl CodeModeWaitHandler {
         } = invocation;
 
         let mut telemetry = CodeModeToolCallGuard::new(
-            session.services.analytics_events_client.clone(),
-            session.thread_id.to_string(),
+            &session,
             turn.sub_id.clone(),
             turn.turn_metadata_state.clone(),
             call_id.clone(),
@@ -126,10 +124,6 @@ impl CodeModeWaitHandler {
                 let started_at = std::time::Instant::now();
                 telemetry.cell_id = Some(args.cell_id.clone());
                 let cell_id = codex_code_mode::CellId::new(args.cell_id);
-                exec.session
-                    .services
-                    .code_mode_service
-                    .mark_cell_ready_for_dispatch(&cell_id, originating_item_id);
                 let wait_response = if args.terminate {
                     exec.session
                         .services
@@ -140,10 +134,13 @@ impl CodeModeWaitHandler {
                     exec.session
                         .services
                         .code_mode_service
-                        .wait(codex_code_mode::WaitRequest {
-                            cell_id,
-                            yield_time_ms: args.yield_time_ms,
-                        })
+                        .wait(
+                            codex_code_mode::WaitRequest {
+                                cell_id,
+                                yield_time_ms: args.yield_time_ms,
+                            },
+                            step_context.preempt.clone(),
+                        )
                         .await
                 }
                 .map_err(|error| {

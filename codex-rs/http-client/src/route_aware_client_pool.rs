@@ -117,34 +117,24 @@ impl RouteAwareRequestError {
             return Some(RouteFailureClass::TlsError);
         }
 
-        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(self);
-        while let Some(error) = source {
+        let mut errors: Vec<&(dyn std::error::Error + 'static)> = vec![self];
+        while let Some(error) = errors.pop() {
             if error.downcast_ref::<rustls::Error>().is_some()
                 || error.downcast_ref::<native_tls::Error>().is_some()
-            {
-                return Some(RouteFailureClass::TlsError);
-            }
-            let compact_message = error
-                .to_string()
-                .to_ascii_lowercase()
-                .chars()
-                .filter(char::is_ascii_alphanumeric)
-                .collect::<String>();
-            if [
-                "invalidcertificate",
-                "unknownissuer",
-                "alertreceivedprotocolversion",
-                "tlsv1alertprotocolversion",
-            ]
-            .iter()
-            .any(|marker| compact_message.contains(marker))
             {
                 return Some(RouteFailureClass::TlsError);
             }
             if error.to_string() == "tunnel error: proxy authorization required" {
                 return Some(RouteFailureClass::ProxyAuthenticationRequired);
             }
-            source = error.source();
+            if let Some(source) = error.source() {
+                errors.push(source);
+            }
+            if let Some(io_error) = error.downcast_ref::<io::Error>()
+                && let Some(inner) = io_error.get_ref()
+            {
+                errors.push(inner);
+            }
         }
 
         match self {

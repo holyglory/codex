@@ -147,6 +147,8 @@ fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, S
         "ALIAS",
         "PRIORITY",
         "NOTE",
+        "CREDITS",
+        "CREDIT USE",
         "BANKED RESETS",
         "LIMITS",
         "RESET IN",
@@ -259,7 +261,7 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
             .collect::<Vec<_>>(),
         ["1", "4294967295"]
     );
-    assert!(rows.iter().all(|row| row.len() == 5
+    assert!(rows.iter().all(|row| row.len() == 7
         && row["BANKED RESETS"] == "unknown"
         && row["LIMITS"] == "unknown (unsupportedAuthentication)"
         && row["RESET IN"] == "unknown"));
@@ -298,7 +300,7 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
                 rows: 24,
                 cols: 240,
             },
-            &[],
+            codex_utils_pty::ChildFds::Inherited(&[]),
         )
         .await?;
         let session = spawned.session;
@@ -476,7 +478,7 @@ async fn account_list_colors_usage_and_prioritizes_banked_resets() -> Result<()>
             rows: 24,
             cols: 240,
         },
-        &[],
+        codex_utils_pty::ChildFds::Inherited(&[]),
     )
     .await?;
     let session = spawned.session;
@@ -1379,6 +1381,8 @@ fn legacy_login_and_logout_command_shapes_remain_available() -> Result<()> {
 #[test]
 fn login_and_logout_replace_only_the_active_profile() -> Result<()> {
     let fixture = fixture(/*beta_authenticated*/ true)?;
+    let registry_store = RegistryStore::new(fixture.home.path());
+    let mut expected_registry = registry_store.read()?;
     let beta_profile = ProfileAuthStorage::new(
         fixture.home.path(),
         fixture.beta.id.clone(),
@@ -1405,24 +1409,39 @@ fn login_and_logout_replace_only_the_active_profile() -> Result<()> {
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;
-    assert_eq!(
-        alpha_profile.load()?.and_then(|auth| auth.openai_api_key),
-        Some("active-replacement".to_string())
-    );
-    assert_eq!(
-        beta_profile.load()?.and_then(|auth| auth.openai_api_key),
-        Some("beta-secret".to_string())
-    );
+    let mut expected_auth = auth();
+    expected_auth.openai_api_key = Some("active-replacement".to_string());
+    assert_eq!(alpha_profile.load()?, Some(expected_auth));
+    assert_eq!(beta_profile.load()?, Some(beta_auth.clone()));
+    expected_registry.generation += 1;
+    let active = expected_registry
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == fixture.alpha.id)
+        .unwrap();
+    active.service_account_id = None;
+    active.service_workspace_id = None;
+    assert_eq!(registry_store.read()?, expected_registry);
+
+    codex_command(fixture.home.path())?
+        .args(["login", "status"])
+        .assert()
+        .success()
+        .stderr(contains("Logged in using an API key"));
 
     codex_command(fixture.home.path())?
         .arg("logout")
         .assert()
         .success();
     assert_eq!(alpha_profile.load()?, None);
-    assert_eq!(
-        beta_profile.load()?.and_then(|auth| auth.openai_api_key),
-        Some("beta-secret".to_string())
-    );
+    assert_eq!(beta_profile.load()?, Some(beta_auth));
+    expected_registry.generation += 1;
+    assert_eq!(registry_store.read()?, expected_registry);
+    codex_command(fixture.home.path())?
+        .args(["login", "status"])
+        .assert()
+        .failure()
+        .stderr(contains("Not logged in"));
     Ok(())
 }
 
@@ -1439,3 +1458,6 @@ fn open_shared_lock(path: &Path) -> Result<File> {
 
 #[path = "account/reset_tests.rs"]
 mod reset_tests;
+
+#[path = "account/credits_tests.rs"]
+mod credits;

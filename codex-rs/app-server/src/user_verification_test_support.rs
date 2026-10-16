@@ -29,6 +29,7 @@ use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -165,8 +166,8 @@ impl Harness {
             state_db: None,
             config_warnings: Vec::new(),
             session_source: SessionSource::Cli,
-            auth_manager: Arc::clone(&auth),
             process_account: None,
+            auth_manager: Arc::clone(&auth),
             user_verification: Arc::clone(&service),
             installation_id: "11111111-1111-4111-8111-111111111111".into(),
             code_mode_session_provider: None,
@@ -179,6 +180,7 @@ impl Harness {
             },
             remote_control_handle: None,
             plugin_startup_tasks: None,
+            background_subscription_loader: Arc::new(OnceLock::new()),
         }));
         Ok(Self {
             processor,

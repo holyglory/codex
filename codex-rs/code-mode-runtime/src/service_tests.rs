@@ -1,7 +1,6 @@
 use codex_code_mode_protocol::NoopCodeModeSessionDelegate;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use super::CellId;
 use super::CodeModeNestedToolCall;
@@ -17,6 +16,7 @@ use crate::ExecuteRequest;
 use crate::ExecuteToPendingOutcome;
 use crate::FunctionCallOutputContentItem;
 use crate::ToolDefinition;
+use codex_code_mode_protocol::CodeModeSession;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::NotificationFuture;
 use codex_code_mode_protocol::ToolInvocationFuture;
@@ -24,6 +24,7 @@ use codex_protocol::ToolName;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use tokio::sync::Notify;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -57,7 +58,95 @@ fn resolve_yield_timeout_applies_grace_before_session_limits() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
+    let _time_guard = hold_virtual_time();
+    let delegate = Arc::new(ReleasableToolDelegate::default());
+    let service: Arc<dyn CodeModeSession> = Arc::new(InProcessCodeModeSession::new());
+    let execute_signal = CancellationToken::new();
+    let started = service
+        .execute(
+            ExecuteRequest {
+                enabled_tools: vec![echo_tool()],
+                source: r#"await tools.echo({}); text("done");"#.to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            },
+            delegate.clone(),
+            Some(execute_signal.clone()),
+        )
+        .await
+        .unwrap();
+    let response = tokio::spawn(started.initial_response());
+    wait_until_tool_started(&delegate).await.unwrap();
+    execute_signal.cancel();
+    assert_eq!(
+        response.await.unwrap().unwrap(),
+        RuntimeResponse::Yielded {
+            code_mode_host_duration: None,
+            cell_id: cell_id("1"),
+            content_items: Vec::new(),
+        }
+    );
+
+    let wait_signal = CancellationToken::new();
+    let response = tokio::spawn({
+        let service = Arc::clone(&service);
+        let wait_signal = wait_signal.clone();
+        async move {
+            service
+                .wait(
+                    WaitRequest {
+                        cell_id: cell_id("1"),
+                        yield_time_ms: 60_000,
+                    },
+                    Some(wait_signal),
+                )
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(!response.is_finished());
+    wait_signal.cancel();
+    assert_eq!(
+        response.await.unwrap().unwrap(),
+        WaitOutcome::LiveCell(RuntimeResponse::Yielded {
+            code_mode_host_duration: None,
+            cell_id: cell_id("1"),
+            content_items: Vec::new(),
+        })
+    );
+
+    delegate.release_tool();
+    let response = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move {
+            service
+                .wait(
+                    WaitRequest {
+                        cell_id: cell_id("1"),
+                        yield_time_ms: 60_000,
+                    },
+                    /*preempt*/ None,
+                )
+                .await
+        }
+    });
+    assert_eq!(
+        response.await.unwrap().unwrap(),
+        WaitOutcome::LiveCell(RuntimeResponse::Result {
+            code_mode_host_duration: None,
+            cell_id: cell_id("1"),
+            content_items: vec![FunctionCallOutputContentItem::InputText {
+                text: "done".to_string(),
+            }],
+            error_text: None,
+        })
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn execute_waits_for_nested_tool_during_yield_grace() {
+    let _time_guard = hold_virtual_time();
     let delegate = Arc::new(ReleasableToolDelegate::default());
     let service = InProcessCodeModeSession::new();
     let request = ExecuteRequest {
@@ -66,12 +155,14 @@ async fn execute_waits_for_nested_tool_during_yield_grace() {
         yield_time_ms: Some(10_000),
         ..execute_request("")
     };
-    let started = service.execute(request, delegate.clone()).await.unwrap();
+    let started = service
+        .execute(request, delegate.clone(), /*preempt*/ None)
+        .await
+        .unwrap();
     let response = tokio::spawn(started.initial_response());
-    wait_until_tool_started(&delegate).await;
+    wait_until_tool_started(&delegate).await.unwrap();
     tokio::time::advance(Duration::from_millis(10_500)).await;
     delegate.release_tool();
-    wait_until_finished(&response).await;
     let response = response.await.unwrap().unwrap();
 
     assert_eq!(
@@ -89,6 +180,7 @@ async fn execute_waits_for_nested_tool_during_yield_grace() {
 
 #[tokio::test(start_paused = true)]
 async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
+    let _time_guard = hold_virtual_time();
     let delegate = Arc::new(ReleasableToolDelegate::default());
     let service = InProcessCodeModeSession::with_limits(CodeModeSessionCellExecutionLimits {
         max_yield_time_ms: Some(/*value*/ 10_000),
@@ -103,16 +195,16 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
                 ..execute_request("")
             },
             delegate.clone(),
+            /*preempt*/ None,
         )
         .await
         .unwrap();
     let initial_response = tokio::spawn(started.initial_response());
-    wait_until_tool_started(&delegate).await;
+    wait_until_tool_started(&delegate).await.unwrap();
 
     tokio::time::advance(Duration::from_millis(9_999)).await;
     assert!(!initial_response.is_finished());
     tokio::time::advance(Duration::from_millis(/*millis*/ 1)).await;
-    wait_until_finished(&initial_response).await;
     assert_eq!(
         initial_response.await.unwrap().unwrap(),
         RuntimeResponse::Yielded {
@@ -123,15 +215,17 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
     );
 
     let wait_response = service
-        .begin_wait(WaitRequest {
-            cell_id: cell_id("1"),
-            yield_time_ms: 10_000,
-        })
+        .begin_wait(
+            WaitRequest {
+                cell_id: cell_id("1"),
+                yield_time_ms: 10_000,
+            },
+            /*preempt*/ None,
+        )
         .await;
     let wait_response = tokio::spawn(wait_response);
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(/*secs*/ 10)).await;
-    wait_until_finished(&wait_response).await;
     assert_eq!(
         wait_response.await.unwrap().unwrap(),
         WaitOutcome::LiveCell(RuntimeResponse::Yielded {
@@ -143,13 +237,15 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
 
     delegate.release_tool();
     let completion = service
-        .begin_wait(WaitRequest {
-            cell_id: cell_id("1"),
-            yield_time_ms: 10_000,
-        })
+        .begin_wait(
+            WaitRequest {
+                cell_id: cell_id("1"),
+                yield_time_ms: 10_000,
+            },
+            /*preempt*/ None,
+        )
         .await;
     let completion = tokio::spawn(completion);
-    wait_until_finished(&completion).await;
     assert_eq!(
         completion.await.unwrap().unwrap(),
         WaitOutcome::LiveCell(RuntimeResponse::Result {
@@ -165,6 +261,7 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
 
 #[tokio::test(start_paused = true)]
 async fn wait_waits_for_nested_tool_during_yield_grace() {
+    let _time_guard = hold_virtual_time();
     let delegate = Arc::new(ReleasableToolDelegate::default());
     let service = InProcessCodeModeSession::new();
     let initial_response = service
@@ -187,16 +284,18 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
         }
     );
     let response = service
-        .begin_wait(WaitRequest {
-            cell_id: cell_id("1"),
-            yield_time_ms: 10_000,
-        })
+        .begin_wait(
+            WaitRequest {
+                cell_id: cell_id("1"),
+                yield_time_ms: 10_000,
+            },
+            /*preempt*/ None,
+        )
         .await;
     let response = tokio::spawn(response);
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_millis(10_500)).await;
     delegate.release_tool();
-    wait_until_finished(&response).await;
     let response = response.await.unwrap();
 
     assert_eq!(
@@ -214,6 +313,7 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
 
 #[tokio::test(start_paused = true)]
 async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
+    let _time_guard = hold_virtual_time();
     let zero_delegate = Arc::new(ReleasableToolDelegate::default());
     let zero_session = InProcessCodeModeSession::with_limits(CodeModeSessionCellExecutionLimits {
         max_yield_time_ms: Some(/*value*/ 0),
@@ -232,18 +332,21 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
         ..execute_request("")
     };
     let zero_started = zero_session
-        .execute(request.clone(), zero_delegate.clone())
+        .execute(
+            request.clone(),
+            zero_delegate.clone(),
+            /*preempt*/ None,
+        )
         .await
         .unwrap();
     let limited_started = limited_session
-        .execute(request, limited_delegate.clone())
+        .execute(request, limited_delegate.clone(), /*preempt*/ None)
         .await
         .unwrap();
     let zero_response = tokio::spawn(zero_started.initial_response());
     let limited_response = tokio::spawn(limited_started.initial_response());
-    wait_until_tool_started(&zero_delegate).await;
-    wait_until_tool_started(&limited_delegate).await;
-    wait_until_finished(&zero_response).await;
+    wait_until_tool_started(&zero_delegate).await.unwrap();
+    wait_until_tool_started(&limited_delegate).await.unwrap();
     assert!(!limited_response.is_finished());
     assert_eq!(
         zero_response.await.unwrap().unwrap(),
@@ -255,13 +358,15 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
     );
 
     let zero_wait = zero_session
-        .begin_wait(WaitRequest {
-            cell_id: cell_id("1"),
-            yield_time_ms: 60_000,
-        })
+        .begin_wait(
+            WaitRequest {
+                cell_id: cell_id("1"),
+                yield_time_ms: 60_000,
+            },
+            /*preempt*/ None,
+        )
         .await;
     let zero_wait = tokio::spawn(zero_wait);
-    wait_until_finished(&zero_wait).await;
     assert_eq!(
         zero_wait.await.unwrap().unwrap(),
         WaitOutcome::LiveCell(RuntimeResponse::Yielded {
@@ -272,7 +377,6 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
     );
 
     tokio::time::advance(Duration::from_millis(/*millis*/ 10)).await;
-    wait_until_finished(&limited_response).await;
     assert_eq!(
         limited_response.await.unwrap().unwrap(),
         RuntimeResponse::Yielded {
@@ -286,30 +390,80 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
     limited_session.shutdown().await.unwrap();
 }
 
-async fn wait_until_finished<T>(task: &tokio::task::JoinHandle<T>) {
-    for _ in 0..10_000 {
-        if task.is_finished() {
-            return;
+#[tokio::test(start_paused = true)]
+async fn tool_start_acknowledgement_reports_error_before_invocation() {
+    let _time_guard = hold_virtual_time();
+    let delegate = Arc::new(ReleasableToolDelegate::default());
+    let service = InProcessCodeModeSession::new();
+    let started = service
+        .execute(
+            execute_request("throw 'startup failed';"),
+            delegate.clone(),
+            /*preempt*/ None,
+        )
+        .await
+        .unwrap();
+
+    let (startup, response) = tokio::join!(
+        wait_until_tool_started(&delegate),
+        started.initial_response(),
+    );
+    assert_eq!(startup, Err("cell closed before nested tool started"));
+    assert_eq!(
+        response.unwrap(),
+        RuntimeResponse::Result {
+            code_mode_host_duration: None,
+            cell_id: cell_id("1"),
+            content_items: Vec::new(),
+            error_text: Some("startup failed".to_string()),
         }
-        tokio::task::yield_now().await;
-    }
-    panic!("code-mode response did not finish while virtual time was held in the grace period");
+    );
 }
 
-async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) {
-    let tool_started = delegate.tool_started.notified();
-    tokio::pin!(tool_started);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut tool_started => return,
-            _ = tokio::task::yield_now() => {}
-        }
-        assert!(
-            Instant::now() < deadline,
-            "nested code-mode tool did not start"
-        );
+#[tokio::test(start_paused = true)]
+async fn tool_start_acknowledgement_reports_termination_before_invocation() {
+    let _time_guard = hold_virtual_time();
+    let delegate = Arc::new(ReleasableToolDelegate::default());
+    let service = InProcessCodeModeSession::new();
+    let started = service
+        .execute(
+            execute_request("await new Promise(() => {});"),
+            delegate.clone(),
+            /*preempt*/ None,
+        )
+        .await
+        .unwrap();
+
+    let (startup, terminated) = tokio::join!(
+        wait_until_tool_started(&delegate),
+        service.terminate(cell_id("1")),
+    );
+    assert_eq!(startup, Err("cell closed before nested tool started"));
+    let response = RuntimeResponse::Terminated {
+        code_mode_host_duration: None,
+        cell_id: cell_id("1"),
+        content_items: Vec::new(),
+    };
+    assert_eq!(terminated.unwrap(), WaitOutcome::LiveCell(response.clone()));
+    assert_eq!(started.initial_response().await.unwrap(), response);
+}
+
+fn hold_virtual_time() -> oneshot::Sender<()> {
+    // A live blocking task prevents Tokio's paused clock from auto-advancing while
+    // we await the V8 thread. Tests advance time explicitly; dropping the guard
+    // releases the task even if the test panics or is cancelled.
+    let (guard, released) = oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let _ = released.blocking_recv();
+    });
+    guard
+}
+
+async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) -> Result<(), &'static str> {
+    tokio::select! {
+        biased;
+        _ = delegate.tool_started.notified() => Ok(()),
+        _ = delegate.cell_closed.cancelled() => Err("cell closed before nested tool started"),
     }
 }
 
@@ -317,6 +471,7 @@ async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) {
 struct ReleasableToolDelegate {
     tool_release: Notify,
     tool_started: Notify,
+    cell_closed: CancellationToken,
 }
 
 impl ReleasableToolDelegate {
@@ -350,7 +505,9 @@ impl CodeModeSessionDelegate for ReleasableToolDelegate {
         Box::pin(async { Ok(()) })
     }
 
-    fn cell_closed(&self, _cell_id: &CellId) {}
+    fn cell_closed(&self, _cell_id: &CellId) {
+        self.cell_closed.cancel();
+    }
 }
 
 fn execute_request(source: &str) -> ExecuteRequest {
@@ -374,13 +531,18 @@ fn echo_tool() -> ToolDefinition {
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        input_schema_max_bytes: None,
         output_schema: None,
     }
 }
 
 async fn execute(service: &InProcessCodeModeSession, request: ExecuteRequest) -> RuntimeResponse {
     service
-        .execute(request, Arc::new(NoopCodeModeSessionDelegate))
+        .execute(
+            request,
+            Arc::new(NoopCodeModeSessionDelegate),
+            /*preempt*/ None,
+        )
         .await
         .unwrap()
         .initial_response()
@@ -535,6 +697,7 @@ async fn shutdown_interrupts_cpu_bound_cells() {
                 ..execute_request("")
             },
             Arc::new(NoopCodeModeSessionDelegate),
+            /*preempt*/ None,
         )
         .await
         .unwrap();
@@ -562,6 +725,7 @@ async fn start_cell_rejects_new_cell_after_shutdown_begins() {
         .execute(
             execute_request("text('late');"),
             Arc::new(NoopCodeModeSessionDelegate),
+            /*preempt*/ None,
         )
         .await
         .err()
@@ -963,6 +1127,7 @@ async fn global_scope_contains_only_allowed_items() {
         "WeakSet",
         "__codexContentItems",
         "add_content",
+        "as_settled",
         "audio",
         "decodeURI",
         "decodeURIComponent",
@@ -982,6 +1147,7 @@ async fn global_scope_contains_only_allowed_items() {
         "parseInt",
         "setTimeout",
         "store",
+        "stream_settled",
         "text",
         "tools",
         "undefined",
@@ -1623,10 +1789,13 @@ async fn wait_reports_missing_cell_separately_from_runtime_results() {
     let service = InProcessCodeModeSession::new();
 
     let response = service
-        .wait(WaitRequest {
-            cell_id: cell_id("missing"),
-            yield_time_ms: 1,
-        })
+        .wait(
+            WaitRequest {
+                cell_id: cell_id("missing"),
+                yield_time_ms: 1,
+            },
+            /*preempt*/ None,
+        )
         .await
         .unwrap();
 

@@ -31,10 +31,15 @@ pub(super) async fn check(
     startup: &mut StartupDraft,
     target: &AppServerTarget,
     config: &Config,
+    cli_kv_overrides: &[(String, toml::Value)],
     managed_daemon: bool,
 ) -> io::Result<Option<String>> {
     let issue = match startup
-        .run_until(daemon_startup::compatibility_warning(target, config))
+        .run_until(daemon_startup::compatibility_warning(
+            target,
+            config,
+            cli_kv_overrides,
+        ))
         .await?
     {
         Ok(warning) => return Ok(warning),
@@ -94,7 +99,7 @@ pub(super) async fn check(
             issue.reason
         ))),
         (Some(1), Some(features)) if managed_daemon => {
-            tui.with_restored(|| async {
+            tui.with_restored(crate::tui::TerminalHandoff::Restore, || async {
                 crossterm::terminal::disable_raw_mode()?;
                 codex_app_server_daemon::restart_with_features(features)
                     .await
@@ -104,7 +109,11 @@ pub(super) async fn check(
             })
             .await?;
             startup
-                .run_until(daemon_startup::compatibility_warning(target, config))
+                .run_until(daemon_startup::compatibility_warning(
+                    target,
+                    config,
+                    cli_kv_overrides,
+                ))
                 .await?
                 .map_err(io::Error::other)
         }

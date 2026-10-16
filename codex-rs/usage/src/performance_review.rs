@@ -8,10 +8,12 @@ use crate::UsageStoreError;
 use crate::detail_query_support::operation;
 use crate::detail_query_support::optional_uuid;
 use crate::detail_query_support::required_enum;
+use sqlx::Connection;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use tokio::time::Instant;
 
 #[path = "performance_review_pages.rs"]
 mod pages;
@@ -26,7 +28,29 @@ pub use types::*;
 impl UsageStore {
     pub async fn performance_review_packet(
         &self,
+        query: PerformanceReviewQuery,
+    ) -> Result<PerformanceReviewPacket, UsageStoreError> {
+        let deadline = Instant::now() + crate::report_read::REPORT_BUDGET;
+        let mut reader = crate::report_read::ReportRead::acquire(
+            &self.pool,
+            &self.report_refresh.reader,
+            deadline,
+        )
+        .await?;
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.read_performance_review(query, &mut reader.connection, deadline),
+        )
+        .await
+        .unwrap_or(Err(UsageStoreError::ReportTimedOut));
+        reader.finish(result, deadline).await
+    }
+
+    async fn read_performance_review(
+        &self,
         mut query: PerformanceReviewQuery,
+        connection: &mut sqlx::SqliteConnection,
+        deadline: Instant,
     ) -> Result<PerformanceReviewPacket, UsageStoreError> {
         if let Some(repository) = &query.repository_id {
             query.repository_id = Some(self.canonical_repository_id(repository).await?);
@@ -34,39 +58,50 @@ impl UsageStore {
         if let Some(page) = pages::existing(self, &query)? {
             return Ok(page);
         }
-        let classification = if crate::report_cache::is_ready(&self.pool)
+        tracing::debug!(stage = "classification", "usage report progress");
+        let classification = if crate::report_cache::is_ready_on(connection)
             .await
-            .map_err(UsageStoreError::Database)?
+            .map_err(|error| database_error(error, deadline))?
         {
             query::ClassificationSource::Cache
         } else {
             query::ClassificationSource::Canonical
         };
-        let mut transaction = self.pool.begin().await.map_err(UsageStoreError::Database)?;
+        let mut transaction = connection
+            .begin()
+            .await
+            .map_err(|error| database_error(error, deadline))?;
         let mut source = query::Selection {
             classification,
             operation_ids: None,
+            scope_materialized: false,
+            materialized: false,
         };
+        tracing::debug!(stage = "window_selection", "usage report progress");
         source.operation_ids =
             query::window_operation_ids(transaction.as_mut(), &query, &source).await?;
+        tracing::debug!(stage = "materialize", "usage report progress");
+        query::materialize(transaction.as_mut(), &query, &mut source).await?;
+        tracing::debug!(stage = "coverage", "usage report progress");
         let mut builder = query::selection(&query, &source);
         let coverage_row = builder
-            .push(query::TOKEN_FACTS)
+            .push(query::token_facts(&source))
             .push(query::OPERATION_COVERAGE)
             .build()
             .fetch_one(transaction.as_mut())
             .await
-            .map_err(UsageStoreError::Database)?;
+            .map_err(|error| database_error(error, deadline))?;
+        tracing::debug!(stage = "tokens", "usage report progress");
         let missing_totals = number(&coverage_row, "model_requests_without_provider_total")?;
 
         let mut builder = query::selection(&query, &source);
-        let token_rows = builder.push(query::TOKEN_FACTS).push("SELECT category_path, measurement_provenance,
+        let token_rows = builder.push(query::token_facts(&source)).push("SELECT category_path, measurement_provenance,
             COALESCE(SUM(CASE WHEN COALESCE(conflict, 0) = 0 THEN token_count ELSE 0 END), 0) measured_tokens,
             COUNT(*) observations, SUM(unknown_count) unknown_observations,
             MAX(incomplete OR COALESCE(conflict, 0)) incomplete, COUNT(*) OVER () category_count
             FROM token_facts GROUP BY category_path, measurement_provenance
             ORDER BY category_path <> 'total_tokens', category_path, measurement_provenance LIMIT 12")
-            .build().fetch_all(transaction.as_mut()).await.map_err(UsageStoreError::Database)?;
+            .build().fetch_all(transaction.as_mut()).await.map_err(|error| database_error(error, deadline))?;
         let category_count = token_rows
             .first()
             .map(|row| number(row, "category_count"))
@@ -77,12 +112,12 @@ impl UsageStore {
             .map(|row| {
                 let category = TokenCategoryPath::new(
                     row.try_get::<String, _>("category_path")
-                        .map_err(UsageStoreError::Database)?,
+                        .map_err(|error| database_error(error, deadline))?,
                 )
                 .map_err(|_| UsageStoreError::InvalidFact)?;
                 let provenance = required_enum(
                     row.try_get("measurement_provenance")
-                        .map_err(UsageStoreError::Database)?,
+                        .map_err(|error| database_error(error, deadline))?,
                     MeasurementProvenance::parse,
                     MeasurementProvenance::as_str,
                 )?;
@@ -102,11 +137,12 @@ impl UsageStore {
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
 
+        tracing::debug!(stage = "operations", "usage report progress");
         let mut builder = query::selection(&query, &source);
         let rows = builder.push("SELECT operation_kind category, COUNT(*) count,
             COALESCE(SUM(interval_ms), 0) measured_interval_sum_ms, SUM(interval_ms IS NULL) unknown_intervals
             FROM effective GROUP BY operation_kind ORDER BY operation_kind")
-            .build().fetch_all(transaction.as_mut()).await.map_err(UsageStoreError::Database)?;
+            .build().fetch_all(transaction.as_mut()).await.map_err(|error| database_error(error, deadline))?;
         let operations = rows
             .iter()
             .map(|row| category(row, OperationKind::parse, OperationKind::as_str))
@@ -117,7 +153,7 @@ impl UsageStore {
             .build()
             .fetch_all(transaction.as_mut())
             .await
-            .map_err(UsageStoreError::Database)?;
+            .map_err(|error| database_error(error, deadline))?;
         let waits = rows
             .iter()
             .map(|row| category(row, ActivityState::parse, ActivityState::as_str))
@@ -126,7 +162,7 @@ impl UsageStore {
         let mut builder = query::selection(&query, &source);
         let rows = builder.push("SELECT * FROM effective WHERE retry_of_operation_id IS NOT NULL OR rework_of_operation_id IS NOT NULL
             ORDER BY started_at_ms, id LIMIT 5").build().fetch_all(transaction.as_mut())
-            .await.map_err(UsageStoreError::Database)?;
+            .await.map_err(|error| database_error(error, deadline))?;
         let sample = rows.iter().map(link).collect::<Result<Vec<_>, _>>()?;
         let links = ReviewLinks {
             retry_operations: number(&coverage_row, "retry_operations")?,
@@ -142,7 +178,7 @@ impl UsageStore {
               AND effective_activity NOT IN ('build_validation', 'verification_review', 'unit_testing', 'integration_testing',
                 'browser_qa', 'compatibility_testing', 'migration_rehearsal')
             ORDER BY interval_ms IS NULL, interval_ms DESC, started_at_ms, id LIMIT 5")
-            .build().fetch_all(transaction.as_mut()).await.map_err(UsageStoreError::Database)?;
+            .build().fetch_all(transaction.as_mut()).await.map_err(|error| database_error(error, deadline))?;
         let candidate_count = rows
             .first()
             .map(|row| number(row, "candidate_count"))
@@ -165,7 +201,7 @@ impl UsageStore {
                     signal,
                     measured_interval_ms: row
                         .try_get::<Option<i64>, _>("interval_ms")
-                        .map_err(UsageStoreError::Database)?
+                        .map_err(|error| database_error(error, deadline))?
                         .map(u64::try_from)
                         .transpose()
                         .map_err(|_| UsageStoreError::DatabaseValueOutOfRange)?,
@@ -178,22 +214,22 @@ impl UsageStore {
         let mut builder = query::selection(&query, &source);
         let rows = builder
             .push(
-                "SELECT coverage.coverage_state, COUNT(*) count FROM coverage_events coverage
-            JOIN scoped ON scoped.id = coverage.operation_id CROSS JOIN bounds
+                "SELECT coverage.coverage_state, COUNT(*) count FROM scoped
+            CROSS JOIN coverage_events coverage ON coverage.operation_id = scoped.id CROSS JOIN bounds
             WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms
             GROUP BY coverage.coverage_state ORDER BY coverage.coverage_state",
             )
             .build()
             .fetch_all(transaction.as_mut())
             .await
-            .map_err(UsageStoreError::Database)?;
+            .map_err(|error| database_error(error, deadline))?;
         let coverage_events = rows
             .iter()
             .map(|row| {
                 Ok(ReviewCoverageCount {
                     state: required_enum(
                         row.try_get("coverage_state")
-                            .map_err(UsageStoreError::Database)?,
+                            .map_err(|error| database_error(error, deadline))?,
                         CoverageState::parse,
                         CoverageState::as_str,
                     )?,
@@ -201,6 +237,7 @@ impl UsageStore {
                 })
             })
             .collect::<Result<Vec<_>, UsageStoreError>>()?;
+        tracing::debug!(stage = "outcomes", "usage report progress");
         let work_bindings = work::read(transaction.as_mut(), &query, &source).await?;
         let outcomes = crate::outcomes::read(transaction.as_mut(), &query, &source).await?;
         let long_lived_declarations = query::long_lived_declaration_count(
@@ -214,10 +251,11 @@ impl UsageStore {
                 .unwrap_or(i64::MAX),
         )
         .await?;
+        tracing::debug!(stage = "commit", "usage report progress");
         transaction
             .commit()
             .await
-            .map_err(UsageStoreError::Database)?;
+            .map_err(|error| database_error(error, deadline))?;
         let window = ReviewWindow {
             from_at_ms: query
                 .time_range
@@ -292,6 +330,14 @@ impl UsageStore {
             interpretation: "Candidates are signals, not diagnoses or measured waste. Critical path and avoidability are unknown. Manual waits and deliberate validation are not waste. Interval sums are effort, not elapsed wall time; waits overlap operation effort. Token categories and provenances overlap: never add total, input, cached, output, or reasoning categories together. Facts deduplicate by owner, source event, category and provenance; covered tools retain request ownership. Windows clip intervals and select facts by observation time. Long-lived declaration diagnostics are aggregate read-only signals and never relabel historical facts. Evidence IDs reference operations; select one details family and follow its nextCursor. Omitted groups remain in paginated evidence. Collection gaps may be unobservable; zero recorded gaps does not prove complete capture.",
         };
         pages::remember(self, &query, packet)
+    }
+}
+
+fn database_error(error: sqlx::Error, deadline: Instant) -> UsageStoreError {
+    if Instant::now() >= deadline {
+        UsageStoreError::ReportTimedOut
+    } else {
+        UsageStoreError::Database(error)
     }
 }
 

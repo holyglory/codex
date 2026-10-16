@@ -27,6 +27,7 @@ pub struct ManagedAccountSummary {
     pub enabled: bool,
     pub authenticated: bool,
     pub priority: u32,
+    pub credit_usage_enabled: bool,
     pub is_default: bool,
 }
 
@@ -67,15 +68,7 @@ pub enum AccountManagementError {
 pub fn read_managed_accounts(
     config: &AuthConfig,
 ) -> Result<ManagedAccountSnapshot, AccountManagementError> {
-    let store = RegistryStore::new(&config.codex_home);
-    if matches!(store.read(), Err(RegistryStoreError::NotFound)) {
-        crate::migrate_legacy_auth_if_needed(
-            &config.codex_home,
-            config.auth_credentials_store_mode,
-            config.keyring_backend_kind,
-        )
-        .map_err(|_| AccountManagementError::RegistryUnavailable)?;
-    }
+    let store = ensure_registry(config)?;
     let registry = read_or_empty(&store)?;
     snapshot(config, registry)
 }
@@ -87,7 +80,7 @@ pub fn set_managed_account_priority(
     priority: u32,
     expected_generation: Option<u64>,
 ) -> Result<ManagedAccountPriorityMutation, AccountManagementError> {
-    let store = RegistryStore::new(&config.codex_home);
+    let store = ensure_registry(config)?;
     let (registry, changed_count) = mutate_registry(&store, expected_generation, |current| {
         let id = resolve_account_id(current, reference)?;
         let mut planned = current.clone();
@@ -112,7 +105,7 @@ pub fn set_all_managed_account_priorities(
     priority: u32,
     expected_generation: Option<u64>,
 ) -> Result<ManagedAccountPriorityMutation, AccountManagementError> {
-    let store = RegistryStore::new(&config.codex_home);
+    let store = ensure_registry(config)?;
     let (registry, changed_count) = mutate_registry(&store, expected_generation, |current| {
         let mut planned = current.clone();
         let mut changed_count = 0;
@@ -128,6 +121,19 @@ pub fn set_all_managed_account_priorities(
         changed_count,
         snapshot: snapshot(config, registry)?,
     })
+}
+
+fn ensure_registry(config: &AuthConfig) -> Result<RegistryStore, AccountManagementError> {
+    let store = RegistryStore::new(&config.codex_home);
+    if matches!(store.read(), Err(RegistryStoreError::NotFound)) {
+        crate::migrate_legacy_auth_if_needed(
+            &config.codex_home,
+            config.auth_credentials_store_mode,
+            config.keyring_backend_kind,
+        )
+        .map_err(|_| AccountManagementError::RegistryUnavailable)?;
+    }
+    Ok(store)
 }
 
 fn snapshot(
@@ -181,6 +187,7 @@ fn summary(
         enabled: account.enabled,
         authenticated: auth.is_some(),
         priority: account.priority,
+        credit_usage_enabled: account.credit_usage_enabled,
         is_default: registry.default_account_id.as_ref() == Some(&account.id),
     })
 }

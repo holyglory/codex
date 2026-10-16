@@ -30,7 +30,9 @@ pub(super) fn update(
         ManagedAccountUpdate::Rename { account, .. }
         | ManagedAccountUpdate::Enable { account }
         | ManagedAccountUpdate::Disable { account }
-        | ManagedAccountUpdate::SetDefault { account } => validate_reference(account)?,
+        | ManagedAccountUpdate::SetDefault { account }
+        | ManagedAccountUpdate::EnableCreditUsage { account }
+        | ManagedAccountUpdate::DisableCreditUsage { account } => validate_reference(account)?,
         ManagedAccountUpdate::EnableAutomaticSelection
         | ManagedAccountUpdate::DisableAutomaticSelection => {}
     }

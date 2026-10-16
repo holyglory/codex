@@ -426,9 +426,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
                 "code": "refresh_token_reused"
             }
         })))
-        // Startup refreshes through the cloud-config and runtime managers race
-        // with the lazily migrated profile manager used by this request.
-        .expect(2..=3)
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -491,9 +489,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
                 "code": "refresh_token_reused"
             }
         })))
-        // Startup refreshes through the cloud-config and runtime managers race
-        // with the lazily migrated profile manager used by this request.
-        .expect(2..=3)
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -529,14 +525,6 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
         }
     );
 
-    let migration_request = mcp
-        .send_get_account_request(GetAccountParams {
-            refresh_token: false,
-        })
-        .await?;
-    let _: GetAccountResponse =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(migration_request)).await??;
-
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("recovered-access-token")
@@ -547,6 +535,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             .last_refresh(Some(Utc::now())),
         AuthCredentialsStoreMode::File,
     )?;
+
     let recovered_request_id = mcp
         .send_get_auth_status_request(GetAuthStatusParams {
             include_token: Some(true),

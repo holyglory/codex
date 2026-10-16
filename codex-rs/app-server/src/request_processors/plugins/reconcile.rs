@@ -1,7 +1,6 @@
 //! Exposes shared installed-plugin reconciliation with hook lifecycle updates.
 
 use super::*;
-use crate::effective_plugin_change::reload_plugin_runtime_configs_without_mcp_prewarm;
 use crate::effective_plugin_change::trust_materialized_plugin_hooks;
 use crate::request_serialization::RequestSerializationAccess;
 use crate::request_serialization::RequestSerializationQueueKey;
@@ -22,9 +21,7 @@ impl PluginRequestProcessor {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let plugins_input = config.plugins_config_input();
         let auth_lease = self.operation_auth_lease().await?;
-        let auth_manager = Arc::clone(auth_lease.auth_manager());
-        let auth = auth_manager.auth().await;
-        let originating_account_id = auth.as_ref().and_then(CodexAuth::get_account_id);
+        let auth = auth_lease.auth_manager().auth().await;
         if !plugins_input.plugins_enabled
             || !auth.as_ref().is_some_and(CodexAuth::uses_codex_backend)
         {
@@ -33,20 +30,16 @@ impl PluginRequestProcessor {
 
         // Match background bundle sync: remote_plugin controls catalog visibility, not sync.
         // The shared reconciler owns synchronization, auth checks, and cache publication.
-        let (outcome, effective_plugins_changed) = self
+        let outcome = self
             .thread_manager
             .plugins_manager()
-            .reconcile_remote_installed_plugins_with_changes(&plugins_input, auth.as_ref())
+            .reconcile_remote_installed_plugins(&plugins_input, auth.as_ref())
             .await
             .map_err(|err| {
                 internal_error(format!(
                     "failed to reconcile remote installed plugins: {err}"
                 ))
             })?;
-
-        if effective_plugins_changed || outcome.changed_local_cache() {
-            self.on_effective_plugins_changed(&auth_lease).await;
-        }
 
         let hooks_changed = outcome
             .changed_plugins
@@ -63,6 +56,8 @@ impl PluginRequestProcessor {
         {
             let materializations = outcome.materialized_remote_plugins.clone();
             let processor = self.clone();
+            let trust_auth_lease = auth_lease.clone();
+            let trust_auth = auth.clone();
             let (complete, completion) = tokio::sync::oneshot::channel();
             request_serialization_queues
                 .enqueue_background(
@@ -71,17 +66,11 @@ impl PluginRequestProcessor {
                     async move {
                         let result = trust_materialized_plugin_hooks(
                             materializations,
-                            originating_account_id,
-                            auth.as_ref(),
-                            &auth_manager,
+                            &trust_auth_lease,
+                            trust_auth.as_ref(),
                             &processor.thread_manager,
                             &processor.config_manager,
                             &config_processor,
-                        )
-                        .await;
-                        reload_plugin_runtime_configs_without_mcp_prewarm(
-                            &processor.thread_manager,
-                            &processor.config_manager,
                         )
                         .await;
                         // Removals and disablements have no trust write to rebuild loaded hooks.
@@ -89,7 +78,7 @@ impl PluginRequestProcessor {
                         if hooks_changed {
                             processor
                                 .thread_manager
-                                .refresh_hook_runtimes_with_auth_lease(auth_lease.clone())
+                                .refresh_hook_runtimes_with_auth_lease(trust_auth_lease)
                                 .await;
                         }
                         let _ = complete.send(result);

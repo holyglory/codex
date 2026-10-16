@@ -1,13 +1,14 @@
+use crate::client::ModelClient;
 use crate::client::X_CODEX_TURN_METADATA_HEADER;
 use crate::context::ContextualUserFragment;
 use crate::context::RealtimeDelegation;
 use crate::context::RealtimeDelegationSource;
 use crate::realtime_context::build_realtime_startup_context;
 use crate::realtime_context::truncate_realtime_text_to_token_budget;
-use crate::realtime_conversation::auth::RealtimeAuth;
 use crate::realtime_prompt::prepare_realtime_backend_prompt;
 use crate::responses_metadata::THREAD_SOURCE_KEY;
 use crate::session::session::Session;
+use crate::session::turn_context::router_external_auth_state;
 use anyhow::Context;
 use async_channel::Receiver;
 use async_channel::RecvError;
@@ -32,7 +33,7 @@ use codex_api::map_api_error;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
 use codex_http_client::HttpClientFactory;
-use codex_login::AccountLease;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
@@ -62,6 +63,7 @@ use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::RealtimeTranscriptEntry;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::RealtimeVoicesList;
+use codex_usage::AccountProfileRef;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::take_bytes_at_char_boundary;
@@ -86,10 +88,10 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-mod auth;
 mod bem;
 mod existing_call;
 mod sideband;
+mod transcript_tail;
 
 use self::bem::ChannelParser as BemChannelParser;
 use self::bem::message_phase as bem_message_phase;
@@ -167,14 +169,26 @@ impl RealtimeHandoffAdmission {
 }
 
 pub(crate) struct RealtimeConversationManager {
-    state: Mutex<Option<ConversationState>>,
-    mode_instructions: Mutex<Option<RealtimeModeInstructions>>,
+    state: Mutex<RealtimeConversationManagerState>,
+}
+
+struct RealtimeConversationManagerState {
+    conversation: Option<ConversationState>,
+    mode_instructions: Option<RealtimeModeInstructions>,
+    // Keep context active until the terminal transcript is recorded.
+    context_active: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RealtimeModeInstructions {
     pub(crate) start: Option<String>,
     pub(crate) end: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RealtimeConversationSnapshot {
+    pub(crate) active: bool,
+    pub(crate) mode_instructions: Option<RealtimeModeInstructions>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,7 +246,7 @@ impl RealtimeStreamedItem {
     fn output_prefix(&self) -> &'static str {
         if self.prefix_final_message
             && self.sent_bytes == 0
-            && !matches!(self.phase, Some(MessagePhase::Commentary))
+            && matches!(self.phase, Some(MessagePhase::FinalAnswer) | None)
         {
             AGENT_FINAL_MESSAGE_PREFIX
         } else {
@@ -502,7 +516,6 @@ impl RealtimeHandoffState {
 
 #[allow(dead_code)]
 struct ConversationState {
-    _account_lease: Option<AccountLease>,
     audio_tx: Sender<RealtimeAudioFrame>,
     text_tx: Sender<ConversationTextParams>,
     session_kind: RealtimeSessionKind,
@@ -513,6 +526,7 @@ struct ConversationState {
     // A misalignment failure retires only this session's queued handoffs.
     route_handoffs: Arc<RealtimeHandoffAdmission>,
     stop_token: CancellationToken,
+    _profile_auth_lease: Option<AuthManagerLease>,
 }
 
 struct RealtimeStart {
@@ -529,7 +543,8 @@ struct RealtimeStart {
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
-    auth: RealtimeAuth,
+    model_client: ModelClient,
+    profile_auth_lease: Option<AuthManagerLease>,
     sdp: Option<String>,
     existing_call_id: Option<String>,
 }
@@ -546,13 +561,20 @@ struct RealtimeStartOutput {
 impl RealtimeConversationManager {
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(None),
-            mode_instructions: Mutex::new(None),
+            state: Mutex::new(RealtimeConversationManagerState {
+                conversation: None,
+                mode_instructions: None,
+                context_active: false,
+            }),
         }
     }
 
-    pub(crate) async fn mode_instructions(&self) -> Option<RealtimeModeInstructions> {
-        self.mode_instructions.lock().await.clone()
+    pub(crate) async fn snapshot(&self) -> RealtimeConversationSnapshot {
+        let state = self.state.lock().await;
+        RealtimeConversationSnapshot {
+            active: state.context_active,
+            mode_instructions: state.mode_instructions.clone(),
+        }
     }
 
     #[tracing::instrument(
@@ -563,6 +585,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn running_state(&self) -> Option<()> {
         let state = self.state.lock().await;
         state
+            .conversation
             .as_ref()
             .and_then(|state| state.realtime_active.load(Ordering::Relaxed).then_some(()))
     }
@@ -570,7 +593,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn is_running_v2(&self) -> bool {
         let state = self.state.lock().await;
         matches!(
-            state.as_ref(),
+            state.conversation.as_ref(),
             Some(state)
                 if state.realtime_active.load(Ordering::Relaxed)
                     && state.session_kind == RealtimeSessionKind::V2
@@ -584,6 +607,7 @@ impl RealtimeConversationManager {
             .state
             .lock()
             .await
+            .conversation
             .as_ref()
             .map(|state| Arc::clone(&state.route_handoffs));
         if let Some(route_handoffs) = route_handoffs {
@@ -598,18 +622,20 @@ impl RealtimeConversationManager {
     ) -> CodexResult<RealtimeStartOutput> {
         let previous_state = {
             let mut guard = self.state.lock().await;
-            guard.take()
+            guard.conversation.take()
         };
         if let Some(state) = previous_state {
             stop_conversation_state(state, RealtimeFanoutTaskStop::Await).await;
         }
 
-        let output = self.start_inner(start).await?;
-        *self.mode_instructions.lock().await = Some(mode_instructions);
-        Ok(output)
+        self.start_inner(start, mode_instructions).await
     }
 
-    async fn start_inner(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
+    async fn start_inner(
+        &self,
+        start: RealtimeStart,
+        mode_instructions: RealtimeModeInstructions,
+    ) -> CodexResult<RealtimeStartOutput> {
         let RealtimeStart {
             api_provider,
             http_client_factory,
@@ -624,14 +650,11 @@ impl RealtimeConversationManager {
             codex_response_handoff_channel_prefixes,
             realtime_call_api_provider,
             session_config,
-            auth,
+            model_client,
+            profile_auth_lease,
             sdp,
             existing_call_id,
         } = start;
-        let RealtimeAuth {
-            model_client,
-            account_lease,
-        } = auth;
         let event_parser = session_config.event_parser;
         let session_kind = match event_parser {
             RealtimeEventParser::V1 | RealtimeEventParser::FramelessBidi => RealtimeSessionKind::V1,
@@ -751,9 +774,8 @@ impl RealtimeConversationManager {
             (task, None)
         };
 
-        let mut guard = self.state.lock().await;
-        *guard = Some(ConversationState {
-            _account_lease: account_lease,
+        let mut state = self.state.lock().await;
+        state.conversation = Some(ConversationState {
             audio_tx,
             text_tx,
             session_kind,
@@ -763,7 +785,10 @@ impl RealtimeConversationManager {
             realtime_active: Arc::clone(&realtime_active),
             route_handoffs: Arc::clone(&route_handoffs),
             stop_token,
+            _profile_auth_lease: profile_auth_lease,
         });
+        state.mode_instructions = Some(mode_instructions);
+        state.context_active = true;
         Ok(RealtimeStartOutput {
             realtime_active,
             route_handoffs,
@@ -781,7 +806,7 @@ impl RealtimeConversationManager {
         let mut fanout_task = Some(fanout_task);
         {
             let mut guard = self.state.lock().await;
-            if let Some(state) = guard.as_mut()
+            if let Some(state) = guard.conversation.as_mut()
                 && Arc::ptr_eq(&state.realtime_active, realtime_active)
             {
                 state.fanout_task = fanout_task.take();
@@ -797,8 +822,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn finish_if_active(&self, realtime_active: &Arc<AtomicBool>) {
         let state = {
             let mut guard = self.state.lock().await;
-            match guard.as_ref() {
-                Some(state) if Arc::ptr_eq(&state.realtime_active, realtime_active) => guard.take(),
+            match guard.conversation.as_ref() {
+                Some(state) if Arc::ptr_eq(&state.realtime_active, realtime_active) => {
+                    guard.conversation.take()
+                }
                 _ => None,
             }
         };
@@ -811,7 +838,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn audio_in(&self, frame: RealtimeAudioFrame) -> CodexResult<()> {
         let sender = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.audio_tx.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.audio_tx.clone())
         };
 
         let Some(sender) = sender else {
@@ -836,6 +866,7 @@ impl RealtimeConversationManager {
         let sender = {
             let guard = self.state.lock().await;
             guard
+                .conversation
                 .as_ref()
                 .map(|state| (state.text_tx.clone(), state.session_kind))
         };
@@ -862,6 +893,7 @@ impl RealtimeConversationManager {
             .state
             .lock()
             .await
+            .conversation
             .as_ref()
             .map(|state| state.handoff.clone());
         let Some(handoff) = handoff.filter(|handoff| {
@@ -892,7 +924,7 @@ impl RealtimeConversationManager {
     ) -> CodexResult<()> {
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -903,7 +935,9 @@ impl RealtimeConversationManager {
         if handoff.client_managed_handoffs {
             return Ok(());
         }
-        let phase = if handoff.routes_handoff_by_bem() {
+        let phase = if handoff.routes_handoff_by_bem()
+            && !matches!(phase, Some(MessagePhase::PartialAnswer))
+        {
             match bem_message_phase(
                 &output_text,
                 &handoff.codex_response_handoff_channel_prefixes,
@@ -917,7 +951,10 @@ impl RealtimeConversationManager {
         } else {
             phase
         };
-        let is_commentary = matches!(phase, Some(MessagePhase::Commentary));
+        let is_nonterminal = matches!(
+            phase,
+            Some(MessagePhase::Commentary | MessagePhase::PartialAnswer)
+        );
         let active_handoff = handoff.stream.lock().await.active_handoff.clone();
         let output = match active_handoff {
             Some(handoff_id) => {
@@ -934,7 +971,7 @@ impl RealtimeConversationManager {
                         ),
                         phase,
                     }
-                } else if handoff.event_parser == RealtimeEventParser::V1 && is_commentary {
+                } else if handoff.event_parser == RealtimeEventParser::V1 && is_nonterminal {
                     RealtimeOutbound::HandoffAppend {
                         handoff_id,
                         text: output_text,
@@ -961,7 +998,8 @@ impl RealtimeConversationManager {
                     }
                 } else {
                     RealtimeOutbound::StandaloneHandoff {
-                        text: if handoff.event_parser == RealtimeEventParser::V1 && !is_commentary {
+                        text: if handoff.event_parser == RealtimeEventParser::V1 && !is_nonterminal
+                        {
                             format!("{AGENT_FINAL_MESSAGE_PREFIX}{output_text}")
                         } else {
                             output_text
@@ -987,7 +1025,10 @@ impl RealtimeConversationManager {
     ) {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return;
@@ -1000,14 +1041,14 @@ impl RealtimeConversationManager {
             let Some(handoff_id) = stream.active_handoff.clone() else {
                 return;
             };
+            // An explicit stable fragment is answer text, even when it starts
+            // with characters that legacy BEM treats as a private channel tag.
+            let parse_bem = handoff.routes_handoff_by_bem()
+                && !matches!(phase, Some(MessagePhase::PartialAnswer));
             let mut streamed_item = RealtimeStreamedItem {
                 handoff_id,
-                phase: if handoff.routes_handoff_by_bem() {
-                    None
-                } else {
-                    phase
-                },
-                bem_channel_parser: handoff.routes_handoff_by_bem().then(|| {
+                phase: if parse_bem { None } else { phase },
+                bem_channel_parser: parse_bem.then(|| {
                     BemChannelParser::new(Arc::clone(
                         &handoff.codex_response_handoff_channel_prefixes,
                     ))
@@ -1045,7 +1086,7 @@ impl RealtimeConversationManager {
         }
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -1077,7 +1118,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn finish_handoff_stream_item(&self, item_id: &str) -> bool {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return false;
@@ -1111,7 +1155,7 @@ impl RealtimeConversationManager {
 
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -1132,7 +1176,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn handoff_complete(&self) -> CodexResult<()> {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return Ok(());
@@ -1172,7 +1219,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn clear_active_handoff(&self) {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         if let Some(handoff) = handoff {
             {
@@ -1187,7 +1237,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn shutdown(&self) -> CodexResult<()> {
         let state = {
             let mut guard = self.state.lock().await;
-            guard.take()
+            guard.conversation.take()
         };
 
         if let Some(state) = state {
@@ -1251,7 +1301,6 @@ pub(crate) async fn handle_start(
 }
 
 struct PreparedRealtimeConversationStart {
-    auth: RealtimeAuth,
     api_provider: ApiProvider,
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
@@ -1270,6 +1319,8 @@ struct PreparedRealtimeConversationStart {
     version: RealtimeWsVersion,
     session_config: RealtimeSessionConfig,
     transport: ConversationStartTransport,
+    model_client: ModelClient,
+    profile_auth_lease: Option<AuthManagerLease>,
 }
 
 #[derive(Clone, Copy)]
@@ -1283,12 +1334,48 @@ async fn prepare_realtime_start(
     params: ConversationStartParams,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let provider = sess.provider().await;
-    let config = sess.get_config().await;
-    let realtime_auth = RealtimeAuth::resolve(sess, &config).await?;
-    let auth_manager = realtime_auth
+    let auth_manager = sess
+        .services
         .model_client
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
+    let config = sess.get_config().await;
+    let profile_auth_lease = if let Some(router) = &sess.services.profile_auth_router {
+        let chatgpt_base_url = config.chatgpt_base_url.clone();
+        let http_client_factory = config.http_client_factory();
+        let external_auth = router_external_auth_state(&config);
+        let probe = move |lease| {
+            codex_backend_client::fetch_profile_rate_limits(
+                lease,
+                chatgpt_base_url.clone(),
+                http_client_factory.clone(),
+            )
+        };
+        router
+            .lease_for_turn_with_external_auth_and_probe(external_auth, probe)
+            .await
+            .map_err(|error| CodexErr::Fatal(error.safe_message()))?
+            .map(AuthManagerLease::profile)
+    } else {
+        None
+    };
+    let auth_manager = profile_auth_lease
+        .as_ref()
+        .map(|lease| Arc::clone(lease.auth_manager()))
+        .unwrap_or_else(|| Arc::clone(&auth_manager));
+    let model_client = if let Some(lease) = &profile_auth_lease {
+        let account_id = lease
+            .account_id()
+            .ok_or_else(|| CodexErr::InvalidRequest("missing account profile".to_string()))?;
+        let profile = AccountProfileRef::new(account_id.as_str())
+            .map_err(|_| CodexErr::InvalidRequest("invalid account profile".to_string()))?;
+        sess.services
+            .model_client
+            .for_auth_manager(Arc::clone(lease.auth_manager()))
+            .with_account_profile_ref(profile)
+    } else {
+        sess.services.model_client.clone()
+    };
     let (auth, http_client_factory) = match auth_manager.auth_with_http_client_factory().await {
         Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
             Some(auth),
@@ -1404,7 +1491,6 @@ async fn prepare_realtime_start(
         extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, metadata);
     }
     Ok(PreparedRealtimeConversationStart {
-        auth: realtime_auth,
         api_provider,
         http_client_factory,
         realtime_sideband_base_url,
@@ -1423,6 +1509,8 @@ async fn prepare_realtime_start(
         version,
         session_config,
         transport,
+        model_client,
+        profile_auth_lease,
     })
 }
 
@@ -1629,7 +1717,6 @@ async fn handle_start_inner(
     prepared_start: PreparedRealtimeConversationStart,
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
-        auth,
         api_provider,
         http_client_factory,
         realtime_sideband_base_url,
@@ -1648,6 +1735,8 @@ async fn handle_start_inner(
         version,
         session_config,
         transport,
+        model_client,
+        profile_auth_lease,
     } = prepared_start;
     info!("starting realtime conversation");
     let (sdp, existing_call_id) = match transport {
@@ -1673,7 +1762,8 @@ async fn handle_start_inner(
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
-        auth,
+        model_client,
+        profile_auth_lease,
         sdp,
         existing_call_id,
     };
@@ -1753,8 +1843,16 @@ async fn handle_start_inner(
         if handoff_error.is_none()
             && let Ok(text) = transcript_tail_rx.recv().await
         {
-            handoff_error = route_handoffs.route(&sess_clone, text).await.err();
+            let _permit = route_handoffs.gate.acquire().await;
+            if !route_handoffs.retired.load(Ordering::Acquire)
+                && let Err(err) = transcript_tail::record(&sess_clone, text).await
+            {
+                warn!("failed to flush realtime transcript before closure: {err}");
+                handoff_error = Some("failed to save the realtime transcript before closure");
+            }
         }
+        // Make realtime_end eligible only after the tail has reached history.
+        sess_clone.conversation.state.lock().await.context_active = false;
         if let Some(error) = handoff_error {
             end = RealtimeConversationEnd::Error;
             sess_clone
@@ -2230,7 +2328,9 @@ fn v3_output_writer(
         CodexResponseHandoffMode::Thinking => None,
         CodexResponseHandoffMode::Commentary => Some(RealtimeContextAppendChannel::Commentary),
         CodexResponseHandoffMode::BemTags => match phase {
-            Some(MessagePhase::FinalAnswer) => Some(RealtimeContextAppendChannel::Speakable),
+            Some(MessagePhase::PartialAnswer | MessagePhase::FinalAnswer) => {
+                Some(RealtimeContextAppendChannel::Speakable)
+            }
             Some(MessagePhase::Commentary) => Some(RealtimeContextAppendChannel::Commentary),
             None => Some(RealtimeContextAppendChannel::Speakable),
         },

@@ -1,6 +1,5 @@
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
-use crate::test_support::normalize_cli_version;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -84,11 +83,10 @@ async fn owned_bottom_pane_preserves_draft_cursor_and_read_only_notice() {
         /*x*/ 0, /*y*/ 8, /*width*/ 60, /*height*/ 8,
     );
     let render_bottom = |widget: &ChatWidget| {
-        let bottom = widget.bottom_pane_renderable(
-            /*footer*/ None,
-            crate::bottom_pane::CommandPopupPlacement::Overlay,
-            /*composer_gap*/ None,
-        );
+        let bottom = widget.bottom_pane_renderable(crate::bottom_pane::ComposerRenderOptions {
+            command_popup_placement: crate::bottom_pane::CommandPopupPlacement::Overlay,
+            ..Default::default()
+        });
         let mut buffer = Buffer::empty(area);
         bottom.render(area, &mut buffer);
         (buffer, bottom.cursor_pos(area), bottom.cursor_style(area))
@@ -305,7 +303,7 @@ async fn external_writer_notice_uses_current_transcript_shortcut() {
 
     assert!(contains_text(
         &render_frame(&widget, /*width*/ 80),
-        "ctrl+k transcript"
+        "⌃k transcript"
     ));
 }
 
@@ -383,32 +381,26 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
         Some(ChatWidget::placeholder_session_header_cell(&widget.config));
 
     let frame = render_frame(&widget, /*width*/ 48);
-    let header = normalize_cli_version(
-        frame
-            .content
-            .chunks(usize::from(frame.area.width))
-            .take(/*n*/ 6)
-            .map(|row| {
-                row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    );
+    let header = frame
+        .content
+        .chunks(usize::from(frame.area.width))
+        .take(/*n*/ 3)
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
 
     let cwd = widget.config.cwd.as_path().display().to_string();
-    let normalized_cwd = format!("{:<width$}", "/tmp/project", width = cwd.len());
 
-    insta::assert_snapshot!(header.replace(&cwd, &normalized_cwd), @"
-    ╭───────────────────────────────────────╮
-    │ >_ OpenAI Codex (v<VERSION>)          │
-    │                                       │
-    │ model:     loading   /model to change │
-    │ directory: /tmp/project               │
-    ╰───────────────────────────────────────╯
+    insta::assert_snapshot!(header.replace(&cwd, "/tmp/project"), @r"
+      >_ OpenAI Codex (v<VERSION>)
+         /tmp/project
     ");
 }
 

@@ -83,9 +83,7 @@ impl CodeModeDispatchBroker {
                     ready: watch::channel(false).0,
                     originating_call: None,
                 });
-            if gate.originating_call.is_none() {
-                gate.originating_call = originating_call;
-            }
+            gate.originating_call = originating_call;
             gate.ready.clone()
         };
         ready.send_replace(true);

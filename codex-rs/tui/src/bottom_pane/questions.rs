@@ -30,7 +30,6 @@ impl BottomPane {
                 self.keymap.clone(),
             );
             questions.set_vim_enabled(self.composer.is_vim_enabled());
-            questions.next_hint = self.pending_input_preview.edit_binding;
             Box::new(questions)
         })
     }
@@ -60,7 +59,7 @@ impl BottomPane {
             return;
         }
         self.composer
-            .edit_stored_draft(|composer| composer.append_recovered_drafts(&drafts.join("\n")));
+            .edit_stored_draft(|composer| composer.append_recovered_drafts(&drafts.join("\n\n")));
         self.request_redraw();
     }
 

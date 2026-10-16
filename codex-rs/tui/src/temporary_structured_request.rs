@@ -2,7 +2,6 @@
 
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
-use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigReadParams;
 use codex_app_server_protocol::ConfigReadResponse;
@@ -48,6 +47,7 @@ pub(crate) struct TemporaryStructuredThreadOptions {
 ///
 /// Structured prompts can contain untrusted transcript text, so the effective app-server config is
 /// read first and every MCP server is explicitly disabled alongside built-in and extension tools.
+/// Approval policy is inherited from the server; the TUI rejects unexpected interaction requests.
 pub(crate) async fn start_temporary_thread(
     request_handle: &AppServerRequestHandle,
     options: TemporaryStructuredThreadOptions,
@@ -94,8 +94,8 @@ pub(crate) async fn start_temporary_thread(
             "tools.experimental_request_user_input.enabled".to_string(),
             false.into(),
         ),
-        ("tools.local_controls.enabled".to_string(), false.into()),
         ("tools.update_plan.enabled".to_string(), false.into()),
+        ("tools.local_controls.enabled".to_string(), false.into()),
         ("web_search".to_string(), "disabled".into()),
     ]);
     if custom_permission_profile.is_none() {
@@ -144,7 +144,6 @@ pub(crate) async fn start_temporary_thread(
                     model: Some(model),
                     model_provider: Some(model_provider),
                     cwd: Some(cwd),
-                    approval_policy: Some(AskForApproval::Never),
                     sandbox: custom_permission_profile
                         .is_none()
                         .then_some(SandboxMode::ReadOnly),

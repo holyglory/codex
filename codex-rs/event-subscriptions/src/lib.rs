@@ -13,6 +13,7 @@ mod service;
 mod types;
 mod wake_policy;
 
+pub use wake_policy::CapacityRetryContext;
 pub use wake_policy::ScopedWakePolicy;
 pub use wake_policy::SubscriptionRunState;
 pub use wake_policy::SubscriptionWorkOrigin;

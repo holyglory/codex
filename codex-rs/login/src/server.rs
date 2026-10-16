@@ -62,6 +62,7 @@ use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::auth::AuthMode;
 use codex_utils_template::Template;
 use serde_json::Value as JsonValue;
@@ -200,7 +201,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     };
     let server = Arc::new(server);
 
-    let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
+    let redirect_uri = format!("http://127.0.0.1:{actual_port}/auth/callback");
     let auth_url = build_authorize_url(
         &opts.issuer,
         &opts.client_id,
@@ -236,7 +237,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let server_handle = {
         let shutdown_notify = shutdown_notify.clone();
         let server = server;
-        tokio::spawn(async move {
+        let task = async move {
             let mut callback_result = LoginCallbackResult::default();
             let result = loop {
                 tokio::select! {
@@ -321,7 +322,8 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
             // running `server.recv()` in a loop exits cleanly.
             server.unblock();
             result
-        })
+        };
+        tokio::spawn(AuthStorageOriginator::current().scope(task))
     };
 
     Ok(LoginServer {
@@ -857,43 +859,46 @@ pub(crate) async fn persist_tokens_async(
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
+    let originator = AuthStorageOriginator::current();
     tokio::task::spawn_blocking(move || {
-        let ExchangedTokens {
-            id_token,
-            access_token,
-            refresh_token,
-        } = tokens;
-        let mut tokens = TokenData {
-            id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
-            access_token,
-            refresh_token,
-            account_id: None,
-        };
-        if let Some(acc) = jwt_auth_claims(&id_token)
-            .get("chatgpt_account_id")
-            .and_then(|v| v.as_str())
-        {
-            tokens.account_id = Some(acc.to_string());
-        }
-        let auth = AuthDotJson {
-            auth_mode: Some(AuthMode::Chatgpt),
-            openai_api_key: api_key,
-            tokens: Some(tokens),
-            last_refresh: Some(Utc::now()),
-            agent_identity: None,
-            personal_access_token: None,
-            bedrock_api_key: None,
-            bedrock_access_keys: None,
-        };
-        match profile_auth_storage {
-            Some(profile) => profile.save(&auth),
-            None => save_auth(
-                &codex_home,
-                &auth,
-                auth_credentials_store_mode,
-                keyring_backend_kind,
-            ),
-        }
+        originator.sync_scope(|| {
+            let ExchangedTokens {
+                id_token,
+                access_token,
+                refresh_token,
+            } = tokens;
+            let mut tokens = TokenData {
+                id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
+                access_token,
+                refresh_token,
+                account_id: None,
+            };
+            if let Some(acc) = jwt_auth_claims(&id_token)
+                .get("chatgpt_account_id")
+                .and_then(|v| v.as_str())
+            {
+                tokens.account_id = Some(acc.to_string());
+            }
+            let auth = AuthDotJson {
+                auth_mode: Some(AuthMode::Chatgpt),
+                openai_api_key: api_key,
+                tokens: Some(tokens),
+                last_refresh: Some(Utc::now()),
+                agent_identity: None,
+                personal_access_token: None,
+                bedrock_api_key: None,
+                bedrock_access_keys: None,
+            };
+            match profile_auth_storage {
+                Some(profile) => profile.save(&auth),
+                None => save_auth(
+                    &codex_home,
+                    &auth,
+                    auth_credentials_store_mode,
+                    keyring_backend_kind,
+                ),
+            }
+        })
     })
     .await
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?

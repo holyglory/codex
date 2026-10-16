@@ -24,12 +24,12 @@ platformOs: string,
 /**
  * Advertises the additive multi-account profile extension.
  */
-multiAccount: MultiAccountCapability | null,
+multiAccount?: MultiAccountCapability,
 /**
  * Advertises the additive local usage-accounting extension.
  */
-localUsageAccounting: LocalUsageAccountingCapability | null,
+localUsageAccounting?: LocalUsageAccountingCapability,
 /**
- * Advertises the additive provider-neutral event-subscription extension.
+ * Advertises durable provider-neutral event subscriptions and event ingress.
  */
-eventSubscriptions: EventSubscriptionsCapability | null, };
+eventSubscriptions?: EventSubscriptionsCapability, };

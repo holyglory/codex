@@ -45,6 +45,7 @@ use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -74,6 +75,7 @@ use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
@@ -165,7 +167,7 @@ pub struct InProcessStartArgs {
     pub session_source: SessionSource,
     /// Whether serving auth should honor `CODEX_API_KEY`; workspace policy still uses stored auth.
     pub enable_codex_api_key_env: bool,
-    /// Optional local account pin owned by this embedded app-server.
+    /// Optional local account profile pinned to this embedded server process.
     pub process_account: Option<String>,
     /// Initialize params used for initial handshake.
     pub initialize: InitializeParams,
@@ -288,11 +290,15 @@ pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
+    initialize_response: Option<InitializeResponse>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
 
 impl InProcessClientHandle {
+    pub fn initialize_response(&self) -> Option<&InitializeResponse> {
+        self.initialize_response.as_ref()
+    }
     /// Sends a typed client request into the in-process runtime.
     ///
     /// The returned value is a transport-level `IoResult` containing either a
@@ -387,7 +393,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
         });
     }
     let initialize = args.initialize.clone();
-    let client = Box::pin(start_uninitialized(args)).await?;
+    let mut client = Box::pin(start_uninitialized(args)).await?;
 
     let initialize_response = client
         .request(ClientRequest::Initialize {
@@ -395,15 +401,25 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
             params: initialize,
         })
         .await?;
-    if let Err(error) = initialize_response {
-        let _ = client.shutdown().await;
-        return Err(IoError::new(
-            ErrorKind::InvalidData,
-            format!("in-process initialize failed: {}", error.message),
-        ));
-    }
+    let initialize_response = match initialize_response {
+        Ok(result) => match serde_json::from_value::<InitializeResponse>(result) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = client.shutdown().await;
+                return Err(IoError::new(ErrorKind::InvalidData, error));
+            }
+        },
+        Err(error) => {
+            let _ = client.shutdown().await;
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                format!("in-process initialize failed: {}", error.message),
+            ));
+        }
+    };
     client.notify(ClientNotification::Initialized)?;
 
+    client.initialize_response = Some(initialize_response);
     Ok(client)
 }
 
@@ -448,7 +464,6 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
-    let shutdown_logs = args.log_db.clone();
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let analytics_events_client =
@@ -458,6 +473,18 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
             outgoing_tx,
             analytics_events_client.clone(),
         ));
+
+        let log_write_warning = crate::log_write_warning::LogWriteWarningReporter::new(
+            args.feedback.clone(),
+            &outgoing_message_sender,
+            &args.config,
+        );
+        if let Some(log_db) = &args.log_db {
+            log_db.set_failure_reporter(log_write_warning.clone());
+            if log_db.has_write_failure() {
+                log_write_warning.notify_failure();
+            }
+        }
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
@@ -485,6 +512,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
+            let background_subscription_loader = Arc::new(OnceLock::new());
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
                 analytics_events_client,
@@ -497,17 +525,19 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 state_db: args.state_db,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
+                process_account: args.process_account,
                 user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
                     &auth_manager,
                 ))),
                 auth_manager,
-                process_account: args.process_account,
                 installation_id,
                 code_mode_session_provider: None,
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
                 plugin_startup_tasks: Some(PluginStartupConfig::Current),
+                background_subscription_loader,
             }));
+            processor.initialize_background_subscription_loader();
             let mut thread_created_rx = processor.thread_created_receiver();
             let session = Arc::new(ConnectionSessionState::new(
                 crate::transport::ConnectionOrigin::InProcess,
@@ -793,9 +823,6 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         }
 
         analytics_events_flush_client.flush().await;
-        if let Some(log_db) = shutdown_logs {
-            log_db.flush().await;
-        }
 
         if let Some(done_tx) = shutdown_ack {
             let _ = done_tx.send(());
@@ -806,6 +833,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
+        initialize_response: None,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -1012,6 +1040,7 @@ mod tests {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
+            initialize_response: None,
             _test_codex_home: None,
         };
 
@@ -1029,6 +1058,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    root_turn_id: None,
                     items: Vec::new(),
                     items_view: TurnItemsView::NotLoaded,
                     status: TurnStatus::Completed,

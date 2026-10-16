@@ -106,10 +106,10 @@ pub(crate) fn should_retry_with_rustls(error: &reqwest::Error) -> bool {
 }
 
 fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
-    let mut source = Some(error);
+    let mut errors = vec![error];
     let mut recognized_negotiation_failure = false;
 
-    while let Some(error) = source {
+    while let Some(error) = errors.pop() {
         let message = error.to_string().to_ascii_lowercase();
         let compact_message = message
             .chars()
@@ -162,7 +162,14 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
         {
             recognized_negotiation_failure = true;
         }
-        source = error.source();
+        if let Some(source) = error.source() {
+            errors.push(source);
+        }
+        if let Some(io_error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io_error.get_ref()
+        {
+            errors.push(inner);
+        }
     }
 
     recognized_negotiation_failure

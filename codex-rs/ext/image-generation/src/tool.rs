@@ -6,8 +6,6 @@ use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
 use codex_api::ImageQuality;
-use codex_api::ImageResponse;
-use codex_api::ImageUrl;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::LOCAL_FS;
 use codex_extension_api::ExtensionTurnItem;
@@ -36,7 +34,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
-use codex_protocol::provider_usage::ProviderUsage;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
@@ -91,6 +88,9 @@ impl ImageGenerationTool {
 #[serde(deny_unknown_fields)]
 struct ImagegenArgs {
     prompt: String,
+    /// Whether the output should have a transparent background. Defaults to false.
+    #[serde(default)]
+    transparent_background: bool,
     #[schemars(length(max = 5))]
     referenced_image_paths: Option<Vec<AbsolutePathBuf>>,
     #[schemars(range(min = 1, max = 5))]
@@ -122,7 +122,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ImageGenerationTool {
         ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
     }
 
-    /// Advertises the model contract: a rewritten prompt and optional edit references.
+    /// Advertises a rewritten prompt, background choice, and optional edit references.
     fn spec(&self) -> ToolSpec {
         imagegen_tool_spec()
     }
@@ -180,44 +180,48 @@ impl ImageGenerationTool {
             )
         })
         .and_then(|(response, imagegen_request_id)| {
-            let generation_id = response
-                .data
-                .first()
-                .and_then(|data| data.generation_id.clone());
-            first_generated_image(response)
-                .map_err(|(message, failure)| (message, failure, imagegen_request_id.clone()))
-                .map(|(result, background, usage)| {
-                    (
-                        result,
-                        background,
-                        imagegen_request_id,
-                        generation_id,
-                        usage,
-                    )
-                })
-        });
-        let (result, transparent_background, imagegen_request_id, generation_id, provider_usage) =
-            match result {
-                Ok(result) => result,
-                Err((message, failure, imagegen_request_id)) => {
-                    let item = ImageGenerationItem {
-                        id: call.call_id.clone(),
-                        status: "failed".to_string(),
-                        revised_prompt: Some(args.prompt),
-                        result: String::new(),
-                        transparent_background: None,
-                        failure,
-                        saved_path: None,
-                        imagegen_request_id,
-                        generation_id: None,
-                    };
-                    let legacy_event = legacy_end_event(&item);
-                    call.turn_item_emitter
-                        .emit_completed(extension_turn_item(item, legacy_event))
-                        .await;
-                    return Err(FunctionCallError::RespondToModel(message));
-                }
+            let transparent_background = match response.background {
+                Some(ImageBackground::Transparent) => Some(true),
+                Some(ImageBackground::Opaque) => Some(false),
+                Some(ImageBackground::Auto) | None => None,
             };
+            match response.data.into_iter().next() {
+                Some(data) => Ok((
+                    data.b64_json,
+                    transparent_background,
+                    imagegen_request_id,
+                    data.generation_id,
+                )),
+                None => Err((
+                    "image generation returned no image data".to_string(),
+                    None,
+                    imagegen_request_id,
+                )),
+            }
+        });
+        let (result, transparent_background, imagegen_request_id, generation_id) = match result {
+            Ok(result) => result,
+            Err((message, failure, imagegen_request_id)) => {
+                let item = ImageGenerationItem {
+                    id: call.call_id.clone(),
+                    status: "failed".to_string(),
+                    revised_prompt: Some(args.prompt),
+                    result: String::new(),
+                    transparent_background: None,
+                    failure,
+                    saved_path: None,
+                    imagegen_request_id,
+                    generation_id: None,
+                };
+                let legacy_event = legacy_end_event(&item);
+                call.turn_item_emitter
+                    .emit_completed(extension_turn_item(item, legacy_event))
+                    .await;
+                return Err(FunctionCallError::RespondToModel(message));
+            }
+        };
+        // TODO(anp): Migrate image tool path arguments and saved-path events to PathUri so image
+        // operations can use the primary environment even when its paths are foreign to the host.
         let saved_path = save_image_generation_result(
             self.save_root.as_ref(),
             call.environments
@@ -250,29 +254,8 @@ impl ImageGenerationTool {
         Ok(Box::new(GeneratedImageOutput {
             result,
             output_hint,
-            provider_usage,
         }))
     }
-}
-
-type GeneratedImageResult = (String, Option<bool>, Option<ProviderUsage>);
-type GeneratedImageError = (String, Option<ImageGenerationFailure>);
-
-fn first_generated_image(
-    response: ImageResponse,
-) -> Result<GeneratedImageResult, GeneratedImageError> {
-    let transparent_background = match response.background {
-        Some(ImageBackground::Transparent) => Some(true),
-        Some(ImageBackground::Opaque) => Some(false),
-        Some(ImageBackground::Auto) | None => None,
-    };
-    let provider_usage = response.usage;
-    response
-        .data
-        .into_iter()
-        .next()
-        .map(|data| (data.b64_json, transparent_background, provider_usage))
-        .ok_or_else(|| ("image generation returned no image data".to_string(), None))
 }
 
 fn usage_limit_failure(error: &CodexErr) -> Option<ImageGenerationFailure> {
@@ -345,6 +328,7 @@ async fn save_image_generation_result(
         None => {
             let environment = environment?;
             let cwd = environment.cwd.to_abs_path().ok()?;
+            let fs = environment.fs();
             let output_dir = cwd.join("generated_images");
             let save_result: io::Result<AbsolutePathBuf> = async {
                 let result = result.trim();
@@ -366,26 +350,19 @@ async fn save_image_generation_result(
 
                 let artifact_path = image_generation_artifact_path(&cwd, session_id, call_id);
                 let path = output_dir.join(artifact_path.as_path().file_name().unwrap_or_default());
-                let sandbox = Some(&environment.file_system_sandbox_context);
                 if let Some(parent) = path.parent() {
                     let parent_uri = PathUri::from_abs_path(&parent);
-                    environment
-                        .file_system
-                        .create_directory(
-                            &parent_uri,
-                            CreateDirectoryOptions {
-                                recursive: true,
-                                follow_symlinks: true,
-                            },
-                            sandbox,
-                        )
-                        .await?;
+                    fs.create_directory(
+                        &parent_uri,
+                        CreateDirectoryOptions {
+                            recursive: true,
+                            follow_symlinks: true,
+                        },
+                    )
+                    .await?;
 
                     // Full-access executor contexts do not prevent symlinked output directories.
-                    let metadata = environment
-                        .file_system
-                        .get_metadata(&parent_uri, Default::default(), sandbox)
-                        .await?;
+                    let metadata = fs.get_metadata(&parent_uri, Default::default()).await?;
                     if metadata.is_symlink || !metadata.is_directory {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
@@ -396,11 +373,7 @@ async fn save_image_generation_result(
 
                 // Existing destination hardlinks could otherwise overwrite files outside the workspace.
                 let path_uri = PathUri::from_abs_path(&path);
-                match environment
-                    .file_system
-                    .get_metadata(&path_uri, Default::default(), sandbox)
-                    .await
-                {
+                match fs.get_metadata(&path_uri, Default::default()).await {
                     Ok(_) => {
                         return Err(io::Error::new(
                             io::ErrorKind::AlreadyExists,
@@ -411,10 +384,7 @@ async fn save_image_generation_result(
                     Err(error) => return Err(error),
                 }
 
-                environment
-                    .file_system
-                    .write_file(&path_uri, bytes, Default::default(), sandbox)
-                    .await?;
+                fs.write_file(&path_uri, bytes, Default::default()).await?;
                 Ok(path)
             }
             .await;
@@ -446,6 +416,11 @@ async fn request_for_call_args(
     history: &[ResponseItem],
     environments: &[ToolEnvironment<'_>],
 ) -> Result<ImageRequest, FunctionCallError> {
+    let background = if args.transparent_background {
+        ImageBackground::Transparent
+    } else {
+        ImageBackground::Opaque
+    };
     let paths = args.referenced_image_paths.as_deref().unwrap_or_default();
     if paths.len() > MAX_EDIT_IMAGES {
         return Err(FunctionCallError::RespondToModel(format!(
@@ -456,7 +431,7 @@ async fn request_for_call_args(
         (true, None) => {
             return Ok(ImageRequest::Generate(ImageGenerationRequest {
                 prompt: args.prompt.clone(),
-                background: Some(ImageBackground::Auto),
+                background: Some(background),
                 model: IMAGE_MODEL.to_string(),
                 n: None,
                 quality: Some(ImageQuality::Auto),
@@ -500,7 +475,7 @@ async fn request_for_call_args(
     Ok(ImageRequest::Edit(ImageEditRequest {
         images,
         prompt: args.prompt.clone(),
-        background: Some(ImageBackground::Auto),
+        background: Some(background),
         model: IMAGE_MODEL.to_string(),
         n: None,
         quality: Some(ImageQuality::Auto),
@@ -511,16 +486,14 @@ async fn request_for_call_args(
 fn recent_images(
     history: &[ResponseItem],
     count: usize,
-) -> Result<Vec<ImageUrl>, FunctionCallError> {
+) -> Result<Vec<ImageReference>, FunctionCallError> {
     let mut images = Vec::with_capacity(count);
     'history: for item in history.iter().rev() {
-        let mut image_urls = Vec::new();
+        let mut image_references = Vec::new();
         match item {
             ResponseItem::Message { content, .. } => {
-                image_urls.extend(content.iter().rev().filter_map(|item| match item {
-                    ContentItem::InputImage { image, .. } => {
-                        Some(inline_image_url(image).map(str::to_owned))
-                    }
+                image_references.extend(content.iter().rev().filter_map(|item| match item {
+                    ContentItem::InputImage { image, .. } => Some(image.clone()),
                     ContentItem::InputText { .. }
                     | ContentItem::InputAudio { .. }
                     | ContentItem::OutputText { .. } => None,
@@ -528,12 +501,12 @@ fn recent_images(
             }
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {
-                image_urls.extend(
-                    output_images(output).map(|image| inline_image_url(image).map(str::to_owned)),
-                );
+                image_references.extend(output_images(output).cloned());
             }
             ResponseItem::ImageGenerationCall { result, .. } if !result.is_empty() => {
-                image_urls.push(Some(format!("data:image/png;base64,{result}")));
+                image_references.push(ImageReference::Inline {
+                    image_url: format!("data:image/png;base64,{result}"),
+                });
             }
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Reasoning { .. }
@@ -551,8 +524,8 @@ fn recent_images(
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => {}
         }
-        for image_url in image_urls {
-            images.push(image_url.map(|image_url| ImageUrl { image_url }));
+        for image in image_references {
+            images.push(image);
             if images.len() == count {
                 break 'history;
             }
@@ -564,18 +537,8 @@ fn recent_images(
             images.len()
         )));
     }
-    let mut inline_images = Vec::with_capacity(count);
-    for image in images {
-        let Some(image) = image else {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "requested the last {count} conversation images, but that window includes a \
-                 file-backed image that cannot be used for editing"
-            )));
-        };
-        inline_images.push(image);
-    }
-    inline_images.reverse();
-    Ok(inline_images)
+    images.reverse();
+    Ok(images)
 }
 
 /// Extracts image references from a tool output in newest-first order.
@@ -593,23 +556,14 @@ fn output_images(output: &FunctionCallOutputPayload) -> impl Iterator<Item = &Im
         })
 }
 
-fn inline_image_url(image: &ImageReference) -> Option<&str> {
-    match image {
-        ImageReference::Inline { image_url } => Some(image_url),
-        // TODO(kc) Image generation and the Images API only accept inline image URLs.
-        ImageReference::File { .. } => None,
-    }
-}
-
 async fn image_url(
     path: &AbsolutePathBuf,
     environment: &ToolEnvironment<'_>,
-) -> Result<ImageUrl, FunctionCallError> {
+) -> Result<ImageReference, FunctionCallError> {
     let path_uri = PathUri::from_abs_path(path);
-    let sandbox = environment.file_system_sandbox_context.clone();
     let bytes = environment
-        .file_system
-        .read_file(&path_uri, Default::default(), Some(&sandbox))
+        .fs()
+        .read_file(&path_uri, Default::default())
         .await
         .map_err(|error| {
             FunctionCallError::RespondToModel(format!(
@@ -625,7 +579,7 @@ async fn image_url(
             ))
         },
     )?;
-    Ok(ImageUrl {
+    Ok(ImageReference::Inline {
         image_url: image.into_data_url(),
     })
 }
@@ -672,7 +626,6 @@ fn imagegen_tool_spec() -> ToolSpec {
 struct GeneratedImageOutput {
     result: String,
     output_hint: Option<String>,
-    provider_usage: Option<ProviderUsage>,
 }
 
 impl ToolOutput for GeneratedImageOutput {
@@ -684,10 +637,6 @@ impl ToolOutput for GeneratedImageOutput {
     /// Reports a completed images request as successful tool execution.
     fn success_for_logging(&self) -> bool {
         true
-    }
-
-    fn provider_usage(&self) -> Option<&ProviderUsage> {
-        self.provider_usage.as_ref()
     }
 
     /// Returns the object consumed by the code-mode `generatedImage()` helper.

@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 import local_candidate as candidate
 import cargo_native_inputs as native
+import check_release_inclusion as inclusion
 
 
 class LocalCandidateTests(unittest.TestCase):
@@ -55,6 +57,142 @@ class LocalCandidateTests(unittest.TestCase):
             log = self.directory / f"{check['name']}.log"
             self.assertEqual(log.read_text(), "fixture check passed\n")
             self.assertEqual(check["log_sha256"], candidate.digest(log))
+
+    def test_isolation_requires_host_configuration_to_be_hidden(self):
+        with (
+            patch("local_candidate.frozen_commit", return_value=self.commit),
+            patch("local_candidate.platform.system", return_value="Linux"),
+            patch("local_candidate.platform.machine", return_value="x86_64"),
+            patch.dict(os.environ, {"CODEX_RELEASE_ISOLATED": "1"}),
+            patch("local_candidate.shutil.which", return_value=None),
+        ):
+            for present in (True, False):
+                with (
+                    self.subTest(host_configuration_present=present),
+                    patch.object(Path, "exists", return_value=present),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "host Codex configuration"
+                        if present
+                        else "Required build tool",
+                    ),
+                ):
+                    candidate.check(
+                        self.directory, self.directory, self.directory, self.directory
+                    )
+
+    def test_runner_keeps_nonroot_identity_and_private_mounts(self):
+        if os.environ.get("CODEX_BAZEL_BATCH"):
+            self.skipTest(
+                "the acceptance runner is already inside its isolated namespace"
+            )
+        if sys.platform != "linux" or shutil.which("bwrap") is None:
+            self.skipTest("the local Linux runner requires bubblewrap")
+        bulk_root = Path("/mnt/build-storage/codex")
+        if not bulk_root.is_dir() or not os.access(bulk_root, os.W_OK):
+            self.skipTest("the local runner bulk volume is unavailable")
+        runner = Path(__file__).with_name("run_local_candidate.sh")
+        probe = (
+            "import json, os, pathlib, pwd; "
+            "home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir); "
+            "socket = pathlib.Path('/tmp') / f'codex-daemon-{os.getuid()}'; "
+            "assert os.getuid() != 0; "
+            "assert pathlib.Path(os.environ['HOME']) == home; "
+            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')); "
+            "assert not pathlib.Path('/etc/codex/config.toml').exists(); "
+            "assert socket.stat().st_mode & 0o777 == 0o700; "
+            "(socket / 'probe').write_text('namespace-only'); "
+            "print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'home': str(home)}))"
+        )
+        with tempfile.TemporaryDirectory(prefix="runner-test-", dir=bulk_root) as state:
+            environment = dict(
+                os.environ,
+                OPENAI_API_KEY="fixture-secret",
+                CODEX_API_KEY="fixture-secret",
+                CODEX_ACCESS_TOKEN="fixture-secret",
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(runner),
+                    state,
+                    "--command",
+                    sys.executable,
+                    "-c",
+                    probe,
+                ],
+                cwd=runner.parents[1],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["uid"], os.getuid())
+            self.assertEqual(payload["gid"], os.getgid())
+            self.assertFalse(
+                (
+                    Path(state)
+                    / "test-environment"
+                    / "tmp"
+                    / f"codex-daemon-{os.getuid()}"
+                    / "probe"
+                ).exists()
+            )
+
+    def test_inclusion_rejects_a_lost_feature_or_changed_migration(self):
+        root = self.directory
+        manifest_path = root / "codex-rs/Cargo.toml"
+        manifest_path.parent.mkdir()
+        manifest_path.write_text('[workspace.package]\nversion = "0.162.1+multi.1"\n')
+        source = root / "feature.rs"
+        source.write_text("fn retained_feature() {}\n")
+        migration = root / "migration.sql"
+        migration.write_text("CREATE TABLE preserved (id INTEGER);\n")
+        for args in (
+            ["init", "-q"],
+            ["add", "."],
+            [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ):
+            subprocess.run(
+                ["git", "-C", str(root), *args], check=True, capture_output=True
+            )
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+        ).strip()
+        for tag in ("fixture-upstream", "fixture-rollback"):
+            subprocess.run(["git", "-C", str(root), "tag", tag], check=True)
+        manifest = {
+            "schema": 1,
+            "upstream": {"tag": "fixture-upstream", "commit": commit},
+            "rollback": {"tag": "fixture-rollback", "commit": commit},
+            "rust_version": "0.162.1+multi.1",
+            "npm_version": "0.162.1-multi.1",
+            "capabilities": [
+                {
+                    "id": "retained",
+                    "required_files": ["feature.rs"],
+                    "filters": ["test(retained)"],
+                }
+            ],
+            "migrations": {"migration.sql": candidate.digest(migration)},
+        }
+        self.assertEqual(inclusion.verify(root, manifest)["capabilities"], ["retained"])
+        source.unlink()
+        with self.assertRaisesRegex(ValueError, "retained: missing feature.rs"):
+            inclusion.verify(root, manifest)
+        source.write_text("fn retained_feature() {}\n")
+        migration.write_text("CREATE TABLE overwritten (id INTEGER);\n")
+        with self.assertRaisesRegex(ValueError, "migration missing or changed"):
+            inclusion.verify(root, manifest)
 
     def test_each_gate_failure_prevents_all_expensive_lanes(self):
         for failed in candidate.GATES:
@@ -270,6 +408,38 @@ class LocalCandidateTests(unittest.TestCase):
         git("add", "pending")
         with self.assertRaises(ValueError):
             candidate.frozen_commit(self.directory)
+
+    def test_preserve_generated_test_artifacts_keeps_source_clean(self):
+        generated = self.directory / "codex-rs/core/tests/suite/example.snap.new"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("snapshot candidate")
+        lock = self.directory / "codex-rs/non-existent/.auth-credential-lock-v1"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("fixture lock")
+        with patch.object(
+            candidate,
+            "git",
+            return_value=(
+                "?? codex-rs/core/tests/suite/example.snap.new\0"
+                "?? codex-rs/non-existent/.auth-credential-lock-v1\0"
+            ),
+        ):
+            candidate.preserve_generated_test_artifacts(self.directory, self.directory)
+        self.assertFalse(generated.exists())
+        self.assertFalse(lock.exists())
+        self.assertEqual(
+            (
+                self.directory / "generated/codex-rs/core/tests/suite/example.snap.new"
+            ).read_text(),
+            "snapshot candidate",
+        )
+
+    def test_preserve_generated_test_artifacts_rejects_unexpected_source_change(self):
+        with patch.object(candidate, "git", return_value="?? unexpected.txt\0"):
+            with self.assertRaisesRegex(ValueError, "unexpected source path"):
+                candidate.preserve_generated_test_artifacts(
+                    self.directory, self.directory
+                )
 
     def test_package_smokes_require_both_formats_and_real_linux_coverage(self):
         (self.directory / "source-commit.txt").write_text(self.commit)

@@ -109,7 +109,6 @@ async fn verified_plugin_install_completed_requires_installed_plugin() {
         "sample@openai-api-curated",
         &config,
         &plugins_manager,
-        /*auth*/ None,
     ));
 
     plugins_manager
@@ -131,7 +130,6 @@ async fn verified_plugin_install_completed_requires_installed_plugin() {
         "sample@openai-api-curated",
         &refreshed_config,
         &plugins_manager,
-        /*auth*/ None,
     ));
 }
 

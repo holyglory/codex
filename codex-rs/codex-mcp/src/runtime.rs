@@ -5,6 +5,8 @@
 //! [`crate::rmcp_client`] and connection-set behavior lives in
 //! [`crate::connection_manager`].
 
+mod status;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -51,6 +53,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::McpConfig;
 use crate::binding::McpBinding;
+use crate::binding::PreparedMcpCall;
 use crate::client_tool_catalog::CodexAppsToolSnapshot;
 use crate::connection_manager::BindingCatalogRevision;
 use crate::connection_manager::McpConnectionSet;
@@ -379,6 +382,18 @@ impl McpRuntime {
         Ok(Some(result))
     }
 
+    /// Compatibility path for callers that do not have a restored binding.
+    pub async fn read_resource_for_call(
+        &self,
+        thread_id: ThreadId,
+        call_id: &str,
+        uri: &str,
+    ) -> anyhow::Result<ReadResourceResult> {
+        self.read_resource_for_call_with_bound_authority(thread_id, call_id, uri)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("MCP resource authority is unavailable"))
+    }
+
     /// Reads a restored widget through an exact binding reacquired for its saved profile.
     pub async fn read_resource_for_call_with_binding(
         &self,
@@ -515,12 +530,13 @@ impl McpRuntime {
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> Option<Arc<McpBinding>> {
-        Self::binding_from_published_runtime(
-            self.current.load_full(),
+        let current = self.current.load_full();
+        current.connections.record_startup_readiness(
+            "model_binding",
             required_servers,
             required_plugins,
-        )
-        .await
+        );
+        Self::binding_from_published_runtime(current, required_servers, required_plugins).await
     }
 
     async fn binding_from_published_runtime(
@@ -630,6 +646,16 @@ impl McpRuntime {
             .connections
             .wait_for_server_startup(server)
             .await;
+    }
+
+    /// Prepares one advertised tool against this publication's current client and policy.
+    /// Its model-visible name stays fixed while execution metadata comes from the live catalog.
+    pub async fn prepare_call(&self, advertised_tool: &ToolInfo) -> Option<PreparedMcpCall> {
+        let current = self.current.load_full();
+        current
+            .connections
+            .prepare_call_for_tool(Arc::clone(current.config.as_ref()?), advertised_tool)
+            .await
     }
 
     /// Captures the current runtime after its selected server has finished startup.
@@ -874,6 +900,8 @@ pub struct SandboxState {
     pub sandbox_cwd: PathUri,
     #[serde(default)]
     pub use_legacy_landlock: bool,
+    #[serde(default)]
+    pub use_mxc: bool,
 }
 
 /// Runtime context used when resolving per-server MCP environments.
@@ -1046,7 +1074,9 @@ mod tests {
             environment_id: environment_id.to_string(),
             enabled: true,
             required: false,
+            startup_readiness: Default::default(),
             supports_parallel_tool_calls: false,
+            tool_input_schema_max_bytes: None,
             omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: None,
@@ -1243,6 +1273,7 @@ mod tests {
             codex_linux_sandbox_exe: None,
             sandbox_cwd,
             use_legacy_landlock: false,
+            use_mxc: false,
         };
 
         let serialized = serde_json::to_value(&sandbox_state).expect("serialize sandbox state");

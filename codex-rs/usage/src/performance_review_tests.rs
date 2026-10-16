@@ -17,6 +17,9 @@ mod outcomes;
 #[path = "performance_review_scope_tests.rs"]
 mod scope;
 
+#[path = "performance_review_lifecycle_tests.rs"]
+mod lifecycle;
+
 struct Fixture {
     store: UsageStore,
     process: ProcessId,
@@ -91,6 +94,7 @@ impl Fixture {
                 event_id: FactEventId::new(),
                 operation_id: operation.id,
                 repository_id: Some(self.repository.clone()),
+                worktree_id: None,
                 kind: RepositoryAttributionKind::Primary,
                 provenance: RepositoryAttributionProvenance::RuntimeObserved,
                 occurred_at_ms: operation.started_at_ms,

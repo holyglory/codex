@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use thiserror::Error;
 
+mod automatic;
 mod priority;
+
+pub use automatic::AutomaticCapacity;
 
 const DEFAULT_LIMIT_ID: &str = "codex";
 const MAX_LIMIT_SNAPSHOTS: usize = 64;
@@ -173,21 +176,34 @@ impl AccountLimitCache {
         now: i64,
         max_age_seconds: i64,
     ) -> Eligibility {
+        match self.fresh_snapshot(account_id, relevant_limit_id, now, max_age_seconds) {
+            Ok(snapshot) => evaluate_snapshot(snapshot, now),
+            Err(reason) => Eligibility::Unknown(reason),
+        }
+    }
+
+    fn fresh_snapshot(
+        &self,
+        account_id: &AccountId,
+        relevant_limit_id: Option<&str>,
+        now: i64,
+        max_age_seconds: i64,
+    ) -> Result<&RateLimitSnapshot, UnknownReason> {
         let Some(cached) = self.entries.get(account_id) else {
-            return Eligibility::Unknown(UnknownReason::Unobserved);
+            return Err(UnknownReason::Unobserved);
         };
         let observed_at = snapshot_observed_at(cached, relevant_limit_id);
         let Some(observed_at) = observed_at else {
-            return Eligibility::Unknown(UnknownReason::RelevantLimitUnavailable);
+            return Err(UnknownReason::RelevantLimitUnavailable);
         };
         if observed_at > now {
-            return Eligibility::Unknown(UnknownReason::ClockSkew);
+            return Err(UnknownReason::ClockSkew);
         }
         let Some(age) = now.checked_sub(observed_at) else {
-            return Eligibility::Unknown(UnknownReason::ClockSkew);
+            return Err(UnknownReason::ClockSkew);
         };
         if max_age_seconds < 0 || age > max_age_seconds {
-            return Eligibility::Unknown(UnknownReason::Stale);
+            return Err(UnknownReason::Stale);
         }
         let snapshot = match relevant_limit_id {
             Some(limit_id) => cached
@@ -200,9 +216,9 @@ impl AccountLimitCache {
                 .find(|snapshot| snapshot.limit_id.as_deref() == Some(DEFAULT_LIMIT_ID)),
         };
         let Some(snapshot) = snapshot else {
-            return Eligibility::Unknown(UnknownReason::RelevantLimitUnavailable);
+            return Err(UnknownReason::RelevantLimitUnavailable);
         };
-        evaluate_snapshot(snapshot, now)
+        Ok(snapshot)
     }
 }
 
@@ -493,15 +509,17 @@ fn current_reason(
     if !supports_automatic_selection(current.auth_mode) {
         return SelectionReason::CurrentUnsupportedAuth;
     }
-    match cache.eligibility(
-        &current.id,
+    match cache.automatic_capacity(
+        current,
         request.relevant_limit_id,
         request.now,
         request.max_limit_age_seconds,
     ) {
-        Eligibility::Eligible => SelectionReason::CurrentEligible,
-        Eligibility::Reached(reason) => SelectionReason::CurrentReached(reason),
-        Eligibility::Unknown(reason) => SelectionReason::CurrentUnknown(reason),
+        AutomaticCapacity::Included | AutomaticCapacity::Credits => {
+            SelectionReason::CurrentEligible
+        }
+        AutomaticCapacity::Reached(reason) => SelectionReason::CurrentReached(reason),
+        AutomaticCapacity::Unknown(reason) => SelectionReason::CurrentUnknown(reason),
     }
 }
 

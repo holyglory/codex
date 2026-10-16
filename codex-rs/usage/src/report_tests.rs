@@ -103,6 +103,7 @@ async fn attribute(
         event_id: FactEventId::new(),
         operation_id,
         repository_id,
+        worktree_id: None,
         kind,
         provenance: RepositoryAttributionProvenance::RuntimeObserved,
         occurred_at_ms: 1_001,
@@ -444,7 +445,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
     );
     assert_eq!(all.operation_count, 4);
     assert_eq!(all.tool_count, 1);
-    assert_eq!(all.database_schema_version, 8);
+    assert_eq!(all.database_schema_version, 9);
     assert_eq!(all.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(repository_one_summary.tool_count, 1);
     assert_eq!(all.classifications.len(), 2);
@@ -455,7 +456,7 @@ async fn summaries_reconcile_without_duplicating_multi_repo_or_unknown_usage() {
         .expect("effective correction");
     assert_eq!(correction.provenance, "user_corrected");
     let structured = StructuredUsageSummary::new(&all, Some("primary".to_string()));
-    assert_eq!(structured.database_schema_version, 8);
+    assert_eq!(structured.database_schema_version, 9);
     assert_eq!(structured.taxonomy_version, TAXONOMY_VERSION);
     assert_eq!(structured.account.as_deref(), Some("primary"));
     assert_eq!(structured.provider_tokens.len(), all.tokens.len());

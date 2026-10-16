@@ -13,6 +13,10 @@ use sha1::Sha1;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 
+#[cfg(test)]
+#[path = "project_automation_tests.rs"]
+mod tests;
+
 #[path = "project_automation_evidence.rs"]
 mod evidence;
 pub use evidence::validate_project_evidence;

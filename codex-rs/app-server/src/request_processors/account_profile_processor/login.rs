@@ -610,6 +610,7 @@ fn verified_pending_account(
         plan_type: identity.plan_type,
         enabled: true,
         priority: DEFAULT_ACCOUNT_PRIORITY,
+        credit_usage_enabled: false,
         created_at: pending.started_at(),
         last_used_at: None,
         note: None,
@@ -654,19 +655,17 @@ fn login_success_page(
         LoginAppBrand::Codex => LoginSuccessPageBrand::Codex,
         LoginAppBrand::Chatgpt => LoginSuccessPageBrand::Chatgpt,
     };
-    let url = codex_login::CODEX_OPEN_APP_URL
+    let mut url = codex_login::CODEX_OPEN_APP_URL
         .parse()
         .map_err(|_| internal_error("login success URL is invalid"))?;
     #[cfg(debug_assertions)]
-    let url = if let Ok(override_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
+    if let Ok(override_url) = std::env::var(LOGIN_OPEN_APP_URL_OVERRIDE_ENV_VAR)
         && !override_url.trim().is_empty()
     {
-        override_url
+        url = override_url
             .parse()
-            .map_err(|_| internal_error("login success URL is invalid"))?
-    } else {
-        url
-    };
+            .map_err(|_| internal_error("login success URL is invalid"))?;
+    }
     Ok(LoginSuccessPage::Hosted {
         url,
         app_brand: brand,
