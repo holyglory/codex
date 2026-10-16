@@ -375,6 +375,16 @@ the authority for release outcomes and verification receipts.
   retains a previous release's literal package version rejects the current
   archive after all build checks pass. Derive the expected version from the
   checked-out workspace and compare it with the archive metadata.
+- **Hosted root fixtures may lack user namespaces.** If bubblewrap cannot set
+  up the UID map, the installed-package check must fall back to a passwordless
+  direct UID-0 launch with an inherited non-root `HOME`; this preserves the
+  root-home and private-storage assertions without weakening product modes.
+- **Schema generation needs its declared Python runner.** `write-app-server-schema`
+  invokes `uv`; hosted Rust validation must install the pinned uv tool before
+  regenerating schemas instead of relying on the runner image.
+- **Slow hosted TUI startup needs test-only slack.** The startup-defaults proxy
+  cleanup deadline was too short under the uncached Bazel runner. Keep the
+  production timeout unchanged and give the test fixture bounded extra time.
 - **Verify the daemon binary separately from the CLI binary after rollout.**
   A stale manually launched app-server can remain on the control socket while
   the launcher and proxy select a newer CLI. That mixed pair caused Desktop's

@@ -269,20 +269,77 @@ def verify(binary):
             str(binary.resolve()),
             "--inside",
         ]
-        result = subprocess.run(command, timeout=240)
-        if result.returncode:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=240)
+        if result.returncode == 0:
+            return
+        if (
+            "uid map" not in result.stderr
+            and "Operation not permitted" not in result.stderr
+        ):
             raise RuntimeError(f"root journey failed with exit {result.returncode}")
+        sudo = shutil.which("sudo")
+        if sudo is None:
+            raise RuntimeError(
+                "bubblewrap user namespace unavailable and sudo is missing"
+            )
+        inherited = Path(temporary) / "direct-inherited"
+        inherited.mkdir()
+        environment = dict(
+            os.environ,
+            HOME=str(inherited),
+            LOCAL_PACKAGE_PYTHON=python_runner,
+            PYTHONDONTWRITEBYTECODE="1",
+        )
+        environment.pop("CODEX_HOME", None)
+        direct = subprocess.run(
+            [
+                sudo,
+                "--preserve-env=HOME,LOCAL_PACKAGE_PYTHON,PYTHONDONTWRITEBYTECODE",
+                python_runner,
+                str(Path(__file__).resolve()),
+                "--binary",
+                str(binary.resolve()),
+                "--direct",
+            ],
+            env=environment,
+            timeout=240,
+        )
+        if direct.returncode:
+            raise RuntimeError(
+                f"direct UID-0 journey failed with exit {direct.returncode}"
+            )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--direct", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--expect-failure", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.inside:
         with tempfile.TemporaryDirectory(prefix="root-usage-") as temporary:
             inside(args.binary, Path(temporary))
+    elif args.direct:
+        if os.geteuid() != 0:
+            raise RuntimeError("direct UID-0 fixture must run as root")
+        with tempfile.TemporaryDirectory(prefix="root-direct-") as temporary:
+            scratch = Path(temporary) / "scratch"
+            scratch.mkdir()
+            root_codex = Path("/root/.codex")
+            backup = Path(temporary) / "existing-codex"
+            had_existing = root_codex.exists() or root_codex.is_symlink()
+            if had_existing:
+                shutil.move(root_codex, backup)
+            try:
+                inside(args.binary, scratch)
+            finally:
+                if root_codex.is_symlink() or root_codex.is_file():
+                    root_codex.unlink()
+                elif root_codex.exists():
+                    shutil.rmtree(root_codex)
+                if had_existing:
+                    shutil.move(backup, root_codex)
     else:
         if args.expect_failure:
             try:
