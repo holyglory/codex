@@ -1,5 +1,7 @@
 """Keep downstream capacity recovery in every shipped package's acceptance run."""
 
+import json
+
 import pytest
 from app_server_harness import MockResponsesServer, ev_response_created, sse
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
@@ -59,3 +61,16 @@ def test_capacity_response_recovers_in_same_turn(
     requests = responses_server.requests()
     assert len(requests) == 2
     assert requests[0].input() == requests[1].input()
+
+    # Query persisted evidence through the packaged CLI after its server exits.
+    # This also keeps the public diagnostics command in the release inventory.
+    incidents = json.loads(
+        package.run("debug", "network-errors", "--thread-id", thread.id).stdout
+    )
+    assert any(
+        row["event"] == "provider_stream_error"
+        and row["details"].get("error_code") == error_code
+        for row in incidents["data"]
+    ), incidents
+    assert all(row["threadId"] == thread.id for row in incidents["data"])
+    assert "Recover this pending request" not in json.dumps(incidents)

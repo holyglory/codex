@@ -275,6 +275,15 @@ the authority for release outcomes and verification receipts.
   Preserve those opt-ins through rebases. Re-enabling the tools globally changes
   unrelated tool lists, prompt layouts, and context-budget tests. Do not accept
   broad snapshot changes to hide that fixture mismatch.
+- **Compare replayed behavior before merging old branches.** A unique commit
+  after a rebase may already be present through equivalent changes. Inspect
+  each remaining hunk: do not duplicate profile setters or reintroduce entire
+  obsolete documentation files. Injected external credentials have no managed
+  account lease; keep that fixture distinct from managed routing and assert
+  its model-request authorization stays unchanged through metadata mutations.
+  Include core account-management journeys in release preflight. For focused
+  checks, declare only the affected checks and their native-input prerequisites;
+  a historical diagnostic graph can include snapshot writers and unrelated work.
 - **Check runner contracts before freezing.** Cargo exclusions require
   `--workspace`; package-scoped diagnostics should not add it. Run the local
   namespace probe through Coordinator before the complete candidate. The

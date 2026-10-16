@@ -165,8 +165,8 @@ async fn profile_crud_auto_and_generation_survive_restart() -> Result<()> {
         })
         .await?;
     assert!(read.profile.is_active);
-    assert_eq!(read.profile.alias, "secondary-renamed");
     assert!(read.profile.credit_usage_enabled);
+    assert_eq!(read.profile.alias, "secondary-renamed");
     let _: AccountProfileActivateResponse = server
         .request(|request_id| ClientRequest::AccountProfileActivate {
             request_id,

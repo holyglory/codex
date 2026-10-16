@@ -1,84 +1,109 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex Multi
 
----
+**Codex Multi is an unofficial fork of [OpenAI Codex](https://github.com/openai/codex) for working with multiple accounts and understanding where agent time and tokens go.** It keeps the `codex` command and the familiar terminal and app-server workflows, while adding account management, local usage reports, and event-driven task continuation.
 
-## Quickstart
+The public package is **`@holyglory/codex`**, maintained in **[holyglory/codex](https://github.com/holyglory/codex)**. It is not an OpenAI distribution.
 
-### Installing and running Codex CLI
+## Why this fork exists
 
-Run the following on Mac or Linux to install Codex CLI:
+Using several authorized Codex accounts should not require repeatedly signing out or manually swapping credential files. Likewise, understanding the effort spent on a project should not require reading conversation logs or guessing from a single token total.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+This fork adds:
+
+- **Named account profiles:** sign in once per account, inspect available limits, choose a default, or pin one invocation to a particular account.
+- **Priority-based automatic selection:** opt in to selecting eligible ChatGPT accounts before turns, with higher-priority accounts used first.
+- **Content-free local accounting:** inspect tokens, tool calls, activity categories, timing, and collection gaps by task, repository, account, or across local history. Ask the agent for a task-tree report that includes its delegated work.
+- **Event subscriptions and heartbeats:** let an existing task continue when a matching event arrives or a scheduled heartbeat becomes due, rather than repeatedly asking the model to poll.
+- **Additive app-server APIs:** expose the account, accounting, and subscription features to compatible clients without replacing the existing single-account interfaces.
+
+These features manage local workflows; they do not combine subscriptions, grant additional service access, or bypass OpenAI account, workspace, billing, or rate-limit rules.
+
+## Install Codex Multi
+
+### Requirements
+
+- Node.js and npm. The published launcher declares Node.js 16 or newer; use a currently supported Node.js LTS release.
+- A supported platform: Linux, macOS, or Windows, on x64 or ARM64. The npm package selects the corresponding native package automatically. Install inside WSL if that is where you run Codex.
+- A Codex-compatible sign-in. Managed multi-account automatic selection uses ChatGPT OAuth accounts; other authentication modes are not part of that automatic pool.
+
+You do not need Rust or a source checkout to install the published package.
+
+### 1. Remove a conflicting standard Codex installation
+
+Both distributions install a command named `codex`. If standard OpenAI Codex is already installed, close its running terminal sessions and remove the old CLI using the method that installed it. Skip this step on a new installation.
+
+First locate existing commands:
+
+**macOS / Linux / WSL**
+
+```sh
+type -a codex
+npm list -g --depth=0
 ```
 
-Run the following on Windows to install Codex CLI:
-
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
-
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
+**Windows PowerShell**
 
 ```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+Get-Command codex -All | Select-Object CommandType, Source
+npm list -g --depth=0
 ```
 
-Codex CLI can also be installed via the following package managers:
+Use the applicable uninstall command, not every command in this table:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+| Original installation                             | Remove standard OpenAI Codex                                                                                                                                               |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| npm                                               | `npm uninstall -g @openai/codex`                                                                                                                                           |
+| Homebrew cask                                     | `brew uninstall --cask codex`                                                                                                                                              |
+| pnpm                                              | `pnpm remove -g @openai/codex`                                                                                                                                             |
+| Bun                                               | `bun remove -g @openai/codex`                                                                                                                                              |
+| Standalone installer or manually extracted binary | Remove the old installation's executable or launcher at the path identified above. Do not remove an unrelated package-manager installation by deleting its files manually. |
+
+If multiple installations appear, resolve each conflicting one. With a Node version manager, check the global packages for the Node installation you actually use.
+
+**Keep your Codex data.** Uninstalling the executable is not a request to delete `CODEX_HOME` (normally `~/.codex`, or `$HOME\.codex` on Windows). That directory holds configuration, sessions, and authentication data. Back it up privately before migrating; do not use a cleanup command that deletes it.
+
+This procedure replaces the CLI, not the separately installed OpenAI desktop app or IDE extension.
+
+### 2. Install the fork
+
+```sh
+npm install -g @holyglory/codex@latest
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+Open a new terminal so it resolves the new executable, then verify:
+
+```sh
+codex --version
+npm list -g @holyglory/codex --depth=0
+codex account --help
+codex usage --help
 ```
 
-Then simply run `codex` to get started.
+The native version includes a downstream `+multi.<revision>` suffix. npm represents that revision with `-multi.<revision>`, so the two version strings need not be identical. If `account` or `usage` is unknown, check the executable paths again: an old binary, alias, or wrapper may still take precedence.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+Do not use `npm install -g @openai/codex`, `brew install --cask codex`, or OpenAI's standalone installer to install this fork. Those install the upstream distribution. The supported public installation path here is npm; do not assume a GitHub workflow artifact is a published release or a complete standalone installation.
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+### 3. Start working
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+From a project directory:
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+```sh
+codex
+```
 
-</details>
+On a fresh installation, follow the sign-in flow. Existing supported legacy authentication is migrated into a local account profile when the fork initializes its account registry. Check the imported alias rather than assuming it is named `default`:
 
-### Using Codex with your ChatGPT plan
+```sh
+codex account list
+codex account current
+```
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+`codex account list` refreshes available service limits for every profile and shows
+the next reset date and time in UTC. JSON output includes the original limit
+windows and `nextResetAt` on each account's `limits` object. Disabled, signed-out,
+unsupported or unavailable profiles retain an explicit unknown state.
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Configuration and authentication profiles are different concepts: `--profile` selects a configuration profile; `--account` selects a signed-in account.
 
 ## Use multiple accounts
 
@@ -216,7 +241,7 @@ Enter these in the interactive Codex prompt, not your shell:
 
 `/account` opens the account list; the other forms open the corresponding action or view. Clients connected to an upstream server do not gain these capabilities just because the local executable is the fork.
 
-You can also ask the agent to list local account aliases, identify which profile handled the current turn, show available limits, or change priorities. The built-in `account_management` tool supports these bounded operations; it does not sign in, activate, rename, or remove profiles and does not reveal credentials, email, or service/workspace identifiers. Use the explicit account commands for those management actions.
+You can also ask the agent to list local account aliases, identify which profile handled the current turn, show available limits, or change priorities. The built-in `account_management` tool also supports renaming, enabling, disabling, selecting a default profile, and changing credit-use permission. Read its list first and use the returned registry generation for metadata changes. It does not add profiles, sign in, remove profiles, or reveal credentials, email, or service/workspace identifiers. Running turns retain their existing account lease.
 
 ## Diagnose network failures
 
@@ -235,8 +260,8 @@ The JSON report includes UTC Unix timestamps in milliseconds, task and turn IDs,
 available request/response IDs, HTTP statuses, provider error codes, WebSocket
 close codes and redacted reasons, retry schedules, fallback, and completion
 markers. `--since-ms` limits the time range; `nextBeforeId` continues an older page.
-The default view shows incidents; `--include-context` adds successful request and
-completion records around them. Incident queries use dedicated indexes, so a long
+The default view shows incidents; `--include-context` includes non-incident request
+and completion records matching the same filters. Incident queries use dedicated indexes, so a long
 successful run does not bury earlier failures or require scanning all its activity.
 
 Large WebSocket requests upload complete context items in ordered batches before
@@ -306,11 +331,11 @@ The tool's `task_tree_summary` report accepts `root_thread_id="current"` and `in
 ### Export and diagnose
 
 ```sh
-codex usage export --format json --output usage-report.json
+codex usage export --format jsonl --output usage-report.jsonl
 codex usage doctor
 ```
 
-Exports support `json`, `jsonl`, and `csv`, write a new file, and do not overwrite an existing file. `codex usage details --help` exposes the detailed record families; `codex usage classify --help` and `codex usage repo --help` describe classification corrections and repository identity maintenance.
+CLI exports support `jsonl` and `csv`, write a new file, and do not overwrite an existing file. `codex usage details --help` exposes the detailed record families; `codex usage classify --help` and `codex usage repo --help` describe classification corrections and repository identity maintenance.
 
 The accounting database is stored at `CODEX_HOME/usage/usage.sqlite3`. Its records and exports exclude prompts, responses, source code, shell commands, tool payloads, credentials, raw filesystem paths, and repository remotes. This **content-free guarantee applies to the accounting store**, not to all Codex session files or to the metadata displayed by account-management commands.
 
@@ -318,42 +343,20 @@ Accounting failures are reported as collection gaps and do not cancel model or t
 
 ## Project reviews and delivery deadlines
 
-Project automation uses the fork's persistent local app-server. Start that server
-with `codex app-server daemon start` if it is not already running; closing a client
-does not remove its saved schedules. `codex project status --json` checks whether
-the connected server supports project automation.
+DevCoordinator2 owns project outcomes, review schedules, delivery deadlines, and
+completion receipts. Configure those policies through its supported review and
+planning commands. CodexMulti supplies generic durable alarms and event waits;
+acknowledging an alarm does not complete a review or a delivery.
 
-Substantive work is enrolled for performance review. Specification, discussion
-and analysis do not create delivery obligations. When implementation actually
-has an authorized preliminary result, bind its purpose and activate that specific
-delivery target. Worktrees share their Git project identity; workstreams keep
-unrelated delivery obligations separate. Use `codex project --help` for the
-commands and `--thread TASK_ID` to identify the persistent task.
+The agent's `await_work` tool waits for real event publishers without asking the
+model to poll. An event integration must already be connected to the app-server;
+naming a source does not create that connection. Use the exact operation labels
+and last observed sequence, or the provider's supported blocking wait when event
+delivery is unavailable. A deadline or disconnected publisher is not success.
 
-The default delivery deadline is 24 hours: delivery starts while independent
-development continues. Only the separate 36-hour hard stop restricts the affected
-implementation to delivery recovery. User-authorized postponements change the
-effective deadlines without claiming a delivery happened. Explicit pauses and
-completed outcomes retire active scheduling; starting a new specification does
-not revive old delivery alarms.
-
-Performance reviews run independently, including for work with nothing to deploy.
-An inactive window does not invoke the model. A review investigates measured
-bottlenecks, compares remedies, and records a verified keep/revert decision or a
-reasoned inconclusive/no-change result. It may improve workflows inside the
-reviewed repository and existing task scope; specification work never authorizes
-implementing the product. Usage stays in the local collector, and Coordinator
-retains the linked decisions, outcome and verification records.
-
-Delivery and review alarms normally run only during user work. Stop defers pending
-alarms and suspends existing background-wake permissions. Starting or resuming work
-releases applicable missed alarms with their original deadlines. Opening or reading
-a task is passive. Explicit project pauses continue to control the project clocks.
-
-The agent's `await_work` tool waits on real event publishers instead of repeatedly
-asking the model for status. Coordinator test/deployment waits use the
-`devcoordinator` source with exact repository and run/deployment labels. A missing
-publisher or expired event history is not treated as successful completion.
+Alarms normally arrive during running user work. Waking an inactive task requires
+explicit user permission, and Stop suspends that permission. Registration alone
+does not authorize background model work.
 
 ## Continue tasks on events or heartbeats
 
@@ -424,7 +427,7 @@ Due alarms are combined and join running user work at a safe input boundary.
 An explicit `trigger` authorizes immediate handling of the selected subscriptions;
 Stop cancels pending immediate triggers while preserving timed/event alarms.
 Event ingress uses the existing app-server connection and bounded typed metadata.
-See the [event and heartbeat API example](codex-rs/app-server/README.md#example-subscribe-a-thread-to-events-and-heartbeats-experimental) for authenticated remote integrations.
+See the [generated app-server API schemas](codex-rs/app-server-protocol/schema) for event subscription request and response types used by remote integrations.
 
 ## Update Codex Multi
 

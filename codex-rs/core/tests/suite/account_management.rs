@@ -43,7 +43,7 @@ fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> Result<()> {
+async fn agent_manages_profiles_without_rerouting_injected_auth() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
@@ -145,6 +145,12 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
     test.submit_turn_with_permission_profile("Rename my default profile, disable and re-enable it, select it and toggle automatic selection", PermissionProfile::read_only()).await?;
     let requests = mocked.requests();
     assert_eq!(requests.len(), 10);
+    for request in &requests {
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer model-route".to_string())
+        );
+    }
     let renamed = tool_output(&requests[2], "rename");
     let disabled = tool_output(&requests[3], "disable");
     let enabled = tool_output(&requests[4], "enable");
@@ -183,7 +189,15 @@ async fn agent_manages_existing_profiles_without_replacing_its_turn_lease() -> R
             .account_id
     );
     assert_eq!(final_state.generation, generation + 7);
-    let output = serde_json::to_string(&(renamed, disabled, enabled, selected, automatic))?;
+    let output = serde_json::to_string(&(
+        renamed,
+        disabled,
+        enabled,
+        selected,
+        automatic,
+        credits_on,
+        credits_off,
+    ))?;
     assert!(!output.contains(credential));
     assert!(!output.contains("email"));
     Ok(())
@@ -233,11 +247,6 @@ async fn agent_lists_and_mutates_priorities_without_credential_exposure() -> Res
     save_auth(
         home.path(),
         &legacy_auth(credential),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::Direct,
-    )?;
-    codex_login::migrate_legacy_auth_if_needed(
-        home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::Direct,
     )?;

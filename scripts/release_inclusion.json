@@ -86,11 +86,13 @@
       ],
       "packages": [
         "codex-cli",
-        "codex-app-server"
+        "codex-app-server",
+        "codex-core"
       ],
       "filters": [
         "test(credits::)",
-        "test(desktop_credit_fallback_obeys_priority_permission_and_probe_evidence)"
+        "test(desktop_credit_fallback_obeys_priority_permission_and_probe_evidence)",
+        "test(suite::account_management::)"
       ]
     },
     {
@@ -209,6 +211,20 @@
       ],
       "filters": [
         "test(suite::project_automation::shell_work_context_)"
+      ]
+    },
+    {
+      "id": "network-diagnostics-reader",
+      "required_files": [
+        "codex-rs/cli/src/network_diagnostics.rs",
+        "scripts/check_network_diagnostics.py",
+        "scripts/codex_package/smoke_tests/test_capacity_recovery.py"
+      ],
+      "packages": [
+        "codex-state"
+      ],
+      "filters": [
+        "test(network_diagnostics::tests::)"
       ]
     }
   ],

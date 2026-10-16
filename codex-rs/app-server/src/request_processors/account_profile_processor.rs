@@ -211,9 +211,6 @@ impl AccountProfileRequestProcessor {
             if let Some(alias) = &alias {
                 account.alias = alias.clone();
             }
-            if let Some(enabled) = params.credit_usage_enabled {
-                account.credit_usage_enabled = enabled;
-            }
             if let Some(priority) = params.priority {
                 account.priority = priority;
             }
