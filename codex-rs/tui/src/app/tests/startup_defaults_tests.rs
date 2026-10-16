@@ -82,7 +82,7 @@ async fn agents_overview_startup_restores_saved_grouping() -> Result<()> {
             endpoint,
         },
     ));
-    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+    tokio::time::timeout(TEST_PROXY_TIMEOUT, async {
         loop {
             if !recorded_params(&requests, "thread/list").is_empty() {
                 return Ok::<(), color_eyre::eyre::Report>(());
@@ -190,7 +190,7 @@ async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
         }),
         AppServerTarget::Embedded,
     ));
-    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+    tokio::time::timeout(TEST_PROXY_TIMEOUT, async {
         loop {
             if !recorded_params(&requests, "thread/fork").is_empty() {
                 return Ok::<(), color_eyre::eyre::Report>(());
@@ -232,7 +232,7 @@ async fn run_until_thread_start(
         SessionSelection::StartFresh,
         AppServerTarget::Embedded,
     ));
-    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+    tokio::time::timeout(TEST_PROXY_TIMEOUT, async {
         loop {
             if !recorded_params(requests, "thread/start").is_empty() {
                 return Ok::<(), color_eyre::eyre::Report>(());
