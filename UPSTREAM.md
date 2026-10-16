@@ -385,6 +385,10 @@ the authority for release outcomes and verification receipts.
 - **Slow hosted TUI startup needs test-only slack.** The startup-defaults proxy
   cleanup deadline was too short under the uncached Bazel runner. Keep the
   production timeout unchanged and give the test fixture bounded extra time.
+- **Local and hosted nextest retry budgets must match.** Hosted release Rust
+  validation uses three retries, while the local candidate previously inherited
+  nextest's single retry and failed on transient app-server timing flakes.
+  Declare the same bounded retry budget in the local candidate environment.
 - **Verify the daemon binary separately from the CLI binary after rollout.**
   A stale manually launched app-server can remain on the control socket while
   the launcher and proxy select a newer CLI. That mixed pair caused Desktop's

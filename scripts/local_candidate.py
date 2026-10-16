@@ -378,6 +378,7 @@ def check(root, state, cargo_target, release_target):
         CARGO_PROFILE_DEV_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
+        NEXTEST_RETRIES="3",
         CODEX_BAZEL_BATCH="1",
         RUST_MIN_STACK="16777216",
         BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
