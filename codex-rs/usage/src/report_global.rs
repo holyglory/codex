@@ -368,7 +368,7 @@ async fn rebuild_hour(
         .execute(&mut *transaction)
         .await?;
     sqlx::query(
-        "WITH preceding AS (SELECT kind,label,s,e,source_s,MAX(e) OVER(PARTITION BY kind,label ORDER BY s,e ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) prior_end FROM _usage_global_intervals), grouped AS (SELECT kind,label,COALESCE(SUM(CASE WHEN e IS NULL THEN 0 ELSE MAX(0,e-MAX(s,COALESCE(prior_end,s))) END),0) measured_ms,SUM(e IS NULL AND source_s>=?1 AND source_s<?2) unknown_intervals,SUM(e IS NOT NULL AND e=s) zero_intervals,COUNT(*) interval_count FROM preceding) INSERT INTO _usage_report_global_time(hour_index,kind,label,measured_ms,unknown_intervals,zero_intervals,interval_count) SELECT ?3,kind,label,measured_ms,unknown_intervals,zero_intervals,interval_count FROM grouped",
+        "WITH preceding AS (SELECT kind,label,s,e,source_s,MAX(e) OVER(PARTITION BY kind,label ORDER BY s,e ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) prior_end FROM _usage_global_intervals), grouped AS (SELECT kind,label,COALESCE(SUM(CASE WHEN e IS NULL THEN 0 ELSE MAX(0,e-MAX(s,COALESCE(prior_end,s))) END),0) measured_ms,SUM(e IS NULL AND source_s>=?1 AND source_s<?2) unknown_intervals,SUM(e IS NOT NULL AND e=s) zero_intervals,COUNT(*) interval_count FROM preceding GROUP BY kind,label) INSERT INTO _usage_report_global_time(hour_index,kind,label,measured_ms,unknown_intervals,zero_intervals,interval_count) SELECT ?3,kind,label,measured_ms,unknown_intervals,zero_intervals,interval_count FROM grouped",
     )
     .bind(lower)
     .bind(upper)
@@ -403,6 +403,11 @@ async fn rebuild_hour(
 
 pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    sqlx::raw_sql(
+        "DROP TABLE IF EXISTS temp._usage_global_dirty_batch; DROP TABLE IF EXISTS temp._usage_global_old_ops;",
+    )
+    .execute(&mut *tx)
+    .await?;
     let core_ready: i64 = sqlx::query_scalar(
         "SELECT ready FROM _usage_report_cache_meta WHERE singleton=1 AND schema_version=?",
     )
@@ -421,10 +426,15 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if let Some((hour, end_hour)) = pending_range {
         rebuild_hour(&mut tx, hour).await?;
         if hour < end_hour {
+            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+                .bind(hour)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
-                "UPDATE _usage_report_global_dirty_hour_ranges SET start_hour=start_hour+1 WHERE start_hour=?",
+                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
             )
-            .bind(hour)
+            .bind(hour + 1)
+            .bind(end_hour)
             .execute(&mut *tx)
             .await?;
         } else {

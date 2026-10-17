@@ -12,7 +12,7 @@ async fn hour_rebuild_rollback_preserves_queue_for_resume() {
 
     let mut tx = store.pool.begin().await.expect("mark dirty hour");
     sqlx::query(
-        "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (0,0)",
+        "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (0,2),(1,3)",
     )
     .execute(&mut *tx)
     .await
@@ -72,6 +72,22 @@ async fn hour_rebuild_rollback_preserves_queue_for_resume() {
         .fetch_one(&store.pool)
         .await
         .expect("dirty marker after resume"),
+        0
+    );
+    for _ in 0..3 {
+        assert!(
+            !crate::report_global::step(&store.pool)
+                .await
+                .expect("drain overlapping hours")
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _usage_report_global_dirty_hour_ranges",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("overlapping hours drained"),
         0
     );
     assert!(

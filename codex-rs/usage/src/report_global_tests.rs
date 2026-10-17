@@ -93,6 +93,7 @@ async fn global_component_upgrade_rebuilds_only_derived_state() {
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("global worker");
+    store.report_refresh.cancel();
     sqlx::query(
         "UPDATE _usage_report_global_meta SET component_version=0, ready=1 WHERE singleton=1",
     )
@@ -303,7 +304,8 @@ async fn global_hour_timing_matches_canonical_for_waits_unknown_and_zero_tools()
         .await
         .expect("finish zero tool");
 
-    let mut crossing_operation = operation(process_id, "timing-thread", OperationKind::ModelRequest);
+    let mut crossing_operation =
+        operation(process_id, "timing-thread", OperationKind::ModelRequest);
     crossing_operation.started_at_ms = 3_599_000;
     record_request(&store, &crossing_operation).await;
     store
