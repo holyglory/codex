@@ -990,10 +990,22 @@ async fn stock_initialize_can_ignore_extension_capabilities() -> Result<()> {
 }
 
 async fn initialized_server(codex_home: &Path) -> Result<TestAppServer> {
-    TestAppServer::builder()
+    let server = TestAppServer::builder()
         .with_codex_home(codex_home)
         .build_initialized()
-        .await
+        .await?;
+    let usage = UsageStore::open(codex_home).await?;
+    let mut ready = false;
+    for _ in 0..100 {
+        if usage.report_cache_status().await?.ready {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    usage.close().await;
+    assert!(ready, "usage report cache did not become ready");
+    Ok(server)
 }
 
 async fn raw_error(
