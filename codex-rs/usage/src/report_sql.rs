@@ -12,6 +12,7 @@ use crate::UsageSummaryScope;
 use crate::types::TAXONOMY_VERSION;
 use sqlx::Row;
 use sqlx::SqliteConnection;
+use std::time::Instant as StdInstant;
 
 #[path = "report_cost_query.rs"]
 mod cost;
@@ -35,12 +36,21 @@ impl UsageStore {
         query: UsageSummaryQuery,
     ) -> Result<UsageSummary, UsageStoreError> {
         let deadline = tokio::time::Instant::now() + crate::report_read::REPORT_BUDGET;
-        let mut reader = crate::report_read::ReportRead::acquire(
+        let admission_started = StdInstant::now();
+        let reader_result = crate::report_read::ReportRead::acquire(
             &self.pool,
             &self.report_refresh.reader,
             deadline,
         )
-        .await?;
+        .await;
+        tracing::debug!(
+            stage = "summary_admission",
+            finite = query.time_range.is_some(),
+            acquired = reader_result.is_ok(),
+            elapsed_ms = admission_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let mut reader = reader_result?;
         let result = tokio::time::timeout_at(
             deadline,
             self.read_usage_summary(query, &mut reader.connection),
@@ -55,6 +65,7 @@ impl UsageStore {
         mut query: UsageSummaryQuery,
         connection: &mut SqliteConnection,
     ) -> Result<UsageSummary, UsageStoreError> {
+        let setup_started = StdInstant::now();
         query.repository_id = match query.repository_id {
             Some(id) => Some(self.canonical_repository_id(&id).await?),
             None => None,
@@ -97,11 +108,29 @@ impl UsageStore {
             self.report_refresh.kick(self.pool.clone());
             ReportSource::Canonical
         };
+        tracing::debug!(
+            stage = "summary_setup",
+            elapsed_ms = setup_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         selection::select(&mut tx, &query, family.as_ref(), source)
             .await
             .map_err(database_error)?;
+        tracing::debug!(
+            stage = "summary_selection",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let tokens = token_aggregates(&mut tx, source).await?;
         let provider_tokens_by_activity = activity_aggregates(&mut tx, source).await?;
+        tracing::debug!(
+            stage = "summary_token_aggregates",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let token_counts = rows(&mut tx, match source {
             ReportSource::CachedAll => "SELECT coverage_state AS state, observation_count AS n FROM _usage_report_token_coverage ORDER BY coverage_state",
             ReportSource::CachedScoped | ReportSource::Canonical => "SELECT coverage_state AS state, SUM(observation_count) AS n FROM _usage_tokens GROUP BY coverage_state ORDER BY coverage_state",
@@ -119,7 +148,59 @@ impl UsageStore {
             .fetch_all(&mut *tx).await.map_err(database_error)?
         };
         let event_counts = counts(event_rows)?;
-        let unresolved: bool = if source != ReportSource::Canonical && query.time_range.is_none() {
+        tracing::debug!(
+            stage = "summary_coverage",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
+        let unresolved: bool = if source != ReportSource::Canonical
+            && query.time_range.is_none()
+            && include_global
+        {
+            // Global cached reports select every operation. Keep this check on
+            // the derived projections so it does not join 1.3M rows through a
+            // temporary selected table just to inspect the latest marker.
+            sqlx::query_scalar(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM _usage_report_latest_coverage AS coverage
+                    WHERE coverage.coverage_state <> 'complete'
+                      AND (
+                        coverage.scope_kind NOT IN ('model_attempt','tool_attempt')
+                        OR coverage.coverage_state NOT IN ('capture_started','partial')
+                        OR coverage.reason_code IS NOT NULL
+                      )
+                ) OR EXISTS(
+                    SELECT 1 FROM _usage_report_operations AS operation
+                    WHERE operation.terminal_status IS NULL
+                      AND EXISTS(
+                        SELECT 1 FROM _usage_report_latest_coverage AS coverage
+                        WHERE coverage.operation_id = operation.operation_id
+                          AND coverage.coverage_state <> 'complete'
+                          AND coverage.scope_kind IN ('model_attempt','tool_attempt')
+                          AND coverage.coverage_state IN ('capture_started','partial')
+                          AND coverage.reason_code IS NULL
+                      )
+                ) OR EXISTS(
+                    SELECT 1 FROM _usage_report_latest_coverage AS coverage
+                    WHERE coverage.coverage_state <> 'complete'
+                      AND coverage.scope_kind = 'model_attempt'
+                      AND coverage.coverage_state IN ('capture_started','partial')
+                      AND coverage.reason_code IS NULL
+                      AND NOT EXISTS(
+                        SELECT 1 FROM _usage_report_provider_complete AS provider
+                        WHERE provider.operation_id = coverage.operation_id
+                      )
+                ) OR EXISTS(
+                    SELECT 1 FROM _usage_report_global_gap WHERE has_gap = 1
+                )
+            "#,
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?
+        } else if source != ReportSource::Canonical && query.time_range.is_none() {
             sqlx::query_scalar(r#"
                 SELECT EXISTS(SELECT 1 FROM _usage_report_latest_coverage AS coverage
                     JOIN _usage_selected AS selected ON selected.id = coverage.operation_id
@@ -152,6 +233,12 @@ impl UsageStore {
         "#).bind(include_global).bind(query.time_range.map(crate::UtcTimeRange::start_ms)).bind(query.time_range.map(crate::UtcTimeRange::end_ms))
             .fetch_one(&mut *tx).await.map_err(database_error)?
         };
+        tracing::debug!(
+            stage = "summary_unresolved",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let row = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(operation_kind = 'model_request'),0) AS models, COALESCE(SUM(terminal_status IS NULL),0) AS unfinished FROM _usage_selected")
             .fetch_one(&mut *tx).await.map_err(database_error)?;
         let operation_count = count(row.get("n"))?;
@@ -159,10 +246,33 @@ impl UsageStore {
         let unfinished_operations = count(row.get("unfinished"))?;
         let classifications = rows(&mut tx, "SELECT phase, activity, provenance, COUNT(*) AS n FROM _usage_selected GROUP BY phase, activity, provenance ORDER BY phase, activity, provenance").await?
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
+        tracing::debug!(
+            stage = "summary_accounting",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let cost = Some(cost::cost(&mut tx, &query, family.as_ref(), source).await?);
+        tracing::debug!(
+            stage = "summary_cost",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
+        tracing::debug!(
+            stage = "summary_time",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
+        let stage_started = StdInstant::now();
         let (worktrees, worktree_coverage) =
             crate::report_worktree::aggregates(&mut tx, query.time_range).await?;
+        tracing::debug!(
+            stage = "summary_worktrees",
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "usage report progress"
+        );
         let has_evidence = !tokens.is_empty() || !event_counts.is_empty();
         let has_gaps = !has_evidence
             || tokens.iter().any(|t| t.exact_tokens.is_none())

@@ -23,8 +23,12 @@ MAX(CASE WHEN token.category_path = 'total_tokens' THEN token.observed_at_ms END
 MAX(CASE WHEN token.category_path = 'output_tokens_details.reasoning_tokens' THEN token.token_count END) AS reasoning_tokens,
 MAX(CASE WHEN token.category_path = 'output_tokens_details.reasoning_tokens' THEN token.observed_at_ms END) AS reasoning_tokens_at_ms,
 SUM(CASE WHEN token.coverage_state = 'complete' AND token.token_count IS NOT NULL THEN CASE token.category_path WHEN 'input_tokens' THEN 1 WHEN 'input_tokens_details.cached_tokens' THEN 2 WHEN 'input_tokens_details.cache_write_tokens' THEN 4 WHEN 'output_tokens' THEN 8 WHEN 'total_tokens' THEN 16 WHEN 'output_tokens_details.reasoning_tokens' THEN 32 ELSE 0 END ELSE 0 END) AS complete_mask
-FROM _usage_selected AS selected JOIN model_requests AS request ON request.operation_id = selected.id
-JOIN token_observations AS token ON token.model_request_id = request.id
+-- Keep the bounded selected set as the outer loop. Without CROSS JOIN,
+-- SQLite may scan the full token history before applying the selected IDs
+-- while the report cache is warming.
+FROM _usage_selected AS selected
+CROSS JOIN model_requests AS request ON request.operation_id = selected.id
+CROSS JOIN token_observations AS token ON token.model_request_id = request.id
 WHERE token.measurement_provenance = 'provider_reported' AND token.category_path IN ('input_tokens','input_tokens_details.cached_tokens','input_tokens_details.cache_write_tokens','output_tokens','total_tokens','output_tokens_details.reasoning_tokens')
 GROUP BY request.id, token.source_event_id, token.repository_bucket;
 CREATE INDEX temp._usage_cost_receipts_request ON _usage_cost_receipts(model_request_id);
@@ -69,8 +73,12 @@ SELECT model,provider_kind,long_context,complete,SUM(observations) AS observatio
  SUM(uncached_input_tokens) AS uncached_input_tokens
 FROM _usage_report_cost_totals WHERE (?3 IS NULL OR thread_id = ?3)
 GROUP BY model,provider_kind,long_context,complete
+"#;
+
+const UNPRICED_ROLLUPS: &str = r#"
 UNION ALL SELECT COALESCE(request.model,''), COALESCE(request.provider_kind,''), 0, 0, COUNT(*),0,0,0,0,0,0,0
-FROM _usage_selected AS selected LEFT JOIN model_requests AS request ON request.operation_id = selected.id
+FROM _usage_selected AS selected
+LEFT JOIN model_requests AS request ON request.operation_id = selected.id
 WHERE selected.operation_kind = 'model_request' AND NOT EXISTS
  (SELECT 1 FROM _usage_report_model_usage AS receipt WHERE receipt.model_request_id = request.id)
 GROUP BY request.model,request.provider_kind
@@ -92,8 +100,9 @@ MAX(CASE WHEN token.category_path = 'input_tokens_details.cache_write_tokens' TH
 MAX(CASE WHEN token.category_path = 'output_tokens' THEN token.token_count END) AS output_tokens,
 MAX(CASE WHEN token.category_path = 'total_tokens' THEN token.token_count END) AS total_tokens,
 MAX(CASE WHEN token.category_path = 'output_tokens_details.reasoning_tokens' THEN token.token_count END) AS reasoning_tokens
-FROM _usage_selected AS selected JOIN tool_invocations AS tool ON tool.operation_id = selected.id
-JOIN token_observations AS token ON token.tool_invocation_id = tool.id
+FROM _usage_selected AS selected
+CROSS JOIN tool_invocations AS tool ON tool.operation_id = selected.id
+CROSS JOIN token_observations AS token ON token.tool_invocation_id = tool.id
 WHERE token.category_path NOT GLOB 'attribution.items.*'
 AND (?1 IS NULL OR token.observed_at_ms >= ?1) AND (?2 IS NULL OR token.observed_at_ms < ?2)
 AND NOT EXISTS (SELECT 1 FROM "#;
@@ -136,6 +145,31 @@ pub(super) async fn cost(
         && query.account_profile_ref.is_none()
         && query.include_unassigned_worktrees
         && query.worktree_ids.is_none();
+    // A ready global cache can answer the unpriced-model fallback without
+    // probing every receipt. Count distinct cached receipts first; if every
+    // selected model request has one, the fallback branch is provably empty.
+    // model_requests.operation_id is unique and its composite foreign key plus
+    // CHECK constraint restricts every request to a model_request operation.
+    // Scoped caches keep the original branch because their selection may be a
+    // strict subset of the global receipt projection.
+    let include_unpriced_rollups =
+        if compact && source == super::ReportSource::CachedAll && query.thread_id.is_none() {
+            let selected_models: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM _usage_selected WHERE operation_kind = 'model_request'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(super::database_error)?;
+            let cached_models: i64 = sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT model_request_id) FROM _usage_report_model_usage",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(super::database_error)?;
+            cached_models < selected_models
+        } else {
+            true
+        };
     let mut sql = QueryBuilder::<Sqlite>::new("WITH bounds AS (SELECT ");
     sql.push_bind(query.time_range.map(crate::UtcTimeRange::start_ms))
         .push(" AS start_ms, ")
@@ -151,6 +185,9 @@ pub(super) async fn cost(
             .push_bind(query.thread_id.as_ref().map(crate::ThreadId::as_str))
             .push(" AS thread_id) ")
             .push(ROLLUPS);
+        if include_unpriced_rollups {
+            sql.push(UNPRICED_ROLLUPS);
+        }
     } else {
         sql.push("), ");
         sql.push(SELECT)

@@ -186,6 +186,10 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
             .expect("raw history"),
         2_051
     );
+    let cached_global = reopened
+        .usage_summary(UsageSummaryScope::All)
+        .await
+        .expect("cached global comparison");
     let scoped = UsageSummaryQuery {
         worktree_ids: None,
         include_unassigned_worktrees: true,
@@ -208,6 +212,13 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         .execute(&reopened.pool)
         .await
         .expect("canonical comparison");
+    assert_eq!(
+        reopened
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("canonical global comparison"),
+        cached_global
+    );
     assert_eq!(
         reopened
             .usage_summary_query(scoped)
@@ -243,4 +254,178 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
             .expect("newer cache uses raw facts"),
         during
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cached_global_coverage_gaps_match_canonical_reporting() {
+    for (
+        scope_kind,
+        state,
+        reason_code,
+        terminal,
+        model_request,
+        operation_id,
+        expected_unfinished,
+    ) in [
+        (
+            "operation",
+            CoverageState::Partial,
+            Some("provider_error"),
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "model_attempt",
+            CoverageState::Partial,
+            None,
+            false,
+            false,
+            true,
+            1,
+        ),
+        (
+            "model_attempt",
+            CoverageState::Partial,
+            None,
+            true,
+            true,
+            true,
+            0,
+        ),
+        (
+            "process",
+            CoverageState::Unknown,
+            None,
+            true,
+            false,
+            false,
+            0,
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = UsageStore::open(temp.path()).await.expect("store");
+        let process = ProcessId::new();
+        store
+            .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 900)
+            .await
+            .expect("process");
+        insert_thread(&store, "coverage").await;
+        let operation = operation(process, "coverage", OperationKind::ModelRequest);
+        store.begin_operation(&operation).await.expect("operation");
+        if model_request {
+            record_request(&store, &operation).await;
+        }
+        if terminal {
+            store
+                .finish_operation(&TerminalOperation {
+                    operation_id: operation.id,
+                    status: TerminalStatus::Completed,
+                    occurred_at_ms: 1_100,
+                    duration_ns: 100_000_000,
+                    error_category: None,
+                })
+                .await
+                .expect("terminal");
+        }
+        store
+            .record_coverage(&NewCoverageEvent {
+                event_id: FactEventId::new(),
+                operation_id: operation_id.then_some(operation.id),
+                scope_kind: CoverageScopeKind::new(scope_kind).expect("scope"),
+                state,
+                reason_code: reason_code.map(|code| CoverageReasonCode::new(code).expect("reason")),
+                occurred_at_ms: 1_100,
+            })
+            .await
+            .expect("coverage");
+        crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+            .await
+            .expect("warm cache");
+        assert!(
+            crate::report_cache::is_ready(&store.pool)
+                .await
+                .expect("cache ready")
+        );
+        let cached = store
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("cached summary");
+        assert!(cached.coverage.has_gaps);
+        assert_eq!(cached.coverage.unfinished_operations, expected_unfinished);
+        sqlx::query("DELETE FROM _usage_report_cache_meta")
+            .execute(&store.pool)
+            .await
+            .expect("canonical comparison");
+        let canonical = store
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("canonical summary");
+        assert_eq!(cached, canonical);
+    }
+
+    for (scope_kind, provider_tokens) in [("model_attempt", Some(25)), ("tool_attempt", None)] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = UsageStore::open(temp.path()).await.expect("store");
+        let process = ProcessId::new();
+        store
+            .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 900)
+            .await
+            .expect("process");
+        insert_thread(&store, "resolved").await;
+        let operation = operation(process, "resolved", OperationKind::ModelRequest);
+        let request = record_request(&store, &operation).await;
+        if let Some(value) = provider_tokens {
+            store
+                .record_token_observation(&token(
+                    request,
+                    RepositoryBucket::Unknown,
+                    Some(value),
+                    CoverageState::Complete,
+                ))
+                .await
+                .expect("provider total");
+        }
+        store
+            .finish_operation(&TerminalOperation {
+                operation_id: operation.id,
+                status: TerminalStatus::Completed,
+                occurred_at_ms: 1_100,
+                duration_ns: 100_000_000,
+                error_category: None,
+            })
+            .await
+            .expect("terminal");
+        store
+            .record_coverage(&NewCoverageEvent {
+                event_id: FactEventId::new(),
+                operation_id: Some(operation.id),
+                scope_kind: CoverageScopeKind::new(scope_kind).expect("scope"),
+                state: CoverageState::Partial,
+                reason_code: None,
+                occurred_at_ms: 1_100,
+            })
+            .await
+            .expect("resolved coverage");
+        crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+            .await
+            .expect("warm resolved cache");
+        let cached = store
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("resolved cached summary");
+        assert!(!cached.coverage.has_gaps);
+        sqlx::query("DELETE FROM _usage_report_cache_meta")
+            .execute(&store.pool)
+            .await
+            .expect("resolved canonical comparison");
+        let canonical = store
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("resolved canonical summary");
+        assert_eq!(cached, canonical);
+        assert!(!canonical.coverage.has_gaps);
+    }
 }

@@ -13,20 +13,34 @@ pub(super) async fn select(
     family: Option<&HashSet<String>>,
     cache: super::ReportSource,
 ) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql("DROP TABLE IF EXISTS temp._usage_selected; DROP TABLE IF EXISTS temp._usage_tokens; DROP TABLE IF EXISTS temp._usage_spans; DROP TABLE IF EXISTS temp._usage_intervals; DROP TABLE IF EXISTS temp._usage_active;")
+    sqlx::raw_sql("DROP VIEW IF EXISTS temp._usage_selected; DROP TABLE IF EXISTS temp._usage_selected_rows; DROP TABLE IF EXISTS temp._usage_timed; DROP TABLE IF EXISTS temp._usage_tokens; DROP TABLE IF EXISTS temp._usage_spans; DROP TABLE IF EXISTS temp._usage_intervals; DROP TABLE IF EXISTS temp._usage_active;")
         .execute(&mut *connection).await?;
     if cache == super::ReportSource::CachedAll {
-        sqlx::query("CREATE TEMP TABLE _usage_selected AS SELECT operation_id AS id, operation_kind, agent_id, started_at_ms, ended_at_ms, terminal_status, phase, activity, activity_state, attribution_provenance AS provenance FROM _usage_report_operations")
+        sqlx::query("CREATE TEMP VIEW _usage_selected AS SELECT operation_id AS id, operation_kind, agent_id, started_at_ms, ended_at_ms, terminal_status, phase, activity, activity_state, attribution_provenance AS provenance FROM _usage_report_operations")
             .execute(&mut *connection).await?;
-        sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected(id)")
-            .execute(&mut *connection)
-            .await?;
         create_worktree_tokens(connection, query).await?;
         return Ok(());
     }
-    let mut sql = QueryBuilder::<Sqlite>::new(
+    let cached_scoped = cache == super::ReportSource::CachedScoped
+        && query.thread_id.is_none()
+        && query.account_profile_ref.is_none();
+    let operation_id_column = if cached_scoped {
+        "operation.operation_id"
+    } else {
+        "operation.id"
+    };
+    let mut sql = QueryBuilder::<Sqlite>::new(if cached_scoped {
         r#"
-        CREATE TEMP TABLE _usage_selected AS
+        CREATE TEMP TABLE _usage_selected_rows AS
+        SELECT operation.operation_id AS id, operation.operation_kind, operation.agent_id,
+               operation.started_at_ms, operation.ended_at_ms,
+               operation.terminal_status, operation.phase, operation.activity,
+               operation.activity_state, operation.attribution_provenance AS provenance
+        FROM _usage_report_operations AS operation
+        "#
+    } else {
+        r#"
+        CREATE TEMP TABLE _usage_selected_rows AS
         SELECT operation.id, operation.operation_kind, operation.agent_id,
                operation.started_at_ms, terminal.occurred_at_ms AS ended_at_ms,
                terminal.event_kind AS terminal_status,
@@ -39,8 +53,8 @@ pub(super) async fn select(
           ON terminal.operation_id = operation.id AND terminal.terminal = 1
         LEFT JOIN effective_classification_events AS classification
           ON classification.operation_id = operation.id
-    "#,
-    );
+    "#
+    });
     if query.account_profile_ref.is_some() {
         sql.push(r#"
             LEFT JOIN model_requests AS request ON request.operation_id = operation.id
@@ -54,11 +68,17 @@ pub(super) async fn select(
             .push_bind(thread.as_str());
     }
     if let Some(family) = family {
-        sql.push(" AND operation.id IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(")
-            .push_bind(Json(family.iter().collect::<Vec<_>>())).push(")))");
+        if cached_scoped {
+            sql.push(" AND EXISTS (SELECT 1 FROM repository_attributions AS family_attribution WHERE family_attribution.operation_id = operation.operation_id AND family_attribution.repository_id IN (SELECT value FROM json_each(")
+                .push_bind(Json(family.iter().collect::<Vec<_>>()))
+                .push(")))");
+        } else {
+            sql.push(" AND ").push(operation_id_column).push(" IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(")
+                .push_bind(Json(family.iter().collect::<Vec<_>>())).push(")))");
+        }
     }
     if let Some(worktrees) = &query.worktree_ids {
-        sql.push(" AND (operation.id IN (SELECT operation_id FROM repository_attributions WHERE worktree_id IN (SELECT value FROM json_each(")
+        sql.push(" AND (").push(operation_id_column).push(" IN (SELECT operation_id FROM repository_attributions WHERE worktree_id IN (SELECT value FROM json_each(")
             .push_bind(Json(
                 worktrees
                     .iter()
@@ -67,11 +87,15 @@ pub(super) async fn select(
             ))
             .push(")))");
         if query.include_unassigned_worktrees {
-            sql.push(" OR NOT EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = operation.id AND worktree_id IS NOT NULL)");
+            sql.push(" OR NOT EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = ")
+                .push(operation_id_column)
+                .push(" AND worktree_id IS NOT NULL)");
         }
         sql.push(")");
     } else if !query.include_unassigned_worktrees {
-        sql.push(" AND EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = operation.id AND worktree_id IS NOT NULL)");
+        sql.push(" AND EXISTS (SELECT 1 FROM repository_attributions WHERE operation_id = ")
+            .push(operation_id_column)
+            .push(" AND worktree_id IS NOT NULL)");
     }
     if let Some(account) = &query.account_profile_ref {
         sql.push(" AND COALESCE(request.account_profile_ref, parent_request.account_profile_ref, turn.account_profile_ref) = ")
@@ -80,12 +104,21 @@ pub(super) async fn select(
     if let Some(range) = query.time_range {
         sql.push(" AND operation.started_at_ms < ")
             .push_bind(range.end_ms());
-        sql.push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
-            .push_bind(range.start_ms())
-            .push(")");
+        if cached_scoped {
+            sql.push(" AND (operation.ended_at_ms IS NULL OR operation.ended_at_ms > ")
+                .push_bind(range.start_ms())
+                .push(")");
+        } else {
+            sql.push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
+                .push_bind(range.start_ms())
+                .push(")");
+        }
     }
     sql.build().execute(&mut *connection).await?;
-    sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected(id)")
+    sqlx::query("CREATE UNIQUE INDEX temp._usage_selected_id ON _usage_selected_rows(id)")
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("CREATE TEMP VIEW _usage_selected AS SELECT * FROM _usage_selected_rows")
         .execute(&mut *connection)
         .await?;
     if cache == super::ReportSource::CachedScoped

@@ -229,6 +229,15 @@ async fn cost_receipts_preserve_subsets_late_facts_unknown_models_and_long_conte
             .await
             .expect("hosted usage");
     }
+    store.report_refresh.cancel();
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("warm cost cache");
+    assert!(
+        crate::report_cache::is_ready(&store.pool)
+            .await
+            .expect("cost cache status")
+    );
     let missing_metadata = operation(process, "cost", OperationKind::ModelRequest);
     store
         .begin_operation(&missing_metadata)
