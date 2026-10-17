@@ -241,6 +241,11 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     .execute(&another.pool)
     .await
     .expect("future derived schema");
+    assert!(
+        !crate::report_cache::prepare(&another.pool)
+            .await
+            .expect("preserve newer cache owner")
+    );
     assert!(matches!(
         crate::report_cache::backfill::step(&another.pool)
             .await

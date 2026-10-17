@@ -336,6 +336,16 @@ pub(crate) async fn ensure(
 pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let build = rebuild_if_needed(&mut tx).await?;
+    let future_core = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM _usage_report_cache_meta WHERE schema_version > ?)",
+    )
+    .bind(REPORT_CACHE_SCHEMA_VERSION)
+    .fetch_one(&mut *tx)
+    .await?;
+    if future_core != 0 {
+        tx.commit().await?;
+        return Ok(false);
+    }
     let global_exists: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_global_meta')",
     )
