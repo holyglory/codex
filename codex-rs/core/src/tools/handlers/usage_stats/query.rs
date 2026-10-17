@@ -39,14 +39,16 @@ pub(super) async fn execute(
 ) -> Result<Value, FunctionCallError> {
     validate_args(&args)?;
     let time_range = time_range(args.from_at_ms, args.to_at_ms)?;
-    if time_range.is_none_or(|range| !range.is_finite())
+    let unbounded = time_range.is_none_or(|range| !range.is_finite());
+    let requires_ready_cache = matches!(
+        args.action,
+        UsageStatsAction::PerformanceReview | UsageStatsAction::TaskTreeSummary
+    ) || (matches!(args.action, UsageStatsAction::Summary)
         && matches!(
-            args.action,
-            UsageStatsAction::PerformanceReview
-                | UsageStatsAction::Summary
-                | UsageStatsAction::TaskTreeSummary
-        )
-    {
+            args.scope.unwrap_or(UsageStatsScope::CurrentChat),
+            UsageStatsScope::All
+        ));
+    if unbounded && requires_ready_cache {
         let cache = store.report_cache_status().await.map_err(|error| {
             if let Some(failure) = error.report_failure() {
                 tool_error(
