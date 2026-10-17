@@ -18,6 +18,9 @@ use pretty_assertions::assert_eq;
 #[path = "report_query_tests.rs"]
 mod query_tests;
 
+#[path = "report_global_tests.rs"]
+mod global_tests;
+
 fn identity(value: &str) -> RepositoryIdentityInput {
     RepositoryIdentityInput::new(CanonicalRepositoryPath::new(value).expect("canonical path"))
 }
