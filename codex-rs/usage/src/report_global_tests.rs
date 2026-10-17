@@ -125,6 +125,61 @@ async fn global_component_upgrade_rebuilds_only_derived_state() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn finite_summary_uses_core_cache_while_global_component_warms() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial cache");
+    store.report_refresh.cancel();
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 45, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    insert_thread(&store, "finite-warming-thread").await;
+    let mut operation = operation(
+        process_id,
+        "finite-warming-thread",
+        OperationKind::ModelRequest,
+    );
+    operation.started_at_ms = 1_000;
+    record_request(&store, &operation).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: operation.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 2_000,
+            duration_ns: 1_000_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("finish operation");
+    let mut connection = store.pool.acquire().await.expect("connection");
+    let summary = store
+        .read_usage_summary(
+            UsageSummaryQuery {
+                worktree_ids: None,
+                include_unassigned_worktrees: true,
+                thread_id: None,
+                repository_id: None,
+                account_profile_ref: None,
+                time_range: Some(UtcTimeRange::new(0, 3_000).expect("finite range")),
+            },
+            &mut connection,
+        )
+        .await
+        .expect("finite summary");
+    assert_eq!(summary.operation_count, 1);
+    assert!(
+        !crate::report_global::is_ready_on(&mut connection)
+            .await
+            .expect("global status")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn global_gap_uses_latest_null_operation_coverage_event() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");
@@ -247,6 +302,20 @@ async fn global_hour_timing_matches_canonical_for_waits_unknown_and_zero_tools()
         })
         .await
         .expect("finish zero tool");
+
+    let mut crossing_operation = operation(process_id, "timing-thread", OperationKind::ModelRequest);
+    crossing_operation.started_at_ms = 3_599_000;
+    record_request(&store, &crossing_operation).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: crossing_operation.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 3_601_000,
+            duration_ns: 2_000_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("finish crossing request");
 
     let mut open_operation = operation(process_id, "timing-thread", OperationKind::ModelRequest);
     open_operation.started_at_ms = 7_000;

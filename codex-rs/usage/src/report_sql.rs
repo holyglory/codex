@@ -95,15 +95,20 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
-        let source = if crate::report_global::is_ready_on(&mut tx)
+        let global_ready = crate::report_global::is_ready_on(&mut tx)
             .await
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        let core_ready = crate::report_cache::is_ready_on(&mut tx)
+            .await
+            .unwrap_or(false);
+        let source = if global_ready {
             if include_global && query.time_range.is_none() {
                 ReportSource::CachedAll
             } else {
                 ReportSource::CachedScoped
             }
+        } else if core_ready {
+            ReportSource::CachedScoped
         } else {
             self.report_refresh.kick(self.pool.clone());
             ReportSource::Canonical
