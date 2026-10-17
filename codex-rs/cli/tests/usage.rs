@@ -23,7 +23,9 @@ use codex_usage::UsageStore;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::sleep;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
@@ -157,6 +159,16 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     let encoded = details.to_string();
     assert!(!encoded.contains("osPid"));
     assert!(!encoded.contains(&OS_PID_SENTINEL.to_string()));
+
+    let mut report_ready = false;
+    for _ in 0..100 {
+        if store.report_cache_status().await?.ready {
+            report_ready = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(report_ready, "usage report cache did not become ready");
 
     let repository_summary = stdout_json(
         codex_command(home.path())?
