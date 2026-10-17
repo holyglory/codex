@@ -79,6 +79,31 @@ DROP TABLE IF EXISTS _usage_report_activity_tokens;
 DROP TABLE IF EXISTS _usage_report_token_coverage;
 DROP TABLE IF EXISTS _usage_report_coverage;
 DROP TABLE IF EXISTS _usage_report_spans;
+DROP TABLE IF EXISTS _usage_report_global_unpriced;
+DROP TABLE IF EXISTS _usage_report_global_unresolved;
+DROP TABLE IF EXISTS _usage_report_global_dirty_hours;
+DROP TABLE IF EXISTS _usage_report_global_dirty_hour_ranges;
+DROP TABLE IF EXISTS _usage_report_global_dirty_operations;
+DROP TABLE IF EXISTS _usage_report_global_classifications;
+DROP TABLE IF EXISTS _usage_report_global_counts;
+DROP TABLE IF EXISTS _usage_report_global_operations;
+DROP TABLE IF EXISTS _usage_report_global_meta;
+DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
+DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
+DROP TABLE IF EXISTS _usage_report_global_gap_v9;
+DROP TABLE IF EXISTS _usage_report_global_gap_events;
+DROP TABLE IF EXISTS _usage_report_global_time;
+DROP TABLE IF EXISTS _usage_report_global_tools;
+DROP TABLE IF EXISTS _usage_report_global_request_hours;
+DROP TABLE IF EXISTS _usage_report_global_request;
+DROP TRIGGER IF EXISTS _usage_report_global_operation_insert;
+DROP TRIGGER IF EXISTS _usage_report_global_operation_terminal;
+DROP TRIGGER IF EXISTS _usage_report_global_token;
+DROP TRIGGER IF EXISTS _usage_report_global_coverage;
+DROP TRIGGER IF EXISTS _usage_report_global_classification;
+DROP TRIGGER IF EXISTS _usage_report_global_gap;
+DROP TRIGGER IF EXISTS _usage_report_global_span_insert;
+DROP TRIGGER IF EXISTS _usage_report_global_span_end;
 "#;
 
 const CREATE_CACHE_SQL: &str = r#"
@@ -273,7 +298,8 @@ pub(crate) async fn ensure(
     pool: &SqlitePool,
     reader: &tokio::sync::Semaphore,
 ) -> Result<(), sqlx::Error> {
-    if is_ready(pool).await? || !prepare(pool).await? {
+    prepare(pool).await?;
+    if is_global_ready(pool).await? {
         return Ok(());
     }
     let mut delay_ms = 100;
@@ -286,7 +312,13 @@ pub(crate) async fn ensure(
             backfill::step(pool).await?
         };
         match progress {
-            backfill::Progress::Ready | backfill::Progress::Superseded => return Ok(()),
+            backfill::Progress::Ready => {
+                if crate::report_global::step(pool).await? {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            backfill::Progress::Superseded => return Ok(()),
             backfill::Progress::Advanced => {
                 delay_ms = 100;
                 tokio::task::yield_now().await;
@@ -304,6 +336,28 @@ pub(crate) async fn ensure(
 pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let build = rebuild_if_needed(&mut tx).await?;
+    let global_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_global_meta')",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if global_exists == 0 {
+        crate::report_global::initialize(&mut tx, REPORT_CACHE_SCHEMA_VERSION).await?;
+    } else {
+        let global_state: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT component_version, core_schema_version FROM _usage_report_global_meta WHERE singleton=1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if global_state
+            != Some((
+                crate::report_global::COMPONENT_VERSION,
+                REPORT_CACHE_SCHEMA_VERSION,
+            ))
+        {
+            crate::report_global::reset(&mut tx, REPORT_CACHE_SCHEMA_VERSION).await?;
+        }
+    }
     sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_interval_end_idx ON _usage_report_operations(ended_at_ms,started_at_ms,operation_id) WHERE ended_at_ms IS NOT NULL")
         .execute(&mut *tx).await?;
     tx.commit().await?;
@@ -313,6 +367,11 @@ pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     is_ready_on(&mut connection).await
+}
+
+pub(crate) async fn is_global_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    crate::report_global::is_ready_on(&mut connection).await
 }
 
 pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {
@@ -347,7 +406,9 @@ pub(crate) async fn status_on(
     .fetch_all(&mut *connection)
     .await?;
     let (schema_version, ready) = state.unwrap_or((REPORT_CACHE_SCHEMA_VERSION, 0));
-    let ready = ready == 1 && schema_version == REPORT_CACHE_SCHEMA_VERSION;
+    let core_ready = ready == 1 && schema_version == REPORT_CACHE_SCHEMA_VERSION;
+    let global_ready = crate::report_global::is_ready_on(connection).await?;
+    let ready = core_ready && global_ready;
     Ok(ReportCacheStatus {
         schema_version,
         ready,
@@ -429,6 +490,7 @@ async fn rebuild_if_needed(connection: &mut SqliteConnection) -> Result<bool, sq
         .execute(&mut *connection)
         .await?;
     backfill::initialize(connection).await?;
+    crate::report_global::initialize(connection, REPORT_CACHE_SCHEMA_VERSION).await?;
     sqlx::query(
         "INSERT INTO _usage_report_cache_meta(singleton, schema_version, ready) VALUES (1, ?, 0)",
     )

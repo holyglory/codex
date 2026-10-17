@@ -55,7 +55,11 @@ UNION ALL SELECT 'agent', '', s, NULL FROM _usage_timed AS op
 pub(super) async fn metrics(
     connection: &mut SqliteConnection,
     range: Option<UtcTimeRange>,
+    global: bool,
 ) -> Result<(ReportTimeMetrics, ToolMetrics), UsageStoreError> {
+    if global && range.is_none() {
+        return crate::report_global::time_metrics(connection).await;
+    }
     let start = range.map_or(i64::MIN, UtcTimeRange::start_ms);
     let end = range.map_or(i64::MAX, UtcTimeRange::end_ms);
     sqlx::query("CREATE TEMP TABLE _usage_timed AS SELECT id, operation_kind, agent_id, phase, activity_state, terminal_status, MAX(started_at_ms, ?1) AS s, CASE WHEN ended_at_ms >= started_at_ms AND MIN(ended_at_ms, ?2) >= MAX(started_at_ms, ?1) THEN MIN(ended_at_ms, ?2) END AS e FROM _usage_selected")

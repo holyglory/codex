@@ -7,6 +7,41 @@ use sqlx::SqliteConnection;
 
 const MAX_WORKTREES: usize = 16_384;
 
+pub(super) async fn global_aggregates(
+    connection: &mut SqliteConnection,
+) -> Result<(Vec<WorktreeAggregate>, WorktreeCoverage), UsageStoreError> {
+    let has_worktree_assignment: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM repository_attributions WHERE worktree_id IS NOT NULL)",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(database_error)?;
+    if has_worktree_assignment == 0 {
+        let unassigned_operations: i64 = sqlx::query_scalar(
+            "SELECT operations FROM _usage_report_global_counts WHERE singleton=1",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        let unassigned_tokens: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(observation_count),0) FROM _usage_report_token_aggregates",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        return Ok((
+            Vec::new(),
+            WorktreeCoverage {
+                assigned_operation_count: 0,
+                unassigned_operation_count: count(unassigned_operations)?,
+                assigned_token_observation_count: 0,
+                unassigned_token_observation_count: count(unassigned_tokens)?,
+            },
+        ));
+    }
+    aggregates(connection, None).await
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeAggregate {
     pub id: WorktreeId,

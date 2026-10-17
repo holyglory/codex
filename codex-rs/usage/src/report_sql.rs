@@ -95,7 +95,7 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
-        let source = if crate::report_cache::is_ready_on(&mut tx)
+        let source = if crate::report_global::is_ready_on(&mut tx)
             .await
             .unwrap_or(false)
         {
@@ -154,9 +154,14 @@ impl UsageStore {
             "usage report progress"
         );
         let stage_started = StdInstant::now();
-        let unresolved: bool = if source != ReportSource::Canonical
-            && query.time_range.is_none()
-            && include_global
+        let unresolved: bool = if source == ReportSource::CachedAll {
+            sqlx::query_scalar(
+                "SELECT unresolved_count > 0 OR EXISTS(SELECT 1 FROM _usage_report_global_gap_v9 WHERE has_gap=1) FROM _usage_report_global_unresolved_meta WHERE singleton=1",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?
+        } else if source != ReportSource::Canonical && query.time_range.is_none() && include_global
         {
             // Global cached reports select every operation. Keep this check on
             // the derived projections so it does not join 1.3M rows through a
@@ -193,7 +198,7 @@ impl UsageStore {
                         WHERE provider.operation_id = coverage.operation_id
                       )
                 ) OR EXISTS(
-                    SELECT 1 FROM _usage_report_global_gap WHERE has_gap = 1
+                    SELECT 1 FROM _usage_report_global_gap_v9 WHERE has_gap = 1
                 )
             "#,
             )
@@ -239,12 +244,20 @@ impl UsageStore {
             "usage report progress"
         );
         let stage_started = StdInstant::now();
-        let row = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(operation_kind = 'model_request'),0) AS models, COALESCE(SUM(terminal_status IS NULL),0) AS unfinished FROM _usage_selected")
+        let row = sqlx::query(if source == ReportSource::CachedAll {
+            "SELECT operations AS n, model_requests AS models, unfinished_operations AS unfinished FROM _usage_report_global_counts WHERE singleton=1"
+        } else {
+            "SELECT COUNT(*) AS n, COALESCE(SUM(operation_kind = 'model_request'),0) AS models, COALESCE(SUM(terminal_status IS NULL),0) AS unfinished FROM _usage_selected"
+        })
             .fetch_one(&mut *tx).await.map_err(database_error)?;
         let operation_count = count(row.get("n"))?;
         let model_request_count = count(row.get("models"))?;
         let unfinished_operations = count(row.get("unfinished"))?;
-        let classifications = rows(&mut tx, "SELECT phase, activity, provenance, COUNT(*) AS n FROM _usage_selected GROUP BY phase, activity, provenance ORDER BY phase, activity, provenance").await?
+        let classifications = rows(&mut tx, if source == ReportSource::CachedAll {
+            "SELECT phase, activity, provenance, operation_count AS n FROM _usage_report_global_classifications ORDER BY phase, activity, provenance"
+        } else {
+            "SELECT phase, activity, provenance, COUNT(*) AS n FROM _usage_selected GROUP BY phase, activity, provenance ORDER BY phase, activity, provenance"
+        }).await?
             .into_iter().map(|row| Ok(ClassificationCount {phase:row.get("phase"),activity:row.get("activity"),provenance:row.get("provenance"),count:count(row.get("n"))?})).collect::<Result<Vec<_>,UsageStoreError>>()?;
         tracing::debug!(
             stage = "summary_accounting",
@@ -259,15 +272,19 @@ impl UsageStore {
             "usage report progress"
         );
         let stage_started = StdInstant::now();
-        let (timing, tools) = time::metrics(&mut tx, query.time_range).await?;
+        let (timing, tools) =
+            time::metrics(&mut tx, query.time_range, source == ReportSource::CachedAll).await?;
         tracing::debug!(
             stage = "summary_time",
             elapsed_ms = stage_started.elapsed().as_millis(),
             "usage report progress"
         );
         let stage_started = StdInstant::now();
-        let (worktrees, worktree_coverage) =
-            crate::report_worktree::aggregates(&mut tx, query.time_range).await?;
+        let (worktrees, worktree_coverage) = if source == ReportSource::CachedAll {
+            crate::report_worktree::global_aggregates(&mut tx).await?
+        } else {
+            crate::report_worktree::aggregates(&mut tx, query.time_range).await?
+        };
         tracing::debug!(
             stage = "summary_worktrees",
             elapsed_ms = stage_started.elapsed().as_millis(),

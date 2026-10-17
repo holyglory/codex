@@ -152,24 +152,17 @@ pub(super) async fn cost(
     // CHECK constraint restricts every request to a model_request operation.
     // Scoped caches keep the original branch because their selection may be a
     // strict subset of the global receipt projection.
-    let include_unpriced_rollups =
-        if compact && source == super::ReportSource::CachedAll && query.thread_id.is_none() {
-            let selected_models: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM _usage_selected WHERE operation_kind = 'model_request'",
-            )
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(super::database_error)?;
-            let cached_models: i64 = sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT model_request_id) FROM _usage_report_model_usage",
-            )
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(super::database_error)?;
-            cached_models < selected_models
-        } else {
-            true
-        };
+    let include_unpriced_rollups = if compact && source == super::ReportSource::CachedAll {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT unpriced_count FROM _usage_report_global_unpriced_meta WHERE singleton=1",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(super::database_error)?
+            > 0
+    } else {
+        true
+    };
     let mut sql = QueryBuilder::<Sqlite>::new("WITH bounds AS (SELECT ");
     sql.push_bind(query.time_range.map(crate::UtcTimeRange::start_ms))
         .push(" AS start_ms, ")
