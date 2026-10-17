@@ -18,6 +18,7 @@ mod recovery;
 mod report;
 mod report_cache;
 mod report_cost;
+mod report_global;
 mod report_math;
 mod report_read;
 mod report_refresh;

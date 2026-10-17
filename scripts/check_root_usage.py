@@ -28,14 +28,14 @@ def run(command, environment=None):
 
 
 class Server:
-    def __init__(self, binary, environment, workspace):
+    def __init__(self, binary, environment, workspace, *, stderr=None):
         self.process = subprocess.Popen(
             [str(binary), "app-server"],
             cwd=workspace,
             env=environment,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL if stderr is None else stderr,
             text=True,
         )
         self.messages = queue.Queue()
@@ -50,8 +50,8 @@ class Server:
         finally:
             self.messages.put(None)
 
-    def receive(self):
-        message = self.messages.get(timeout=30)
+    def receive(self, *, timeout=30.0):
+        message = self.messages.get(timeout=timeout)
         if message is None:
             raise RuntimeError("app-server exited before its response")
         return message

@@ -325,6 +325,11 @@ class LocalCandidateTests(unittest.TestCase):
             lambda r: r.update(status="failure"),
             lambda r: r.update(platform="darwin-arm64"),
             lambda r: r["checks"].pop(),
+            lambda r: r.update(
+                checks=[
+                    check for check in r["checks"] if check["name"] != "usage-history"
+                ]
+            ),
             lambda r: r["checks"].append(r["checks"][0]),
             lambda r: r["checks"][1].update(name=r["checks"][0]["name"]),
             lambda r: r["checks"][0].update(exit_code=False),
@@ -463,6 +468,171 @@ class LocalCandidateTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         candidate.verify_package(self.directory, self.commit)
                     smoke(compression)
+
+
+@unittest.skipUnless(sys.platform == "linux", "Linux candidate release verification")
+class UsageHistoryVerifierTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="usage-verifier-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.scopes = {
+            "window_start_ms": 6_000_000_000,
+            "window_end_ms": 6_086_400_000,
+            "expected_all_operations": 8,
+            "expected_all_provider_tokens": 8400,
+            "repositories": [
+                {
+                    "name": f"synthetic-{n}",
+                    "repository_id": str(n),
+                    "expected_operations": 1,
+                    "expected_provider_tokens": 1050,
+                }
+                for n in range(8)
+            ],
+        }
+
+    def server_binary(self, *, faults, warming=False):
+        binary = self.directory / "fixture-server"
+        binary.write_text(
+            "#!/usr/bin/env python3\nimport json,sys\n"
+            f"faults = {faults!r}\nwarming = {warming!r}\n"
+            + """
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    response = {"id": request["id"], "result": {}}
+    if request["method"] == "localUsage/summary":
+        params = request["params"]
+        key = params.get("repositoryKey")
+        if key is not None:
+            assert params["fromAt"] == 6000000 and params["toAt"] == 6086400
+        if warming and key is None:
+            response = {"id": request["id"], "error": {"code": -32602,
+                "data": {"code": "usage_report_warming", "retryable": True,
+                         "retryAfterMs": 1000, "cache": {"schemaVersion": 8,
+                         "ready": False, "progress": [{"source": "operations",
+                         "cursor": 1, "highWater": 100}]}}}}
+            if faults:
+                response["error"]["data"]["cache"]["progress"] = faults
+        elif faults and key == "2":
+            response = {"id": request["id"], "error": {"code": -32602,
+                "message": "private fixture sentinel", "data": {"code": "usage_report_timeout"}}}
+        else:
+            operations = 8 if key is None else 2 if faults and key == "1" else 1
+            tokens = 8400 if key is None else "private fixture sentinel" if faults and key == "3" else 1050
+            response["result"] = {"report": {"counts": {"operations": operations}},
+                                  "aggregate": {"totalTokens": tokens}}
+    print(json.dumps(response), flush=True)
+"""
+        )
+        binary.chmod(0o700)
+        return binary
+
+    def test_public_probe_accepts_exact_windows_and_unbounded_totals(self):
+        import check_usage_history as history
+
+        binary = self.server_binary(faults=False)
+        self.assertTrue(
+            history.public_probe(binary, self.directory, self.scopes, dict(os.environ))
+        )
+        self.assertTrue(
+            history.public_probe(
+                binary,
+                self.directory,
+                self.scopes,
+                dict(os.environ),
+                scope="all",
+                evidence_name="global.json",
+            )
+        )
+
+    def test_public_probe_preserves_other_windows_and_rejects_wrong_totals_and_timeout(
+        self,
+    ):
+        import check_usage_history as history
+
+        binary = self.server_binary(faults=True)
+        self.assertFalse(
+            history.public_probe(binary, self.directory, self.scopes, dict(os.environ))
+        )
+        text = (self.directory / "public-window-proof.json").read_text()
+        rows = json.loads(text)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(
+            [row["repository"] for row in rows if not row["passed"]],
+            ["synthetic-1", "synthetic-2", "synthetic-3"],
+        )
+        self.assertEqual(rows[2]["failure"], "usage_report_timeout")
+        self.assertNotIn("private fixture sentinel", text)
+
+    def test_rebuilding_probe_requires_warming_instead_of_successful_totals(self):
+        import check_usage_history as history
+
+        for warming in (False, True):
+            with self.subTest(warming=warming):
+                binary = self.server_binary(faults=False, warming=warming)
+                self.assertEqual(
+                    history.public_probe(
+                        binary,
+                        self.directory,
+                        self.scopes,
+                        dict(os.environ),
+                        scope="warming",
+                        evidence_name="warming.json",
+                    ),
+                    warming,
+                )
+
+    def test_native_proof_requires_every_original_window_and_exact_totals(self):
+        import check_usage_history as history
+
+        path = self.directory / "native-window-proof.json"
+        good = [
+            {
+                "repository": row["name"],
+                "operations": 1,
+                "provider_tokens": 1050,
+                "elapsed_ms": 1,
+            }
+            for row in self.scopes["repositories"]
+        ]
+        path.write_text(json.dumps(good))
+        self.assertTrue(history.verify_native(self.directory, self.scopes))
+        for bad in (
+            None,
+            {},
+            [None] * 8,
+            [dict(good[0], repository=[]), *good[1:]],
+            good[:-1],
+            [dict(good[0], provider_tokens=1051), *good[1:]],
+            [dict(good[0], elapsed_ms=15001), *good[1:]],
+            [dict(good[0], elapsed_ms=-1), *good[1:]],
+            [dict(good[0], operations=True), *good[1:]],
+        ):
+            path.write_text(json.dumps(bad))
+            self.assertFalse(history.verify_native(self.directory, self.scopes))
+
+    def test_warming_probe_rejects_malformed_source_progress(self):
+        import check_usage_history as history
+
+        for progress in (
+            [None],
+            [{"source": 1, "cursor": "x", "highWater": 100}],
+            [{"source": "operations", "cursor": 2, "highWater": 1}],
+        ):
+            with self.subTest(progress=progress):
+                binary = self.server_binary(faults=progress, warming=True)
+                self.assertFalse(
+                    history.public_probe(
+                        binary,
+                        self.directory,
+                        self.scopes,
+                        dict(os.environ),
+                        scope="warming",
+                    )
+                )
 
 
 if __name__ == "__main__":

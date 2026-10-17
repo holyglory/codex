@@ -245,6 +245,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
             .execute(&mut *tx)
             .await?;
     }
+    crate::report_global::apply_page(&mut tx, source, cursor, end).await?;
     sqlx::query("UPDATE _usage_report_backfill SET cursor = ? WHERE source = ?")
         .bind(end)
         .bind(source)

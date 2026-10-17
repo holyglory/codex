@@ -128,7 +128,13 @@
         "codex-rs/core/tests/suite/usage_stats.rs",
         "codex-rs/app-server/tests/suite/v2/local_usage.rs",
         "codex-rs/usage/src/report_cache_backfill_tests.rs",
-        "codex-rs/usage/src/report_scale_tests.rs"
+        "codex-rs/usage/src/report_global.rs",
+        "codex-rs/usage/src/report_global_schema.rs",
+        "codex-rs/usage/src/report_global_tests.rs",
+        "codex-rs/usage/src/report_global_worker_tests.rs",
+        "codex-rs/usage/src/report_sql.rs",
+        "codex-rs/usage/src/report_scale_tests.rs",
+        "scripts/check_usage_history.py"
       ],
       "packages": [
         "codex-core",
@@ -138,7 +144,9 @@
       "filters": [
         "test(suite::usage_stats::)",
         "test(suite::v2::local_usage::)",
-        "test(report::tests::backfill_tests::)"
+        "test(report::tests::backfill_tests::)",
+        "test(report::tests::global_tests::)",
+        "test(report_global::worker_tests::)"
       ]
     },
     {

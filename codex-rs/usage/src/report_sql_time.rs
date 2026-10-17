@@ -14,7 +14,7 @@ const INTERVALS: &str = r#"
 CREATE TEMP TABLE _usage_active AS
 WITH waits AS (
     SELECT op.id, MAX(span.s, op.s) AS s, MIN(span.e, op.e) AS e
-    FROM _usage_selected AS op JOIN _usage_spans AS span ON span.operation_id = op.id
+    FROM _usage_timed AS op JOIN _usage_spans AS span ON span.operation_id = op.id
     WHERE op.e IS NOT NULL AND span.e IS NOT NULL AND MAX(span.s, op.s) <= MIN(span.e, op.e)
 ), preceding AS (
     SELECT *, MAX(e) OVER (PARTITION BY id ORDER BY s, e ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prior_end FROM waits
@@ -23,30 +23,30 @@ WITH waits AS (
 ), merged AS (
     SELECT id, MIN(s) AS s, MAX(e) AS e FROM islands GROUP BY id, island
 ), cuts AS (
-    SELECT id, s, s AS e FROM _usage_selected WHERE e IS NOT NULL
+    SELECT id, s, s AS e FROM _usage_timed WHERE e IS NOT NULL
     UNION ALL SELECT id, s, e FROM merged
 ), segments AS (
     SELECT cuts.id, cuts.e AS s,
            LEAD(cuts.s, 1, op.e) OVER (PARTITION BY cuts.id ORDER BY cuts.s, cuts.e) AS e
-    FROM cuts JOIN _usage_selected AS op ON op.id = cuts.id
+    FROM cuts JOIN _usage_timed AS op ON op.id = cuts.id
     WHERE op.activity_state NOT IN ('external_wait','user_wait','blocked_wait')
 )
 SELECT * FROM segments WHERE s < e;
 CREATE INDEX temp._usage_active_id ON _usage_active(id);
 CREATE TEMP TABLE _usage_intervals AS
-SELECT 'execution' AS kind, '' AS label, s, e FROM _usage_selected
-UNION ALL SELECT 'phase', phase, s, e FROM _usage_selected
+SELECT 'execution' AS kind, '' AS label, s, e FROM _usage_timed
+UNION ALL SELECT 'phase', phase, s, e FROM _usage_timed
 UNION ALL SELECT 'state', activity_state, s, e FROM _usage_spans
-UNION ALL SELECT 'state', activity_state, s, e FROM _usage_selected
+UNION ALL SELECT 'state', activity_state, s, e FROM _usage_timed
     WHERE activity_state IN ('external_wait','user_wait','blocked_wait') OR e IS NULL
-UNION ALL SELECT 'state', activity_state, s, s FROM _usage_selected WHERE e IS NOT NULL
+UNION ALL SELECT 'state', activity_state, s, s FROM _usage_timed WHERE e IS NOT NULL
 UNION ALL SELECT 'state', op.activity_state, segment.s, segment.e
-    FROM _usage_active AS segment JOIN _usage_selected AS op ON op.id = segment.id
+    FROM _usage_active AS segment JOIN _usage_timed AS op ON op.id = segment.id
 UNION ALL SELECT 'agent', op.agent_id, segment.s, segment.e
-    FROM _usage_active AS segment JOIN _usage_selected AS op ON op.id = segment.id
+    FROM _usage_active AS segment JOIN _usage_timed AS op ON op.id = segment.id
     WHERE op.agent_id IS NOT NULL AND NOT EXISTS
         (SELECT 1 FROM _usage_spans AS span WHERE span.operation_id = op.id AND span.e IS NULL)
-UNION ALL SELECT 'agent', '', s, NULL FROM _usage_selected AS op
+UNION ALL SELECT 'agent', '', s, NULL FROM _usage_timed AS op
     WHERE activity_state NOT IN ('external_wait','user_wait','blocked_wait')
       AND (e IS NULL OR agent_id IS NULL OR EXISTS
         (SELECT 1 FROM _usage_spans AS span WHERE span.operation_id = op.id AND span.e IS NULL));
@@ -55,19 +55,25 @@ UNION ALL SELECT 'agent', '', s, NULL FROM _usage_selected AS op
 pub(super) async fn metrics(
     connection: &mut SqliteConnection,
     range: Option<UtcTimeRange>,
+    global: bool,
 ) -> Result<(ReportTimeMetrics, ToolMetrics), UsageStoreError> {
+    if global && range.is_none() {
+        return crate::report_global::time_metrics(connection).await;
+    }
     let start = range.map_or(i64::MIN, UtcTimeRange::start_ms);
     let end = range.map_or(i64::MAX, UtcTimeRange::end_ms);
-    sqlx::raw_sql("ALTER TABLE _usage_selected ADD COLUMN s INTEGER; ALTER TABLE _usage_selected ADD COLUMN e INTEGER;")
-        .execute(&mut *connection).await.map_err(super::database_error)?;
-    sqlx::query("UPDATE _usage_selected SET s = MAX(started_at_ms, ?1), e = CASE WHEN ended_at_ms >= started_at_ms AND MIN(ended_at_ms, ?2) >= MAX(started_at_ms, ?1) THEN MIN(ended_at_ms, ?2) END")
+    sqlx::query("CREATE TEMP TABLE _usage_timed AS SELECT id, operation_kind, agent_id, phase, activity_state, terminal_status, MAX(started_at_ms, ?1) AS s, CASE WHEN ended_at_ms >= started_at_ms AND MIN(ended_at_ms, ?2) >= MAX(started_at_ms, ?1) THEN MIN(ended_at_ms, ?2) END AS e FROM _usage_selected")
         .bind(start).bind(end).execute(&mut *connection).await.map_err(super::database_error)?;
+    sqlx::query("CREATE UNIQUE INDEX temp._usage_timed_id ON _usage_timed(id)")
+        .execute(&mut *connection)
+        .await
+        .map_err(super::database_error)?;
     sqlx::query(r#"
         CREATE TEMP TABLE _usage_spans AS
         SELECT span.operation_id, span.activity_state, MAX(span.started_at_ms, ?1) AS s,
                CASE WHEN ended.occurred_at_ms >= span.started_at_ms AND MIN(ended.occurred_at_ms, ?2) >= MAX(span.started_at_ms, ?1)
                     THEN MIN(ended.occurred_at_ms, ?2) END AS e
-        FROM _usage_selected AS op JOIN activity_spans AS span ON span.operation_id = op.id
+        FROM _usage_timed AS op JOIN activity_spans AS span ON span.operation_id = op.id
         LEFT JOIN activity_span_events AS ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
     "#).bind(start).bind(end).execute(&mut *connection).await.map_err(super::database_error)?;
     sqlx::query("CREATE INDEX temp._usage_spans_operation ON _usage_spans(operation_id)")
@@ -130,7 +136,7 @@ pub(super) async fn metrics(
             _ => return Err(UsageStoreError::DatabaseValueOutOfRange),
         }
     }
-    let request = sqlx::query("SELECT MIN(CASE WHEN e IS NOT NULL THEN s END) AS s, MAX(e) AS e, COUNT(*) AS n, COALESCE(SUM(e IS NULL), 0) AS unknown_intervals FROM _usage_selected WHERE operation_kind = 'model_request'")
+    let request = sqlx::query("SELECT MIN(CASE WHEN e IS NOT NULL THEN s END) AS s, MAX(e) AS e, COUNT(*) AS n, COALESCE(SUM(e IS NULL), 0) AS unknown_intervals FROM _usage_timed WHERE operation_kind = 'model_request'")
         .fetch_one(&mut *connection).await.map_err(super::database_error)?;
     let request_start: Option<i64> = request.get("s");
     let request_end: Option<i64> = request.get("e");
@@ -144,7 +150,7 @@ pub(super) async fn metrics(
         request.get("unknown_intervals")
     };
     timing.request_to_delivery_wall = duration(request_ms, unknown)?;
-    let rows = sqlx::query("SELECT COALESCE(terminal_status, 'unknown') AS outcome, COUNT(*) AS n, COALESCE(SUM(e - s), 0) AS measured_ms, SUM(e IS NULL) AS unknown_intervals FROM _usage_selected WHERE operation_kind IN ('local_tool','hosted_tool','activity_control') GROUP BY outcome ORDER BY outcome")
+    let rows = sqlx::query("SELECT COALESCE(terminal_status, 'unknown') AS outcome, COUNT(*) AS n, COALESCE(SUM(e - s), 0) AS measured_ms, SUM(e IS NULL) AS unknown_intervals FROM _usage_timed WHERE operation_kind IN ('local_tool','hosted_tool','activity_control') GROUP BY outcome ORDER BY outcome")
         .fetch_all(&mut *connection).await.map_err(super::database_error)?;
     let mut tools = ToolMetrics {
         count: 0,
