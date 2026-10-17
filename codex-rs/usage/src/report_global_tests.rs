@@ -94,6 +94,41 @@ async fn global_component_upgrade_rebuilds_only_derived_state() {
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("global worker");
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 46, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    insert_thread(&store, "upgrade-thread").await;
+    let mut operation = operation(process_id, "upgrade-thread", OperationKind::ModelRequest);
+    operation.started_at_ms = 1_000;
+    let request = record_request(&store, &operation).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: operation.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 2_000,
+            duration_ns: 1_000_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("finish operation");
+    store
+        .record_token_observation(&token(
+            request,
+            RepositoryBucket::Unknown,
+            Some(5),
+            CoverageState::Complete,
+        ))
+        .await
+        .expect("token");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("refresh populated component");
+    let before = store
+        .usage_summary(UsageSummaryScope::All)
+        .await
+        .expect("before upgrade");
     store.report_refresh.cancel();
     sqlx::query(
         "UPDATE _usage_report_global_meta SET component_version=0, ready=1 WHERE singleton=1",
@@ -123,6 +158,13 @@ async fn global_component_upgrade_rebuilds_only_derived_state() {
         .await
         .expect("rebuild upgraded component");
     assert!(store.report_cache_status().await.expect("status").ready);
+    assert_eq!(
+        store
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("after upgrade"),
+        before
+    );
 }
 
 #[cfg(unix)]
