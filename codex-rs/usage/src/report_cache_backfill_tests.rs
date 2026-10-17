@@ -366,7 +366,10 @@ async fn cached_global_coverage_gaps_match_canonical_reporting() {
         assert_eq!(cached, canonical);
     }
 
-    for (scope_kind, provider_tokens) in [("model_attempt", Some(25)), ("tool_attempt", None)] {
+    for (scope_kind, operation_kind, provider_tokens) in [
+        ("model_attempt", OperationKind::ModelRequest, Some(25)),
+        ("tool_attempt", OperationKind::HostedTool, None),
+    ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = UsageStore::open(temp.path()).await.expect("store");
         let process = ProcessId::new();
@@ -375,9 +378,9 @@ async fn cached_global_coverage_gaps_match_canonical_reporting() {
             .await
             .expect("process");
         insert_thread(&store, "resolved").await;
-        let operation = operation(process, "resolved", OperationKind::ModelRequest);
-        let request = record_request(&store, &operation).await;
+        let operation = operation(process, "resolved", operation_kind);
         if let Some(value) = provider_tokens {
+            let request = record_request(&store, &operation).await;
             store
                 .record_token_observation(&token(
                     request,
@@ -387,6 +390,26 @@ async fn cached_global_coverage_gaps_match_canonical_reporting() {
                 ))
                 .await
                 .expect("provider total");
+        } else {
+            store
+                .begin_operation(&operation)
+                .await
+                .expect("tool operation");
+            store
+                .record_tool_invocation(&NewToolInvocation {
+                    id: ToolInvocationId::new(),
+                    operation_id: operation.id,
+                    operation_kind,
+                    tool_kind: ToolKind::new("hosted").expect("kind"),
+                    safe_tool_name: ToolName::new("test_tool").expect("name"),
+                    operation_family: OperationFamily::new("test").expect("family"),
+                    observation_timing: ObservationTiming::new("runtime").expect("timing"),
+                    covering_model_request_id: None,
+                    execution_group_id: None,
+                    execution_role: ToolExecutionRole::Standalone,
+                })
+                .await
+                .expect("tool invocation");
         }
         store
             .finish_operation(&TerminalOperation {
