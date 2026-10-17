@@ -290,6 +290,10 @@ the authority for release outcomes and verification receipts.
   source-owned bubblewrap runner preserves isolation without requiring `sudo`
   under the executor's `NoNewPrivileges` setting. Use existing compatible
   caches and targets; a new evidence directory does not require a cold build.
+  Concurrent wrapper invocations need distinct isolated state directories:
+  each holds an exclusive `environment.lock` and a loser exits before running
+  its command. Shared compiler caches can still be reused. Keep real ordering
+  dependencies when checks intentionally share the same isolated environment.
   A failing sandbox test remains unverified when skipped: fix its boundary or
   retain the explicit missing acceptance instead of reporting a successful test.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
@@ -413,6 +417,30 @@ the authority for release outcomes and verification receipts.
   calculate expected totals; preserve half-open windows, late facts, corrections,
   covered tools, descendants and pagination. Include cancellation checks that
   demonstrate SQLite stopped and released its snapshot while capture continues.
+- **Make large-history checks mandatory before candidate freeze.** Default
+  nextest runs skip the opt-in scale fixtures. The local `usage-history` gate
+  generates 1.3 million operations and 7.8 million observations, retains a
+  positive fixture before deliberate oversized cases, and checks native finite
+  reviews plus public ready/rebuilding summaries. Require its exact-commit receipt
+  before hosted compilation; an older receipt without this gate is insufficient.
+  Keep the 128 MiB memory target, 15-second reports and 2-second warming responses.
+  Preserve failed fixtures on bulk storage instead of importing private history.
+- **Separate report admission from SQL cost before changing concurrency.**
+  Bounded stage timings exposed a finite-window cost query scanning millions of
+  unrelated token observations after admission had taken under 120 ms. Explain
+  the selected-operation join plan and measure the public request before and
+  after repair. Test ready unbounded reports separately: finite review success
+  does not prove global aggregation fits the same budget. Do not substitute a
+  narrower window, increase the budget, or split admission lanes without evidence.
+  Time unresolved coverage and classification work separately: a missing cost
+  completion trace does not prove execution reached the cost query.
+- **Reuse ready projections when selecting report operations.** A global
+  report copied and indexed 1.3 million cached rows before aggregating them;
+  finite ready reports still joined raw terminal and classification history.
+  Cold selection alone exceeded the report budget. Keep the global selection
+  as a transaction-local view, and select finite windows from the indexed ready
+  projection. Verify identical account, repository, worktree and time filters,
+  plus rollback/cancellation cleanup, before accepting the faster query.
 - **Test effective-UID home resolution at the installed boundary.** A root
   launch with an inherited non-root `HOME` must use UID 0's passwd home when
   `CODEX_HOME` is unset; an explicit `CODEX_HOME` remains authoritative. The

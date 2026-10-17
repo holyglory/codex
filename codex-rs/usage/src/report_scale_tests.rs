@@ -11,6 +11,18 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(20_000);
     assert!(requests >= 20_000);
+    let retained_home = std::env::var_os("CXM_USAGE_SCALE_RETAIN").map(std::path::PathBuf::from);
+    if let Some(path) = &retained_home {
+        assert!(
+            requests >= 1_300_000,
+            "retention requires at least 1,300,000 requests"
+        );
+        assert!(!path.exists(), "retention output must be absent: {path:?}");
+        assert!(
+            path.parent().is_some_and(std::path::Path::exists),
+            "retention parent must exist: {path:?}"
+        );
+    }
     let prefix = format!("{}.{}.{}_", "x".repeat(60), "y".repeat(60), "z".repeat(50));
     TokenCategoryPath::new(format!("{prefix}00000_tokens")).expect("valid long category");
     let root = std::env::var_os("CXM_USAGE_SCALE_ROOT").expect("explicit scale storage");
@@ -231,6 +243,77 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             .fetch_one(&store.pool)
             .await
             .expect("compact dimensions");
+    let store = if let Some(path) = retained_home.as_ref() {
+        const WINDOW_START_MS: i64 = 6_000_000_000;
+        const WINDOW_END_MS: i64 = 6_086_400_000;
+        let mut expected_operations = [0_i64; 8];
+        for index in 0..requests {
+            let started_at_ms = index * 10_000;
+            let ended_at_ms = started_at_ms + 1_000;
+            if started_at_ms < WINDOW_END_MS && ended_at_ms > WINDOW_START_MS {
+                expected_operations[(index % 8) as usize] += 1;
+            }
+        }
+        assert!(expected_operations.iter().all(|operations| *operations > 0));
+        let expected_provider_tokens = expected_operations.map(|operations| operations * 1_050);
+        let expected_all_provider_tokens = requests * 1_050 + 7;
+        assert!(
+            crate::report_cache::is_ready(&store.pool)
+                .await
+                .expect("retained cache status")
+        );
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&store.pool)
+            .await
+            .expect("retained checkpoint");
+        store.close().await;
+
+        let source_usage = temp.path().join("usage");
+        let destination_usage = path.join("usage");
+        std::fs::create_dir(path).expect("retained home");
+        std::fs::create_dir(&destination_usage).expect("retained usage directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("retained home permissions");
+            std::fs::set_permissions(&destination_usage, std::fs::Permissions::from_mode(0o700))
+                .expect("retained usage permissions");
+        }
+        for name in ["usage.sqlite3", "repository-hmac.key"] {
+            let source = source_usage.join(name);
+            std::fs::copy(&source, destination_usage.join(name)).expect("retain fixture file");
+        }
+        std::fs::write(
+            path.join("fixture-marker"),
+            "Disposable isolated accounting verification copy. Never a production collector.\n",
+        )
+        .expect("fixture marker");
+        let scope = serde_json::json!({
+            "window_start_ms": WINDOW_START_MS,
+            "window_end_ms": WINDOW_END_MS,
+            "expected_all_operations": requests,
+            "expected_all_provider_tokens": expected_all_provider_tokens,
+            "repositories": repositories.iter().enumerate().map(|(index, repository)| {
+                serde_json::json!({
+                    "name": format!("synthetic-{index}"),
+                    "repository_id": repository.as_str(),
+                    "expected_operations": expected_operations[index],
+                    "expected_provider_tokens": expected_provider_tokens[index],
+                })
+            }).collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            path.join("scope.json"),
+            serde_json::to_vec_pretty(&scope).expect("scope JSON"),
+        )
+        .expect("scope file");
+        UsageStore::open(temp.path())
+            .await
+            .expect("reopen after retention")
+    } else {
+        store
+    };
     insert_thread(&store, "wide").await;
     let wide_op = operation(process, "wide", OperationKind::ModelRequest);
     let wide_request = record_request(&store, &wide_op).await;

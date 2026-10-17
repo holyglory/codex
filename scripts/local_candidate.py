@@ -25,6 +25,7 @@ GATES = (
     "format",
     "package-prerequisites",
     "focused",
+    "usage-history",
     "schemas",
     "source-drift",
     "bazel-lock",
@@ -108,6 +109,15 @@ def commands(root, state, directory):
         ),
         "focused": (
             [sys.executable, "scripts/run_candidate_preflight.py"],
+            root,
+        ),
+        "usage-history": (
+            [
+                sys.executable,
+                "scripts/check_usage_history.py",
+                "--state",
+                str(directory / "usage-history"),
+            ],
             root,
         ),
         "schemas": (
