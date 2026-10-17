@@ -31,7 +31,8 @@ async fn global_component_initializes_and_reopens_from_core_schema() {
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("global worker");
-    assert!(store.report_cache_status().await.expect("status").ready);
+    let status = store.report_cache_status().await.expect("status");
+    assert!(status.ready, "unexpected initial status: {status:?}");
     store.report_refresh.cancel();
     sqlx::raw_sql(
         "DROP TRIGGER IF EXISTS _usage_report_global_operation_insert;

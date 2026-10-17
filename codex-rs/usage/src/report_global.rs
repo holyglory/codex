@@ -25,17 +25,20 @@ pub(crate) async fn initialize(
     core_schema_version: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(SCHEMA).execute(&mut *connection).await?;
-    sqlx::query("UPDATE _usage_report_global_meta SET core_schema_version=? WHERE singleton=1")
+    sqlx::query(
+        "UPDATE _usage_report_global_meta SET component_version=?, core_schema_version=? WHERE singleton=1",
+    )
+        .bind(COMPONENT_VERSION)
         .bind(core_schema_version)
         .execute(&mut *connection)
         .await?;
-    let core_ready: Option<i64> = sqlx::query_scalar(
+    let core_state: Option<i64> = sqlx::query_scalar(
         "SELECT ready FROM _usage_report_cache_meta WHERE singleton=1 AND schema_version=?",
     )
     .bind(core_schema_version)
     .fetch_optional(&mut *connection)
     .await?;
-    if core_ready == Some(1) {
+    if core_state.is_some() {
         sqlx::query(
             "INSERT OR IGNORE INTO _usage_report_global_dirty_operations(operation_id) SELECT id FROM operations",
         )
