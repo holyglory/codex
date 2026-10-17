@@ -309,12 +309,27 @@ pub(crate) async fn ensure(
                 .acquire()
                 .await
                 .map_err(|_| sqlx::Error::PoolClosed)?;
-            backfill::step(pool).await?
+            match backfill::step(pool).await {
+                Ok(progress) => progress,
+                Err(error) if is_transient_contention(&error) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(5_000);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         };
         match progress {
             backfill::Progress::Ready => {
-                if crate::report_global::step(pool).await? {
-                    return Ok(());
+                match crate::report_global::step(pool).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(error) if is_transient_contention(&error) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        delay_ms = (delay_ms * 2).min(5_000);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
@@ -329,6 +344,10 @@ pub(crate) async fn ensure(
             }
         }
     }
+}
+
+fn is_transient_contention(error: &sqlx::Error) -> bool {
+    matches!(crate::report_status::sqlite_code(error), "busy" | "locked")
 }
 
 /// Prepare or resume our derived schema; a newer schema belongs to a newer
