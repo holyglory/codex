@@ -18,7 +18,8 @@ use sqlx::SqlitePool;
 mod schema;
 
 pub(crate) use schema::COMPONENT_VERSION;
-use schema::{RESET_SQL, SCHEMA};
+use schema::RESET_SQL;
+use schema::SCHEMA;
 
 pub(crate) async fn initialize(
     connection: &mut SqliteConnection,
