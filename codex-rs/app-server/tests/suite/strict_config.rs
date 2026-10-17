@@ -26,6 +26,7 @@ async fn ignored_config_fields_emit_startup_and_project_warnings() -> Result<()>
     let read_timeout = Duration::from_secs(30);
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
+        .with_mock_chatgpt_backend()
         .build_initialized_with_timeout(read_timeout)
         .await?;
     let startup_warning: ConfigWarningNotification =
