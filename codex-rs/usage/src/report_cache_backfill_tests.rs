@@ -368,7 +368,7 @@ async fn cached_global_coverage_gaps_match_canonical_reporting() {
 
     for (scope_kind, operation_kind, provider_tokens) in [
         ("model_attempt", OperationKind::ModelRequest, Some(25)),
-        ("tool_attempt", OperationKind::HostedTool, None),
+        ("tool_attempt", OperationKind::LocalTool, None),
     ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = UsageStore::open(temp.path()).await.expect("store");
@@ -400,9 +400,9 @@ async fn cached_global_coverage_gaps_match_canonical_reporting() {
                     id: ToolInvocationId::new(),
                     operation_id: operation.id,
                     operation_kind,
-                    tool_kind: ToolKind::new("hosted").expect("kind"),
-                    safe_tool_name: ToolName::new("test_tool").expect("name"),
-                    operation_family: OperationFamily::new("test").expect("family"),
+                    tool_kind: ToolKind::new("builtin").expect("kind"),
+                    safe_tool_name: ToolName::new("apply_patch").expect("name"),
+                    operation_family: OperationFamily::new("filesystem").expect("family"),
                     observation_timing: ObservationTiming::new("runtime").expect("timing"),
                     covering_model_request_id: None,
                     execution_group_id: None,
