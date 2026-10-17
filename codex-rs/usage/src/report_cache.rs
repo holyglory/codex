@@ -360,8 +360,9 @@ pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     }
     sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_interval_end_idx ON _usage_report_operations(ended_at_ms,started_at_ms,operation_id) WHERE ended_at_ms IS NOT NULL")
         .execute(&mut *tx).await?;
+    let global_pending = !crate::report_global::is_ready_on(&mut tx).await?;
     tx.commit().await?;
-    Ok(build)
+    Ok(build || global_pending)
 }
 
 pub(crate) async fn is_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {

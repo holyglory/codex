@@ -28,8 +28,46 @@ pub(crate) async fn initialize(
     sqlx::query("UPDATE _usage_report_global_meta SET core_schema_version=? WHERE singleton=1")
         .bind(core_schema_version)
         .execute(&mut *connection)
-        .await
-        .map(|_| ())
+        .await?;
+    let core_ready: Option<i64> = sqlx::query_scalar(
+        "SELECT ready FROM _usage_report_cache_meta WHERE singleton=1 AND schema_version=?",
+    )
+    .bind(core_schema_version)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if core_ready == Some(1) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO _usage_report_global_dirty_operations(operation_id) SELECT id FROM operations",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT span.started_at_ms/3600000-(span.started_at_ms%3600000<0),MAX(span.started_at_ms/3600000-(span.started_at_ms%3600000<0),COALESCE(ended.occurred_at_ms/3600000-(ended.occurred_at_ms%3600000<0),span.started_at_ms/3600000-(span.started_at_ms%3600000<0))) FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' GROUP BY span.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO _usage_report_global_gap_events(event_id,occurred_at_ms,coverage_state) SELECT event_id,occurred_at_ms,coverage_state FROM coverage_events WHERE operation_id IS NULL",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "UPDATE _usage_report_global_gap_v9 SET has_gap=COALESCE((SELECT coverage_state<>'complete' FROM _usage_report_global_gap_events ORDER BY occurred_at_ms DESC,event_id DESC LIMIT 1),0) WHERE singleton=1",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "UPDATE _usage_report_global_meta SET ready=0, dirty_revision=dirty_revision+1 WHERE singleton=1",
+        )
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn reset(

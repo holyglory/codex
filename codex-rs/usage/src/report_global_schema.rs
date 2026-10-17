@@ -1,6 +1,6 @@
 //! Physical schema for the versioned global report component.
 
-pub(crate) const COMPONENT_VERSION: i64 = 1;
+pub(crate) const COMPONENT_VERSION: i64 = 2;
 
 pub(crate) const RESET_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_global_operation_insert;
@@ -125,7 +125,8 @@ CREATE TRIGGER _usage_report_global_operation_terminal AFTER INSERT ON operation
  UPDATE _usage_report_global_meta SET dirty_revision=dirty_revision+1 WHERE singleton=1;
 END;
 CREATE TRIGGER _usage_report_global_token AFTER INSERT ON token_observations BEGIN
- INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT COALESCE(request.operation_id,tool.operation_id) FROM model_requests request LEFT JOIN tool_invocations tool ON tool.id=NEW.tool_invocation_id WHERE request.id=NEW.model_request_id OR tool.id=NEW.tool_invocation_id;
+ INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM model_requests WHERE id=NEW.model_request_id;
+ INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM tool_invocations WHERE id=NEW.tool_invocation_id;
  UPDATE _usage_report_global_meta SET dirty_revision=dirty_revision+1 WHERE singleton=1;
 END;
 CREATE TRIGGER _usage_report_global_coverage AFTER INSERT ON coverage_events WHEN NEW.operation_id IS NOT NULL BEGIN

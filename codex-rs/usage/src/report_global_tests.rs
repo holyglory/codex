@@ -9,6 +9,25 @@ use pretty_assertions::assert_eq;
 async fn global_component_initializes_and_reopens_from_core_schema() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 41, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    insert_thread(&store, "reopen-thread").await;
+    let mut operation = operation(process_id, "reopen-thread", OperationKind::ModelRequest);
+    operation.started_at_ms = 1_000;
+    record_request(&store, &operation).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: operation.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 2_000,
+            duration_ns: 1_000_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("finish operation");
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("global worker");
@@ -55,6 +74,14 @@ async fn global_component_initializes_and_reopens_from_core_schema() {
             .await
             .expect("reopened status")
             .ready
+    );
+    assert_eq!(
+        reopened
+            .usage_summary(UsageSummaryScope::All)
+            .await
+            .expect("reopened summary")
+            .operation_count,
+        1
     );
 }
 
