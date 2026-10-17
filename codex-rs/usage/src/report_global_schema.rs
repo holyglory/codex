@@ -139,7 +139,7 @@ CREATE TRIGGER _usage_report_global_gap AFTER INSERT ON coverage_events WHEN NEW
 END;
 CREATE TRIGGER _usage_report_global_classification AFTER INSERT ON classification_events BEGIN
  INSERT OR IGNORE INTO _usage_report_global_dirty_operations VALUES(NEW.operation_id);
- INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM operations WHERE id=NEW.operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour);
+ INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.id=NEW.operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour);
  UPDATE _usage_report_global_meta SET dirty_revision=dirty_revision+1 WHERE singleton=1;
 END;
 CREATE TRIGGER _usage_report_global_span_insert AFTER INSERT ON activity_spans BEGIN

@@ -211,7 +211,7 @@ pub(crate) async fn apply_page(
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
-                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM operations WHERE rowid>? AND rowid<=? GROUP BY id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.rowid>? AND operation.rowid<=? GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
             )
             .bind(cursor)
             .bind(end)
