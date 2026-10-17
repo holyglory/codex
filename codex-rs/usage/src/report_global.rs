@@ -392,7 +392,7 @@ async fn rebuild_hour(
         .bind(hour)
         .execute(&mut *transaction)
         .await?;
-    sqlx::query("INSERT INTO _usage_report_global_request_hours(hour_index,min_start_ms,max_end_ms,unknown_intervals,request_count) SELECT ?1,MIN(CASE WHEN e IS NOT NULL THEN source_started_at_ms END),MAX(ended_at_ms),COALESCE(SUM(e IS NULL AND source_started_at_ms>=?2 AND source_started_at_ms<?3),0),COALESCE(SUM(source_started_at_ms>=?2 AND source_started_at_ms<?3),0) FROM _usage_global_timed WHERE operation_kind='model_request'")
+    sqlx::query("INSERT INTO _usage_report_global_request_hours(hour_index,min_start_ms,max_end_ms,unknown_intervals,request_count) SELECT ?1,MIN(CASE WHEN e IS NOT NULL THEN source_started_at_ms END),MAX(CASE WHEN e IS NOT NULL THEN ended_at_ms END),COALESCE(SUM(e IS NULL AND source_started_at_ms>=?2 AND source_started_at_ms<?3),0),COALESCE(SUM(source_started_at_ms>=?2 AND source_started_at_ms<?3),0) FROM _usage_global_timed WHERE operation_kind='model_request'")
         .bind(hour)
         .bind(lower)
         .bind(upper)

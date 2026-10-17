@@ -320,6 +320,20 @@ async fn global_hour_timing_matches_canonical_for_waits_unknown_and_zero_tools()
         .await
         .expect("finish crossing request");
 
+    let mut skewed_operation = operation(process_id, "timing-thread", OperationKind::ModelRequest);
+    skewed_operation.started_at_ms = 9_000;
+    record_request(&store, &skewed_operation).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: skewed_operation.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 8_000,
+            duration_ns: 0,
+            error_category: None,
+        })
+        .await
+        .expect("finish skewed request");
+
     let mut open_operation = operation(process_id, "timing-thread", OperationKind::ModelRequest);
     open_operation.started_at_ms = 7_000;
     let _open_request = record_request(&store, &open_operation).await;
