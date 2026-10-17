@@ -303,6 +303,15 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         sleep(Duration::from_millis(10)).await;
     }
     assert!(seeded, "seed model request was not captured");
+    let mut report_ready = false;
+    for _ in 0..100 {
+        if usage.report_cache_status().await?.ready {
+            report_ready = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(report_ready, "usage report cache did not become ready");
     test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
