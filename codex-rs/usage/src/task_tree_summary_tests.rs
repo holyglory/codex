@@ -640,6 +640,63 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
     assert_eq!(windowed.context.unknown_requests, 1);
 }
 
+#[tokio::test]
+async fn task_tree_window_includes_lower_bound_point_and_excludes_upper_bound_point() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("open store");
+    let (process_id, root_thread, _, root_agent, _) = register_tree(&store).await;
+    for started_at_ms in [1_000, 2_000] {
+        let operation = operation(
+            process_id,
+            &root_thread,
+            &root_agent,
+            OperationKind::ActivityControl,
+            ActivityState::ToolActive,
+            started_at_ms,
+        );
+        store
+            .begin_operation(&operation)
+            .await
+            .expect("begin point operation");
+        finish(
+            &store,
+            &operation,
+            started_at_ms,
+            TerminalStatus::Completed,
+            /*error_category*/ None,
+        )
+        .await;
+    }
+
+    let summary = store
+        .task_tree_summary(TaskTreeSummaryQuery {
+            root_thread_id: root_thread,
+            include_descendants: true,
+            time_range: UtcTimeRange::new(/*start_ms*/ 1_000, /*end_ms*/ 2_000)
+                .expect("time range"),
+        })
+        .await
+        .expect("summary")
+        .expect("root exists");
+    assert_eq!(
+        summary.counts,
+        TaskTreeCounts {
+            threads: 2,
+            agents: 1,
+            raw_operations: 1,
+            deduplicated_operations: 1,
+            model_requests: 0,
+            raw_tool_operations: 0,
+            deduplicated_tool_operations: 0,
+            wrapper_tool_operations: 0,
+            nested_tool_operations: 0,
+            unlinked_wrapper_tool_operations: 0,
+            unlinked_nested_tool_operations: 0,
+        }
+    );
+    assert_eq!(summary.totals.wall_time, duration(0));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn task_tree_summary_waits_for_report_admission() {
