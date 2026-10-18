@@ -524,6 +524,33 @@ class UsageHistoryVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "legacy usage fixture shape"):
             history.scopes_for(self.directory)
 
+    def test_missing_generated_history_preserves_failure_without_running_reports(self):
+        import check_usage_history as history
+
+        for status in (0, 100):
+            with (
+                self.subTest(status=status),
+                patch.object(history.subprocess, "run"),
+                patch.object(history.shutil, "disk_usage") as disk_usage,
+                patch.object(history, "native_probe", return_value=status),
+                patch.object(history, "copy_warming") as copy_warming,
+                redirect_stdout(io.StringIO()),
+            ):
+                disk_usage.return_value.free = 64 * 1024**3
+                state = self.directory / f"missing-history-{status}"
+                self.assertEqual(
+                    history.check(self.directory, state, Path("unused")), 1
+                )
+                copy_warming.assert_not_called()
+                self.assertEqual(
+                    json.loads((state / "report.json").read_text()),
+                    {
+                        "checks": {"scale": status == 0, "fixture_ready": False},
+                        "unavailable_checks": "generated_history_not_ready",
+                        "live_data_used": False,
+                    },
+                )
+
     def server_binary(self, *, faults, warming=False):
         binary = self.directory / "fixture-server"
         binary.write_text(

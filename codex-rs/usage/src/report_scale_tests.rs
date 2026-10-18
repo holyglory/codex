@@ -100,7 +100,10 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let prefix = format!("{}.{}.{}_", "x".repeat(60), "y".repeat(60), "z".repeat(50));
     TokenCategoryPath::new(format!("{prefix}00000_tokens")).expect("valid long category");
     let root = std::env::var_os("CXM_USAGE_SCALE_ROOT").expect("explicit scale storage");
-    let temp = tempfile::tempdir_in(root).expect("isolated scale directory");
+    let mut temp = tempfile::tempdir_in(root).expect("isolated scale directory");
+    // Keep the complete synthetic working directory if a release-scale
+    // assertion fails. It is diagnostic evidence, not a ready fixture.
+    temp.disable_cleanup(retained_home.is_some());
     let store = UsageStore::open(temp.path()).await.expect("store");
     let process = ProcessId::new();
     store
@@ -497,4 +500,6 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         checks.iter().all(|(_, passed)| *passed),
         "scale acceptance failed: {checks:?}"
     );
+    store.close().await;
+    temp.disable_cleanup(false);
 }
