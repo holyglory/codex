@@ -72,7 +72,7 @@ impl CoordinatorEventBridge {
     }
 
     pub(crate) fn cancel(&self) {
-        self.store.set_alarm_delivery_available(false);
+        self.store.set_alarm_delivery_available(/*available*/ false);
         self.cancellation.cancel();
     }
 

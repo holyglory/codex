@@ -33,7 +33,8 @@ fn implementation(now_ms: i64) -> ProjectAutomation {
 #[test]
 fn specification_weeks_never_create_delivery_alarms() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project-alpha".into(), owner, 1_000_000);
+    let mut project =
+        ProjectAutomation::new("project-alpha".into(), owner, /*now_ms*/ 1_000_000);
     project
         .apply(
             owner,
@@ -41,7 +42,7 @@ fn specification_weeks_never_create_delivery_alarms() {
                 purpose: WorkPurpose::Specification,
                 workstream: None,
             },
-            1_000_001,
+            /*now_ms*/ 1_000_001,
         )
         .unwrap();
     let jobs = project.collect_due(1_000_000 + 7 * DAY_MS);
@@ -90,7 +91,7 @@ fn specification_weeks_never_create_delivery_alarms() {
 
 #[test]
 fn overdue_delivery_is_nonblocking_until_hard_stop() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     assert_eq!(project.mode(1_000_000 + DAY_MS - 1), ProjectMode::Normal);
     let jobs = project.collect_due(1_000_000 + DAY_MS);
     assert_eq!(
@@ -116,7 +117,7 @@ fn overdue_delivery_is_nonblocking_until_hard_stop() {
 
 #[test]
 fn explicit_postponement_releases_block_without_fake_delivery() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     project.collect_due(1_000_000 + 2 * DAY_MS);
     let original = project.delivery["linux-cli"].clone();
     project
@@ -150,7 +151,7 @@ fn explicit_postponement_releases_block_without_fake_delivery() {
 #[test]
 fn empty_windows_do_not_request_model_work_and_review_needs_completion() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("quiet".into(), owner, 1_000_000);
+    let mut project = ProjectAutomation::new("quiet".into(), owner, /*now_ms*/ 1_000_000);
     assert!(project.collect_due(1_000_000 + 5 * DAY_MS).is_empty());
     project
         .apply(
@@ -194,7 +195,7 @@ fn empty_windows_do_not_request_model_work_and_review_needs_completion() {
 
 #[test]
 fn pause_retains_deadlines_and_resume_does_not_reset_them() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     project
         .apply(
             project.owner_thread_id,
@@ -202,7 +203,7 @@ fn pause_retains_deadlines_and_resume_does_not_reset_them() {
                 target: None,
                 authorization_ref: "owner pause".into(),
             },
-            1_000_001,
+            /*now_ms*/ 1_000_001,
         )
         .unwrap();
     assert_eq!(project.next_deadline(), None);
@@ -222,7 +223,7 @@ fn pause_retains_deadlines_and_resume_does_not_reset_them() {
 
 #[test]
 fn target_delivery_cannot_reset_another_platform_or_accept_future_time() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     project
         .apply(
             project.owner_thread_id,
@@ -233,7 +234,7 @@ fn target_delivery_cannot_reset_another_platform_or_accept_future_time() {
                 delivery_interval_ms: None,
                 hard_stop_interval_ms: None,
             },
-            1_000_000,
+            /*now_ms*/ 1_000_000,
         )
         .unwrap();
     assert!(
@@ -266,7 +267,7 @@ fn target_delivery_cannot_reset_another_platform_or_accept_future_time() {
 
 #[test]
 fn hard_stop_does_not_block_unrelated_workstreams_or_specification() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     let other = ThreadId::new();
     project
         .apply(
@@ -275,7 +276,7 @@ fn hard_stop_does_not_block_unrelated_workstreams_or_specification() {
                 purpose: WorkPurpose::Implementation,
                 workstream: Some("unrelated".into()),
             },
-            1_000_001,
+            /*now_ms*/ 1_000_001,
         )
         .unwrap();
     let spec = ThreadId::new();
@@ -286,7 +287,7 @@ fn hard_stop_does_not_block_unrelated_workstreams_or_specification() {
                 purpose: WorkPurpose::Specification,
                 workstream: None,
             },
-            1_000_002,
+            /*now_ms*/ 1_000_002,
         )
         .unwrap();
     let now_ms = 1_000_000 + 2 * DAY_MS;
@@ -306,7 +307,7 @@ fn hard_stop_does_not_block_unrelated_workstreams_or_specification() {
 
 #[test]
 fn review_completion_preserves_work_after_the_reviewed_window() {
-    let mut project = implementation(1_000_000);
+    let mut project = implementation(/*now_ms*/ 1_000_000);
     project.last_activity_at_ms = 1_000_001;
     project.collect_due(1_000_000 + DAY_MS);
     let job_id = project.review.as_ref().unwrap().id;
@@ -334,14 +335,14 @@ fn review_completion_preserves_work_after_the_reviewed_window() {
 #[test]
 fn review_signal_is_deduplicated_and_bookkeeping_does_not_create_work() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project".into(), owner, 100);
+    let mut project = ProjectAutomation::new("project".into(), owner, /*now_ms*/ 100);
     project
         .apply(
             owner,
             ProjectAutomationCommand::RequestReview {
                 evidence_ref: "usage-operation:real-id".into(),
             },
-            200,
+            /*now_ms*/ 200,
         )
         .unwrap();
     let job_id = project.review.as_ref().unwrap().id;
@@ -352,7 +353,7 @@ fn review_signal_is_deduplicated_and_bookkeeping_does_not_create_work() {
                 job_id,
                 decision_ref: "review@1".into(),
             },
-            300,
+            /*now_ms*/ 300,
         )
         .unwrap();
     project
@@ -361,7 +362,7 @@ fn review_signal_is_deduplicated_and_bookkeeping_does_not_create_work() {
             ProjectAutomationCommand::RequestReview {
                 evidence_ref: "usage-operation:real-id".into(),
             },
-            400,
+            /*now_ms*/ 400,
         )
         .unwrap();
     assert!(project.review.is_none());
@@ -371,14 +372,14 @@ fn review_signal_is_deduplicated_and_bookkeeping_does_not_create_work() {
 #[test]
 fn a_new_work_cycle_does_not_revive_completed_delivery_obligations() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project".into(), owner, 100);
+    let mut project = ProjectAutomation::new("project".into(), owner, /*now_ms*/ 100);
     project
         .apply(
             owner,
             ProjectAutomationCommand::Complete {
                 outcome_ref: "outcome-done".into(),
             },
-            200,
+            /*now_ms*/ 200,
         )
         .unwrap();
     assert!(project.completed);
@@ -402,7 +403,7 @@ fn a_new_work_cycle_does_not_revive_completed_delivery_obligations() {
 #[test]
 fn implementation_discovery_counts_toward_delivery_without_charging_specification() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project".into(), owner, 100);
+    let mut project = ProjectAutomation::new("project".into(), owner, /*now_ms*/ 100);
     project
         .apply(
             owner,
@@ -410,7 +411,7 @@ fn implementation_discovery_counts_toward_delivery_without_charging_specificatio
                 purpose: WorkPurpose::Specification,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .unwrap();
     project
@@ -443,7 +444,7 @@ fn implementation_discovery_counts_toward_delivery_without_charging_specificatio
 #[test]
 fn partial_work_links_preserve_other_associations_and_clear_only_explicit_targets() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project".into(), owner, 100);
+    let mut project = ProjectAutomation::new("project".into(), owner, /*now_ms*/ 100);
     project
         .apply(
             owner,
@@ -451,7 +452,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .unwrap();
     project
@@ -463,7 +464,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
                 clear_outcome: false,
                 clear_experiment: false,
             },
-            101,
+            /*now_ms*/ 101,
         )
         .unwrap();
     project
@@ -475,7 +476,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
                 clear_outcome: false,
                 clear_experiment: false,
             },
-            102,
+            /*now_ms*/ 102,
         )
         .unwrap();
     assert_eq!(
@@ -494,7 +495,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
                 clear_outcome: false,
                 clear_experiment: true,
             },
-            103,
+            /*now_ms*/ 103,
         )
         .unwrap();
     assert!(project.thread_experiments.is_empty());
@@ -510,7 +511,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
                     clear_outcome: true,
                     clear_experiment: false
                 },
-                104
+                /*now_ms*/ 104
             )
             .is_err()
     );
@@ -520,7 +521,7 @@ fn partial_work_links_preserve_other_associations_and_clear_only_explicit_target
 #[test]
 fn completed_work_cannot_resume_old_alarms_and_new_work_gets_a_new_owner() {
     let owner = ThreadId::new();
-    let mut project = ProjectAutomation::new("project".into(), owner, 100);
+    let mut project = ProjectAutomation::new("project".into(), owner, /*now_ms*/ 100);
     project
         .apply(
             owner,
@@ -528,7 +529,7 @@ fn completed_work_cannot_resume_old_alarms_and_new_work_gets_a_new_owner() {
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .unwrap();
     project
@@ -540,7 +541,7 @@ fn completed_work_cannot_resume_old_alarms_and_new_work_gets_a_new_owner() {
                 clear_outcome: false,
                 clear_experiment: false,
             },
-            101,
+            /*now_ms*/ 101,
         )
         .unwrap();
     project
@@ -549,7 +550,7 @@ fn completed_work_cannot_resume_old_alarms_and_new_work_gets_a_new_owner() {
             ProjectAutomationCommand::Complete {
                 outcome_ref: "done-outcome".into(),
             },
-            102,
+            /*now_ms*/ 102,
         )
         .unwrap();
     let completed = project.clone();
@@ -558,7 +559,7 @@ fn completed_work_cannot_resume_old_alarms_and_new_work_gets_a_new_owner() {
             .apply(
                 owner,
                 ProjectAutomationCommand::Resume { target: None },
-                103
+                /*now_ms*/ 103
             )
             .is_err()
     );

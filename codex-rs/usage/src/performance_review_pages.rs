@@ -79,7 +79,12 @@ pub(super) fn remember(
         return Err(UsageStoreError::TaskTreeTooLarge);
     }
     let id = uuid::Uuid::now_v7().to_string();
-    let result = page(&packet, &id, 0, query.outcome_limit.unwrap_or(8) as usize)?;
+    let result = page(
+        &packet,
+        &id,
+        /*offset*/ 0,
+        query.outcome_limit.unwrap_or(8) as usize,
+    )?;
     if result.outcomes.next_cursor.is_none() {
         return Ok(result);
     }

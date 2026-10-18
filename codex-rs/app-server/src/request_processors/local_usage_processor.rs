@@ -122,7 +122,8 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
-        self.ensure_report_ready(&store, None, None).await?;
+        self.ensure_report_ready(&store, /*from_at*/ None, /*to_at*/ None)
+            .await?;
         let id = thread_id(params.thread_id)?;
         let record = store
             .read_thread(&id)
@@ -184,7 +185,8 @@ impl LocalUsageRequestProcessor {
         params: LocalUsageRepositoryReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let store = self.store().await?;
-        self.ensure_report_ready(&store, None, None).await?;
+        self.ensure_report_ready(&store, /*from_at*/ None, /*to_at*/ None)
+            .await?;
         let id = repository_id(params.repository_key)?;
         let record = store
             .read_repository(&id)

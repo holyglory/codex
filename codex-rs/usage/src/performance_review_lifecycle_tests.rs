@@ -29,7 +29,7 @@ async fn report_deadline_interrupts_sql_and_releases_the_snapshot() {
         .expect("pin snapshot");
     fixture
         .store
-        .begin_operation(&fixture.operation(1_000_000))
+        .begin_operation(&fixture.operation(/*started_at_ms*/ 1_000_000))
         .await
         .expect("capture alongside report");
     let result = sqlx::query_scalar::<_, i64>(SLOW_SQL)
@@ -86,7 +86,7 @@ async fn dropped_report_stops_sql_without_waiting_for_the_deadline() {
     running.await.expect("report started");
     fixture
         .store
-        .begin_operation(&fixture.operation(1_000_000))
+        .begin_operation(&fixture.operation(/*started_at_ms*/ 1_000_000))
         .await
         .expect("capture alongside report");
     task.abort();
@@ -139,7 +139,9 @@ async fn overlapping_report_admission_leaves_connections_for_capture() {
     }
     tokio::time::timeout(
         Duration::from_secs(1),
-        fixture.store.begin_operation(&fixture.operation(1_000_000)),
+        fixture
+            .store
+            .begin_operation(&fixture.operation(/*started_at_ms*/ 1_000_000)),
     )
     .await
     .expect("capture not queued behind reports")

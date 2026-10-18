@@ -138,7 +138,11 @@ async fn usage_limit_failover_excludes_rejected_profiles_and_respects_process_pi
     let observed_at = Utc::now().timestamp();
     for account in [&account_a, &account_b, &account_c] {
         shared
-            .record_rate_limits(account.id.clone(), observed_at, vec![limits(10.0)])
+            .record_rate_limits(
+                account.id.clone(),
+                observed_at,
+                vec![limits(/*used_percent*/ 10.0)],
+            )
             .expect("record eligible limits");
     }
 

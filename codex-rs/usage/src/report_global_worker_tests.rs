@@ -32,7 +32,9 @@ async fn hour_rebuild_rollback_preserves_queue_for_resume() {
     tx.commit().await.expect("commit dirty marker");
 
     let mut tx = store.pool.begin().await.expect("start hour rebuild");
-    rebuild_hour(&mut tx, 0).await.expect("rebuild hour");
+    rebuild_hour(&mut tx, /*hour*/ 0)
+        .await
+        .expect("rebuild hour");
     tx.rollback().await.expect("rollback hour rebuild");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(

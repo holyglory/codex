@@ -59,19 +59,19 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
     assert!(!status.ready);
     let started = std::time::Instant::now();
     assert!(matches!(
-        store.require_report_ready(None).await,
+        store.require_report_ready(/*range*/ None).await,
         Err(UsageStoreError::ReportWarming(_))
     ));
     assert!(matches!(
         store
             .require_report_ready(Some(
-                UtcTimeRange::new(i64::MIN, 2000).expect("unbounded start")
+                UtcTimeRange::new(i64::MIN, /*end_ms*/ 2000).expect("unbounded start")
             ))
             .await,
         Err(UsageStoreError::ReportWarming(_))
     ));
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
-    let finite = UtcTimeRange::new(1000, 2000).expect("finite window");
+    let finite = UtcTimeRange::new(/*start_ms*/ 1000, /*end_ms*/ 2000).expect("finite window");
     store
         .require_report_ready(Some(finite))
         .await
@@ -196,7 +196,9 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         thread_id: Some(ThreadId::new("backfill").expect("thread")),
         repository_id: None,
         account_profile_ref: None,
-        time_range: Some(UtcTimeRange::new(3_600_123, 18_000_999).expect("range")),
+        time_range: Some(
+            UtcTimeRange::new(/*start_ms*/ 3_600_123, /*end_ms*/ 18_000_999).expect("range"),
+        ),
     };
     let rolled = reopened
         .usage_summary_query(scoped.clone())

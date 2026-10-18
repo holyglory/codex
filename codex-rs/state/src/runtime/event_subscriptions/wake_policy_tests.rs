@@ -101,7 +101,7 @@ async fn acknowledging_one_alarm_retains_other_and_newer_alarms() {
             .await
             .unwrap();
     }
-    store.collect_due_heartbeats(1000).await.unwrap();
+    store.collect_due_heartbeats(/*now_ms*/ 1000).await.unwrap();
     let pending = store.pending_wake(owner).await.unwrap().unwrap();
     assert_eq!(pending.wake.items.len(), 2);
     store

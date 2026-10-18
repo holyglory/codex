@@ -673,7 +673,7 @@ impl UsageRuntime {
             .save_activity_declaration(thread_id, &declaration)
             .await
         {
-            self.latch_write_failure("activity_declaration", None, error);
+            self.latch_write_failure("activity_declaration", /*operation_id*/ None, error);
         }
     }
 

@@ -1074,7 +1074,8 @@ impl AccountRequestProcessor {
                 )
                 .await;
             if let Some(account_id) = &self.active_profile_id
-                && let Ok(generation) = sync_profile_registry(&self.config, account_id, true)
+                && let Ok(generation) =
+                    sync_profile_registry(&self.config, account_id, /*refresh_metadata*/ true)
             {
                 self.send_profile_auth_changed(account_id, generation).await;
             }
@@ -1217,7 +1218,8 @@ impl AccountRequestProcessor {
         }
         if succeeded
             && let Some(account_id) = &self.active_profile_id
-            && let Ok(generation) = sync_profile_registry(&self.config, account_id, false)
+            && let Ok(generation) =
+                sync_profile_registry(&self.config, account_id, /*refresh_metadata*/ false)
         {
             self.send_profile_auth_changed(account_id, generation).await;
         }

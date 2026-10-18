@@ -654,12 +654,12 @@ async fn alarms_persist_deduplicate_and_deliver_after_inactive_resume() {
     let store = runtime.event_subscriptions();
     let thread = ThreadId::new();
     let relative = store
-        .set_alarm(thread, alarm_spec("relative"), 1000)
+        .set_alarm(thread, alarm_spec("relative"), /*now*/ 1000)
         .await
         .unwrap();
     assert_eq!(
         store
-            .set_alarm(thread, alarm_spec("relative"), 1010)
+            .set_alarm(thread, alarm_spec("relative"), /*now*/ 1010)
             .await
             .unwrap(),
         relative
@@ -668,19 +668,25 @@ async fn alarms_persist_deduplicate_and_deliver_after_inactive_resume() {
     repeated.relative_ms = Some(200);
     repeated.summary = "Updated wording for the same obligation".into();
     assert_eq!(
-        store.set_alarm(thread, repeated, 1011).await.unwrap(),
+        store
+            .set_alarm(thread, repeated, /*now*/ 1011)
+            .await
+            .unwrap(),
         relative
     );
 
     let mut absolute = alarm_spec("absolute");
     absolute.relative_ms = None;
     absolute.absolute_at_ms = Some(1100);
-    let absolute = store.set_alarm(thread, absolute, 1000).await.unwrap();
+    let absolute = store
+        .set_alarm(thread, absolute, /*now*/ 1000)
+        .await
+        .unwrap();
     store.restore_runtime().await.unwrap();
-    let clock = TestClock::new(1100);
+    let clock = TestClock::new(/*now_ms*/ 1100);
     let sink = RecordingWakeSink::new(WakeDisposition::DeferredUntilResume);
     let service = EventSubscriptionService::spawn(store.clone(), sink.clone(), clock.clone());
-    sink.wait_for_count(1).await;
+    sink.wait_for_count(/*expected*/ 1).await;
     assert_eq!(
         store
             .alarm_status(thread, relative.id)
@@ -692,7 +698,7 @@ async fn alarms_persist_deduplicate_and_deliver_after_inactive_resume() {
     );
     sink.set_disposition(WakeDisposition::Started);
     service.notify_thread_ready(thread);
-    sink.wait_for_count(2).await;
+    sink.wait_for_count(/*expected*/ 2).await;
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if store
@@ -721,29 +727,37 @@ async fn alarms_persist_deduplicate_and_deliver_after_inactive_resume() {
         AlarmState::Delivered
     );
     let ack = store
-        .acknowledge_alarm(thread, relative.id, 1150)
+        .acknowledge_alarm(thread, relative.id, /*now*/ 1150)
         .await
         .unwrap();
     assert_eq!(ack.state, AlarmState::Acknowledged);
     assert_eq!(
         store
-            .acknowledge_alarm(thread, relative.id, 1200)
+            .acknowledge_alarm(thread, relative.id, /*now*/ 1200)
             .await
             .unwrap(),
         ack
     );
     assert!(
         store
-            .acknowledge_alarm(ThreadId::new(), absolute.id, 1200)
+            .acknowledge_alarm(ThreadId::new(), absolute.id, /*now*/ 1200)
             .await
             .is_err()
     );
-    store.cancel_alarm(thread, absolute.id, 1200).await.unwrap();
+    store
+        .cancel_alarm(thread, absolute.id, /*now*/ 1200)
+        .await
+        .unwrap();
     let restarted = EventSubscriptionService::spawn(store.clone(), sink.clone(), clock);
     restarted.shutdown().await;
     assert!(store.pending_wake(thread).await.unwrap().is_none());
     assert_eq!(
-        store.list_alarms(thread, 0, 10).await.unwrap().data.len(),
+        store
+            .list_alarms(thread, /*offset*/ 0, /*limit*/ 10)
+            .await
+            .unwrap()
+            .data
+            .len(),
         2
     );
 }
@@ -757,7 +771,7 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
     let mut spec = alarm_spec("work");
     spec.relative_ms = None;
     spec.active_work_ms = Some(100);
-    let alarm = store.set_alarm(thread, spec, 1000).await.unwrap();
+    let alarm = store.set_alarm(thread, spec, /*now*/ 1000).await.unwrap();
     store
         .observe_alarm_work(
             "model",
@@ -765,7 +779,7 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
                 thread_id: thread,
                 eligible: true,
             },
-            1000,
+            /*now*/ 1000,
         )
         .await
         .unwrap();
@@ -776,7 +790,7 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
                 thread_id: thread,
                 eligible: false,
             },
-            1010,
+            /*now*/ 1010,
         )
         .await
         .unwrap();
@@ -787,31 +801,37 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
                 thread_id: thread,
                 eligible: true,
             },
-            1020,
+            /*now*/ 1020,
         )
         .await
         .unwrap();
     store
-        .observe_alarm_work("model", Work::Finish, 1040)
+        .observe_alarm_work("model", Work::Finish, /*now*/ 1040)
         .await
         .unwrap();
     store
-        .observe_alarm_work("tool", Work::Wait, 1050)
+        .observe_alarm_work("tool", Work::Wait, /*now*/ 1050)
         .await
         .unwrap();
-    assert!(store.collect_due_heartbeats(9000).await.unwrap().is_empty());
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 9000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     store
-        .observe_alarm_work("tool", Work::Resume, 9000)
+        .observe_alarm_work("tool", Work::Resume, /*now*/ 9000)
         .await
         .unwrap();
     store
-        .observe_alarm_work("tool", Work::Finish, 9025)
+        .observe_alarm_work("tool", Work::Finish, /*now*/ 9025)
         .await
         .unwrap();
     store.restore_runtime().await.unwrap();
     assert!(
         store
-            .collect_due_heartbeats(20000)
+            .collect_due_heartbeats(/*now_ms*/ 20000)
             .await
             .unwrap()
             .is_empty()
@@ -823,19 +843,22 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
                 thread_id: thread,
                 eligible: true,
             },
-            20000,
+            /*now*/ 20000,
         )
         .await
         .unwrap();
     assert!(
         store
-            .collect_due_heartbeats(20024)
+            .collect_due_heartbeats(/*now_ms*/ 20024)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        store.collect_due_heartbeats(20025).await.unwrap(),
+        store
+            .collect_due_heartbeats(/*now_ms*/ 20025)
+            .await
+            .unwrap(),
         vec![thread]
     );
     assert_eq!(
@@ -851,7 +874,7 @@ async fn active_work_alarms_exclude_waits_overlap_and_offline_time() {
     );
     assert!(
         store
-            .collect_due_heartbeats(20026)
+            .collect_due_heartbeats(/*now_ms*/ 20026)
             .await
             .unwrap()
             .is_empty()
@@ -875,21 +898,30 @@ async fn result_alarms_match_terminal_metadata_and_keep_cancelled_reminders_quie
     let mut spec = alarm_spec("failed");
     spec.relative_ms = None;
     spec.operation_result = Some(result.clone());
-    let alarm = store.set_alarm(thread, spec.clone(), 1000).await.unwrap();
+    let alarm = store
+        .set_alarm(thread, spec.clone(), /*now*/ 1000)
+        .await
+        .unwrap();
     let mut success = result.clone();
     success.operation_id = "different-call".into();
     success.outcome_class = OperationOutcome::Completed;
     store
-        .observe_alarm_result(thread, &success, 1010)
+        .observe_alarm_result(thread, &success, /*now*/ 1010)
         .await
         .unwrap();
-    assert!(store.collect_due_heartbeats(1050).await.unwrap().is_empty());
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 1050)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     store
-        .observe_alarm_result(thread, &result, 1060)
+        .observe_alarm_result(thread, &result, /*now*/ 1060)
         .await
         .unwrap();
     assert_eq!(
-        store.collect_due_heartbeats(1060).await.unwrap(),
+        store.collect_due_heartbeats(/*now_ms*/ 1060).await.unwrap(),
         vec![thread]
     );
     assert_eq!(
@@ -902,12 +934,18 @@ async fn result_alarms_match_terminal_metadata_and_keep_cancelled_reminders_quie
         AlarmState::Due
     );
     spec.dedupe_key = "late-registration".into();
-    let late = store.set_alarm(thread, spec, 1070).await.unwrap();
-    store.cancel_alarm(thread, late.id, 1071).await.unwrap();
+    let late = store.set_alarm(thread, spec, /*now*/ 1070).await.unwrap();
+    store
+        .cancel_alarm(thread, late.id, /*now*/ 1071)
+        .await
+        .unwrap();
     let mut expiring = alarm_spec("expiry");
     expiring.expires_at_ms = Some(1090);
-    let expiry = store.set_alarm(thread, expiring, 1080).await.unwrap();
-    store.collect_due_heartbeats(1200).await.unwrap();
+    let expiry = store
+        .set_alarm(thread, expiring, /*now*/ 1080)
+        .await
+        .unwrap();
+    store.collect_due_heartbeats(/*now_ms*/ 1200).await.unwrap();
     assert_eq!(
         store
             .alarm_status(thread, expiry.id)
@@ -918,7 +956,7 @@ async fn result_alarms_match_terminal_metadata_and_keep_cancelled_reminders_quie
         AlarmState::Expired
     );
     let generic = store
-        .set_alarm(thread, alarm_spec("subscription-cancel"), 1200)
+        .set_alarm(thread, alarm_spec("subscription-cancel"), /*now*/ 1200)
         .await
         .unwrap();
     assert!(store.cancel(generic.id).await.unwrap());
@@ -938,7 +976,13 @@ async fn result_alarms_match_terminal_metadata_and_keep_cancelled_reminders_quie
         BTreeMap::from([("alarm_id".into(), alarm.id.to_string())])
     );
     store.delete_thread(thread).await.unwrap();
-    assert!(store.collect_due_heartbeats(9999).await.unwrap().is_empty());
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 9999)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         store
             .alarm_status(thread, alarm.id)

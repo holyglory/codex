@@ -39,7 +39,7 @@ impl ToolExecutor<ToolInvocation> for AlarmHandler {
                 "subject",
                 "summary",
             ] {
-                fields.insert(key.into(), JsonSchema::string(None));
+                fields.insert(key.into(), JsonSchema::string(/*description*/ None));
             }
             for key in [
                 "absolute_at_ms",
@@ -47,21 +47,27 @@ impl ToolExecutor<ToolInvocation> for AlarmHandler {
                 "active_work_ms",
                 "expires_at_ms",
             ] {
-                fields.insert(key.into(), JsonSchema::number(None));
+                fields.insert(key.into(), JsonSchema::number(/*description*/ None));
             }
             fields.insert(
                 "operation_result".into(),
                 JsonSchema::object(
                     BTreeMap::from([
-                        ("operation_id".into(), JsonSchema::string(None)),
-                        ("tool_name".into(), JsonSchema::string(None)),
+                        (
+                            "operation_id".into(),
+                            JsonSchema::string(/*description*/ None),
+                        ),
+                        ("tool_name".into(), JsonSchema::string(/*description*/ None)),
                         (
                             "outcome_class".into(),
                             JsonSchema::string(Some(
                                 "completed, failed, denied, timed_out, or cancelled".into(),
                             )),
                         ),
-                        ("result_code".into(), JsonSchema::string(None)),
+                        (
+                            "result_code".into(),
+                            JsonSchema::string(/*description*/ None),
+                        ),
                     ]),
                     Some(vec![
                         "operation_id".into(),
@@ -72,13 +78,13 @@ impl ToolExecutor<ToolInvocation> for AlarmHandler {
                 ),
             );
         } else if self.0 == "alarm_list" {
-            fields.insert("offset".into(), JsonSchema::number(None));
+            fields.insert("offset".into(), JsonSchema::number(/*description*/ None));
             fields.insert(
                 "limit".into(),
                 JsonSchema::number(Some("1–5, default 5".into())),
             );
         } else {
-            fields.insert("alarm_id".into(), JsonSchema::string(None));
+            fields.insert("alarm_id".into(), JsonSchema::string(/*description*/ None));
         }
         ToolSpec::Function(ResponsesApiTool {
             name:self.0.into(),description:"Durable generic reminders for this task; no project policy, worker, or business completion. alarm_set requires a stable dedupe_key, subject, summary and exactly one trigger: absolute_at_ms (UTC), relative_ms, active_work_ms (measured model/tool time excluding waits), or operation_result (exact call/operation and tool with terminal outcome). Opaque project_id/workstream_id group reminders. An existing scope/key retains its original alarm and terminal state; use a new key for changed intent. Never copy tool output or logs into reminder text. alarm_status/list read state; alarm_ack acknowledges a delivered message only; alarm_cancel retires a reminder. Background wake permission is separate and Stop is respected.".into(),strict:false,defer_loading:None,

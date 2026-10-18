@@ -38,7 +38,7 @@ impl ToolExecutor<ToolInvocation> for ProjectAutomationHandler {
             description: "Read legacy project clock state for migration using command {action:status}. Scheduling and mutations are retired. Use alarm_set for reminders and DevCoordinator2 for reviews.".into(),
             strict: false, defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
-                ("command".into(), JsonSchema::object(BTreeMap::new(), None, Some(true.into()))),
+                ("command".into(), JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(true.into()))),
                 ("expected_revision".into(), JsonSchema::number(Some("Not accepted by the legacy reader.".into()))),
             ]), Some(vec!["command".into()]), Some(false.into())), output_schema: None,
         })

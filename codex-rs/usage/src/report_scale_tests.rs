@@ -327,7 +327,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let wide = store
         .usage_summary_in_range(
             UsageSummaryScope::Thread(ThreadId::new("wide").expect("thread")),
-            Some(UtcTimeRange::new(1_000, 17_384).expect("range")),
+            Some(UtcTimeRange::new(/*start_ms*/ 1_000, /*end_ms*/ 17_384).expect("range")),
         )
         .await
         .expect("maximum supported groups");

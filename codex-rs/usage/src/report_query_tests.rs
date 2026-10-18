@@ -122,7 +122,9 @@ async fn scoped_reports_preserve_results_when_unrelated_history_grows() {
             thread_id: Some(ThreadId::new("selected").expect("thread")),
             repository_id: None,
             account_profile_ref: None,
-            time_range: Some(UtcTimeRange::new(1_000, 2_000).expect("range")),
+            time_range: Some(
+                UtcTimeRange::new(/*start_ms*/ 1_000, /*end_ms*/ 2_000).expect("range"),
+            ),
         },
         UsageSummaryQuery {
             worktree_ids: None,
@@ -130,7 +132,9 @@ async fn scoped_reports_preserve_results_when_unrelated_history_grows() {
             thread_id: None,
             repository_id: Some(repository.clone()),
             account_profile_ref: None,
-            time_range: Some(UtcTimeRange::new(1_000, 2_000).expect("range")),
+            time_range: Some(
+                UtcTimeRange::new(/*start_ms*/ 1_000, /*end_ms*/ 2_000).expect("range"),
+            ),
         },
     ];
     let mut expected = Vec::new();
