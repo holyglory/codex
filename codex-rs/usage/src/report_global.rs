@@ -337,12 +337,35 @@ async fn rebuild_hour(
         .checked_add(3_600_000)
         .ok_or_else(|| sqlx::Error::Protocol("global hour upper bound overflow".into()))?;
     sqlx::raw_sql(
-        "DROP TABLE IF EXISTS temp._usage_global_timed; DROP TABLE IF EXISTS temp._usage_global_spans; DROP TABLE IF EXISTS temp._usage_global_active; DROP TABLE IF EXISTS temp._usage_global_intervals;",
+        "DROP TABLE IF EXISTS temp._usage_global_old_operations; DROP TABLE IF EXISTS temp._usage_global_old_span_owners; DROP TABLE IF EXISTS temp._usage_global_timed; DROP TABLE IF EXISTS temp._usage_global_spans; DROP TABLE IF EXISTS temp._usage_global_active; DROP TABLE IF EXISTS temp._usage_global_intervals;",
     )
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.operation_id id,operation.operation_kind,operation.agent_id,operation.phase,operation.activity_state,operation.started_at_ms source_started_at_ms,operation.terminal_status,operation.ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN operation.ended_at_ms>=operation.started_at_ms AND MIN(operation.ended_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(operation.ended_at_ms,?2) END e FROM _usage_report_operations operation WHERE (operation.started_at_ms>=?1 AND operation.started_at_ms<?2) OR (operation.ended_at_ms IS NOT NULL AND operation.started_at_ms<?2 AND operation.ended_at_ms>?1) OR (operation.ended_at_ms IS NULL AND EXISTS (SELECT 1 FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.operation_id=operation.operation_id AND span.started_at_ms<?2 AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms>?1)))",
+        "CREATE TEMP TABLE _usage_global_old_operations AS SELECT operation_id FROM _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms<?",
+    )
+    .bind(lower)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX temp._usage_global_old_operations_id ON _usage_global_old_operations(operation_id)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE TEMP TABLE _usage_global_old_span_owners AS SELECT DISTINCT span.operation_id FROM activity_spans span JOIN _usage_global_old_operations old ON old.operation_id=span.operation_id LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.started_at_ms<? AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms>?)",
+    )
+    .bind(upper)
+    .bind(lower)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX temp._usage_global_old_span_owners_id ON _usage_global_old_span_owners(operation_id)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.operation_id id,operation.operation_kind,operation.agent_id,operation.phase,operation.activity_state,operation.started_at_ms source_started_at_ms,operation.terminal_status,operation.ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN operation.ended_at_ms>=operation.started_at_ms AND MIN(operation.ended_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(operation.ended_at_ms,?2) END e FROM _usage_report_operations operation WHERE operation.started_at_ms<?2 AND ((operation.ended_at_ms IS NULL AND (operation.started_at_ms>=?1 OR EXISTS (SELECT 1 FROM _usage_global_old_span_owners owner WHERE owner.operation_id=operation.operation_id))) OR (operation.ended_at_ms IS NOT NULL AND operation.ended_at_ms>?1))",
     )
     .bind(lower)
     .bind(upper)
