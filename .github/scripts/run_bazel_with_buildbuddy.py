@@ -185,6 +185,18 @@ def bazel_args_with_remote_config(
         # cache setting. Avoid duplicating all build outputs on ephemeral
         # runners; preserve explicit bounded caches and repository downloads.
         cache_args.append("--disk_cache=")
+    license_args = []
+    acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
+    if (
+        env.get("RUNNER_OS") == "Windows"
+        and env.get(acknowledgement) == "1"
+        and not any(
+            arg == f"--repo_env={acknowledgement}"
+            or arg.startswith(f"--repo_env={acknowledgement}=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        license_args.append(f"--repo_env={acknowledgement}=1")
     if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")
@@ -206,6 +218,7 @@ def bazel_args_with_remote_config(
     return [
         *configured_args[:separator_idx],
         *cache_args,
+        *license_args,
         *configured_args[separator_idx:],
     ]
 

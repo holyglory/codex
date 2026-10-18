@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-03
+Last reviewed: 2026-10-18
 
 ## Confirmed project context
 
@@ -56,6 +56,20 @@ Last reviewed: 2026-09-03
   versions before they become public. Long-lived npm write tokens are not an
   accepted steady-state control (user confirmation on 2026-09-03;
   DEC-CODEX-016).
+- **Windows build license:** The owner accepted the Microsoft Visual Studio
+  terms for GitHub-hosted Windows builds on 2026-10-18 and authorized the
+  Windows-only CI opt-in. The repository variable
+  `BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1` enables that acknowledgement for
+  the fork's Windows jobs; it grants no unrelated host or credential authority
+  (Coordinator `release1621-windows-msvc-approved-20261018`).
+- **Upstream D-Bus maintenance advisories:** For `0.162.1-multi.2`, the owner
+  approved exceptions limited to `RUSTSEC-2026-0370`, `RUSTSEC-2026-0371`, and
+  `RUSTSEC-2026-0372` on 2026-10-18. The affected versions are inherited unchanged
+  from upstream `rust-v0.162.1`, and these advisories identify no specific
+  vulnerability. Revisit the exceptions with the upstream keyring,
+  secret-service, and zbus migration. Other advisory checks and credential
+  boundaries remain in force (Coordinator
+  `release1621-upstream-dbus-exceptions-approved-20261018`).
 - **Build-cache scope:** The owner requested persistent build outputs between
   GitHub jobs and explicitly approved the persistent SSH/service changes on
   2026-09-07, allowing up to 1 TB of reusable builds. The approved design uses

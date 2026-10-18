@@ -84,6 +84,9 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained and has no patched release; serde_yaml is currently used for skill/plugin frontmatter and command migration parsing; migrate to a maintained compatible parser before removing this scoped exception" },
+    { id = "RUSTSEC-2026-0370", reason = "Owner-approved on 2026-10-18: retain upstream rust-v0.162.1 zvariant 4.2.0 through keyring/secret-service/zbus; maintenance advisory with no specific vulnerability; revisit with the upstream D-Bus stack migration" },
+    { id = "RUSTSEC-2026-0371", reason = "Owner-approved on 2026-10-18: retain upstream rust-v0.162.1 zbus_names 3.0.0 through zbus 4.4.0; maintenance advisory with no specific vulnerability; revisit with the upstream D-Bus stack migration" },
+    { id = "RUSTSEC-2026-0372", reason = "Owner-approved on 2026-10-18: retain upstream rust-v0.162.1 zvariant_derive 4.2.0 through zvariant; maintenance advisory with no specific vulnerability; revisit with the upstream D-Bus stack migration" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
