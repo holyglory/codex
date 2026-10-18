@@ -39,7 +39,7 @@ pub(super) async fn global_aggregates(
             },
         ));
     }
-    aggregates(connection, None).await
+    aggregates(connection, /*time_range*/ None).await
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -51,6 +51,11 @@ def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     ):
         injected_args.append(f"--output_user_root={output_user_root}")
 
+    if env.get("CODEX_BAZEL_BATCH") == "1" and not any(
+        arg in {"--batch", "--nobatch"} for arg in configured_startup_args
+    ):
+        injected_args.append("--batch")
+
     if env.get("GITHUB_ACTIONS") == "true" and not any(
         arg in REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS
         for arg in configured_startup_args
@@ -175,6 +180,29 @@ def bazel_args_with_remote_config(
         )
     ]
     if (
+        env.get("GITHUB_ACTIONS") == "true"
+        and env.get("RUNNER_ENVIRONMENT") == "github-hosted"
+        and not any(
+            arg.startswith("--disk_cache=") for arg in configured_args[:separator_idx]
+        )
+    ):
+        # The unkeyed fallback skips the remote CI config, including its disk
+        # cache setting. Avoid duplicating all build outputs on ephemeral
+        # runners; preserve explicit bounded caches and repository downloads.
+        cache_args.append("--disk_cache=")
+    license_args = []
+    acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
+    if (
+        env.get("RUNNER_OS") == "Windows"
+        and env.get(acknowledgement) == "1"
+        and not any(
+            arg == f"--repo_env={acknowledgement}"
+            or arg.startswith(f"--repo_env={acknowledgement}=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        license_args.append(f"--repo_env={acknowledgement}=1")
+    if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")
         and env.get("CODEX_BAZEL_REMOTE_CACHE_URL")
@@ -195,6 +223,7 @@ def bazel_args_with_remote_config(
     return [
         *configured_args[:separator_idx],
         *cache_args,
+        *license_args,
         *configured_args[separator_idx:],
     ]
 

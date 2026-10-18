@@ -63,6 +63,12 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Refresh native dependency patches after lock updates.** Cargo can pass
+  while Bazel still applies a patch written for an older transitive crate.
+  Inspect the new crate source, drop changes already implemented upstream,
+  retain the remaining platform fix, and exercise Bazel repository loading.
+  For example, zstd-sys 2.1.2 already avoids the visibility flag for MSVC but
+  still needs the downstream MSVC header-search paths.
 - **Verify the toolchain before diagnosing compile failures.** Read
   `codex-rs/rust-toolchain.toml`, resolve the actual `rustc` and `cargo` selected
   by the shell, and compare them with the toolchain used by DevCoordinator's
@@ -296,6 +302,30 @@ the authority for release outcomes and verification receipts.
   dependencies when checks intentionally share the same isolated environment.
   A failing sandbox test remains unverified when skipped: fix its boundary or
   retain the explicit missing acceptance instead of reporting a successful test.
+- **Resolve runner groups before debugging hosted build failures.** Upstream
+  workflows can request organization-owned runner groups that the fork cannot
+  use. Inspect job annotations when no steps ran. Preserve upstream routing for
+  its owner and select approved GitHub-hosted runners for the fork, keeping the
+  test commands and required-check aggregation intact. Validate the actual fork
+  jobs; repeated retries cannot create a missing runner group.
+- **Keep required upstream checks in local release acceptance.** The broad
+  Bazel test command excludes the separate argument-comment aspect. Run that
+  aspect explicitly, including manual unit-test binaries, before freezing a
+  release. A passing Rust suite or Bazel test graph does not cover this lint.
+  Apply compiler-reported parameter names mechanically and verify that the
+  correction changes only comments, whitespace, and trailing commas.
+- **Inspect the cache settings of unauthenticated CI jobs.** Without a
+  BuildBuddy key, the wrapper omits remote CI configurations, including their
+  disabled disk cache. GitHub-hosted jobs must also disable the default local
+  action cache so large outputs are not duplicated on the ephemeral disk.
+  Preserve explicitly configured bounded caches and repository-download
+  caches; test the fallback without exposing credentials to pull requests.
+- **Honor batch mode for governed Bazel runs.** The local candidate requests
+  `CODEX_BAZEL_BATCH=1`; the Bazel wrapper must turn it into the startup option
+  `--batch`, preserving an explicit caller override. Otherwise an idle Java
+  server can keep the governed run alive after all test assertions finish.
+  Verify terminal run completion as well as test output. Batch mode retains
+  the configured persistent action and repository caches.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
   candidate identity. Make remaining repairs in a separate checkout, integrate
   them after the accepted run finishes, and bind the next run to that commit.

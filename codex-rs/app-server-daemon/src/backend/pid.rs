@@ -129,7 +129,7 @@ impl PidBackend {
     }
 
     pub(crate) fn new_handover(codex_bin: PathBuf, pid_file: PathBuf) -> Self {
-        let mut backend = Self::new_update_loop(codex_bin, pid_file, None);
+        let mut backend = Self::new_update_loop(codex_bin, pid_file, /*restore_release*/ None);
         backend.command_kind = PidCommandKind::Handover;
         backend
     }

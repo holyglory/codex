@@ -191,7 +191,30 @@ pub(crate) fn spawn_exit_watcher(
         let plugin_metrics_sidecar = plugin_metrics_sidecar
             .as_ref()
             .and_then(take_plugin_metrics_sidecar);
-        if let Some(message) = process.failure_message() {
+        if process.was_user_declined() {
+            let exit_code = process.exit_code().unwrap_or(-1);
+            finish_and_track_measurements(
+                plugin_metrics_sidecar,
+                exit_code,
+                &session_ref,
+                &turn_ref,
+                &model_context,
+                &call_id,
+            )
+            .await;
+            emit_declined_exec_end_for_unified_exec(
+                process.sandbox_type(),
+                session_ref,
+                turn_ref,
+                model_info,
+                call_id,
+                command,
+                cwd,
+                Some(process_id.to_string()),
+                plugin_attribution,
+            )
+            .await;
+        } else if let Some(message) = process.failure_message() {
             drop(plugin_metrics_sidecar);
             emit_failed_exec_end_for_unified_exec(
                 process.sandbox_type(),
@@ -375,6 +398,47 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
                 output,
                 applied_patch_delta: None,
             },
+        )
+        .await;
+}
+
+/// Emit a rejected ExecCommandEnd event when a nested zsh-fork command was
+/// declined by the user. The shell may exit nonzero in this case, but that
+/// exit code is an implementation detail rather than the user-facing status.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn emit_declined_exec_end_for_unified_exec(
+    sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
+    session_ref: Arc<Session>,
+    turn_ref: Arc<TurnContext>,
+    model_info: Arc<ModelInfo>,
+    call_id: String,
+    command: Vec<String>,
+    cwd: PathUri,
+    process_id: Option<String>,
+    plugin_attribution: Option<PluginCommandAttribution>,
+) {
+    let mut event_ctx = ToolEventCtx::new(
+        session_ref.as_ref(),
+        turn_ref.as_ref(),
+        &model_info,
+        &call_id,
+        /*turn_diff_tracker*/ None,
+    );
+    event_ctx.sandbox_type = sandbox_type;
+    let emitter = ToolEmitter::unified_exec(
+        &command,
+        cwd,
+        ExecCommandSource::UnifiedExecStartup,
+        process_id,
+        plugin_attribution,
+    );
+    emitter
+        .emit(
+            event_ctx,
+            ToolEventStage::Failure(ToolEventFailure::Rejected {
+                message: "exec command rejected by user".to_string(),
+                applied_patch_delta: None,
+            }),
         )
         .await;
 }

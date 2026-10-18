@@ -37,7 +37,7 @@ impl AppServerCapabilities {
             Some(LocalUsageAccountingCapability {
                 version: LOCAL_USAGE_ACCOUNTING_VERSION,
             }),
-            None,
+            /*event_subscriptions*/ None,
         )
     }
 

@@ -208,7 +208,9 @@ async fn finite_summary_uses_core_cache_while_global_component_warms() {
                 thread_id: None,
                 repository_id: None,
                 account_profile_ref: None,
-                time_range: Some(UtcTimeRange::new(0, 3_000).expect("finite range")),
+                time_range: Some(
+                    UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 3_000).expect("finite range"),
+                ),
             },
             &mut connection,
         )
@@ -427,7 +429,12 @@ async fn global_worktree_branch_matches_canonical_assignments() {
         .expect("repository");
     let worktree = WorktreeId::new("a".repeat(64)).expect("worktree");
     store
-        .ensure_worktree(&worktree, &repository, &label("global-worktree"), 1)
+        .ensure_worktree(
+            &worktree,
+            &repository,
+            &label("global-worktree"),
+            /*observed_at_ms*/ 1,
+        )
         .await
         .expect("worktree");
     let mut operation = operation(process_id, "worktree-thread", OperationKind::ModelRequest);
@@ -588,7 +595,9 @@ async fn global_counters_follow_terminal_classification_and_late_token_facts() {
                 thread_id: None,
                 repository_id: None,
                 account_profile_ref: None,
-                time_range: Some(UtcTimeRange::new(0, 3_000).expect("finite range")),
+                time_range: Some(
+                    UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 3_000).expect("finite range"),
+                ),
             },
             &mut oracle,
         )

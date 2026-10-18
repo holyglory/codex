@@ -194,7 +194,7 @@ async fn replay_after_partial_durable_write_is_idempotent() {
         .finish(
             TerminalStatus::Completed,
             /*error*/ None,
-            1,
+            /*duration_ns*/ 1,
             /*saw_provider_usage*/ true,
             /*saw_usage_activity*/ false,
             /*saw_mixed_activity_output*/ false,

@@ -42,15 +42,23 @@ impl UsageRuntime {
         if !self.faulted.load(Ordering::Acquire)
             && let Ok(model_attempt) = self.begin_model_attempt_once(&context, &work_context).await
         {
-            self.start_alarm_work(model_attempt.operation_id, context.thread_id, true)
-                .await;
+            self.start_alarm_work(
+                model_attempt.operation_id,
+                context.thread_id,
+                /*eligible*/ true,
+            )
+            .await;
             return model_attempt;
         }
         let attempt = self
             .begin_buffered_model_attempt(&context, &work_context)
             .await;
-        self.start_alarm_work(attempt.operation_id, context.thread_id, true)
-            .await;
+        self.start_alarm_work(
+            attempt.operation_id,
+            context.thread_id,
+            /*eligible*/ true,
+        )
+        .await;
         attempt
     }
 
@@ -105,7 +113,7 @@ impl UsageRuntime {
             .recover_after_write_failure(self.process_id, &affected_operations, now_ms())
             .await
             .map_err(|error| {
-                self.latch_write_failure("runtime_recovery", None, error);
+                self.latch_write_failure("runtime_recovery", /*operation_id*/ None, error);
                 unavailable()
             })?;
         tracing::warn!(

@@ -186,7 +186,7 @@ impl SqliteEventSubscriptionStore {
         self.apply_project_command(
             project_id,
             thread_id,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: codex_event_subscriptions::WorkPurpose::Analysis,
                 workstream: None,

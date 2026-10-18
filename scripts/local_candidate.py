@@ -34,7 +34,7 @@ GATES = (
 )
 LANES = {
     "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
-    "bazel": ("bazel-tests", "bazel-release"),
+    "bazel": ("argument-comments", "bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
 
@@ -209,6 +209,14 @@ def commands(root, state, directory):
                 "scripts/check_root_usage.py",
                 "--binary",
                 str(directory / "linux-package/bin/codex"),
+            ],
+            root,
+        ),
+        "argument-comments": (
+            [
+                "bash",
+                "-euc",
+                'target_list=$(bash tools/argument-comment-lint/list-bazel-targets.sh); test -n "$target_list"; mapfile -t targets <<< "$target_list"; bash .github/scripts/run-bazel-ci.sh -- build --disk_cache="$LOCAL_BAZEL_CACHE" --config=argument-comment-lint --keep_going -- "${targets[@]}"',
             ],
             root,
         ),

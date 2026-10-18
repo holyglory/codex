@@ -30,7 +30,8 @@ fn snapshots() {
 fn legacy_guidance_is_not_injected_again() {
     let mut world_state = super::super::WorldState::default();
     world_state.add_section(UsageStatsInstructionsState::new(/*available*/ true));
-    let legacy: ResponseItem = ContextualUserFragment::into(UsageStatsInstructionsState::new(true));
+    let legacy: ResponseItem =
+        ContextualUserFragment::into(UsageStatsInstructionsState::new(/*available*/ true));
 
     assert!(
         world_state
@@ -46,7 +47,7 @@ fn persisted_guidance_is_restored_only_when_missing_from_history() {
     world_state.add_section(UsageStatsInstructionsState::new(/*available*/ true));
     let snapshot = world_state.render_full().0;
     let retained: ResponseItem =
-        ContextualUserFragment::into(UsageStatsInstructionsState::new(true));
+        ContextualUserFragment::into(UsageStatsInstructionsState::new(/*available*/ true));
 
     assert_eq!(
         world_state

@@ -59,7 +59,7 @@ async fn large_task_tree_includes_all_descendants_and_agent_totals() {
         .task_tree_summary(TaskTreeSummaryQuery {
             root_thread_id: root,
             include_descendants: true,
-            time_range: UtcTimeRange::new(900, 2_001).expect("range"),
+            time_range: UtcTimeRange::new(/*start_ms*/ 900, /*end_ms*/ 2_001).expect("range"),
         })
         .await
         .expect("summary")
@@ -77,7 +77,7 @@ async fn large_task_tree_includes_all_descendants_and_agent_totals() {
         TaskTreeEffort {
             operations: 141,
             model_requests: 141,
-            provider_total_tokens: tokens(1_410),
+            provider_total_tokens: tokens(/*measured_tokens*/ 1_410),
             wall_time: duration(1_000 * NS_PER_MS)
         }
     );

@@ -273,7 +273,13 @@ async fn completion_before_registration_replays_the_source_journal() {
     let fixture = Fixture::new().await;
     let (requests, mut received) = mpsc::channel(8);
     let bridge = fixture.start(FixtureSource(requests));
-    let bytes = completion(42, "test", "run_id", "run-a", "test.finished");
+    let bytes = completion(
+        /*cursor*/ 42,
+        "test",
+        "run_id",
+        "run-a",
+        "test.finished",
+    );
     let subscription = fixture
         .subscribe("run_id", "run-a", "test.finished", /*after*/ 41)
         .await;
@@ -322,7 +328,7 @@ async fn completion_after_registration_ignores_other_jobs_and_blocks_without_wak
     let bridge = fixture.start(FixtureSource(requests));
     let request = next_request(&mut received).await;
     let other = completion(
-        42,
+        /*cursor*/ 42,
         "deployment",
         "deployment_id",
         "deployment-b",
@@ -349,7 +355,7 @@ async fn completion_after_registration_ignores_other_jobs_and_blocks_without_wak
     );
     assert_eq!(fixture.sink.0.load(Ordering::SeqCst), 0);
     let matching = completion(
-        43,
+        /*cursor*/ 43,
         "deployment",
         "deployment_id",
         "deployment-a",
@@ -395,7 +401,13 @@ async fn new_subscription_rewinds_without_redelivering_to_another_run() {
         .unwrap();
     let request = next_request(&mut received).await;
     assert_eq!(request.cursor, Some(41));
-    let bytes = completion(42, "test", "run_id", "run-b", "test.finished");
+    let bytes = completion(
+        /*cursor*/ 42,
+        "test",
+        "run_id",
+        "run-b",
+        "test.finished",
+    );
     request
         .reply
         .send(decode_envelope(&bytes, request.cursor))
@@ -465,7 +477,13 @@ async fn unavailable_source_recovers_without_advancing_the_cursor() {
         .acknowledge_wake(subscription.thread_id, attention.through_revision)
         .await
         .unwrap();
-    let bytes = completion(42, "test", "run_id", "run-a", "test.finished");
+    let bytes = completion(
+        /*cursor*/ 42,
+        "test",
+        "run_id",
+        "run-a",
+        "test.finished",
+    );
     request
         .reply
         .send(decode_envelope(&bytes, request.cursor))
@@ -523,7 +541,13 @@ async fn stale_cursor_reports_attention_without_poisoning_another_subscription()
         .unwrap();
     let request = next_request(&mut received).await;
     assert_eq!(request.cursor, Some(99));
-    let bytes = completion(100, "test", "run_id", "run-a", "test.finished");
+    let bytes = completion(
+        /*cursor*/ 100,
+        "test",
+        "run_id",
+        "run-a",
+        "test.finished",
+    );
     request
         .reply
         .send(decode_envelope(&bytes, request.cursor))
@@ -569,13 +593,19 @@ async fn no_source_process_without_coordinator_subscriptions_and_last_cancel_sto
 
 #[test]
 fn metadata_projection_rejects_invalid_cursors_and_never_invents_repository_ids() {
-    let bytes = completion(42, "test", "run_id", "run-a", "test.finished");
+    let bytes = completion(
+        /*cursor*/ 42,
+        "test",
+        "run_id",
+        "run-a",
+        "test.finished",
+    );
     assert_eq!(
         decode_envelope(&bytes, Some(42)).unwrap_err(),
         SourceError::InvalidEnvelope
     );
     let mut envelope: serde_json::Value = serde_json::from_slice(&completion(
-        42,
+        /*cursor*/ 42,
         "deployment",
         "deployment_id",
         "deployment-a",
@@ -591,7 +621,7 @@ fn metadata_projection_rejects_invalid_cursors_and_never_invents_repository_ids(
         BTreeMap::from([("deployment_id".into(), "deployment-a".into())])
     );
     assert_eq!(
-        decode_envelope(&vec![b' '; MAX_ENVELOPE_BYTES + 1], None).unwrap_err(),
+        decode_envelope(&vec![b' '; MAX_ENVELOPE_BYTES + 1], /*after*/ None).unwrap_err(),
         SourceError::InvalidEnvelope
     );
     let stale = br#"{"protocol":2,"ok":false,"error":{"code":"cursor_stale","message":"refresh required","detail":"not retained"}}"#;
@@ -701,7 +731,7 @@ async fn coordinator_review_event_becomes_one_durable_alarm_without_a_worker() {
                 ]),
                 labels: BTreeMap::from([("owner_thread_id".into(), owner.to_string())]),
             },
-            1000,
+            /*now*/ 1000,
         )
         .await
         .unwrap();
@@ -718,7 +748,11 @@ async fn coordinator_review_event_becomes_one_durable_alarm_without_a_worker() {
     alarm::deliver(&fixture.store, &fixture.service, &subscriptions, &event)
         .await
         .unwrap();
-    let page = fixture.store.list_alarms(owner, 0, 5).await.unwrap();
+    let page = fixture
+        .store
+        .list_alarms(owner, /*offset*/ 0, /*limit*/ 5)
+        .await
+        .unwrap();
     assert_eq!(page.data.len(), 1);
     let alarm = &page.data[0];
     assert_eq!(alarm.spec.workstream_id.as_deref(), Some("implementation"));
@@ -771,7 +805,7 @@ impl EventSource for RecoveringSource {
 async fn review_reconciliation_preserves_another_subscription_cursor() {
     let fixture = Fixture::new().await;
     let other = fixture
-        .subscribe("run_id", "run-existing", "test.finished", 41)
+        .subscribe("run_id", "run-existing", "test.finished", /*after*/ 41)
         .await;
     let owner = ThreadId::new();
     fixture
@@ -783,12 +817,14 @@ async fn review_reconciliation_preserves_another_subscription_cursor() {
                 event_types: BTreeSet::from(["review.reminder".into()]),
                 labels: BTreeMap::from([("owner_thread_id".into(), owner.to_string())]),
             },
-            1000,
+            /*now*/ 1000,
         )
         .await
         .unwrap();
     let reminder:alarm::ReviewReminder=serde_json::from_value(json!({"version":1,"reminder_id":"review-recovered","repository_id":"r1234567890abcdef","workstream_id":null,"owner_thread_id":owner.to_string(),"alarm_namespace":"codex.review.v1","window_start_ms":1000,"window_end_ms":86401000,"due_at_ms":90001000,"last_completed_receipt":null,"escalation":true})).unwrap();
-    let event = reminder.event(50, "2026-09-26T00:00:00Z").unwrap();
+    let event = reminder
+        .event(/*cursor*/ 50, "2026-09-26T00:00:00Z")
+        .unwrap();
     let (requests, mut received) = mpsc::channel(8);
     let bridge = fixture.start(RecoveringSource {
         recovered: Some(SourceBatch {
@@ -802,7 +838,7 @@ async fn review_reconciliation_preserves_another_subscription_cursor() {
     assert_eq!(
         fixture
             .store
-            .list_alarms(owner, 0, 5)
+            .list_alarms(owner, /*offset*/ 0, /*limit*/ 5)
             .await
             .unwrap()
             .data
@@ -812,7 +848,13 @@ async fn review_reconciliation_preserves_another_subscription_cursor() {
     request
         .reply
         .send(decode_envelope(
-            &completion(43, "test", "run_id", "run-existing", "test.finished"),
+            &completion(
+                /*cursor*/ 43,
+                "test",
+                "run_id",
+                "run-existing",
+                "test.finished",
+            ),
             Some(41),
         ))
         .unwrap();

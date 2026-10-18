@@ -98,6 +98,22 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+        acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
+        for runner, value, explicit, expected in (
+            ("Windows", "1", [], [f"--repo_env={acknowledgement}=1"]),
+            ("Windows", "", [], []),
+            ("Linux", "1", [], []),
+            ("Windows", "1", [f"--repo_env={acknowledgement}=0"], []),
+        ):
+            with self.subTest(runner=runner, value=value, explicit=explicit):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["build", *explicit, "--", "//codex-rs/cli:codex"],
+                        {"RUNNER_OS": runner, acknowledgement: value},
+                    ),
+                    ["build", *explicit, *expected, "--", "//codex-rs/cli:codex"],
+                )
+
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
         expression = 'kind("rust_library rule", //codex-rs/...)'
         env = {"BUILDBUDDY_API_KEY": "fork-token"}
@@ -214,6 +230,25 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+        for explicit_batch in (None, "--batch", "--nobatch"):
+            with self.subTest(explicit_batch=explicit_batch):
+                args = ([explicit_batch] if explicit_batch else []) + [
+                    "build",
+                    "//codex-rs/...",
+                ]
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_command(
+                        *args, env={**env, "CODEX_BAZEL_BATCH": "1"}
+                    ),
+                    [
+                        "bazel",
+                        "--output_user_root=/tmp/bazel-output",
+                        *([] if explicit_batch else ["--batch"]),
+                        "--noexperimental_remote_repo_contents_cache",
+                        *args,
+                    ],
+                )
+
     def test_bazel_command_uses_configured_local_caches(self) -> None:
         env = {
             "BAZEL_REPO_CONTENTS_CACHE": "/tmp/bazel-repo-contents",
@@ -244,17 +279,39 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "//codex-rs/...",
                 "--",
                 "--program-arg",
-                env={"BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository"},
+                env={
+                    "BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository",
+                    "GITHUB_ACTIONS": "true",
+                    "RUNNER_ENVIRONMENT": "github-hosted",
+                },
             ),
             [
                 "bazel",
+                "--noexperimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
                 "--repository_cache=/tmp/bazel-repository",
+                "--disk_cache=",
                 "--",
                 "--program-arg",
             ],
         )
+
+        for runner, explicit_cache in (
+            ("github-hosted", "--disk_cache=/bounded-cache"),
+            ("self-hosted", ""),
+        ):
+            with self.subTest(runner=runner, explicit_cache=explicit_cache):
+                args = ["build", "//codex-rs/..."]
+                if explicit_cache:
+                    args.append(explicit_cache)
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_command(
+                        *args,
+                        env={"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": runner},
+                    ),
+                    ["bazel", "--noexperimental_remote_repo_contents_cache", *args],
+                )
 
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (
@@ -266,6 +323,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
         env = os.environ.copy()
         env["CODEX_BAZEL_BIN"] = sys.executable
         env.pop("BAZEL_OUTPUT_USER_ROOT", None)
+        env.pop("CODEX_BAZEL_BATCH", None)
         env.pop("BUILDBUDDY_API_KEY", None)
         env.pop("GITHUB_ACTIONS", None)
 

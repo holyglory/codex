@@ -132,8 +132,8 @@ pub(crate) async fn time_metrics(
     .await
     .map_err(UsageStoreError::Database)?;
     let mut timing = ReportTimeMetrics {
-        execution_wall_union: duration(0, 0)?,
-        summed_per_agent_active: duration(0, 0)?,
+        execution_wall_union: duration(/*milliseconds*/ 0, /*unknown*/ 0)?,
+        summed_per_agent_active: duration(/*milliseconds*/ 0, /*unknown*/ 0)?,
         ..ReportTimeMetrics::default()
     };
     for row in rows {
@@ -186,7 +186,7 @@ pub(crate) async fn time_metrics(
     .await
     .map_err(UsageStoreError::Database)?;
     let mut tools = ToolMetrics {
-        duration: duration(0, 0)?,
+        duration: duration(/*milliseconds*/ 0, /*unknown*/ 0)?,
         duration_basis: "sum of clipped UTC wall intervals; lifecycle facts retain full monotonic duration",
         ..ToolMetrics::default()
     };

@@ -82,9 +82,12 @@ async fn dropped_wait_creation_is_drained_without_leaving_a_registration() {
 async fn missing_scheduler_fails_wait_creation_without_leaking_a_registration() {
     let (runtime, _directory) = fixture().await;
     let store = runtime.event_subscriptions().clone();
-    let result = timeout(Duration::from_secs(6), store.create_wait(request(), 1_000))
-        .await
-        .unwrap();
+    let result = timeout(
+        Duration::from_secs(6),
+        store.create_wait(request(), /*now_ms*/ 1_000),
+    )
+    .await
+    .unwrap();
     assert!(matches!(result, Err(StoreError::Unavailable(_))));
     assert!(store.wait_requests.lock().unwrap().is_empty());
     assert!(store.coordinator_subscriptions().await.unwrap().is_empty());

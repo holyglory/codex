@@ -38,10 +38,12 @@ mod imp {
     use crate::unified_exec::SpawnLifecycle;
     use codex_shell_escalation::ESCALATE_SOCKET_ENV_VAR;
     use codex_shell_escalation::EscalationSession;
+    use std::sync::Arc;
 
     #[derive(Debug)]
     struct ZshForkSpawnLifecycle {
         escalation_session: EscalationSession,
+        user_declined: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl SpawnLifecycle for ZshForkSpawnLifecycle {
@@ -52,6 +54,11 @@ mod imp {
                 .and_then(|fd| fd.parse().ok())
                 .into_iter()
                 .collect()
+        }
+
+        fn was_user_declined(&self) -> bool {
+            self.user_declined
+                .load(std::sync::atomic::Ordering::Acquire)
         }
 
         fn after_spawn(&mut self) {
@@ -83,6 +90,7 @@ mod imp {
             exec_request: prepared.exec_request,
             spawn_lifecycle: Box::new(ZshForkSpawnLifecycle {
                 escalation_session: prepared.escalation_session,
+                user_declined: prepared.user_declined,
             }),
         }))
     }
