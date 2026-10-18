@@ -341,7 +341,12 @@ async fn repository_merge_waits_for_writer_and_preserves_concurrent_capture() {
     let merge_target = target.clone();
     let merge = tokio::spawn(async move {
         merge_store
-            .append_repository_merge(merge_event_id, &merge_source, &merge_target, 3)
+            .append_repository_merge(
+                merge_event_id,
+                &merge_source,
+                &merge_target,
+                /*occurred_at_ms*/ 3,
+            )
             .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
