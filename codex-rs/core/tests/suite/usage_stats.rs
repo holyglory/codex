@@ -905,6 +905,8 @@ text(JSON.stringify(result));
     assert_eq!(summary["includeDescendants"], true);
     if let Some(scale) = scale {
         assert_eq!(summary["rootThreadId"], "scale-root");
+        assert_eq!(summary["timeRange"]["startMs"], scale.from_at_ms);
+        assert_eq!(summary["timeRange"]["endMs"], scale.to_at_ms);
         assert_eq!(summary["counts"]["threads"], scale.threads);
         assert_eq!(summary["counts"]["agents"], scale.threads);
         assert_eq!(summary["counts"]["rawOperations"], scale.operations);
@@ -913,6 +915,7 @@ text(JSON.stringify(result));
             scale.operations
         );
         assert_eq!(summary["counts"]["modelRequests"], scale.operations);
+        assert_eq!(summary["counts"]["rawToolOperations"], 0);
         assert_eq!(summary["totals"]["operations"], scale.operations);
         assert_eq!(summary["totals"]["modelRequests"], scale.operations);
         assert_eq!(
