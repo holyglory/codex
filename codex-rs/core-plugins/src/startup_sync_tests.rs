@@ -1047,9 +1047,25 @@ async fn sync_openai_plugins_repo_uses_http_without_git_transport() {
     let tmp = tempdir().expect("tempdir");
     let server = MockServer::start().await;
     let sha = "0123456789abcdef0123456789abcdef01234567";
+    let mut zipball = curated_repo_zipball_bytes(sha);
+    let helper_header_start = {
+        let mut archive = ZipArchive::new(std::io::Cursor::new(&zipball)).expect("read zipball");
+        usize::try_from(
+            archive
+                .by_name(&format!("openai-plugins-{sha}/plugins/gmail/bin/helper"))
+                .expect("read helper entry")
+                .central_header_start(),
+        )
+        .expect("helper central header offset")
+    };
+    // ZipWriter::unix_permissions masks special bits, so put them in the Unix
+    // central-directory attributes exactly as an untrusted archive can.
+    zipball[helper_header_start + 5] = 3;
+    zipball[helper_header_start + 38..helper_header_start + 42]
+        .copy_from_slice(&(0o107751_u32 << 16).to_le_bytes());
 
     mount_github_repo_and_ref(&server, sha).await;
-    mount_github_zipball(&server, sha, curated_repo_zipball_bytes(sha)).await;
+    mount_github_zipball(&server, sha, zipball).await;
 
     let synced_sha = run_sync_without_git(
         tmp.path().to_path_buf(),
@@ -1060,7 +1076,26 @@ async fn sync_openai_plugins_repo_uses_http_without_git_transport() {
     .expect("HTTP sync should succeed");
 
     assert_eq!(synced_sha, sha);
-    assert_curated_gmail_repo(&curated_plugins_repo_path(tmp.path()));
+    let repo_path = curated_plugins_repo_path(tmp.path());
+    assert_curated_gmail_repo(&repo_path);
+    let helper_path = repo_path.join("plugins/gmail/bin/helper");
+    assert_eq!(
+        std::fs::read(&helper_path).expect("read extracted helper"),
+        b"curated helper fixture\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(&helper_path)
+                .expect("read helper permissions")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o751
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -1414,6 +1449,15 @@ fn curated_repo_zipball_bytes(sha: &str) -> Vec<u8> {
     writer
         .write_all(br#"{"name":"gmail"}"#)
         .expect("write plugin manifest");
+    writer
+        .start_file(
+            format!("{root}/plugins/gmail/bin/helper"),
+            options.unix_permissions(0o751),
+        )
+        .expect("start helper entry");
+    writer
+        .write_all(b"curated helper fixture\n")
+        .expect("write helper");
 
     writer.finish().expect("finish zip writer").into_inner()
 }
