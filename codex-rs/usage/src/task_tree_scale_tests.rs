@@ -104,6 +104,22 @@ async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
     .execute(&store.pool)
     .await
     .expect("bulk operations");
+    sqlx::query(
+        "INSERT INTO tool_invocations(
+             id, operation_id, operation_kind, tool_kind, safe_tool_name,
+             operation_family, observation_timing, covering_model_request_id,
+             execution_group_id, execution_role
+         ) VALUES
+             ('20000000-0000-4000-8000-000000000000', '10000000-0000-4000-8000-000000000000',
+              'activity_control', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+              '30000000-0000-4000-8000-000000000000', 'wrapper'),
+             ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001',
+              'activity_control', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+              '30000000-0000-4000-8000-000000000000', 'nested')",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("bulk tool invocations");
 
     let summary = store
         .task_tree_summary(TaskTreeSummaryQuery {
@@ -117,6 +133,11 @@ async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
     assert_eq!(summary.counts.threads, 2);
     assert_eq!(summary.counts.agents, 1);
     assert_eq!(summary.counts.raw_operations, 33_000);
-    assert_eq!(summary.counts.deduplicated_operations, 33_000);
+    assert_eq!(summary.counts.deduplicated_operations, 32_999);
     assert_eq!(summary.counts.model_requests, 0);
+    assert_eq!(summary.counts.raw_tool_operations, 2);
+    assert_eq!(summary.counts.deduplicated_tool_operations, 1);
+    assert_eq!(summary.counts.wrapper_tool_operations, 1);
+    assert_eq!(summary.counts.nested_tool_operations, 1);
+    assert_eq!(summary.totals.operations, 32_999);
 }
