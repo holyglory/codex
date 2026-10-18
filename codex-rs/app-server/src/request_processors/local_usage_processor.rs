@@ -131,7 +131,7 @@ impl LocalUsageRequestProcessor {
             .map_err(store_error)?
             .ok_or_else(resource_not_found)?;
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: Some(id),
@@ -194,7 +194,7 @@ impl LocalUsageRequestProcessor {
             .map_err(store_error)?
             .ok_or_else(resource_not_found)?;
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: None,
@@ -234,6 +234,7 @@ impl LocalUsageRequestProcessor {
             .append_repository_alias(FactEventId::new(), &canonical, &label, now_ms())
             .await
             .map_err(store_error)?;
+        self.ensure_report_ready(&store, None, None).await?;
         let record = store
             .read_repository(&canonical)
             .await
@@ -266,6 +267,7 @@ impl LocalUsageRequestProcessor {
             .append_repository_merge(FactEventId::new(), &source, &target, now_ms())
             .await
             .map_err(store_error)?;
+        self.ensure_report_ready(&store, None, None).await?;
         let record = store
             .read_repository(&target)
             .await
@@ -468,7 +470,7 @@ impl LocalUsageRequestProcessor {
         let include_unassigned_worktrees =
             filters.include_unassigned.unwrap_or(worktree_ids.is_none());
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids,
                 include_unassigned_worktrees,
                 thread_id: filters.thread_id.map(thread_id).transpose()?,
@@ -534,7 +536,7 @@ impl LocalUsageRequestProcessor {
         record: UsageRepositoryRecord,
     ) -> Result<LocalUsageRepository, JSONRPCErrorError> {
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: None,
