@@ -264,7 +264,11 @@ def bazel_args_with_remote_config(
         )
     ):
         license_args.append(f"--repo_env={acknowledgement}=1")
-    voice_args = windows_voice_args(configured_args, env)
+    voice_args = (
+        windows_voice_args(configured_args, env)
+        if args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
+        else []
+    )
     if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")

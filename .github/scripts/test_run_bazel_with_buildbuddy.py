@@ -120,6 +120,14 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             "VOICE_WINDOWS_SYSTEM_ROOT": r"C:\Windows",
             "VOICE_WINDOWS_HOST_ARCH": "AMD64",
         }
+        for command, operand in (("query", "tests(//...)"), ("info", "bazel-testlogs")):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        [command, operand], voice_env
+                    ),
+                    [command, operand],
+                )
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(
                 ["build", "--", "//third_party/voice:native_runtime"],
