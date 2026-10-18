@@ -84,9 +84,8 @@ impl UsageStore {
             .iter()
             .map(|operation| (operation.id.clone(), operation.clone()))
             .collect::<HashMap<_, _>>();
-        let (excluded_wrappers, tool_counts) = self
-            .task_tree_tool_roles(connection, &thread_ids, query.time_range)
-            .await?;
+        let (excluded_wrappers, tool_counts) =
+            self.task_tree_tool_roles(connection, &operations).await?;
         let effective_operation_ids = operations
             .iter()
             .filter(|operation| !excluded_wrappers.contains(&operation.id))

@@ -11,24 +11,23 @@ impl UsageStore {
     pub(super) async fn task_tree_tool_roles(
         &self,
         connection: &mut SqliteConnection,
-        thread_ids: &[String],
-        range: UtcTimeRange,
+        operations: &[OperationRow],
     ) -> Result<(HashSet<String>, ToolCounts), UsageStoreError> {
+        if operations.is_empty() {
+            return Ok((HashSet::new(), ToolCounts::default()));
+        }
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT operation.id, tool.execution_group_id, tool.execution_role
-               FROM tool_invocations AS tool
-               CROSS JOIN operations AS operation ON operation.id = tool.operation_id
-               LEFT JOIN operation_events AS terminal
-                 ON terminal.operation_id = operation.id AND terminal.terminal = 1
-               WHERE operation.thread_id IN ("#,
+               FROM operations AS operation
+               JOIN tool_invocations AS tool ON tool.operation_id = operation.id
+               WHERE operation.id IN ("#,
         );
-        push_string_binds(&mut query, thread_ids);
-        query
-            .push(") AND operation.started_at_ms < ")
-            .push_bind(range.end_ms())
-            .push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
-            .push_bind(range.start_ms())
-            .push(')');
+        let operation_ids = operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect::<Vec<_>>();
+        push_string_binds(&mut query, &operation_ids);
+        query.push(')');
         let rows = query
             .build()
             .fetch_all(&mut *connection)
