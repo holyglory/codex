@@ -199,21 +199,6 @@ def bazel_args_without_remote_execution(args: Sequence[str]) -> list[str]:
     ]
 
 
-def windows_msvc_fallback_args(
-    args: Sequence[str], env: Mapping[str, str]
-) -> list[str]:
-    """Select the MSVC target when Windows cross CI lacks remote execution."""
-    if (
-        env.get("RUNNER_OS") != "Windows"
-        or env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") != "1"
-        or env.get("BUILDBUDDY_API_KEY")
-    ):
-        return []
-    if any(arg == "--platforms" or arg.startswith("--platforms=") for arg in args):
-        return []
-    return [WINDOWS_MSVC_TARGET_PLATFORM]
-
-
 def bazel_args_with_remote_config(
     args: Sequence[str], env: Mapping[str, str]
 ) -> list[str]:
@@ -288,7 +273,18 @@ def bazel_args_with_remote_config(
         if args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
         else []
     )
-    fallback_args = windows_msvc_fallback_args(configured_args, env)
+    fallback_args = []
+    if (
+        args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
+        and env.get("RUNNER_OS") == "Windows"
+        and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
+        and not env.get("BUILDBUDDY_API_KEY")
+        and not any(
+            arg == "--platforms" or arg.startswith("--platforms=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
     if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")
