@@ -109,6 +109,12 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ),
             ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
         )
+        for args in (["query", "//codex-rs/..."], ["info", "bazel-testlogs"]):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+                    args,
+                )
 
         for explicit in (
             ["--platforms=//:windows_x86_64_gnullvm"],
