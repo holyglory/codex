@@ -132,11 +132,14 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
-        if mode == SummaryReadMode::RequireReady && query.time_range.is_none() && include_global {
+        if mode == SummaryReadMode::RequireReady && query.time_range.is_none() {
             let status = crate::report_cache::status_on(&mut tx)
                 .await
                 .map_err(database_error)?;
-            if !status.ready {
+            let core_ready = crate::report_cache::is_ready_on(&mut tx)
+                .await
+                .map_err(database_error)?;
+            if !core_ready {
                 return Err(UsageStoreError::ReportWarming(Box::new(status)));
             }
         }

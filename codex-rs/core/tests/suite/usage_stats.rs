@@ -62,6 +62,34 @@ fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
         .unwrap_or_else(|error| panic!("JSON tool output ({error}): {content}"))
 }
 
+#[cfg(unix)]
+fn mark_global_report_warming(home: &TempDir) -> Result<()> {
+    let script = "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute(\"UPDATE _usage_report_global_meta SET ready=0 WHERE singleton=1\"); db.commit(); db.close()";
+    let status = std::process::Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &home.path().join("usage/usage.sqlite3").to_string_lossy(),
+        ])
+        .status()?;
+    anyhow::ensure!(status.success(), "mark global report warming");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn mark_core_report_warming(home: &TempDir) -> Result<()> {
+    let script = "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute(\"UPDATE _usage_report_cache_meta SET schema_version=999, ready=0 WHERE singleton=1\"); db.commit(); db.close()";
+    let status = std::process::Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &home.path().join("usage/usage.sqlite3").to_string_lossy(),
+        ])
+        .status()?;
+    anyhow::ensure!(status.success(), "mark core report warming");
+    Ok(())
+}
+
 fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> Value {
     json!({
         "type": "response.completed",
@@ -256,6 +284,60 @@ async fn agent_reads_finite_performance_review_with_descendants() -> Result<()> 
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-warming"),
+                ev_function_call(
+                    "read-current-chat",
+                    "usage_stats",
+                    &json!({
+                        "action": "summary",
+                        "scope": "current_chat"
+                    })
+                    .to_string(),
+                ),
+                ev_completed("resp-warming"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-warming-followup"),
+                ev_assistant_message("msg-warming", "warming read"),
+                ev_completed("resp-warming-followup"),
+            ]),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    UsageStore::open(home.path()).await?.close().await;
+    let test = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build(&server)
+        .await?;
+    mark_core_report_warming(&home)?;
+    test.submit_turn("inspect current chat usage").await?;
+
+    let requests = response_mock.requests();
+    let warming = requests
+        .iter()
+        .find_map(|request| request.function_call_output_text("read-current-chat"))
+        .context("current chat usage output")?;
+    let warming: Value = serde_json::from_str(&warming)?;
+    assert_eq!(warming["kind"], "usageReportWarming");
+    assert_eq!(warming["action"], "summary");
+    assert_eq!(warming["reportingOperationInProgress"], false);
+    assert_eq!(warming["retryAfterMs"], 1_000);
+    assert_eq!(warming["cache"]["ready"], false);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_repo() -> Result<()>
 {
@@ -418,6 +500,7 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_reads_current_repository_usage_and_appends_a_classification_correction() -> Result<()>
 {
@@ -515,6 +598,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         sleep(Duration::from_millis(10)).await;
     }
     assert!(report_ready, "usage report cache did not become ready");
+    mark_global_report_warming(&home)?;
     test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
