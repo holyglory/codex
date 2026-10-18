@@ -555,6 +555,14 @@ the authority for release outcomes and verification receipts.
   projections, dirty queues and metadata before and after a compatible
   upgrade, including rollback and re-upgrade with stale frontier metadata.
   Unsupported future components must not be reset or treated as refreshable.
+- **Check older live writers before a derived-cache upgrade.** Raw-schema
+  compatibility alone does not prove safe coexistence. The released
+  `0.162.1-multi.1` refresh preparation resets global components that differ
+  from version 2, including a newer version 3 component. Verify which serving
+  and worker processes share the collector during supported handover, and
+  require a stable component version and completed rebuild before reporting
+  recovery. Preserve sessions and raw history; a new launcher alone does not
+  replace already-running workers.
 - **Check build settings outside the test shell.** Language servers have their
   own process environment; a shared Cargo target in test declarations does not
   configure them. Inspect their effective target settings and newly created
