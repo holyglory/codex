@@ -747,7 +747,7 @@ async fn finite_window_selection_scales_with_lifetime_history() {
     );
     let callback_count = callbacks.load(Ordering::Relaxed);
     assert!(
-        callback_count < 1_000,
+        callback_count < 800,
         "finite window selection used {callback_count} SQLite progress callbacks"
     );
 }
