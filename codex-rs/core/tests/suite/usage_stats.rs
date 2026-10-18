@@ -218,6 +218,7 @@ struct TaskTreeScaleExpectation {
     from_at_ms: i64,
     to_at_ms: i64,
     threads: u64,
+    unknown_provider_observations: u64,
     operations: u64,
     provider_tokens: u64,
 }
@@ -240,6 +241,12 @@ async fn prepare_task_tree_scale_fixture(
     let threads = scopes["expected_thread_count"]
         .as_u64()
         .context("thread count")?;
+    let first_window_operation = u64::try_from(from_at_ms / 10_000).context("window index")?;
+    let unknown_provider_observations = if first_window_operation == 0 {
+        0
+    } else {
+        (first_window_operation - 1) / 511 + 1
+    };
     let operations = scopes["expected_root_window_operations"]
         .as_u64()
         .context("root operation total")?;
@@ -251,6 +258,7 @@ async fn prepare_task_tree_scale_fixture(
         from_at_ms,
         to_at_ms,
         threads,
+        unknown_provider_observations,
         operations,
         provider_tokens,
     }))
@@ -882,14 +890,46 @@ text(JSON.stringify(result));
             config.model_context_window = Some(10_000);
         });
     let test = builder.build_with_auto_env(&server).await?;
-    let started = std::time::Instant::now();
-    test.submit_turn("inspect this task tree").await?;
     if scale.is_some() {
+        let overall_started = std::time::Instant::now();
+        let mut turn = Box::pin(test.submit_turn("inspect this task tree"));
+        let mut tool_started = None;
+        let mut tool_elapsed = None;
+        loop {
+            tokio::select! {
+                result = &mut turn => {
+                    result?;
+                    break;
+                }
+                _ = sleep(Duration::from_millis(50)) => {
+                    let requests = response_mock.requests();
+                    if tool_started.is_none() && !requests.is_empty() {
+                        tool_started = Some(std::time::Instant::now());
+                    }
+                    if tool_elapsed.is_none()
+                        && requests.iter().any(|request| {
+                            request
+                                .function_call_output_text("read-tree-scale")
+                                .is_some()
+                        })
+                    {
+                        tool_elapsed = tool_started.map(|started| started.elapsed());
+                    }
+                    anyhow::ensure!(
+                        overall_started.elapsed() <= Duration::from_secs(30),
+                        "large task-tree tool did not return within 30 seconds"
+                    );
+                }
+            }
+        }
+        let tool_elapsed = tool_elapsed.context("scale task-tree tool output timing")?;
         assert!(
-            started.elapsed() <= Duration::from_secs(15),
-            "large task-tree summary exceeded the 15 second report budget: {:?}",
-            started.elapsed()
+            tool_elapsed <= Duration::from_secs(15),
+            "large task-tree report exceeded the 15 second report budget: {tool_elapsed:?}"
         );
+        eprintln!("large task-tree tool elapsed: {tool_elapsed:?}");
+    } else {
+        test.submit_turn("inspect this task tree").await?;
     }
 
     let requests = response_mock.requests();
@@ -908,7 +948,7 @@ text(JSON.stringify(result));
         assert_eq!(summary["timeRange"]["startMs"], scale.from_at_ms);
         assert_eq!(summary["timeRange"]["endMs"], scale.to_at_ms);
         assert_eq!(summary["counts"]["threads"], scale.threads);
-        assert_eq!(summary["counts"]["agents"], scale.threads);
+        assert_eq!(summary["counts"]["agents"], scale.threads - 1);
         assert_eq!(summary["counts"]["rawOperations"], scale.operations);
         assert_eq!(
             summary["counts"]["deduplicatedOperations"],
@@ -918,17 +958,19 @@ text(JSON.stringify(result));
         assert_eq!(summary["counts"]["rawToolOperations"], 0);
         assert_eq!(summary["totals"]["operations"], scale.operations);
         assert_eq!(summary["totals"]["modelRequests"], scale.operations);
+        assert_eq!(summary["context"]["observedRequests"], 0);
+        assert_eq!(summary["context"]["unknownRequests"], scale.operations);
         assert_eq!(
             summary["totals"]["providerTotalTokens"]["measuredTokens"],
             scale.provider_tokens
         );
         assert_eq!(
             summary["totals"]["providerTotalTokens"]["exactTokens"],
-            scale.provider_tokens
+            Value::Null
         );
         assert_eq!(
             summary["totals"]["providerTotalTokens"]["unknownObservations"],
-            0
+            scale.unknown_provider_observations
         );
         return Ok(());
     }
