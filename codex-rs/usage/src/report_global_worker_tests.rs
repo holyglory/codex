@@ -226,7 +226,7 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
     );
 
     store
-        .require_report_ready(None)
+        .require_report_ready(/*range*/ None)
         .await
         .expect("first bounded catch-up");
     let summary = store
@@ -256,7 +256,7 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
         .await
         .expect("second operation");
     store
-        .require_report_ready(None)
+        .require_report_ready(/*range*/ None)
         .await
         .expect("second bounded catch-up");
     let summary = store
