@@ -515,6 +515,19 @@ the authority for release outcomes and verification receipts.
   reporting windows. Keep operation and hour queues progressing together; a
   short SQLite deadline alone can repeatedly interrupt an expensive page.
   Measure the whole hourly calculation and preserve its reported aggregates.
+- **Verify every public reporting entry point.** Performance-review deadlines
+  do not protect separate task-tree queries. Row and output caps do not bound
+  SQLite execution time. Exercise task-tree summaries on the same large,
+  synthetic history, require successful finite-window descendant reports, and
+  verify admission, cancellation, snapshot release and later capture through
+  the actual tool. Preserve accounting and requested scopes when adding the
+  existing report budget to another query path.
+- **Include generated integration binaries in focused lint.** The Rust crate
+  macro generates integration labels such as `core-all-test-bin` and
+  `app-server-all-test-bin`. A pass over libraries and unit-test binaries does
+  not cover those sources. Resolve the labels from `defs.bzl` and include the
+  changed integration boundary; keep the complete target-list check in frozen
+  release acceptance.
 - **Check the cache needed by each report scope.** Global unbounded summaries
   need global aggregates; scoped summaries can use a ready core projection.
   Missing bounds and one-sided bounds are both unbounded for admission, but

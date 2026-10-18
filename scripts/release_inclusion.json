@@ -134,7 +134,10 @@
         "codex-rs/usage/src/report_global_worker_tests.rs",
         "codex-rs/usage/src/report_sql.rs",
         "codex-rs/usage/src/report_scale_tests.rs",
-        "scripts/check_usage_history.py"
+        "scripts/check_usage_history.py",
+        "codex-rs/usage/src/task_tree_summary.rs",
+        "codex-rs/usage/src/task_tree_summary_tests.rs",
+        "codex-rs/usage/src/task_tree_scale_tests.rs"
       ],
       "packages": [
         "codex-core",
@@ -146,7 +149,8 @@
         "test(suite::v2::local_usage::)",
         "test(report::tests::backfill_tests::)",
         "test(report::tests::global_tests::)",
-        "test(report_global::worker_tests::)"
+        "test(report_global::worker_tests::)",
+        "test(task_tree_summary::)"
       ]
     },
     {
