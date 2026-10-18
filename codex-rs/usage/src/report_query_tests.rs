@@ -184,6 +184,94 @@ async fn scoped_reports_preserve_results_when_unrelated_history_grows() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn ready_cache_preserves_one_sided_window_bounds() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 900)
+        .await
+        .expect("process");
+    insert_thread(&store, "bounds").await;
+    let mut old = operation(process, "bounds", OperationKind::ModelRequest);
+    old.started_at_ms = 1_000;
+    let old_request = record_request(&store, &old).await;
+    let mut new = operation(process, "bounds", OperationKind::ModelRequest);
+    new.started_at_ms = 2_000;
+    let new_request = record_request(&store, &new).await;
+    for (operation, ended_at_ms) in [(&old, 1_100), (&new, 2_100)] {
+        store
+            .finish_operation(&TerminalOperation {
+                operation_id: operation.id,
+                status: TerminalStatus::Completed,
+                occurred_at_ms: ended_at_ms,
+                duration_ns: 100_000_000,
+                error_category: None,
+            })
+            .await
+            .expect("terminal");
+    }
+    for (request, observed_at_ms, count) in [(old_request, 1_002, 11), (new_request, 2_002, 13)] {
+        let mut fact = token(
+            request,
+            RepositoryBucket::Unknown,
+            Some(count),
+            CoverageState::Complete,
+        );
+        fact.observed_at_ms = observed_at_ms;
+        store
+            .record_token_observation(&fact)
+            .await
+            .expect("token fact");
+    }
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("ready cache");
+    store.report_refresh.cancel();
+    let query = |time_range| UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
+        thread_id: Some(ThreadId::new("bounds").expect("thread")),
+        repository_id: None,
+        account_profile_ref: None,
+        time_range,
+    };
+    let from_only = store
+        .usage_summary_query(query(Some(
+            UtcTimeRange::new(1_500, i64::MAX).expect("from"),
+        )))
+        .await
+        .expect("from-only summary");
+    let from_expected = store
+        .usage_summary_query(query(Some(
+            UtcTimeRange::new(1_500, 2_500).expect("from range"),
+        )))
+        .await
+        .expect("from expected");
+    let to_only = store
+        .usage_summary_query(query(Some(UtcTimeRange::new(i64::MIN, 1_500).expect("to"))))
+        .await
+        .expect("to-only summary");
+    let to_expected = store
+        .usage_summary_query(query(Some(
+            UtcTimeRange::new(500, 1_500).expect("to range"),
+        )))
+        .await
+        .expect("to expected");
+    for (actual, expected, tokens) in [
+        (&from_only, &from_expected, 13),
+        (&to_only, &to_expected, 11),
+    ] {
+        assert_eq!(actual.operation_count, expected.operation_count);
+        assert_eq!(actual.model_request_count, expected.model_request_count);
+        assert_eq!(actual.coverage.event_counts, expected.coverage.event_counts);
+        assert_eq!(actual.tokens, expected.tokens);
+        assert_eq!(actual.tokens[0].measured_tokens, tokens);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn completed_capture_keeps_history_without_reporting_the_start_as_a_gap() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");

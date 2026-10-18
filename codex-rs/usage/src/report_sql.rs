@@ -151,7 +151,7 @@ impl UsageStore {
             .await
             .unwrap_or(false);
         let source = if global_ready {
-            if include_global && unbounded {
+            if include_global && query.time_range.is_none() {
                 ReportSource::CachedAll
             } else {
                 ReportSource::CachedScoped
@@ -215,7 +215,8 @@ impl UsageStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(database_error)?
-        } else if source != ReportSource::Canonical && unbounded && include_global {
+        } else if source != ReportSource::Canonical && query.time_range.is_none() && include_global
+        {
             // Global cached reports select every operation. Keep this check on
             // the derived projections so it does not join 1.3M rows through a
             // temporary selected table just to inspect the latest marker.
@@ -258,7 +259,7 @@ impl UsageStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(database_error)?
-        } else if source != ReportSource::Canonical && unbounded {
+        } else if source != ReportSource::Canonical && query.time_range.is_none() {
             sqlx::query_scalar(r#"
                 SELECT EXISTS(SELECT 1 FROM _usage_report_latest_coverage AS coverage
                     JOIN _usage_selected AS selected ON selected.id = coverage.operation_id
