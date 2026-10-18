@@ -549,7 +549,7 @@ async fn build_summary(
         .await
         .map_err(UsageCommandError::from)?;
     let summary = store
-        .usage_summary_query(UsageSummaryQuery {
+        .usage_summary_query_strict(UsageSummaryQuery {
             worktree_ids: None,
             include_unassigned_worktrees: true,
             thread_id,
@@ -904,7 +904,7 @@ async fn coverage_header(
     time_range: Option<UtcTimeRange>,
 ) -> Result<String, UsageCommandError> {
     Ok(store
-        .usage_summary_query(UsageSummaryQuery {
+        .usage_summary_query_strict(UsageSummaryQuery {
             worktree_ids: None,
             include_unassigned_worktrees: true,
             thread_id,
