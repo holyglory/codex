@@ -747,10 +747,13 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2(
         }
         Ok(Err(error)) => return Err(error),
         Err(_) => {
-            // Some zsh builds abort the turn immediately after the rejected
-            // subcommand without emitting a parent `item/completed`, and Linux
-            // sandbox failures can also complete the turn before the parent
-            // completion item is observed.
+            // The explicit Cancel decision may abort the turn before the
+            // parent completion item. A network-rule denial must still emit
+            // the parent's Declined item.
+            assert!(
+                !network_rule_deny,
+                "network-rule denial omitted the parent Declined item"
+            );
             let completed_notif = timeout(
                 DEFAULT_READ_TIMEOUT,
                 mcp.read_stream_until_notification_message("turn/completed"),
@@ -763,10 +766,7 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2(
             )?;
             assert_eq!(completed.thread_id, thread.id);
             assert_eq!(completed.turn.id, turn.id);
-            assert!(matches!(
-                completed.turn.status,
-                TurnStatus::Interrupted | TurnStatus::Completed
-            ));
+            assert_eq!(completed.turn.status, TurnStatus::Interrupted);
         }
     }
 

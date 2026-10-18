@@ -208,6 +208,7 @@ jobs:
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         uses: ./.github/actions/run-argument-comment-lint
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: ${{ runner.os }}
           buildbuddy-api-key: ${{ secrets.BUILDBUDDY_API_KEY }}
 
