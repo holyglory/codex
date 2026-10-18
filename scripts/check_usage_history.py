@@ -34,15 +34,17 @@ def expected_shape(requests):
     }
 
 
-def native_probe(root, state, fixture, environment, test):
+def native_probe(
+    root, state, fixture, environment, test, package="codex-usage", lib=True
+):
+    command = ["just", "test", "--locked", "-p", package]
+    if lib:
+        command.append("--lib")
+    else:
+        command.extend(["--test", "all"])
     return subprocess.run(
-        [
-            "just",
-            "test",
-            "--locked",
-            "-p",
-            "codex-usage",
-            "--lib",
+        command
+        + [
             "--run-ignored",
             "only",
             "--success-output",
@@ -83,6 +85,15 @@ def scopes_for(fixture):
         for row in rows
     ):
         raise ValueError("Usage windows must carry independently calculated totals")
+    if (
+        scopes.get("root_thread_id") != "scale-root"
+        or scopes.get("include_descendants") is not True
+        or scopes.get("expected_root_window_operations")
+        != sum(row["expected_operations"] for row in rows)
+        or scopes.get("expected_root_window_provider_tokens")
+        != sum(row["expected_provider_tokens"] for row in rows)
+    ):
+        raise ValueError("Missing root descendant finite-window expectations")
     return scopes
 
 
@@ -380,6 +391,18 @@ def check(root, state, binary):
                 )
             except (OSError, ValueError, KeyError):
                 results[f"{label}_native"] = False
+            results[f"{label}_native_finite_review"] = (
+                native_probe(
+                    root,
+                    state,
+                    fixture,
+                    environment,
+                    "agent_reads_finite_performance_review_with_descendants",
+                    package="codex-core",
+                    lib=False,
+                )
+                == 0
+            )
         reader.rollback()
     with sqlite3.connect(
         f"file:{warming}/usage/usage.sqlite3?mode=ro", uri=True
