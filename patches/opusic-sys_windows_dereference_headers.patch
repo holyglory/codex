@@ -1,0 +1,43 @@
+--- a/build.rs
++++ b/build.rs
+@@ -76,6 +76,31 @@
+     }
+ }
+ 
++#[cfg(windows)]
++fn dereference_installed_headers(out_dir: &path::Path) {
++    // Bazel validates build-script output trees. CMake preserves symlinked
++    // source headers during install, but those links can point back into the
++    // execroot and are dangling when Bazel materializes the tree artifact.
++    let include_dir = out_dir.join("include").join("opus");
++    let entries = std::fs::read_dir(&include_dir)
++        .expect("opusic-sys CMake install did not create the Opus include directory");
++    for entry in entries {
++        let header = entry
++            .expect("cannot inspect the opusic-sys installed Opus headers")
++            .path();
++        let metadata = std::fs::symlink_metadata(&header)
++            .expect("cannot inspect an opusic-sys installed Opus header");
++        if metadata.file_type().is_symlink() {
++            let contents = std::fs::read(&header)
++                .expect("cannot read a symlinked opusic-sys installed Opus header");
++            std::fs::remove_file(&header)
++                .expect("cannot replace a symlinked opusic-sys installed Opus header");
++            std::fs::write(&header, contents)
++                .expect("cannot write a dereferenced opusic-sys installed Opus header");
++        }
++    }
++}
++
+ #[cfg(feature = "bundled")]
+ fn set_cmake_define_if_present(config: &mut cmake::Config, name: &str) {
+     if let Ok(value) = std::env::var(name) {
+@@ -235,6 +260,8 @@
+     }
+ 
+     let mut out_dir = cmake.build();
++    #[cfg(windows)]
++    dereference_installed_headers(&out_dir);
+ 
+     println!("cargo:rustc-link-lib=static=opus");
+ 
