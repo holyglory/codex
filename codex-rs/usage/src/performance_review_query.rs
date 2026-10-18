@@ -77,8 +77,8 @@ pub(crate) async fn window_operation_ids(
         // Apply the requested scope before walking historical interval indexes;
         // otherwise every repository report scans the entire collector first.
         ClassificationSource::Cache => "SELECT operation.id FROM bounds CROSS JOIN scoped operation WHERE operation.started_at_ms >= lower_ms AND operation.started_at_ms < upper_ms
-            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms > lower_ms AND cached.started_at_ms < upper_ms
-            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached JOIN scoped operation ON operation.id = cached.operation_id WHERE cached.ended_at_ms IS NULL AND cached.started_at_ms < upper_ms",
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached CROSS JOIN scoped operation WHERE operation.id = cached.operation_id AND cached.ended_at_ms > lower_ms AND cached.started_at_ms < upper_ms
+            UNION SELECT cached.operation_id FROM bounds CROSS JOIN _usage_report_operations cached CROSS JOIN scoped operation WHERE operation.id = cached.operation_id AND cached.ended_at_ms IS NULL AND cached.started_at_ms < upper_ms",
         ClassificationSource::Canonical => "SELECT operation.id FROM bounds CROSS JOIN scoped operation LEFT JOIN operation_events terminal ON terminal.operation_id = operation.id AND terminal.terminal = 1 WHERE operation.started_at_ms < upper_ms AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > lower_ms OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= lower_ms))",
     });
     builder.push(
@@ -135,7 +135,7 @@ fn selection_with_prefix(
         .push_bind(query.repository_id.as_ref().map(crate::RepositoryId::as_str))
         .push(" UNION SELECT merge.source_repository_id FROM repository_merge_events merge
             JOIN repository_family family ON merge.target_repository_id = family.id),
-            scoped AS MATERIALIZED (SELECT operation.* FROM ");
+            scoped AS NOT MATERIALIZED (SELECT operation.* FROM ");
     builder.push(if source.scope_materialized {
         "temp._review_scoped"
     } else {
