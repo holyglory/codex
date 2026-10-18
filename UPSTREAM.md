@@ -582,6 +582,11 @@ the authority for release outcomes and verification receipts.
   cursor, match the reported job identifier, and inspect authoritative status
   after a wait deadline. A timed-out submission or observer does not establish
   that the underlying operation was rejected or cancelled.
+  For native local-test waits, the connected `devcoordinator` publisher emits
+  `test.finished`; match both `repository_id` and the exact `run_id`.
+  `source.unavailable` requires checking provider health, and a wait deadline
+  is never a passing result. GitHub workflows need their own confirmed event
+  integration or the provider's existing watch command.
 - **Test effective-UID home resolution at the installed boundary.** A root
   launch with an inherited non-root `HOME` must use UID 0's passwd home when
   `CODEX_HOME` is unset; an explicit `CODEX_HOME` remains authoritative. The
