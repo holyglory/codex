@@ -35,18 +35,25 @@ def expected_shape(requests):
 
 
 def native_probe(
-    root, state, fixture, environment, test, package="codex-usage", lib=True
+    root,
+    state,
+    fixture,
+    environment,
+    test,
+    package="codex-usage",
+    lib=True,
+    run_ignored="only",
 ):
     command = ["just", "test", "--locked", "-p", package]
     if lib:
         command.append("--lib")
     else:
         command.extend(["--test", "all"])
+    if run_ignored is not None:
+        command.extend(["--run-ignored", run_ignored])
     return subprocess.run(
         command
         + [
-            "--run-ignored",
-            "only",
             "--success-output",
             "final",
             "--retries",
@@ -400,6 +407,7 @@ def check(root, state, binary):
                     "agent_reads_finite_performance_review_with_descendants",
                     package="codex-core",
                     lib=False,
+                    run_ignored=None,
                 )
                 == 0
             )
