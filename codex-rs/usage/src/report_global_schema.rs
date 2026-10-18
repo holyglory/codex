@@ -1,6 +1,6 @@
 //! Physical schema for the versioned global report component.
 
-pub(crate) const COMPONENT_VERSION: i64 = 2;
+pub(crate) const COMPONENT_VERSION: i64 = 3;
 
 pub(crate) const RESET_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_global_operation_insert;
@@ -28,6 +28,7 @@ DROP TABLE IF EXISTS _usage_report_global_operations;
 DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
 DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
 DROP TABLE IF EXISTS _usage_report_global_meta;
+DROP TABLE IF EXISTS _usage_report_global_seed;
 "#;
 
 pub(crate) const SCHEMA: &str = r#"
@@ -39,6 +40,11 @@ CREATE TABLE _usage_report_global_meta(
  ready INTEGER NOT NULL CHECK(ready IN (0,1)),
  dirty_revision INTEGER NOT NULL,
  applied_revision INTEGER NOT NULL
+) STRICT;
+CREATE TABLE _usage_report_global_seed(
+ source TEXT PRIMARY KEY NOT NULL,
+ cursor INTEGER NOT NULL,
+ high_water INTEGER NOT NULL CHECK(high_water>=cursor)
 ) STRICT;
 CREATE TABLE _usage_report_global_operations(
  operation_id TEXT PRIMARY KEY NOT NULL,
@@ -114,6 +120,11 @@ INSERT INTO _usage_report_global_unpriced_meta VALUES(1,0);
 INSERT INTO _usage_report_global_gap_v9 VALUES(1,0);
 INSERT INTO _usage_report_global_request VALUES(1,NULL,NULL,0,0);
 INSERT INTO _usage_report_global_meta VALUES(1,1,0,0,0,0,0);
+INSERT INTO _usage_report_global_seed VALUES
+ ('operations',0,0),
+ ('token_observations',0,0),
+ ('coverage_events',0,0),
+ ('activity_spans',0,0);
 CREATE TRIGGER _usage_report_global_operation_insert AFTER INSERT ON operations BEGIN
  INSERT OR IGNORE INTO _usage_report_global_dirty_operations VALUES(NEW.id);
  INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES(NEW.started_at_ms/3600000-(NEW.started_at_ms%3600000<0),NEW.started_at_ms/3600000-(NEW.started_at_ms%3600000<0)) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour);

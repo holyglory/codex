@@ -59,6 +59,7 @@ async fn global_component_initializes_and_reopens_from_core_schema() {
          DROP TABLE IF EXISTS _usage_report_global_classifications;
          DROP TABLE IF EXISTS _usage_report_global_counts;
          DROP TABLE IF EXISTS _usage_report_global_operations;
+         DROP TABLE IF EXISTS _usage_report_global_seed;
          DROP TABLE IF EXISTS _usage_report_global_meta;",
     )
     .execute(&store.pool)

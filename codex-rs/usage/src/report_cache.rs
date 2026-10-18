@@ -88,6 +88,7 @@ DROP TABLE IF EXISTS _usage_report_global_classifications;
 DROP TABLE IF EXISTS _usage_report_global_counts;
 DROP TABLE IF EXISTS _usage_report_global_operations;
 DROP TABLE IF EXISTS _usage_report_global_meta;
+DROP TABLE IF EXISTS _usage_report_global_seed;
 DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
 DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
 DROP TABLE IF EXISTS _usage_report_global_gap_v9;
