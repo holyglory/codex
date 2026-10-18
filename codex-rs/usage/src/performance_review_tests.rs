@@ -642,6 +642,21 @@ async fn finite_window_selection_scales_with_lifetime_history() {
         .execute(&mut *transaction)
         .await
         .expect("operation events");
+        sqlx::query(
+            "WITH RECURSIVE sequence(n) AS (
+                 SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
+             )
+             INSERT INTO coverage_events(
+                 event_id, operation_id, scope_kind, coverage_state, occurred_at_ms
+             )
+             SELECT printf('scale-old-coverage-%05d', ?1 + n), printf('scale-op-%05d', ?1 + n),
+                    'model_attempt', 'complete', 1000001 + ?1 + n
+             FROM sequence",
+        )
+        .bind(start)
+        .execute(&mut *transaction)
+        .await
+        .expect("old coverage events");
     }
     sqlx::query(
         "INSERT INTO operations(
