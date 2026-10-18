@@ -848,6 +848,15 @@ text(JSON.stringify(result));
                 ]),
                 sse(vec![
                     ev_response_created("resp-tree-2"),
+                    ev_assistant_message("msg-tree-ready", "ready"),
+                    ev_completed_with_usage(
+                        "resp-tree-2",
+                        /*input_tokens*/ 20,
+                        /*output_tokens*/ 3,
+                    ),
+                ]),
+                sse(vec![
+                    ev_response_created("resp-tree-3"),
                     ev_function_call(
                         "read-tree",
                         "usage_stats",
@@ -860,16 +869,12 @@ text(JSON.stringify(result));
                         })
                         .to_string(),
                     ),
-                    ev_completed_with_usage(
-                        "resp-tree-2",
-                        /*input_tokens*/ 20,
-                        /*output_tokens*/ 3,
-                    ),
+                    ev_completed("resp-tree-3"),
                 ]),
                 sse(vec![
-                    ev_response_created("resp-tree-3"),
+                    ev_response_created("resp-tree-4"),
                     ev_assistant_message("msg-tree", "done"),
-                    ev_completed("resp-tree-3"),
+                    ev_completed("resp-tree-4"),
                 ]),
             ],
         )
@@ -929,18 +934,23 @@ text(JSON.stringify(result));
         );
         eprintln!("large task-tree tool elapsed: {tool_elapsed:?}");
     } else {
+        test.submit_turn("prepare this task tree").await?;
         test.submit_turn("inspect this task tree").await?;
     }
 
     let requests = response_mock.requests();
-    let (summary_request, summary_call_id) = if scale.is_some() {
+    let summary_call_id = if scale.is_some() {
         assert_eq!(requests.len(), 2);
-        (1, "read-tree-scale")
+        "read-tree-scale"
     } else {
-        assert_eq!(requests.len(), 3);
-        (2, "read-tree")
+        assert_eq!(requests.len(), 4);
+        "read-tree"
     };
-    let summary = tool_output(&requests[summary_request], summary_call_id);
+    let summary_request = requests
+        .iter()
+        .find(|request| request.function_call_output_text(summary_call_id).is_some())
+        .context("task tree tool output request")?;
+    let summary = tool_output(summary_request, summary_call_id);
     assert_eq!(summary["kind"], "taskTreeSummary");
     assert_eq!(summary["includeDescendants"], true);
     if let Some(scale) = scale {
@@ -982,7 +992,7 @@ text(JSON.stringify(result));
         summary["totals"]["providerTotalTokens"]["measuredTokens"],
         35
     );
-    assert_eq!(summary["context"]["observedRequests"], 2);
+    assert_eq!(summary["context"]["observedRequests"], 3);
     let sources = summary["context"]["sources"]
         .as_array()
         .context("context source array")?;
@@ -1039,7 +1049,7 @@ text(JSON.stringify(result));
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(model_contexts.len(), 3);
+    assert_eq!(model_contexts.len(), 4);
     assert!(
         model_contexts
             .iter()
