@@ -16,8 +16,8 @@ impl UsageStore {
     ) -> Result<(HashSet<String>, ToolCounts), UsageStoreError> {
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT operation.id, tool.execution_group_id, tool.execution_role
-               FROM operations AS operation
-               JOIN tool_invocations AS tool ON tool.operation_id = operation.id
+               FROM tool_invocations AS tool
+               CROSS JOIN operations AS operation ON operation.id = tool.operation_id
                LEFT JOIN operation_events AS terminal
                  ON terminal.operation_id = operation.id AND terminal.terminal = 1
                WHERE operation.thread_id IN ("#,
@@ -259,8 +259,8 @@ impl UsageStore {
                       context.tool_output_estimated_tokens, context.estimator,
                       request.operation_id
                FROM model_request_context_sources AS context
-               JOIN model_requests AS request ON request.id = context.model_request_id
-               JOIN operations AS operation ON operation.id = request.operation_id
+               CROSS JOIN model_requests AS request ON request.id = context.model_request_id
+               CROSS JOIN operations AS operation ON operation.id = request.operation_id
                WHERE context.observed_at_ms >= "#,
         );
         query
