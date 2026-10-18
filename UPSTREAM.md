@@ -517,8 +517,10 @@ the authority for release outcomes and verification receipts.
   Measure the whole hourly calculation and preserve its reported aggregates.
 - **Check the cache needed by each report scope.** Global unbounded summaries
   need global aggregates; scoped summaries can use a ready core projection.
-  Missing bounds and one-sided bounds are both unbounded. Cover all three
-  through the actual agent tool, retain the existing global warming guard,
+  Missing bounds and one-sided bounds are both unbounded for admission, but
+  one-sided bounds must still filter counts, tokens and coverage. Only a
+  completely absent range can select all-time projections. Cover warming and
+  ready results through the actual interfaces, retain the global warming guard,
   and preserve typed warming fields through response decoration. Use portable
   SQL fixture setup instead of removing Windows coverage from existing tests.
 - **Preserve compatible cache state during startup upgrades.** Opening a
