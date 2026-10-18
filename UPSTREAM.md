@@ -7,8 +7,12 @@
 - Peeled commit: `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`
 - Selected: 2026-09-29
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.162.1+multi.1`
-- Downstream npm version: `0.162.1-multi.1`
+- Downstream Rust version: `0.162.1+multi.2`
+- Downstream npm version: `0.162.1-multi.2`
+- Local rollback source: `npm-v0.162.1-multi.1` at
+  `10da2ab565b9c322ef12b852eef1ad2041f47d4e`; retain its installed package and
+  the older `npm-v0.159.1-multi.3` tag. The older package cannot open the current
+  usage schema, so it is not a direct rollback target for the live database.
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic

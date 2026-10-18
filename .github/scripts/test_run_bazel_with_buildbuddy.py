@@ -98,6 +98,22 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+        acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
+        for runner, value, explicit, expected in (
+            ("Windows", "1", [], [f"--repo_env={acknowledgement}=1"]),
+            ("Windows", "", [], []),
+            ("Linux", "1", [], []),
+            ("Windows", "1", [f"--repo_env={acknowledgement}=0"], []),
+        ):
+            with self.subTest(runner=runner, value=value, explicit=explicit):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["build", *explicit, "--", "//codex-rs/cli:codex"],
+                        {"RUNNER_OS": runner, acknowledgement: value},
+                    ),
+                    ["build", *explicit, *expected, "--", "//codex-rs/cli:codex"],
+                )
+
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
         expression = 'kind("rust_library rule", //codex-rs/...)'
         env = {"BUILDBUDDY_API_KEY": "fork-token"}

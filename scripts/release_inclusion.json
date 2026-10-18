@@ -5,11 +5,11 @@
     "commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d"
   },
   "rollback": {
-    "tag": "npm-v0.159.1-multi.3",
-    "commit": "3a6c22204cae02e2f37e32a77c331cb5a0c56113"
+    "tag": "npm-v0.162.1-multi.1",
+    "commit": "10da2ab565b9c322ef12b852eef1ad2041f47d4e"
   },
-  "rust_version": "0.162.1+multi.1",
-  "npm_version": "0.162.1-multi.1",
+  "rust_version": "0.162.1+multi.2",
+  "npm_version": "0.162.1-multi.2",
   "capabilities": [
     {
       "id": "root-owned-data",
