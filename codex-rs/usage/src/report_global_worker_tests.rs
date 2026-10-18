@@ -353,3 +353,63 @@ async fn hour_rebuild_keeps_current_wait_span_for_old_open_operation() {
     assert_eq!(derived.timing, canonical.timing);
     assert_eq!(derived.tools, canonical.tools);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn missing_global_component_seeds_history_after_open() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = crate::UsageStore::open(temp.path()).await.expect("store");
+    store.report_refresh.cancel();
+    let process_id = crate::ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 47, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    sqlx::query(
+        "INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES ('seed-thread',NULL,'cli',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("thread");
+    let mut tx = store.pool.begin().await.expect("seed transaction");
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<9999) INSERT INTO operations(id,process_id,thread_id,operation_kind,started_at_ms,taxonomy_version,phase,activity,activity_state,attribution_provenance) SELECT printf('seed-op-%05d',i),?,'seed-thread','local_tool',i*1000,1,'implementation','coding','tool_active','agent_declared' FROM n",
+    )
+    .bind(process_id.as_string())
+    .execute(&mut *tx)
+    .await
+    .expect("operations");
+    tx.commit().await.expect("seed commit");
+    sqlx::raw_sql(super::schema::RESET_SQL)
+        .execute(&store.pool)
+        .await
+        .expect("remove global component");
+    store.close().await;
+
+    let started = std::time::Instant::now();
+    let reopened = crate::UsageStore::open(temp.path()).await.expect("reopen");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    reopened.report_refresh.cancel();
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT cursor,high_water FROM _usage_report_global_seed WHERE source='operations'",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("seed frontier"),
+        (0, 10_000)
+    );
+    assert!(
+        !crate::report_cache::is_global_ready(&reopened.pool)
+            .await
+            .expect("warming global cache")
+    );
+    crate::report_cache::ensure(&reopened.pool, &reopened.report_refresh.reader)
+        .await
+        .expect("finish seeded history");
+    assert!(
+        crate::report_cache::is_global_ready(&reopened.pool)
+            .await
+            .expect("seeded global cache")
+    );
+}
