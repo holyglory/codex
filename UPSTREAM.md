@@ -426,7 +426,25 @@ the authority for release outcomes and verification receipts.
   model-list and message paths to fail even though each binary started alone.
   After switching releases, require `codex app-server daemon version` to report
   matching `cliVersion`, `managedCodexVersion`, and `appServerVersion`, and
-  stop unmanaged app-server processes before testing the Desktop protocol.
+  verify the control socket's peer executable and package hashes. Matching
+  versions do not prove that the process is managed. A schema-changing release
+  also needs a compatible recovery binary; an older package cannot reopen newer
+  migrations merely because its files were retained.
+- **Keep a restart independent of the app-server hosting the release task.**
+  Direct signals can terminate the agent's own connection before its installation
+  step runs, and Desktop can immediately relaunch the selected old package.
+  Use the supported handover or an explicitly authorized, independently governed
+  maintenance operation with exact process identity, verified online backups,
+  compatible recovery and a bounded terminal result. Reconcile the actual socket
+  owner after any failed bootstrap before another mutation. Preserve a correctly
+  serving candidate; do not restart it just to make an administrative status green.
+- **Use WebSocket framing for the shared Unix control endpoint.** The
+  `app-server proxy` command forwards transport bytes; it is not the stdio
+  app-server's newline-delimited JSON interface. Release probes must perform the
+  WebSocket handshake, initialize JSON-RPC, retain notifications received before
+  RPC responses, and close the client on failure. Measure skill listing and
+  reporting separately from model-turn startup. A verifier transport timeout is
+  not evidence that the serving binary failed to initialize.
 
 - **Verify usage reporting through its public boundary.** A warming response
   proves bounded behavior, not usable reporting. Exercise finite-window reviews
@@ -452,6 +470,17 @@ the authority for release outcomes and verification receipts.
   narrower window, increase the budget, or split admission lanes without evidence.
   Time unresolved coverage and classification work separately: a missing cost
   completion trace does not prove execution reached the cost query.
+- **Exercise long-lived task scopes in finite-window review fixtures.** A large
+  fixture spread across repositories did not expose a review that materialized
+  the task's lifetime operations before selecting a short interval. Measure the
+  complete public review and the selection stage with the bundled SQLite version;
+  the host Python can use a different query planner. Seek the observation and
+  interval indexes before looking up scoped owners, then materialize the selected
+  facts once. Removing a CTE materialization hint alone can let SQLite reorder
+  joins into lifetime scans, including token and coverage branches. Compare exact
+  selected identities in one read snapshot
+  and preserve late observations, open intervals and descendant scope in regression
+  coverage; matching counts alone is insufficient.
 - **Reuse ready projections when selecting report operations.** A global
   report copied and indexed 1.3 million cached rows before aggregating them;
   finite ready reports still joined raw terminal and classification history.
