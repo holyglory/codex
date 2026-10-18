@@ -83,9 +83,7 @@ def windows_voice_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]
             )
             or (
                 option.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
-                and existing.startswith(
-                    "--host_action_env=PROCESSOR_ARCHITECTURE="
-                )
+                and existing.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
             )
             for existing in configured_args
         )
