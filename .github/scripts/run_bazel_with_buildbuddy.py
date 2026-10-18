@@ -51,6 +51,11 @@ def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     ):
         injected_args.append(f"--output_user_root={output_user_root}")
 
+    if env.get("CODEX_BAZEL_BATCH") == "1" and not any(
+        arg in {"--batch", "--nobatch"} for arg in configured_startup_args
+    ):
+        injected_args.append("--batch")
+
     if env.get("GITHUB_ACTIONS") == "true" and not any(
         arg in REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS
         for arg in configured_startup_args
