@@ -1,30 +1,32 @@
 --- a/build.rs
 +++ b/build.rs
-@@ -76,6 +76,31 @@
+@@ -76,6 +76,33 @@
      }
  }
  
 +#[cfg(windows)]
-+fn dereference_installed_headers(out_dir: &path::Path) {
-+    // Bazel validates build-script output trees. CMake preserves symlinked
-+    // source headers during install, but those links can point back into the
-+    // execroot and are dangling when Bazel materializes the tree artifact.
++fn materialize_installed_headers(out_dir: &path::Path) {
++    // These are Opus_PUBLIC_HEADER in the pinned CMake project. CMake can
++    // preserve invalid Windows symlinks here, so copy from the crate's source
++    // tree instead of following the installed link target.
++    const PUBLIC_HEADERS: [&str; 5] = [
++        "opus.h",
++        "opus_defines.h",
++        "opus_multistream.h",
++        "opus_projection.h",
++        "opus_types.h",
++    ];
++    let source_dir = path::Path::new("opus").join("include");
 +    let include_dir = out_dir.join("include").join("opus");
-+    let entries = std::fs::read_dir(&include_dir)
-+        .expect("opusic-sys CMake install did not create the Opus include directory");
-+    for entry in entries {
-+        let header = entry
-+            .expect("cannot inspect the opusic-sys installed Opus headers")
-+            .path();
-+        let metadata = std::fs::symlink_metadata(&header)
++    for name in PUBLIC_HEADERS {
++        let destination = include_dir.join(name);
++        let metadata = std::fs::symlink_metadata(&destination)
 +            .expect("cannot inspect an opusic-sys installed Opus header");
 +        if metadata.file_type().is_symlink() {
-+            let contents = std::fs::read(&header)
-+                .expect("cannot read a symlinked opusic-sys installed Opus header");
-+            std::fs::remove_file(&header)
++            std::fs::remove_file(&destination)
 +                .expect("cannot replace a symlinked opusic-sys installed Opus header");
-+            std::fs::write(&header, contents)
-+                .expect("cannot write a dereferenced opusic-sys installed Opus header");
++            std::fs::copy(source_dir.join(name), &destination)
++                .expect("cannot copy a pinned opusic-sys source Opus header");
 +        }
 +    }
 +}
@@ -32,12 +34,12 @@
  #[cfg(feature = "bundled")]
  fn set_cmake_define_if_present(config: &mut cmake::Config, name: &str) {
      if let Ok(value) = std::env::var(name) {
-@@ -235,6 +260,8 @@
+@@ -235,6 +262,8 @@
      }
  
      let mut out_dir = cmake.build();
 +    #[cfg(windows)]
-+    dereference_installed_headers(&out_dir);
++    materialize_installed_headers(&out_dir);
  
      println!("cargo:rustc-link-lib=static=opus");
  
