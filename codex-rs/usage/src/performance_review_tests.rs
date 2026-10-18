@@ -779,7 +779,9 @@ async fn finite_window_selection_scales_with_lifetime_history() {
 
     let query = PerformanceReviewQuery {
         thread_id: Some(ThreadId::new("spec").expect("thread")),
-        time_range: Some(UtcTimeRange::new(9_000_000, 9_000_010).expect("window")),
+        time_range: Some(
+            UtcTimeRange::new(/*start_ms*/ 9_000_000, /*end_ms*/ 9_000_010).expect("window"),
+        ),
         include_descendants: true,
         ..Default::default()
     };

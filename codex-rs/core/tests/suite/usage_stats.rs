@@ -108,7 +108,9 @@ fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> V
 async fn seed_small_performance_review(home: &TempDir) -> Result<()> {
     let store = UsageStore::open(home.path()).await?;
     let process = ProcessId::new();
-    store.register_process(&process, 42, 0).await?;
+    store
+        .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
+        .await?;
     for (id, parent) in [
         ("scale-root", None),
         ("scale-child", Some("scale-root")),
