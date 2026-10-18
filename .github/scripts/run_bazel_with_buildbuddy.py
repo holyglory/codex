@@ -30,6 +30,66 @@ REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS = {
 }
 
 
+def windows_voice_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
+    """Return the verified voice inputs required by Windows Bazel analysis."""
+    if env.get("RUNNER_OS") != "Windows":
+        return []
+    values = {
+        "repository": env.get("VOICE_WINDOWS_BAZEL_REPOSITORY"),
+        "system_root": env.get("VOICE_WINDOWS_SYSTEM_ROOT"),
+        "host_architecture": env.get("VOICE_WINDOWS_HOST_ARCH"),
+    }
+    if not all(values.values()):
+        return []
+    try:
+        separator_idx = args.index("--")
+    except ValueError:
+        separator_idx = len(args)
+    configured_args = args[:separator_idx]
+    options = [
+        f"--inject_repository=voice_windows_tools={values['repository']}",
+        "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools",
+        f"--action_env=SystemRoot={values['system_root']}",
+        f"--host_action_env=SystemRoot={values['system_root']}",
+        f"--action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
+        f"--host_action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
+    ]
+    return [
+        option
+        for option in options
+        if not any(
+            existing == option
+            or (
+                option.startswith("--inject_repository=")
+                and existing.startswith("--inject_repository=voice_windows_tools=")
+            )
+            or (
+                option.startswith("--//third_party/voice:windows_installed_tools=")
+                and existing.startswith(
+                    "--//third_party/voice:windows_installed_tools="
+                )
+            )
+            or (
+                option.startswith("--action_env=SystemRoot=")
+                and existing.startswith("--action_env=SystemRoot=")
+            )
+            or (
+                option.startswith("--host_action_env=SystemRoot=")
+                and existing.startswith("--host_action_env=SystemRoot=")
+            )
+            or (
+                option.startswith("--action_env=PROCESSOR_ARCHITECTURE=")
+                and existing.startswith("--action_env=PROCESSOR_ARCHITECTURE=")
+            )
+            or (
+                option.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
+                and existing.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
+            )
+            for existing in configured_args
+        )
+    ]
+
+
 def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     """Return shared startup options that are missing from a Bazel invocation.
 
@@ -202,6 +262,11 @@ def bazel_args_with_remote_config(
         )
     ):
         license_args.append(f"--repo_env={acknowledgement}=1")
+    voice_args = (
+        windows_voice_args(configured_args, env)
+        if args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
+        else []
+    )
     if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")
@@ -224,6 +289,7 @@ def bazel_args_with_remote_config(
         *configured_args[:separator_idx],
         *cache_args,
         *license_args,
+        *voice_args,
         *configured_args[separator_idx:],
     ]
 
