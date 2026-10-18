@@ -55,6 +55,7 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::emit_declined_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
@@ -801,23 +802,38 @@ impl UnifiedExecProcessManager {
             initial_exec_command_guard
                 .finish_plugin_metrics(context, exit)
                 .await;
-            emit_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                Arc::clone(&context.session),
-                Arc::clone(&context.step_context.turn),
-                Arc::clone(&context.step_context.settings.model_info),
-                context.call_id.clone(),
-                request.command.clone(),
-                cwd.clone(),
-                Some(process_id.to_string()),
-                plugin_attribution.clone(),
-                Arc::clone(&output_buffer),
-                text.clone(),
-                exit,
-                wall_time,
-                process.timed_out(),
-            )
-            .await;
+            if process.was_user_declined() {
+                emit_declined_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    Arc::clone(&context.session),
+                    Arc::clone(&context.step_context.turn),
+                    Arc::clone(&context.step_context.settings.model_info),
+                    context.call_id.clone(),
+                    request.command.clone(),
+                    cwd.clone(),
+                    Some(process_id.to_string()),
+                    plugin_attribution.clone(),
+                )
+                .await;
+            } else {
+                emit_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    Arc::clone(&context.session),
+                    Arc::clone(&context.step_context.turn),
+                    Arc::clone(&context.step_context.settings.model_info),
+                    context.call_id.clone(),
+                    request.command.clone(),
+                    cwd.clone(),
+                    Some(process_id.to_string()),
+                    plugin_attribution.clone(),
+                    Arc::clone(&output_buffer),
+                    text.clone(),
+                    exit,
+                    wall_time,
+                    process.timed_out(),
+                )
+                .await;
+            }
 
             self.release_process_id(request.process_id).await;
             process
