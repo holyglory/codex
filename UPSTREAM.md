@@ -296,6 +296,12 @@ the authority for release outcomes and verification receipts.
   dependencies when checks intentionally share the same isolated environment.
   A failing sandbox test remains unverified when skipped: fix its boundary or
   retain the explicit missing acceptance instead of reporting a successful test.
+- **Resolve runner groups before debugging hosted build failures.** Upstream
+  workflows can request organization-owned runner groups that the fork cannot
+  use. Inspect job annotations when no steps ran. Preserve upstream routing for
+  its owner and select approved GitHub-hosted runners for the fork, keeping the
+  test commands and required-check aggregation intact. Validate the actual fork
+  jobs; repeated retries cannot create a missing runner group.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
   candidate identity. Make remaining repairs in a separate checkout, integrate
   them after the accepted run finishes, and bind the next run to that commit.
