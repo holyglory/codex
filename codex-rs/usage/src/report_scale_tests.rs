@@ -394,6 +394,10 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             "expected_wait_spans": (requests + 15) / 16,
             "expected_thread_count": 64,
             "expected_token_facts": requests * 6 + 1,
+            "root_thread_id": "scale-root",
+            "include_descendants": true,
+            "expected_root_window_operations": expected_operations.iter().sum::<i64>(),
+            "expected_root_window_provider_tokens": expected_provider_tokens.iter().sum::<i64>(),
             "expected_all_operations": requests,
             "expected_all_provider_tokens": expected_all_provider_tokens,
             "repositories": repositories.iter().enumerate().map(|(index, repository)| {

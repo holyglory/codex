@@ -485,6 +485,10 @@ class UsageHistoryVerifierTests(unittest.TestCase):
             "expected_thread_count": 64,
             "expected_phase_activity_pairs": 4,
             "expected_token_facts": 49,
+            "root_thread_id": "scale-root",
+            "include_descendants": True,
+            "expected_root_window_operations": 8,
+            "expected_root_window_provider_tokens": 8400,
             "expected_all_operations": 8,
             "expected_all_provider_tokens": 8400,
             "repositories": [
