@@ -200,7 +200,7 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
     .await
     .expect("thread");
     store
-        .require_report_ready(None)
+        .require_report_ready(/*range*/ None)
         .await
         .expect("ready guard before capture");
     store

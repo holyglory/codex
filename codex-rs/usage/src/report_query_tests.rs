@@ -238,23 +238,25 @@ async fn ready_cache_preserves_one_sided_window_bounds() {
     };
     let from_only = store
         .usage_summary_query(query(Some(
-            UtcTimeRange::new(1_500, i64::MAX).expect("from"),
+            UtcTimeRange::new(/*start_ms*/ 1_500, i64::MAX).expect("from"),
         )))
         .await
         .expect("from-only summary");
     let from_expected = store
         .usage_summary_query(query(Some(
-            UtcTimeRange::new(1_500, 2_500).expect("from range"),
+            UtcTimeRange::new(/*start_ms*/ 1_500, /*end_ms*/ 2_500).expect("from range"),
         )))
         .await
         .expect("from expected");
     let to_only = store
-        .usage_summary_query(query(Some(UtcTimeRange::new(i64::MIN, 1_500).expect("to"))))
+        .usage_summary_query(query(Some(
+            UtcTimeRange::new(i64::MIN, /*end_ms*/ 1_500).expect("to"),
+        )))
         .await
         .expect("to-only summary");
     let to_expected = store
         .usage_summary_query(query(Some(
-            UtcTimeRange::new(500, 1_500).expect("to range"),
+            UtcTimeRange::new(/*start_ms*/ 500, /*end_ms*/ 1_500).expect("to range"),
         )))
         .await
         .expect("to expected");
