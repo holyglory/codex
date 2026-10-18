@@ -48,7 +48,7 @@ async fn finite_review_shape_includes_root_descendants() {
     let root_query = |include_descendants| PerformanceReviewQuery {
         thread_id: Some(ThreadId::new("scale-root").expect("root")),
         include_descendants,
-        time_range: Some(UtcTimeRange::new(900, 2_200).expect("range")),
+        time_range: Some(UtcTimeRange::new(/*start_ms*/ 900, /*end_ms*/ 2_200).expect("range")),
         ..Default::default()
     };
     let root_only = store
