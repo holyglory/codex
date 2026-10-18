@@ -87,11 +87,11 @@ pub(crate) async fn window_operation_ids(
         LEFT JOIN model_requests request ON request.id = token.model_request_id
         LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
         LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
-        JOIN scoped operation ON operation.id = COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
+        CROSS JOIN scoped operation ON operation.id = COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
         WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
           AND token.category_path NOT GLOB 'attribution.items.*'
         UNION SELECT coverage.operation_id FROM bounds CROSS JOIN coverage_events coverage
-          JOIN scoped operation ON operation.id = coverage.operation_id
+          CROSS JOIN scoped operation ON operation.id = coverage.operation_id
           WHERE coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms)
         SELECT id FROM candidates ORDER BY id LIMIT 200001",
     );
