@@ -10,6 +10,9 @@ inputs:
   accept-msvc-runtime-license:
     description: Explicit operator acknowledgement of the Visual Studio terms.
     default: 'false'
+  prepare-windows-voice:
+    description: Provision the pinned Windows voice tool tree for Bazel native analysis.
+    default: 'false'
 outputs:
   repository-cache-path:
     description: Filesystem path used for the Bazel repository cache.
@@ -30,6 +33,12 @@ runs:
       with:
         target: ${{ inputs.target }}
         accept-msvc-runtime-license: ${{ inputs.accept-msvc-runtime-license }}
+
+    - name: Prepare pinned Windows voice inputs
+      if: runner.os == 'Windows' && inputs.prepare-windows-voice == 'true'
+      uses: ./.github/actions/setup-voice-bazel-windows
+      with:
+        target: ${{ inputs.target }}
 
     - name: Compute bazel repository cache key
       id: cache_bazel_repository_key
