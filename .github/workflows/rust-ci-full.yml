@@ -115,6 +115,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: ${{ runner.os }}
       - name: Install Linux sandbox build dependencies
         if: ${{ runner.os == 'Linux' }}
