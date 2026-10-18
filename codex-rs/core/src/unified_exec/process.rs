@@ -47,6 +47,16 @@ pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
         Vec::new()
     }
 
+    /// Reports whether the process ended because a nested command approval was
+    /// declined by the user.
+    ///
+    /// A shell can exit with a nonzero status after a nested approval is
+    /// declined, so callers need this explicit reason to preserve the
+    /// user-facing `Declined` status without changing ordinary exit handling.
+    fn was_user_declined(&self) -> bool {
+        false
+    }
+
     fn after_spawn(&mut self) {}
 }
 
@@ -234,6 +244,12 @@ impl UnifiedExecProcess {
 
     pub(super) fn timed_out(&self) -> bool {
         self.timed_out.load(Ordering::Acquire)
+    }
+
+    pub(super) fn was_user_declined(&self) -> bool {
+        self._spawn_lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| lifecycle.was_user_declined())
     }
 
     fn finish_termination(&self) {

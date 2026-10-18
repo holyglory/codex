@@ -51,6 +51,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -59,6 +61,7 @@ use uuid::Uuid;
 pub(crate) struct PreparedUnifiedExecZshFork {
     pub(crate) exec_request: ExecRequest,
     pub(crate) escalation_session: EscalationSession,
+    pub(crate) user_declined: Arc<AtomicBool>,
 }
 
 const PROMPT_CONFLICT_REASON: &str =
@@ -144,6 +147,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         codex_linux_sandbox_exe: ctx.step_context.turn.config.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: req.turn_environment.config().use_legacy_landlock,
     };
+    let user_declined = Arc::new(AtomicBool::new(false));
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
         session: Arc::clone(&ctx.session),
@@ -161,6 +165,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         ),
         prompt_permissions: req.additional_permissions.clone(),
         stopwatch: Stopwatch::unlimited(),
+        user_declined: Arc::clone(&user_declined),
     };
 
     let escalate_server = EscalateServer::new(
@@ -176,6 +181,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
     Ok(Some(PreparedUnifiedExecZshFork {
         exec_request,
         escalation_session,
+        user_declined,
     }))
 }
 
@@ -193,6 +199,7 @@ struct CoreShellActionProvider {
     approval_sandbox_permissions: SandboxPermissions,
     prompt_permissions: Option<AdditionalPermissionProfile>,
     stopwatch: Stopwatch,
+    user_declined: Arc<AtomicBool>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -367,6 +374,7 @@ impl CoreShellActionProvider {
                             }
                         },
                         ReviewDecision::Denied { rejection } => {
+                            self.user_declined.store(true, Ordering::Release);
                             EscalationDecision::deny(Some(rejection))
                         }
                         ReviewDecision::TimedOut => EscalationDecision::deny(Some(
@@ -385,6 +393,7 @@ impl CoreShellActionProvider {
                             ))
                         }
                         ReviewDecision::Abort => {
+                            self.user_declined.store(true, Ordering::Release);
                             EscalationDecision::deny(Some("User cancelled execution".to_string()))
                         }
                     }
