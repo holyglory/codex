@@ -111,7 +111,9 @@ pub(super) async fn execute(
     ) {
         super::pagination::paginate(&mut value, &args)?;
     }
-    if let Some(object) = value.as_object_mut() {
+    if value["kind"] != "usageReportWarming"
+        && let Some(object) = value.as_object_mut()
+    {
         object.insert("reportingOperationInProgress".to_string(), json!(true));
         object.insert(
             "reportingDisclosure".to_string(),
