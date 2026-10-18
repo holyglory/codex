@@ -98,6 +98,46 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_keyless_windows_fallback_selects_msvc_target(self) -> None:
+        env = {
+            "RUNNER_OS": "Windows",
+            "CODEX_BAZEL_WINDOWS_MSVC_FALLBACK": "1",
+        }
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "//codex-rs/..."], env
+            ),
+            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+        )
+
+        for explicit in (
+            ["--platforms=//:windows_x86_64_gnullvm"],
+            ["--platforms", "//:windows_x86_64_gnullvm"],
+        ):
+            with self.subTest(explicit=explicit):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["test", *explicit, "//codex-rs/..."], env
+                    ),
+                    ["test", *explicit, "//codex-rs/..."],
+                )
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "//codex-rs/..."],
+                {
+                    **env,
+                    "BUILDBUDDY_API_KEY": "token",
+                },
+            ),
+            [
+                "test",
+                "--config=buildbuddy-generic",
+                "--remote_header=x-buildbuddy-api-key=token",
+                "//codex-rs/...",
+            ],
+        )
+
         acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
         for runner, value, explicit, expected in (
             ("Windows", "1", [], [f"--repo_env={acknowledgement}=1"]),
