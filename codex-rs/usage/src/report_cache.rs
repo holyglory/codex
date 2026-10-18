@@ -300,6 +300,9 @@ pub(crate) async fn ensure(
     reader: &tokio::sync::Semaphore,
 ) -> Result<(), sqlx::Error> {
     prepare(pool).await?;
+    if !crate::report_global::is_supported(pool).await? {
+        return Ok(());
+    }
     if is_global_ready(pool).await? {
         return Ok(());
     }
@@ -380,12 +383,24 @@ pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         .fetch_optional(&mut *tx)
         .await?;
         if global_state
-            != Some((
-                crate::report_global::COMPONENT_VERSION,
-                REPORT_CACHE_SCHEMA_VERSION,
-            ))
+            .is_some_and(|(component, _)| component > crate::report_global::COMPONENT_VERSION)
         {
-            crate::report_global::reset(&mut tx, REPORT_CACHE_SCHEMA_VERSION).await?;
+            tx.commit().await?;
+            return Ok(false);
+        }
+        match global_state {
+            Some((component, core))
+                if component == crate::report_global::COMPONENT_VERSION
+                    && core == REPORT_CACHE_SCHEMA_VERSION => {}
+            Some((component, core))
+                if component == crate::report_global::PREVIOUS_COMPONENT_VERSION
+                    && core == REPORT_CACHE_SCHEMA_VERSION =>
+            {
+                crate::report_global::upgrade_v2(&mut tx, REPORT_CACHE_SCHEMA_VERSION).await?;
+            }
+            _ => {
+                crate::report_global::reset(&mut tx, REPORT_CACHE_SCHEMA_VERSION).await?;
+            }
         }
     }
     sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_interval_end_idx ON _usage_report_operations(ended_at_ms,started_at_ms,operation_id) WHERE ended_at_ms IS NOT NULL")
