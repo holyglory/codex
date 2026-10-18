@@ -9,7 +9,6 @@ use hmac::Hmac;
 use hmac::Mac;
 use rand::RngCore;
 use sha2::Sha256;
-use sqlx::Connection;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::path::Path;

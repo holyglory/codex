@@ -74,10 +74,14 @@ impl UsageStore {
             "usage report progress"
         );
         let mut reader = reader_result?;
-        let result = tokio::time::timeout_at(
-            deadline,
-            self.read_usage_summary_with_mode(query, &mut reader.connection, mode),
-        )
+        let result = tokio::time::timeout_at(deadline, async {
+            if mode == SummaryReadMode::CanonicalFallback {
+                self.read_usage_summary(query, &mut reader.connection).await
+            } else {
+                self.read_usage_summary_with_mode(query, &mut reader.connection, mode)
+                    .await
+            }
+        })
         .await
         .unwrap_or(Err(UsageStoreError::ReportTimedOut));
         reader.finish(result, deadline).await
@@ -89,15 +93,6 @@ impl UsageStore {
         connection: &mut SqliteConnection,
     ) -> Result<UsageSummary, UsageStoreError> {
         self.read_usage_summary_with_mode(query, connection, SummaryReadMode::CanonicalFallback)
-            .await
-    }
-
-    pub(crate) async fn read_usage_summary_strict(
-        &self,
-        query: UsageSummaryQuery,
-        connection: &mut SqliteConnection,
-    ) -> Result<UsageSummary, UsageStoreError> {
-        self.read_usage_summary_with_mode(query, connection, SummaryReadMode::RequireReady)
             .await
     }
 
@@ -137,7 +132,7 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
-        if mode == SummaryReadMode::RequireReady && query.time_range.is_none() {
+        if mode == SummaryReadMode::RequireReady && query.time_range.is_none() && include_global {
             let status = crate::report_cache::status_on(&mut tx)
                 .await
                 .map_err(database_error)?;

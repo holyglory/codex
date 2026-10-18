@@ -198,8 +198,8 @@ async fn summary(
         .as_deref()
         .map(|reference| resolve_account(context, reference))
         .transpose()?;
-    let summary = store
-        .usage_summary_query(UsageSummaryQuery {
+    let summary = match store
+        .usage_summary_query_strict(UsageSummaryQuery {
             worktree_ids: None,
             include_unassigned_worktrees: true,
             thread_id,
@@ -208,7 +208,13 @@ async fn summary(
             time_range,
         })
         .await
-        .map_err(|_| storage_error())?;
+    {
+        Ok(summary) => summary,
+        Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
+            return Ok(warming_response(UsageStatsAction::Summary, *cache));
+        }
+        Err(_) => return Err(storage_error()),
+    };
     let mut structured =
         StructuredUsageSummary::new(&summary, account.map(|account| account.display));
     if matches!(
