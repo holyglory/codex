@@ -223,6 +223,11 @@ the authority for release outcomes and verification receipts.
   distinguish startup/catalog, handshake/prewarm, request delivery, and score
   publication. Add bounded diagnostics, reproduce the exact await point, then
   remove diagnostics before committing the fixture repair.
+  A timeout of the Coordinator client is different from a test timeout: an
+  accepted run may already be executing or complete. Inspect the current run
+  and its source identity before resubmitting, then resume its supported wait.
+  Retain the operation ID and cursor; a transport failure does not prove that
+  admission failed or authorize a duplicate run.
 - **Preserve fixture configuration while isolating host settings.** The 0.159.1
   Guardian helper wrote its scoring configuration and then cleared the entire
   configuration stack, disabling prewarm and causing 25 identical timeouts.
