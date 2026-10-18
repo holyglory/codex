@@ -509,6 +509,36 @@ the authority for release outcomes and verification receipts.
   as a transaction-local view, and select finite windows from the indexed ready
   projection. Verify identical account, repository, worktree and time filters,
   plus rollback/cancellation cleanup, before accepting the faster query.
+- **Include old open operations and spans in scale fixtures.** Volume alone
+  missed expensive hourly joins and unfair refresh scheduling during capture.
+  Mix completed and open operations, descendant threads, activity spans and
+  reporting windows. Keep operation and hour queues progressing together; a
+  short SQLite deadline alone can repeatedly interrupt an expensive page.
+  Measure the whole hourly calculation and preserve its reported aggregates.
+- **Check the cache needed by each report scope.** Global unbounded summaries
+  need global aggregates; scoped summaries can use a ready core projection.
+  Missing bounds and one-sided bounds are both unbounded. Cover all three
+  through the actual agent tool, retain the existing global warming guard,
+  and preserve typed warming fields through response decoration. Use portable
+  SQL fixture setup instead of removing Windows coverage from existing tests.
+- **Preserve compatible cache state during startup upgrades.** Opening a
+  collector should capture source frontiers, not enqueue its entire history.
+  Test each background seed source and its page boundary. Compare populated
+  projections, dirty queues and metadata before and after a compatible
+  upgrade, including rollback and re-upgrade with stale frontier metadata.
+  Unsupported future components must not be reset or treated as refreshable.
+- **Check build settings outside the test shell.** Language servers have their
+  own process environment; a shared Cargo target in test declarations does not
+  configure them. Inspect their effective target settings and newly created
+  local targets before blaming cache misses. Release unused language servers
+  through the current navigation session before requesting governed cleanup;
+  preserve active outputs, source and rollback artifacts.
+- **Match completion waits to actual event metadata.** Storage completion
+  events currently carry a storage-job subject and no repository identifier.
+  Filtering those events by repository hides completion. Retain the event
+  cursor, match the reported job identifier, and inspect authoritative status
+  after a wait deadline. A timed-out submission or observer does not establish
+  that the underlying operation was rejected or cancelled.
 - **Test effective-UID home resolution at the installed boundary.** A root
   launch with an inherited non-root `HOME` must use UID 0's passwd home when
   `CODEX_HOME` is unset; an explicit `CODEX_HOME` remains authoritative. The
