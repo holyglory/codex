@@ -46,3 +46,13 @@ runs:
         if (-not $hostArch) { $hostArch = $env:PROCESSOR_ARCHITECTURE }
         if (-not $hostArch) { throw "Windows host architecture is required" }
         "VOICE_WINDOWS_HOST_ARCH=$hostArch" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        $voiceSourceCommit = (& git rev-parse --verify HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $voiceSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+          throw "Cannot resolve the source identity for native voice inputs"
+        }
+        $env:STABLE_GIT_COMMIT = $voiceSourceCommit
+        $voiceStatus = & cmd.exe /d /c .\scripts\workspace-status.cmd
+        if ($LASTEXITCODE -ne 0 -or $voiceStatus -cne "STABLE_GIT_COMMIT $voiceSourceCommit") {
+          throw "Windows workspace status did not emit the selected source identity"
+        }
+        "STABLE_GIT_COMMIT=$voiceSourceCommit" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append

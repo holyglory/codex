@@ -53,6 +53,7 @@ def windows_voice_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]
         f"--host_action_env=SystemRoot={values['system_root']}",
         f"--action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
         f"--host_action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
+        "--workspace_status_command=./scripts/workspace-status.cmd",
     ]
     return [
         option
@@ -84,6 +85,10 @@ def windows_voice_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]
             or (
                 option.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
                 and existing.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
+            )
+            or (
+                option.startswith("--workspace_status_command=")
+                and existing.startswith("--workspace_status_command=")
             )
             for existing in configured_args
         )
