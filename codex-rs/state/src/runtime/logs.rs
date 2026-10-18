@@ -39,19 +39,6 @@ impl StateRuntime {
         Ok(())
     }
 
-    /// Enforce per-partition retained-log-content caps after a successful batch insert.
-    ///
-    /// We maintain two independent budgets:
-    /// - Thread logs: rows with `thread_id IS NOT NULL`, capped per `thread_id`.
-    /// - Threadless process logs: rows with `thread_id IS NULL` ("threadless"),
-    ///   capped per `process_uuid` (including `process_uuid IS NULL` as its own
-    ///   threadless partition).
-    ///
-    /// "Threadless" means the log row is not associated with any conversation
-    /// thread, so retention is keyed by process identity instead.
-    ///
-    /// This runs inside the same transaction as the insert so callers never
-    /// observe "inserted but not yet pruned" rows.
     async fn prune_logs_after_insert(
         &self,
         entries: &[LogEntry],

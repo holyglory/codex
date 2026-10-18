@@ -3832,6 +3832,12 @@ impl Session {
                 extension_data.insert(messages.clone());
             }
             extension_data.insert(selected_capability_roots.clone());
+            if let Some(auth_lease) = turn_context
+                .extension_data
+                .get::<codex_login::AuthManagerLease>()
+            {
+                extension_data.insert(auth_lease.as_ref().clone());
+            }
             if let Some(discovery) = &executor_capability_discovery {
                 extension_data.insert(discovery.as_ref().clone());
             }

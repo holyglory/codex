@@ -71,6 +71,30 @@ async fn backup_replaces_blocking_sqlite_home_file() -> std::io::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn oversized_logs_are_preserved_before_runtime_open() -> anyhow::Result<()> {
+    let sqlite_home = unique_temp_dir();
+    tokio::fs::create_dir_all(sqlite_home.as_path()).await?;
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let logs_path = sqlite.logs_db_path();
+    let file = tokio::fs::File::create(logs_path.as_path()).await?;
+    file.set_len(LOG_DB_STARTUP_SIZE_LIMIT_BYTES + 1).await?;
+
+    let runtime = super::super::StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;
+    runtime.close().await;
+
+    assert!(
+        tokio::fs::metadata(logs_path.as_path()).await?.len() < LOG_DB_STARTUP_SIZE_LIMIT_BYTES
+    );
+    let mut backups = tokio::fs::read_dir(sqlite_home.join(BACKUP_DIR_NAME)).await?;
+    let mut backup_count = 0;
+    while backups.next_entry().await?.is_some() {
+        backup_count += 1;
+    }
+    assert_eq!(backup_count, 1);
+    Ok(())
+}
+
 #[test]
 fn sqlite_error_detail_classifies_lock_errors() {
     assert!(sqlite_error_detail_is_lock("database is locked"));

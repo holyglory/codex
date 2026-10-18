@@ -570,6 +570,21 @@ the authority for release outcomes and verification receipts.
   require a stable component version and completed rebuild before reporting
   recovery. Preserve sessions and raw history; a new launcher alone does not
   replace already-running workers.
+- **Bound diagnostic logs globally before opening SQLite.** Per-thread and
+  per-process retention caps do not bound a database when each retry creates a
+  new thread partition. A large WAL can block pre-listener startup before the
+  normal age/size maintenance task runs, and repeated launch retries can leave
+  many stale processes. Check the database and sidecars before opening them,
+  preserve an oversized set together, create a fresh diagnostic database, and
+  run global size pruning on a short maintenance interval. Test a restart with
+  a sparse oversized database and verify the preserved backup, fresh listener,
+  bounded WAL, and no retry-process accumulation.
+- **Bind image generation to the step account lease.** Standalone extensions
+  receive a default authentication manager at installation time, but an agent
+  turn can select another account. Build image tools for each sampling step
+  from its `AuthManagerLease`, with the installation manager only as a legacy
+  fallback, and exercise direct and code-mode generation and editing against
+  an account-specific mock endpoint.
 - **Check build settings outside the test shell.** Language servers have their
   own process environment; a shared Cargo target in test declarations does not
   configure them. Inspect their effective target settings and newly created

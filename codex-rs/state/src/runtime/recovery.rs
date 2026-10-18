@@ -15,6 +15,12 @@ use std::path::PathBuf;
 
 const BACKUP_DIR_NAME: &str = "db-backups";
 
+/// Keep startup from replaying an unbounded diagnostic WAL before the app
+/// server can accept a connection. The complete database and its sidecars are
+/// preserved in the normal runtime backup area before a fresh log database is
+/// created.
+pub(crate) const LOG_DB_STARTUP_SIZE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+
 tokio::task_local! {
     static RECOVERY_BACKUPS: RefCell<Vec<RuntimeDbBackup>>;
 }
@@ -116,6 +122,26 @@ pub async fn backup_runtime_db_for_fresh_start(
     }?;
     let _ = RECOVERY_BACKUPS.try_with(|report| report.borrow_mut().extend(backups.iter().cloned()));
     Ok(backups)
+}
+
+/// Preserve an oversized logs database and sidecars before opening it.
+///
+/// This check runs before SQLite opens the file, because WAL replay can take
+/// longer than the app-server startup budget. The source files are moved as a
+/// set; no active database or sidecar is copied independently.
+pub(crate) async fn backup_oversized_logs_db_for_startup(
+    db_path: &Path,
+) -> std::io::Result<Option<Vec<RuntimeDbBackup>>> {
+    let mut total_bytes = 0_u64;
+    for path in sqlite_paths(db_path) {
+        if let Ok(metadata) = tokio::fs::metadata(path.as_path()).await {
+            total_bytes = total_bytes.saturating_add(metadata.len());
+        }
+    }
+    if total_bytes <= LOG_DB_STARTUP_SIZE_LIMIT_BYTES {
+        return Ok(None);
+    }
+    backup_runtime_db_for_fresh_start(db_path).await.map(Some)
 }
 
 pub fn runtime_db_path_for_corruption_error(err: &anyhow::Error) -> Option<PathBuf> {

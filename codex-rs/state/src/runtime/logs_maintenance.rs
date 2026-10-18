@@ -1,8 +1,10 @@
 //! Prune diagnostic logs in the background immediately, then on a timer.
 //! SQLite keeps freed pages for reuse.
 
+use super::LOG_GLOBAL_ROW_LIMIT;
 use super::StateRuntime;
 use chrono::Utc;
+use sqlx::Row;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,12 +73,49 @@ async fn prune_by_age_and_size(
         )
         .fetch_one(pool)
         .await?;
-        if occupied_bytes <= budget_bytes || retention_seconds == 1 {
+        if occupied_bytes <= budget_bytes {
+            return Ok(());
+        }
+        if retention_seconds == 1 {
+            prune_newest_rows_to_budget(pool, budget_bytes).await?;
+            let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(pool)
+                .await;
             return Ok(());
         }
         // Keep the newest second even if it exceeds the budget.
         retention_seconds = (retention_seconds / 2).max(1);
     }
+}
+
+/// Enforce a global content cap after age pruning has reached the newest
+/// second. Partition caps alone are insufficient when a process creates many
+/// short-lived thread IDs; this removes the oldest rows across all partitions.
+async fn prune_newest_rows_to_budget(pool: &SqlitePool, budget_bytes: i64) -> anyhow::Result<()> {
+    let rows = sqlx::query("SELECT id, estimated_bytes FROM logs ORDER BY id DESC LIMIT ?")
+        .bind(LOG_GLOBAL_ROW_LIMIT.saturating_add(1))
+        .fetch_all(pool)
+        .await?;
+    let mut cumulative_bytes = 0_i64;
+    let mut cutoff_id = None;
+    for (index, row) in rows.iter().enumerate() {
+        cumulative_bytes =
+            cumulative_bytes.saturating_add(row.try_get::<i64, _>("estimated_bytes")?.max(0));
+        if index > 0
+            && (cumulative_bytes > budget_bytes
+                || i64::try_from(index + 1).unwrap_or(i64::MAX) > LOG_GLOBAL_ROW_LIMIT)
+        {
+            cutoff_id = Some(row.try_get::<i64, _>("id")?);
+            break;
+        }
+    }
+    if let Some(cutoff_id) = cutoff_id {
+        sqlx::query("DELETE FROM logs WHERE id <= ?")
+            .bind(cutoff_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
