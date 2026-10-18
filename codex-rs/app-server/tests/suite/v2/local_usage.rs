@@ -877,7 +877,7 @@ async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> R
     let seeded = seed_usage(codex_home.path()).await?;
     let mut server = initialized_server(codex_home.path()).await?;
 
-    set_usage_core_cache_ready(codex_home.path(), false).await?;
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ false).await?;
     let update_error = raw_error(
         &mut server,
         "localUsageRepository/update",
@@ -890,7 +890,7 @@ async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> R
     assert!(update_error.error.message.contains("warming"));
     assert_eq!(repository_alias_count(codex_home.path()).await?, 0);
 
-    set_usage_core_cache_ready(codex_home.path(), true).await?;
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ true).await?;
     let updated: LocalUsageRepositoryUpdateResponse = server
         .request(|request_id| ClientRequest::LocalUsageRepositoryUpdate {
             request_id,
@@ -904,7 +904,7 @@ async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> R
     let _: LocalUsageUpdatedNotification = server.read_notification("localUsage/updated").await?;
     assert_eq!(repository_alias_count(codex_home.path()).await?, 1);
 
-    set_usage_core_cache_ready(codex_home.path(), false).await?;
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ false).await?;
     let merge_error = raw_error(
         &mut server,
         "localUsageRepository/merge",
@@ -917,7 +917,7 @@ async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> R
     assert!(merge_error.error.message.contains("warming"));
     assert_eq!(repository_merge_count(codex_home.path()).await?, 0);
 
-    set_usage_core_cache_ready(codex_home.path(), true).await?;
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ true).await?;
     let merged: LocalUsageRepositoryMergeResponse = server
         .request(|request_id| ClientRequest::LocalUsageRepositoryMerge {
             request_id,
