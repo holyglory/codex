@@ -37,32 +37,31 @@ fn tool_output(request: &responses::ResponsesRequest, call_id: &str) -> Value {
         .unwrap_or_else(|error| panic!("JSON tool output ({error}): {content}"))
 }
 
-#[cfg(unix)]
-fn mark_global_report_warming(home: &TempDir) -> Result<()> {
-    let script = "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute(\"UPDATE _usage_report_global_meta SET ready=0 WHERE singleton=1\"); db.commit(); db.close()";
-    let status = std::process::Command::new("python3")
-        .args([
-            "-c",
-            script,
-            &home.path().join("usage/usage.sqlite3").to_string_lossy(),
-        ])
-        .status()?;
-    anyhow::ensure!(status.success(), "mark global report warming");
+async fn update_usage_metadata(home: &TempDir, statement: &'static str) -> Result<()> {
+    let pool = codex_state::open_sqlite_pool(
+        &home.path().join("usage/usage.sqlite3"),
+        codex_state::SqlitePoolProfile::DurableEvents,
+    )
+    .await?;
+    sqlx::query(statement).execute(&pool).await?;
+    pool.close().await;
     Ok(())
 }
 
-#[cfg(unix)]
-fn mark_core_report_warming(home: &TempDir) -> Result<()> {
-    let script = "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute(\"UPDATE _usage_report_cache_meta SET schema_version=999, ready=0 WHERE singleton=1\"); db.commit(); db.close()";
-    let status = std::process::Command::new("python3")
-        .args([
-            "-c",
-            script,
-            &home.path().join("usage/usage.sqlite3").to_string_lossy(),
-        ])
-        .status()?;
-    anyhow::ensure!(status.success(), "mark core report warming");
-    Ok(())
+async fn mark_global_report_warming(home: &TempDir) -> Result<()> {
+    update_usage_metadata(
+        home,
+        "UPDATE _usage_report_global_meta SET ready=0 WHERE singleton=1",
+    )
+    .await
+}
+
+async fn mark_core_report_warming(home: &TempDir) -> Result<()> {
+    update_usage_metadata(
+        home,
+        "UPDATE _usage_report_cache_meta SET schema_version=999, ready=0 WHERE singleton=1",
+    )
+    .await
 }
 
 fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> Value {
@@ -81,7 +80,6 @@ fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> V
     })
 }
 
-#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -104,6 +102,34 @@ async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result
                 ev_completed("resp-warming"),
             ]),
             sse(vec![
+                ev_response_created("resp-warming-from"),
+                ev_function_call(
+                    "read-current-chat-from",
+                    "usage_stats",
+                    &json!({
+                        "action": "summary",
+                        "scope": "current_chat",
+                        "from_at_ms": 1
+                    })
+                    .to_string(),
+                ),
+                ev_completed("resp-warming-from"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-warming-to"),
+                ev_function_call(
+                    "read-current-chat-to",
+                    "usage_stats",
+                    &json!({
+                        "action": "summary",
+                        "scope": "current_chat",
+                        "to_at_ms": 2
+                    })
+                    .to_string(),
+                ),
+                ev_completed("resp-warming-to"),
+            ]),
+            sse(vec![
                 ev_response_created("resp-warming-followup"),
                 ev_assistant_message("msg-warming", "warming read"),
                 ev_completed("resp-warming-followup"),
@@ -118,20 +144,26 @@ async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result
         .with_config(|config| config.local_control_tools_enabled = true)
         .build(&server)
         .await?;
-    mark_core_report_warming(&home)?;
+    mark_core_report_warming(&home).await?;
     test.submit_turn("inspect current chat usage").await?;
 
     let requests = response_mock.requests();
-    let warming = requests
-        .iter()
-        .find_map(|request| request.function_call_output_text("read-current-chat"))
-        .context("current chat usage output")?;
-    let warming: Value = serde_json::from_str(&warming)?;
-    assert_eq!(warming["kind"], "usageReportWarming");
-    assert_eq!(warming["action"], "summary");
-    assert_eq!(warming["reportingOperationInProgress"], false);
-    assert_eq!(warming["retryAfterMs"], 1_000);
-    assert_eq!(warming["cache"]["ready"], false);
+    for call_id in [
+        "read-current-chat",
+        "read-current-chat-from",
+        "read-current-chat-to",
+    ] {
+        let warming = requests
+            .iter()
+            .find_map(|request| request.function_call_output_text(call_id))
+            .with_context(|| format!("current chat usage output for {call_id}"))?;
+        let warming: Value = serde_json::from_str(&warming)?;
+        assert_eq!(warming["kind"], "usageReportWarming");
+        assert_eq!(warming["action"], "summary");
+        assert_eq!(warming["reportingOperationInProgress"], false);
+        assert_eq!(warming["retryAfterMs"], 1_000);
+        assert_eq!(warming["cache"]["ready"], false);
+    }
     Ok(())
 }
 
@@ -297,7 +329,6 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_reads_current_repository_usage_and_appends_a_classification_correction() -> Result<()>
 {
@@ -395,7 +426,7 @@ async fn agent_reads_current_repository_usage_and_appends_a_classification_corre
         sleep(Duration::from_millis(10)).await;
     }
     assert!(report_ready, "usage report cache did not become ready");
-    mark_global_report_warming(&home)?;
+    mark_global_report_warming(&home).await?;
     test.submit_turn_with_environments(
         "inspect current repository usage",
         Some(vec![local(test.config.cwd.clone())]),
