@@ -83,7 +83,6 @@ async fn large_task_tree_includes_all_descendants_and_agent_totals() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
     let temp = tempfile::tempdir().expect("tempdir");
