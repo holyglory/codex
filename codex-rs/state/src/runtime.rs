@@ -147,14 +147,13 @@ impl StateRuntime {
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
-        match recovery::backup_oversized_logs_db_for_startup(logs_path.as_path()).await? {
-            Some(backups) => {
-                warn!(
-                    backup_count = backups.len(),
-                    "preserved oversized logs database before startup"
-                );
-            }
-            None => {}
+        if let Some(backups) =
+            recovery::backup_oversized_logs_db_for_startup(logs_path.as_path()).await?
+        {
+            warn!(
+                backup_count = backups.len(),
+                "preserved oversized logs database before startup"
+            );
         }
         let pool = match sqlite
             .open_state_db(&state_migrator, telemetry_override)

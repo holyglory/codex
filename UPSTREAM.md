@@ -585,6 +585,16 @@ the authority for release outcomes and verification receipts.
   from its `AuthManagerLease`, with the installation manager only as a legacy
   fallback, and exercise direct and code-mode generation and editing against
   an account-specific mock endpoint.
+- **Audit every remote extension at its execution boundary.** The same
+  installation-manager versus issuing-lease mistake can affect web search,
+  Git attribution, and Guardian's asynchronous sampler even when normal chat
+  requests use the selected account. Native tools must select credentials in
+  `tools_for_step`; turn-scoped policy and background samplers must read the
+  turn lease and keep caches keyed by its account identity and auth generation.
+  History notes and
+  MCP Apps use thread or shared state and require explicit lease-aware APIs;
+  treat them as separate follow-up work. Add regression fixtures with distinct
+  default and selected-account credentials for every remote surface.
 - **Check build settings outside the test shell.** Language servers have their
   own process environment; a shared Cargo target in test declarations does not
   configure them. Inspect their effective target settings and newly created

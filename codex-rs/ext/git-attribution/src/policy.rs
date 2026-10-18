@@ -11,6 +11,7 @@ use tokio::time::timeout;
 #[derive(Clone, Debug)]
 pub(super) struct GitAttributionPolicy {
     pub(super) auth_generation: u64,
+    pub(super) profile_account_id: Option<String>,
     pub(super) enabled: bool,
 }
 
@@ -31,14 +32,19 @@ pub(super) fn cached_attribution_policy(
     thread_store: &ExtensionData,
     turn_store: &ExtensionData,
     auth_generation: u64,
+    profile_account_id: Option<&str>,
 ) -> Option<GitAttributionPolicy> {
     thread_store
         .get::<GitAttributionPolicy>()
-        .filter(|policy| policy.auth_generation == auth_generation)
+        .filter(|policy| {
+            policy.auth_generation == auth_generation
+                && policy.profile_account_id.as_deref() == profile_account_id
+        })
         .or_else(|| {
-            turn_store
-                .get::<GitAttributionPolicy>()
-                .filter(|policy| policy.auth_generation == auth_generation)
+            turn_store.get::<GitAttributionPolicy>().filter(|policy| {
+                policy.auth_generation == auth_generation
+                    && policy.profile_account_id.as_deref() == profile_account_id
+            })
         })
         .map(|policy| policy.as_ref().clone())
 }
@@ -94,6 +100,7 @@ pub(super) async fn resolve_attribution_policy(
             }
             return enabled.map(|enabled| GitAttributionPolicy {
                 auth_generation: auth_generation_at_start,
+                profile_account_id: None,
                 enabled,
             });
         }

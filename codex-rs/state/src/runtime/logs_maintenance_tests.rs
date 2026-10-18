@@ -84,7 +84,7 @@ async fn halves_again_when_first_halving_deletes_nothing() {
 
 #[tokio::test]
 async fn stops_at_one_second_when_recent_rows_exceed_budget() {
-    let (pool, directory) = database_with_logs(&[-1, 0, 1, 2, DAY]).await;
+    let (pool, directory) = database_with_logs(&[DAY, 2, 1, 0, -1]).await;
     prune_by_age_and_size(&pool, NOW, /*budget_bytes*/ 1)
         .await
         .unwrap();
@@ -115,7 +115,7 @@ async fn global_size_cap_prunes_many_recent_partitions() {
         .await
         .unwrap();
     }
-    prune_by_age_and_size(&pool, NOW, /*budget_bytes*/ 12)
+    prune_by_age_and_size(&pool, NOW, /*budget_bytes*/ 5)
         .await
         .unwrap();
     let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM logs")
