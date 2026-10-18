@@ -74,6 +74,12 @@ the authority for release outcomes and verification receipts.
   packaging, verify the complete retained stack, required GitHub merge commits
   and outstanding release branches. Keep source-inclusion evidence separate
   from the installed-binary tests that prove the behavior still works.
+- **Prove shared CI prerequisites before propagating them through a PR stack.**
+  Keep focused repair checks and one current native platform diagnostic while
+  fixing common runner setup. Retire superseded or duplicate intermediate
+  matrices deliberately, retain their actual outcomes, and preserve sealed
+  release runs. Run complete local and hosted acceptance after the final source
+  is integrated and frozen; queued intermediate jobs are not release evidence.
 - **Refresh native dependency patches after lock updates.** Cargo can pass
   while Bazel still applies a patch written for an older transitive crate.
   Inspect the new crate source, drop changes already implemented upstream,
