@@ -94,8 +94,9 @@ async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
              id, process_id, thread_id, agent_id, operation_kind, started_at_ms,
              taxonomy_version, phase, activity, activity_state, attribution_provenance
          )
-         SELECT printf('10000000-0000-4000-8000-%012x', i), ?, 'child-task', ?,
-                'activity_control', 1000 + i, 1, 'implementation', 'coding',
+             SELECT printf('10000000-0000-4000-8000-%012x', i), ?, 'child-task', ?,
+                CASE WHEN i IN (32768, 32769) THEN 'local_tool' ELSE 'activity_control' END,
+                1000 + i, 1, 'implementation', 'coding',
                 'tool_active', 'agent_declared'
          FROM n",
     )
@@ -110,11 +111,11 @@ async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
              operation_family, observation_timing, covering_model_request_id,
              execution_group_id, execution_role
          ) VALUES
-             ('20000000-0000-4000-8000-000000000000', '10000000-0000-4000-8000-000000000000',
-              'activity_control', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+             ('20000000-0000-4000-8000-000000008000', '10000000-0000-4000-8000-000000008000',
+              'local_tool', 'builtin', 'exec', 'exec', 'dispatch', NULL,
               '30000000-0000-4000-8000-000000000000', 'wrapper'),
-             ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001',
-              'activity_control', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+             ('20000000-0000-4000-8000-000000008001', '10000000-0000-4000-8000-000000008001',
+              'local_tool', 'builtin', 'exec', 'exec', 'dispatch', NULL,
               '30000000-0000-4000-8000-000000000000', 'nested')",
     )
     .execute(&store.pool)
