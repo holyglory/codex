@@ -329,6 +329,12 @@ the authority for release outcomes and verification receipts.
   action cache so large outputs are not duplicated on the ephemeral disk.
   Preserve explicitly configured bounded caches and repository-download
   caches; test the fallback without exposing credentials to pull requests.
+- **Honor batch mode for governed Bazel runs.** The local candidate requests
+  `CODEX_BAZEL_BATCH=1`; the Bazel wrapper must turn it into the startup option
+  `--batch`, preserving an explicit caller override. Otherwise an idle Java
+  server can keep the governed run alive after all test assertions finish.
+  Verify terminal run completion as well as test output. Batch mode retains
+  the configured persistent action and repository caches.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
   candidate identity. Make remaining repairs in a separate checkout, integrate
   them after the accepted run finishes, and bind the next run to that commit.
