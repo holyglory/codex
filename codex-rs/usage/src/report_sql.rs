@@ -121,6 +121,7 @@ impl UsageStore {
             && family.is_none()
             && query.worktree_ids.is_none()
             && query.include_unassigned_worktrees;
+        let unbounded = query.time_range.is_none_or(|range| !range.is_finite());
         // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.
@@ -132,14 +133,14 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
-        if mode == SummaryReadMode::RequireReady && query.time_range.is_none() {
+        if mode == SummaryReadMode::RequireReady && unbounded {
             let status = crate::report_cache::status_on(&mut tx)
                 .await
                 .map_err(database_error)?;
             let core_ready = crate::report_cache::is_ready_on(&mut tx)
                 .await
                 .map_err(database_error)?;
-            if !core_ready {
+            if !core_ready || (include_global && !status.ready) {
                 return Err(UsageStoreError::ReportWarming(Box::new(status)));
             }
         }
@@ -150,7 +151,7 @@ impl UsageStore {
             .await
             .unwrap_or(false);
         let source = if global_ready {
-            if include_global && query.time_range.is_none() {
+            if include_global && unbounded {
                 ReportSource::CachedAll
             } else {
                 ReportSource::CachedScoped
@@ -214,8 +215,7 @@ impl UsageStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(database_error)?
-        } else if source != ReportSource::Canonical && query.time_range.is_none() && include_global
-        {
+        } else if source != ReportSource::Canonical && unbounded && include_global {
             // Global cached reports select every operation. Keep this check on
             // the derived projections so it does not join 1.3M rows through a
             // temporary selected table just to inspect the latest marker.
@@ -258,7 +258,7 @@ impl UsageStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(database_error)?
-        } else if source != ReportSource::Canonical && query.time_range.is_none() {
+        } else if source != ReportSource::Canonical && unbounded {
             sqlx::query_scalar(r#"
                 SELECT EXISTS(SELECT 1 FROM _usage_report_latest_coverage AS coverage
                     JOIN _usage_selected AS selected ON selected.id = coverage.operation_id
