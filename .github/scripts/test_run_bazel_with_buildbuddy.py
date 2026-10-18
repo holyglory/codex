@@ -244,17 +244,39 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "//codex-rs/...",
                 "--",
                 "--program-arg",
-                env={"BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository"},
+                env={
+                    "BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository",
+                    "GITHUB_ACTIONS": "true",
+                    "RUNNER_ENVIRONMENT": "github-hosted",
+                },
             ),
             [
                 "bazel",
+                "--noexperimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
                 "--repository_cache=/tmp/bazel-repository",
+                "--disk_cache=",
                 "--",
                 "--program-arg",
             ],
         )
+
+        for runner, explicit_cache in (
+            ("github-hosted", "--disk_cache=/bounded-cache"),
+            ("self-hosted", ""),
+        ):
+            with self.subTest(runner=runner, explicit_cache=explicit_cache):
+                args = ["build", "//codex-rs/..."]
+                if explicit_cache:
+                    args.append(explicit_cache)
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_command(
+                        *args,
+                        env={"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": runner},
+                    ),
+                    ["bazel", "--noexperimental_remote_repo_contents_cache", *args],
+                )
 
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (

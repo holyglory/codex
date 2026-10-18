@@ -302,6 +302,18 @@ the authority for release outcomes and verification receipts.
   its owner and select approved GitHub-hosted runners for the fork, keeping the
   test commands and required-check aggregation intact. Validate the actual fork
   jobs; repeated retries cannot create a missing runner group.
+- **Keep required upstream checks in local release acceptance.** The broad
+  Bazel test command excludes the separate argument-comment aspect. Run that
+  aspect explicitly, including manual unit-test binaries, before freezing a
+  release. A passing Rust suite or Bazel test graph does not cover this lint.
+  Apply compiler-reported parameter names mechanically and verify that the
+  correction changes only comments, whitespace, and trailing commas.
+- **Inspect the cache settings of unauthenticated CI jobs.** Without a
+  BuildBuddy key, the wrapper omits remote CI configurations, including their
+  disabled disk cache. GitHub-hosted jobs must also disable the default local
+  action cache so large outputs are not duplicated on the ephemeral disk.
+  Preserve explicitly configured bounded caches and repository-download
+  caches; test the fallback without exposing credentials to pull requests.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
   candidate identity. Make remaining repairs in a separate checkout, integrate
   them after the accepted run finishes, and bind the next run to that commit.
