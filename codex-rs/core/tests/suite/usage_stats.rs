@@ -82,7 +82,11 @@ async fn seed_small_performance_review(home: &TempDir) -> Result<()> {
     let store = UsageStore::open(home.path()).await?;
     let process = ProcessId::new();
     store.register_process(&process, 42, 0).await?;
-    for (id, parent) in [("scale-root", None), ("scale-child", Some("scale-root"))] {
+    for (id, parent) in [
+        ("scale-root", None),
+        ("scale-child", Some("scale-root")),
+        ("scale-other", None),
+    ] {
         store
             .ensure_thread(&NewThread {
                 id: ThreadId::new(id)?,
@@ -96,7 +100,11 @@ async fn seed_small_performance_review(home: &TempDir) -> Result<()> {
             })
             .await?;
     }
-    for (thread, started_at_ms, tokens) in [("scale-root", 1_000, 11), ("scale-child", 1_100, 13)] {
+    for (thread, started_at_ms, tokens) in [
+        ("scale-root", 1_000, 11),
+        ("scale-child", 1_100, 13),
+        ("scale-other", 1_200, 99),
+    ] {
         let operation = NewOperation {
             work_context: None,
             id: OperationId::new(),
