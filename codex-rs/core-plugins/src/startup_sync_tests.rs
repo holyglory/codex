@@ -1443,7 +1443,7 @@ fn curated_repo_zipball_bytes(sha: &str) -> Vec<u8> {
     writer
         .start_file(
             format!("{root}/plugins/gmail/.codex-plugin/plugin.json"),
-            options,
+            options.compression_method(zip::CompressionMethod::Stored),
         )
         .expect("start plugin manifest entry");
     writer
@@ -1452,7 +1452,9 @@ fn curated_repo_zipball_bytes(sha: &str) -> Vec<u8> {
     writer
         .start_file(
             format!("{root}/plugins/gmail/bin/helper"),
-            options.unix_permissions(0o751),
+            options
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(0o751),
         )
         .expect("start helper entry");
     writer
