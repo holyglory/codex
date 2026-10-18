@@ -63,6 +63,12 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Refresh native dependency patches after lock updates.** Cargo can pass
+  while Bazel still applies a patch written for an older transitive crate.
+  Inspect the new crate source, drop changes already implemented upstream,
+  retain the remaining platform fix, and exercise Bazel repository loading.
+  For example, zstd-sys 2.1.2 already avoids the visibility flag for MSVC but
+  still needs the downstream MSVC header-search paths.
 - **Verify the toolchain before diagnosing compile failures.** Read
   `codex-rs/rust-toolchain.toml`, resolve the actual `rustc` and `cargo` selected
   by the shell, and compare them with the toolchain used by DevCoordinator's
