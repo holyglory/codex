@@ -350,6 +350,19 @@ def check(root, state, binary):
         scale_environment,
         "accounting_scale_bounds_memory_refresh_and_wal",
     )
+    results = {
+        "scale": scale_status == 0,
+        "fixture_ready": (ready / "fixture-marker").is_file(),
+    }
+    if not results["fixture_ready"]:
+        report = {
+            "checks": results,
+            "unavailable_checks": "generated_history_not_ready",
+            "live_data_used": False,
+        }
+        (state / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report), flush=True)
+        return 1
     copy_warming(ready, warming)
     # Initialize before pinning the snapshot, then keep refresh incomplete for
     # both public and native windows rather than accidentally testing warm data.
@@ -360,7 +373,6 @@ def check(root, state, binary):
         stdout=subprocess.DEVNULL,
         timeout=180,
     )
-    results = {"scale": scale_status == 0}
     with sqlite3.connect(
         f"file:{warming}/usage/usage.sqlite3?mode=ro", uri=True
     ) as reader:
