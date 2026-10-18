@@ -528,6 +528,13 @@ the authority for release outcomes and verification receipts.
   reporting windows. Keep operation and hour queues progressing together; a
   short SQLite deadline alone can repeatedly interrupt an expensive page.
   Measure the whole hourly calculation and preserve its reported aggregates.
+- **Exercise the production refresh worker in large-history acceptance.** A
+  direct `report_cache::ensure` call can return a page interruption that the
+  real worker already retries with backoff. Retain the failed database and
+  compare worker progress before changing production retry behavior. A fast
+  replay against warmed pages does not establish the cause of a cold failure.
+  Require eventual readiness, monotonic committed cursors, unchanged totals
+  and responsive concurrent capture; a successful retry alone is insufficient.
 - **Verify every public reporting entry point.** Performance-review deadlines
   do not protect separate task-tree queries. Row and output caps do not bound
   SQLite execution time. Exercise task-tree summaries on the same large,
