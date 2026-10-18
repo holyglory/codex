@@ -170,6 +170,267 @@ async fn global_component_upgrade_rebuilds_only_derived_state() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn v2_global_upgrade_preserves_partial_queues_and_aggregates() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial global worker");
+    store.report_refresh.cancel();
+
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 48, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    insert_thread(&store, "v2-upgrade-thread").await;
+    let mut applied = operation(process_id, "v2-upgrade-thread", OperationKind::LocalTool);
+    applied.started_at_ms = 1_000;
+    store
+        .begin_operation(&applied)
+        .await
+        .expect("applied operation");
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: applied.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 2_000,
+            duration_ns: 1_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("applied terminal");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("apply v2 aggregate");
+
+    let mut queued = operation(process_id, "v2-upgrade-thread", OperationKind::LocalTool);
+    queued.started_at_ms = 7_200_000;
+    store
+        .begin_operation(&queued)
+        .await
+        .expect("queued operation");
+    let before_meta = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64)>(
+        "SELECT component_version,core_schema_version,core_generation,ready,dirty_revision,applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("v2 metadata");
+    let before_counts = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT operations,model_requests,unfinished_operations FROM _usage_report_global_counts WHERE singleton=1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("v2 aggregates");
+    let before_operations: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT operation_id,operation_kind,terminal_status FROM _usage_report_global_operations ORDER BY operation_id",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .expect("v2 operation projection");
+    let before_dirty_operations: Vec<String> = sqlx::query_scalar(
+        "SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .expect("v2 operation queue");
+    let before_dirty_hours: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .expect("v2 hour queue");
+    assert_eq!(before_meta.0, crate::report_global::COMPONENT_VERSION);
+    assert_eq!(before_operations.len(), 1);
+    assert!(before_dirty_operations.contains(&queued.id.as_string()));
+    assert!(
+        before_dirty_hours
+            .iter()
+            .any(|(start, end)| *start == 2 && *end == 2)
+    );
+
+    // A v2 cache had no frontier table. Dropping it also models a rollback
+    // from the older binary after a newer binary had previously opened the
+    // same database and left additive metadata behind.
+    sqlx::raw_sql("DROP TABLE _usage_report_global_seed;")
+        .execute(&store.pool)
+        .await
+        .expect("remove v3 frontier");
+    sqlx::query("UPDATE _usage_report_global_meta SET component_version=2")
+        .execute(&store.pool)
+        .await
+        .expect("mark v2 component");
+
+    let blocked_refresh = store
+        .report_refresh
+        .reader
+        .acquire()
+        .await
+        .expect("hold refresh admission");
+    store.close().await;
+    let reopened = UsageStore::open(temp.path())
+        .await
+        .expect("reopen v2 cache");
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "SELECT core_schema_version,core_generation,ready,dirty_revision,applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("preserved metadata"),
+        (
+            before_meta.1,
+            before_meta.2,
+            before_meta.3,
+            before_meta.4,
+            before_meta.5,
+        )
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT operations,model_requests,unfinished_operations FROM _usage_report_global_counts WHERE singleton=1",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("preserved aggregates"),
+        before_counts
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT operation_id,operation_kind,terminal_status FROM _usage_report_global_operations ORDER BY operation_id",
+        )
+        .fetch_all(&reopened.pool)
+        .await
+        .expect("preserved operation projection"),
+        before_operations
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id",
+        )
+        .fetch_all(&reopened.pool)
+        .await
+        .expect("preserved operation queue"),
+        before_dirty_operations
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour",
+        )
+        .fetch_all(&reopened.pool)
+        .await
+        .expect("preserved hour queue"),
+        before_dirty_hours
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT component_version FROM _usage_report_global_meta WHERE singleton=1",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("upgraded version"),
+        crate::report_global::COMPONENT_VERSION
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT cursor,high_water FROM _usage_report_global_seed ORDER BY source",
+        )
+        .fetch_all(&reopened.pool)
+        .await
+        .expect("completed v3 frontiers")
+        .iter()
+        .filter(|(cursor, high_water)| cursor != high_water)
+        .count(),
+        0
+    );
+    // A v2 binary leaves this additive table behind when it rolls a v3 cache
+    // back to its own schema. Re-upgrading must replace stale frontiers too.
+    sqlx::query("UPDATE _usage_report_global_meta SET component_version=2")
+        .execute(&reopened.pool)
+        .await
+        .expect("mark rolled-back component");
+    sqlx::query("UPDATE _usage_report_global_seed SET cursor=0, high_water=0")
+        .execute(&reopened.pool)
+        .await
+        .expect("stale rolled-back frontier");
+    crate::report_cache::prepare(&reopened.pool)
+        .await
+        .expect("replace rolled-back frontier");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _usage_report_global_seed WHERE cursor <> high_water",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .expect("rolled-back frontier state"),
+        0
+    );
+    drop(blocked_refresh);
+    reopened.report_refresh.cancel();
+    crate::report_cache::ensure(&reopened.pool, &reopened.report_refresh.reader)
+        .await
+        .expect("resume queued v2 work");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _usage_report_global_dirty_operations",)
+            .fetch_one(&reopened.pool)
+            .await
+            .expect("drained operation queue"),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn newer_global_component_is_preserved_for_newer_reader() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial global worker");
+    store.report_refresh.cancel();
+    sqlx::query(
+        "UPDATE _usage_report_global_meta SET component_version=?, ready=1 WHERE singleton=1",
+    )
+    .bind(crate::report_global::COMPONENT_VERSION + 1)
+    .execute(&store.pool)
+    .await
+    .expect("mark future global component");
+    sqlx::query(
+        "UPDATE _usage_report_global_counts SET operations=17, model_requests=11 WHERE singleton=1",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("future aggregate marker");
+    assert!(
+        !crate::report_cache::prepare(&store.pool)
+            .await
+            .expect("future prepare")
+    );
+    assert!(
+        !crate::report_global::is_supported(&store.pool)
+            .await
+            .expect("future support")
+    );
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("future component remains untouched");
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT component_version,operations,model_requests FROM _usage_report_global_meta CROSS JOIN _usage_report_global_counts WHERE _usage_report_global_meta.singleton=1 AND _usage_report_global_counts.singleton=1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("future component marker"),
+        (
+            crate::report_global::COMPONENT_VERSION + 1,
+            17,
+            11,
+        )
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn finite_summary_uses_core_cache_while_global_component_warms() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");

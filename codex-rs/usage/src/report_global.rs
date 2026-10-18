@@ -21,14 +21,24 @@ use tokio::time::Instant;
 mod schema;
 
 pub(crate) use schema::COMPONENT_VERSION;
+pub(crate) use schema::PREVIOUS_COMPONENT_VERSION;
 use schema::RESET_SQL;
 use schema::SCHEMA;
+use schema::SEED_SCHEMA;
+
+const SEED_SOURCES: [&str; 4] = [
+    "operations",
+    "token_observations",
+    "coverage_events",
+    "activity_spans",
+];
 
 pub(crate) async fn initialize(
     connection: &mut SqliteConnection,
     core_schema_version: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(SCHEMA).execute(&mut *connection).await?;
+    initialize_seed_frontier(connection, /*complete*/ false).await?;
     sqlx::query(
         "UPDATE _usage_report_global_meta SET component_version=?, core_schema_version=? WHERE singleton=1",
     )
@@ -36,22 +46,6 @@ pub(crate) async fn initialize(
         .bind(core_schema_version)
         .execute(&mut *connection)
         .await?;
-    for source in [
-        "operations",
-        "token_observations",
-        "coverage_events",
-        "activity_spans",
-    ] {
-        sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "UPDATE _usage_report_global_seed SET high_water = COALESCE((SELECT MAX(rowid) FROM ",
-        )
-        .push(source)
-        .push(") , 0) WHERE source = ")
-        .push_bind(source)
-        .build()
-        .execute(&mut *connection)
-        .await?;
-    }
     sqlx::query(
         "UPDATE _usage_report_global_meta SET ready=0, dirty_revision=dirty_revision+1 WHERE singleton=1",
     )
@@ -68,6 +62,63 @@ pub(crate) async fn reset(
     initialize(connection, core_schema_version).await
 }
 
+/// Upgrade the v2 component in place. V2 populated every derived projection
+/// in one transaction, so its source history is already represented. The v3
+/// seed frontier therefore starts at each source high-water mark and does not
+/// invalidate the queues, aggregates, or readiness state that v2 left behind.
+pub(crate) async fn upgrade_v2(
+    connection: &mut SqliteConnection,
+    core_schema_version: i64,
+) -> Result<(), sqlx::Error> {
+    initialize_seed_frontier(connection, /*complete*/ true).await?;
+    sqlx::query(
+        "UPDATE _usage_report_global_meta SET component_version=?, core_schema_version=? WHERE singleton=1",
+    )
+    .bind(COMPONENT_VERSION)
+    .bind(core_schema_version)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn initialize_seed_frontier(
+    connection: &mut SqliteConnection,
+    complete: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(SEED_SCHEMA).execute(&mut *connection).await?;
+    sqlx::query("DELETE FROM _usage_report_global_seed")
+        .execute(&mut *connection)
+        .await?;
+    for source in SEED_SOURCES {
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid),0) FROM ");
+        query.push(source);
+        let high_water = query
+            .build_query_scalar()
+            .fetch_one(&mut *connection)
+            .await?;
+        sqlx::query(
+            "INSERT INTO _usage_report_global_seed(source,cursor,high_water) VALUES (?, ?, ?)",
+        )
+        .bind(source)
+        .bind(if complete { high_water } else { 0 })
+        .bind(high_water)
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn is_supported(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    let component: Option<i64> = sqlx::query_scalar(
+        "SELECT component_version FROM _usage_report_global_meta WHERE singleton=1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(component.is_none_or(|version| version <= COMPONENT_VERSION))
+}
+
 pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<bool, sqlx::Error> {
     let exists: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_global_meta')",
@@ -75,6 +126,14 @@ pub(crate) async fn is_ready_on(connection: &mut SqliteConnection) -> Result<boo
     .fetch_one(&mut *connection)
     .await?;
     if exists == 0 {
+        return Ok(false);
+    }
+    let seed_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_global_seed')",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    if seed_exists == 0 {
         return Ok(false);
     }
     let state: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
