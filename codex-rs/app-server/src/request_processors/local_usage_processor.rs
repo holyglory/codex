@@ -230,11 +230,11 @@ impl LocalUsageRequestProcessor {
             .id;
         let label = SafeRepositoryLabel::new(params.label)
             .map_err(|_| invalid_params("repository label is invalid"))?;
+        self.ensure_report_ready(&store, None, None).await?;
         store
             .append_repository_alias(FactEventId::new(), &canonical, &label, now_ms())
             .await
             .map_err(store_error)?;
-        self.ensure_report_ready(&store, None, None).await?;
         let record = store
             .read_repository(&canonical)
             .await
@@ -263,11 +263,11 @@ impl LocalUsageRequestProcessor {
         if source == target {
             return Err(invalid_params("repository merge would create a cycle"));
         }
+        self.ensure_report_ready(&store, None, None).await?;
         store
             .append_repository_merge(FactEventId::new(), &source, &target, now_ms())
             .await
             .map_err(store_error)?;
-        self.ensure_report_ready(&store, None, None).await?;
         let record = store
             .read_repository(&target)
             .await
