@@ -7,6 +7,9 @@ inputs:
   cache-scope:
     description: Logical namespace used to keep concurrent Bazel jobs from reserving the same repository cache key.
     required: true
+  accept-msvc-runtime-license:
+    description: Explicit operator acknowledgement of the Visual Studio terms.
+    default: 'false'
 outputs:
   repository-cache-path:
     description: Filesystem path used for the Bazel repository cache.
@@ -26,6 +29,7 @@ runs:
       uses: ./.github/actions/setup-bazel-ci
       with:
         target: ${{ inputs.target }}
+        accept-msvc-runtime-license: ${{ inputs.accept-msvc-runtime-license }}
 
     - name: Compute bazel repository cache key
       id: cache_bazel_repository_key

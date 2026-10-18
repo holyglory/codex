@@ -153,6 +153,7 @@ jobs:
       - name: Prepare Bazel for pinned native Cargo inputs
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: x86_64-unknown-linux-gnu
           cache-scope: downstream-candidate-cargo-native
       - name: Prepare the pinned voice SDK and runtime for Cargo
@@ -200,6 +201,7 @@ jobs:
         id: bazel-setup
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: x86_64-unknown-linux-gnu
           cache-scope: downstream-candidate-bazel
       - name: Restore bounded Bazel build results

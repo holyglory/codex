@@ -4,6 +4,9 @@ inputs:
   target:
     description: Target triple used for cache namespacing.
     required: true
+  accept-msvc-runtime-license:
+    description: Explicit operator acknowledgement of the Visual Studio terms.
+    default: 'false'
 outputs:
   repository-cache-path:
     description: Filesystem path used for the Bazel repository cache.
@@ -32,7 +35,7 @@ runs:
         "repository-cache-path=$env:BAZEL_REPOSITORY_CACHE" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
     - name: Apply operator-configured MSVC runtime acknowledgement
-      if: runner.os == 'Windows' && github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1'
+      if: runner.os == 'Windows' && github.repository_owner != 'openai' && inputs.accept-msvc-runtime-license == 'true'
       shell: pwsh
       run: |
         # The operator must explicitly configure this repository variable after

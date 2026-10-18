@@ -67,6 +67,7 @@ jobs:
         id: setup_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: x86_64-unknown-linux-gnu
           cache-scope: sdk
 
