@@ -214,6 +214,55 @@ async fn prepare_performance_review_fixture(home: &TempDir) -> Result<(i64, i64,
     Ok((900, 2_200, 2, 24))
 }
 
+struct TaskTreeScaleExpectation {
+    from_at_ms: i64,
+    to_at_ms: i64,
+    threads: u64,
+    operations: u64,
+    provider_tokens: u64,
+}
+
+#[cfg(unix)]
+async fn prepare_task_tree_scale_fixture(
+    home: &TempDir,
+) -> Result<Option<TaskTreeScaleExpectation>> {
+    let Some(fixture) = std::env::var_os("CXM_USAGE_SCALE_FIXTURE") else {
+        return Ok(None);
+    };
+    let fixture = std::path::PathBuf::from(fixture);
+    let scopes: Value = serde_json::from_slice(&std::fs::read(fixture.join("scope.json"))?)?;
+    anyhow::ensure!(scopes["fixture_shape_version"] == 2);
+    anyhow::ensure!(scopes["root_thread_id"] == "scale-root");
+    anyhow::ensure!(scopes["include_descendants"] == true);
+    anyhow::ensure!(scopes["expected_thread_count"] == 64);
+    let from_at_ms = scopes["window_start_ms"].as_i64().context("window start")?;
+    let to_at_ms = scopes["window_end_ms"].as_i64().context("window end")?;
+    let threads = scopes["expected_thread_count"]
+        .as_u64()
+        .context("thread count")?;
+    let operations = scopes["expected_root_window_operations"]
+        .as_u64()
+        .context("root operation total")?;
+    let provider_tokens = scopes["expected_root_window_provider_tokens"]
+        .as_u64()
+        .context("root token total")?;
+    std::os::unix::fs::symlink(fixture.join("usage"), home.path().join("usage"))?;
+    Ok(Some(TaskTreeScaleExpectation {
+        from_at_ms,
+        to_at_ms,
+        threads,
+        operations,
+        provider_tokens,
+    }))
+}
+
+#[cfg(not(unix))]
+async fn prepare_task_tree_scale_fixture(
+    _home: &TempDir,
+) -> Result<Option<TaskTreeScaleExpectation>> {
+    Ok(None)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_reads_finite_performance_review_with_descendants() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -735,54 +784,89 @@ async fn task_tree_summary_reports_code_mode_deduplication_and_context_sources()
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let response_mock = responses::mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-tree-1"),
-                ev_custom_tool_call(
-                    "code-mode-wrapper",
-                    "exec",
-                    r#"
+    let home = Arc::new(TempDir::new()?);
+    let scale = prepare_task_tree_scale_fixture(&home).await?;
+    let response_mock = if let Some(scale) = &scale {
+        responses::mount_sse_sequence(
+            &server,
+            vec![
+                sse(vec![
+                    ev_response_created("resp-tree-scale-1"),
+                    ev_function_call(
+                        "read-tree-scale",
+                        "usage_stats",
+                        &json!({
+                            "action": "task_tree_summary",
+                            "root_thread_id": "scale-root",
+                            "include_descendants": true,
+                            "from_at_ms": scale.from_at_ms,
+                            "to_at_ms": scale.to_at_ms
+                        })
+                        .to_string(),
+                    ),
+                    ev_completed_with_usage(
+                        "resp-tree-scale-1",
+                        /*input_tokens*/ 1,
+                        /*output_tokens*/ 1,
+                    ),
+                ]),
+                sse(vec![
+                    ev_response_created("resp-tree-scale-2"),
+                    ev_assistant_message("msg-tree-scale", "done"),
+                    ev_completed("resp-tree-scale-2"),
+                ]),
+            ],
+        )
+        .await
+    } else {
+        responses::mount_sse_sequence(
+            &server,
+            vec![
+                sse(vec![
+                    ev_response_created("resp-tree-1"),
+                    ev_custom_tool_call(
+                        "code-mode-wrapper",
+                        "exec",
+                        r#"
 const result = await tools.get_context_remaining({});
 text(JSON.stringify(result));
 "#,
-                ),
-                ev_completed_with_usage(
-                    "resp-tree-1",
-                    /*input_tokens*/ 10,
-                    /*output_tokens*/ 2,
-                ),
-            ]),
-            sse(vec![
-                ev_response_created("resp-tree-2"),
-                ev_function_call(
-                    "read-tree",
-                    "usage_stats",
-                    &json!({
-                        "action": "task_tree_summary",
-                        "root_thread_id": "current",
-                        "include_descendants": true,
-                        "from_at_ms": 0,
-                        "to_at_ms": 4_000_000_000_000_i64
-                    })
-                    .to_string(),
-                ),
-                ev_completed_with_usage(
-                    "resp-tree-2",
-                    /*input_tokens*/ 20,
-                    /*output_tokens*/ 3,
-                ),
-            ]),
-            sse(vec![
-                ev_response_created("resp-tree-3"),
-                ev_assistant_message("msg-tree", "done"),
-                ev_completed("resp-tree-3"),
-            ]),
-        ],
-    )
-    .await;
-    let home = Arc::new(TempDir::new()?);
+                    ),
+                    ev_completed_with_usage(
+                        "resp-tree-1",
+                        /*input_tokens*/ 10,
+                        /*output_tokens*/ 2,
+                    ),
+                ]),
+                sse(vec![
+                    ev_response_created("resp-tree-2"),
+                    ev_function_call(
+                        "read-tree",
+                        "usage_stats",
+                        &json!({
+                            "action": "task_tree_summary",
+                            "root_thread_id": "current",
+                            "include_descendants": true,
+                            "from_at_ms": 0,
+                            "to_at_ms": 4_000_000_000_000_i64
+                        })
+                        .to_string(),
+                    ),
+                    ev_completed_with_usage(
+                        "resp-tree-2",
+                        /*input_tokens*/ 20,
+                        /*output_tokens*/ 3,
+                    ),
+                ]),
+                sse(vec![
+                    ev_response_created("resp-tree-3"),
+                    ev_assistant_message("msg-tree", "done"),
+                    ev_completed("resp-tree-3"),
+                ]),
+            ],
+        )
+        .await
+    };
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_config(|config| {
@@ -798,13 +882,53 @@ text(JSON.stringify(result));
             config.model_context_window = Some(10_000);
         });
     let test = builder.build_with_auto_env(&server).await?;
+    let started = std::time::Instant::now();
     test.submit_turn("inspect this task tree").await?;
+    if scale.is_some() {
+        assert!(
+            started.elapsed() <= Duration::from_secs(15),
+            "large task-tree summary exceeded the 15 second report budget: {:?}",
+            started.elapsed()
+        );
+    }
 
     let requests = response_mock.requests();
-    assert_eq!(requests.len(), 3);
-    let summary = tool_output(&requests[2], "read-tree");
+    let (summary_request, summary_call_id) = if scale.is_some() {
+        assert_eq!(requests.len(), 2);
+        (1, "read-tree-scale")
+    } else {
+        assert_eq!(requests.len(), 3);
+        (2, "read-tree")
+    };
+    let summary = tool_output(&requests[summary_request], summary_call_id);
     assert_eq!(summary["kind"], "taskTreeSummary");
     assert_eq!(summary["includeDescendants"], true);
+    if let Some(scale) = scale {
+        assert_eq!(summary["rootThreadId"], "scale-root");
+        assert_eq!(summary["counts"]["threads"], scale.threads);
+        assert_eq!(summary["counts"]["agents"], scale.threads);
+        assert_eq!(summary["counts"]["rawOperations"], scale.operations);
+        assert_eq!(
+            summary["counts"]["deduplicatedOperations"],
+            scale.operations
+        );
+        assert_eq!(summary["counts"]["modelRequests"], scale.operations);
+        assert_eq!(summary["totals"]["operations"], scale.operations);
+        assert_eq!(summary["totals"]["modelRequests"], scale.operations);
+        assert_eq!(
+            summary["totals"]["providerTotalTokens"]["measuredTokens"],
+            scale.provider_tokens
+        );
+        assert_eq!(
+            summary["totals"]["providerTotalTokens"]["exactTokens"],
+            scale.provider_tokens
+        );
+        assert_eq!(
+            summary["totals"]["providerTotalTokens"]["unknownObservations"],
+            0
+        );
+        return Ok(());
+    }
     assert_eq!(summary["counts"]["wrapperToolOperations"], 1);
     assert_eq!(summary["counts"]["nestedToolOperations"], 1);
     assert_eq!(summary["counts"]["rawToolOperations"], 3);
