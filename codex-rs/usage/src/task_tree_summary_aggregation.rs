@@ -26,8 +26,10 @@ impl UsageStore {
             .iter()
             .map(|operation| operation.id.clone())
             .collect::<Vec<_>>();
-        push_string_binds(&mut query, &operation_ids);
-        query.push(')');
+        query
+            .push("SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(operation_ids))
+            .push("))");
         let rows = query
             .build()
             .fetch_all(&mut *connection)
