@@ -5,9 +5,12 @@ use crate::store::UsageStoreError;
 use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
+use sqlx::SqliteConnection;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 
 #[path = "task_tree_summary_aggregation.rs"]
 mod aggregation;
@@ -37,32 +40,59 @@ impl UsageStore {
         &self,
         query: TaskTreeSummaryQuery,
     ) -> Result<Option<TaskTreeSummary>, UsageStoreError> {
-        let thread_ids = self.task_tree_threads(&query).await?;
+        let deadline = Instant::now() + crate::report_read::REPORT_BUDGET;
+        let mut reader = crate::report_read::ReportRead::acquire(
+            &self.pool,
+            &self.report_refresh.reader,
+            deadline,
+        )
+        .await?;
+        let result = timeout_at(
+            deadline,
+            self.read_task_tree_summary(query, &mut reader.connection),
+        )
+        .await
+        .unwrap_or(Err(UsageStoreError::ReportTimedOut));
+        reader.finish(result, deadline).await
+    }
+
+    async fn read_task_tree_summary(
+        &self,
+        query: TaskTreeSummaryQuery,
+        connection: &mut SqliteConnection,
+    ) -> Result<Option<TaskTreeSummary>, UsageStoreError> {
+        use sqlx::Connection;
+        let mut transaction = connection
+            .begin()
+            .await
+            .map_err(UsageStoreError::Database)?;
+        let connection = transaction.as_mut();
+        let thread_ids = self.task_tree_threads(connection, &query).await?;
         if thread_ids.is_empty() {
             return Ok(None);
         }
         let operations = self
-            .task_tree_operations(&thread_ids, query.time_range)
+            .task_tree_operations(connection, &thread_ids, query.time_range)
             .await?;
         let active_agent_ids = operations
             .iter()
             .filter_map(|operation| operation.agent_id.clone())
             .collect::<HashSet<_>>();
-        let agents = self.task_tree_agents(&active_agent_ids).await?;
+        let agents = self.task_tree_agents(connection, &active_agent_ids).await?;
         let agent_count = agents.len();
         let operation_by_id = operations
             .iter()
             .map(|operation| (operation.id.clone(), operation.clone()))
             .collect::<HashMap<_, _>>();
         let (excluded_wrappers, tool_counts) = self
-            .task_tree_tool_roles(&thread_ids, query.time_range)
+            .task_tree_tool_roles(connection, &thread_ids, query.time_range)
             .await?;
         let effective_operation_ids = operations
             .iter()
             .filter(|operation| !excluded_wrappers.contains(&operation.id))
             .map(|operation| operation.id.clone())
             .collect::<HashSet<_>>();
-        let rework_cache = self.task_tree_rework_flags(&operations).await?;
+        let rework_cache = self.task_tree_rework_flags(connection, &operations).await?;
 
         let mut agent_effort = agents
             .keys()
@@ -113,6 +143,7 @@ impl UsageStore {
         }
 
         self.task_tree_tokens(
+            connection,
             &thread_ids,
             query.time_range,
             &operations,
@@ -124,18 +155,18 @@ impl UsageStore {
         )
         .await?;
         let context = self
-            .task_tree_context(&thread_ids, query.time_range, &operations)
+            .task_tree_context(connection, &thread_ids, query.time_range, &operations)
             .await?;
         let totals = combine_effort(&agent_effort)?;
         let agent_summaries = agent_summaries(agents, agent_effort)?;
         let database_schema_version =
             sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *connection)
                 .await
                 .map_err(UsageStoreError::Database)?
                 .try_into()
                 .map_err(|_| UsageStoreError::DatabaseValueOutOfRange)?;
-        Ok(Some(TaskTreeSummary {
+        let result = Some(TaskTreeSummary {
             schema_version: TASK_TREE_SUMMARY_SCHEMA_VERSION,
             kind: "taskTreeSummary",
             database_schema_version,
@@ -182,11 +213,17 @@ impl UsageStore {
                 rework: "explicit rework_of operations and their parent/retry descendants are rework; all others are first pass",
                 time_window: "clip operation intervals; select token and context facts by observation time in the half-open window",
             },
-        }))
+        });
+        transaction
+            .commit()
+            .await
+            .map_err(UsageStoreError::Database)?;
+        Ok(result)
     }
 
     async fn task_tree_threads(
         &self,
+        connection: &mut SqliteConnection,
         query: &TaskTreeSummaryQuery,
     ) -> Result<Vec<String>, UsageStoreError> {
         let rows = sqlx::query(
@@ -203,7 +240,7 @@ impl UsageStore {
         .bind(query.root_thread_id.as_str())
         .bind(query.include_descendants)
         .bind(i64::try_from(MAX_TASK_TREE_NODES + 1).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_NODES {
@@ -214,6 +251,7 @@ impl UsageStore {
 
     async fn task_tree_agents(
         &self,
+        connection: &mut SqliteConnection,
         agent_ids: &HashSet<String>,
     ) -> Result<BTreeMap<String, AgentMetadata>, UsageStoreError> {
         if agent_ids.len() > MAX_TASK_TREE_NODES {
@@ -230,7 +268,7 @@ impl UsageStore {
         query.push_bind(i64::try_from(MAX_TASK_TREE_NODES + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_NODES {
@@ -251,6 +289,7 @@ impl UsageStore {
 
     async fn task_tree_operations(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
     ) -> Result<Vec<OperationRow>, UsageStoreError> {
@@ -278,7 +317,7 @@ impl UsageStore {
             .push_bind(i64::try_from(MAX_TASK_TREE_OPERATIONS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_OPERATIONS {

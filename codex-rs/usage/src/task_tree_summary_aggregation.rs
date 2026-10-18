@@ -10,6 +10,7 @@ struct TokenFact {
 impl UsageStore {
     pub(super) async fn task_tree_tool_roles(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
     ) -> Result<(HashSet<String>, ToolCounts), UsageStoreError> {
@@ -30,7 +31,7 @@ impl UsageStore {
             .push(')');
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         let mut wrappers = Vec::new();
@@ -81,6 +82,7 @@ impl UsageStore {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn task_tree_tokens(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
         operations: &[OperationRow],
@@ -139,7 +141,7 @@ impl UsageStore {
             .push_bind(i64::try_from(MAX_TASK_TREE_FACT_ROWS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_FACT_ROWS {
@@ -235,6 +237,7 @@ impl UsageStore {
 
     pub(super) async fn task_tree_context(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
         operations: &[OperationRow],
@@ -272,7 +275,7 @@ impl UsageStore {
             .push_bind(i64::try_from(MAX_TASK_TREE_FACT_ROWS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_FACT_ROWS {
