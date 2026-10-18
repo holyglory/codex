@@ -9,6 +9,7 @@ use hmac::Hmac;
 use hmac::Mac;
 use rand::RngCore;
 use sha2::Sha256;
+use sqlx::Connection;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::path::Path;
@@ -564,7 +565,11 @@ impl UsageStore {
         target: &RepositoryId,
         occurred_at_ms: i64,
     ) -> Result<(), UsageStoreError> {
-        let mut transaction = self.pool.begin().await.map_err(UsageStoreError::Database)?;
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(UsageStoreError::Database)?;
         let creates_cycle: i64 = sqlx::query_scalar(
             r#"
             WITH RECURSIVE target_chain(id) AS (
