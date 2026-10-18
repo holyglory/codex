@@ -181,6 +181,7 @@ jobs:
       - name: Prepare Bazel CI
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: ${{ matrix.target }}
           cache-scope: release-voice-windows
       - uses: ./.github/actions/setup-msvc-env
