@@ -370,6 +370,7 @@ impl CoreShellActionProvider {
                                 }
                             }
                             NetworkPolicyRuleAction::Deny => {
+                                self.user_declined.store(true, Ordering::Release);
                                 EscalationDecision::deny(Some("User denied execution".to_string()))
                             }
                         },
