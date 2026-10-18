@@ -282,3 +282,91 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
         .expect("second unbounded summary after refresh");
     assert_eq!(summary.operation_count, 2);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hour_rebuild_keeps_current_wait_span_for_old_open_operation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = crate::UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial global cache");
+    store.report_refresh.cancel();
+
+    let process_id = crate::ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 45, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    sqlx::query(
+        "INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES ('lifetime-span-thread',NULL,'cli',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("thread");
+    let operation = crate::NewOperation {
+        work_context: None,
+        id: crate::OperationId::new(),
+        process_id,
+        thread_id: Some(crate::ThreadId::new("lifetime-span-thread").expect("thread id")),
+        turn_id: None,
+        agent_id: None,
+        parent_operation_id: None,
+        retry_of_operation_id: None,
+        rework_of_operation_id: None,
+        kind: crate::OperationKind::LocalTool,
+        started_at_ms: -1_000,
+        phase: crate::Phase::Implementation,
+        activity: crate::Activity::Coding,
+        activity_state: crate::ActivityState::ToolActive,
+        attribution_provenance: crate::AttributionProvenance::AgentDeclared,
+    };
+    store
+        .begin_operation(&operation)
+        .await
+        .expect("old open operation");
+    let span = crate::NewActivitySpan {
+        id: crate::ActivitySpanId::new(),
+        operation_id: operation.id,
+        activity_state: crate::ActivityState::UserWait,
+        started_at_ms: 1_000,
+    };
+    store.begin_activity_span(&span).await.expect("wait span");
+    store
+        .record_activity_span_event(&crate::NewActivitySpanEvent {
+            event_id: crate::FactEventId::new(),
+            activity_span_id: span.id,
+            kind: crate::ActivitySpanEventKind::Ended,
+            occurred_at_ms: 3_000,
+        })
+        .await
+        .expect("end wait span");
+
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready=0 WHERE singleton=1")
+        .execute(&store.pool)
+        .await
+        .expect("invalidate core cache for canonical oracle");
+    let query = crate::UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
+        thread_id: None,
+        repository_id: None,
+        account_profile_ref: None,
+        time_range: None,
+    };
+    let mut connection = store.pool.acquire().await.expect("canonical connection");
+    let canonical = store
+        .read_usage_summary(query.clone(), &mut connection)
+        .await
+        .expect("canonical lifetime span summary");
+    drop(connection);
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("bounded lifetime span refresh");
+    let derived = store
+        .usage_summary_query(query)
+        .await
+        .expect("derived lifetime span summary");
+    assert_eq!(derived.timing, canonical.timing);
+    assert_eq!(derived.tools, canonical.tools);
+}

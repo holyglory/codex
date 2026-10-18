@@ -342,14 +342,14 @@ async fn rebuild_hour(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.operation_id id,operation.operation_kind,operation.agent_id,operation.phase,operation.activity_state,operation.started_at_ms source_started_at_ms,operation.terminal_status,operation.ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN operation.ended_at_ms>=operation.started_at_ms AND MIN(operation.ended_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(operation.ended_at_ms,?2) END e FROM _usage_report_operations operation WHERE operation.started_at_ms<?2 AND (operation.ended_at_ms IS NULL OR operation.ended_at_ms>?1)",
+        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.operation_id id,operation.operation_kind,operation.agent_id,operation.phase,operation.activity_state,operation.started_at_ms source_started_at_ms,operation.terminal_status,operation.ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN operation.ended_at_ms>=operation.started_at_ms AND MIN(operation.ended_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(operation.ended_at_ms,?2) END e FROM _usage_report_operations operation WHERE (operation.started_at_ms>=?1 AND operation.started_at_ms<?2) OR (operation.ended_at_ms IS NOT NULL AND operation.started_at_ms<?2 AND operation.ended_at_ms>?1) OR (operation.ended_at_ms IS NULL AND EXISTS (SELECT 1 FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.operation_id=operation.operation_id AND span.started_at_ms<?2 AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms>?1)))",
     )
     .bind(lower)
     .bind(upper)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "CREATE TEMP TABLE _usage_global_spans AS SELECT span.operation_id,span.activity_state,span.started_at_ms source_started_at_ms,MAX(span.started_at_ms,?1) s,CASE WHEN span.ended_at_ms>=span.started_at_ms AND MIN(span.ended_at_ms,?2)>=MAX(span.started_at_ms,?1) THEN MIN(span.ended_at_ms,?2) END e FROM _usage_global_timed operation JOIN _usage_report_spans span ON span.operation_id=operation.id WHERE span.started_at_ms<?2 AND (span.ended_at_ms IS NULL OR span.ended_at_ms>?1)",
+        "CREATE TEMP TABLE _usage_global_spans AS SELECT span.operation_id,span.activity_state,span.started_at_ms source_started_at_ms,MAX(span.started_at_ms,?1) s,CASE WHEN ended.occurred_at_ms>=span.started_at_ms AND MIN(ended.occurred_at_ms,?2)>=MAX(span.started_at_ms,?1) THEN MIN(ended.occurred_at_ms,?2) END e FROM _usage_global_timed operation JOIN activity_spans span ON span.operation_id=operation.id LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.started_at_ms<?2 AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms>?1)",
     )
     .bind(lower)
     .bind(upper)
