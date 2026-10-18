@@ -117,6 +117,26 @@ impl UsageStore {
         if range.is_none_or(|range| !range.is_finite()) {
             let status = self.report_cache_status().await?;
             if !status.ready {
+                let global_was_ready: Option<i64> = sqlx::query_scalar(
+                    "SELECT ready FROM _usage_report_global_meta WHERE singleton=1",
+                )
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(UsageStoreError::Database)?;
+                let core_ready = crate::report_cache::is_ready(&self.pool)
+                    .await
+                    .map_err(UsageStoreError::Database)?;
+                if global_was_ready == Some(1) && core_ready {
+                    self.report_refresh.kick(self.pool.clone());
+                    if self
+                        .report_refresh
+                        .wait_for_ready(&self.pool, std::time::Duration::from_secs(2))
+                        .await
+                        .map_err(UsageStoreError::Database)?
+                    {
+                        return Ok(());
+                    }
+                }
                 return Err(UsageStoreError::ReportWarming(Box::new(status)));
             }
         }
