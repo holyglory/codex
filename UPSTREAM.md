@@ -67,6 +67,13 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Make release inventory fields enforceable.** Required filenames do not
+  prove that a PR or worktree patch reached the candidate. Pin original and
+  replayed patch identities, record reviewed API adaptations explicitly, and
+  preserve original unmerged stacks under immutable archive tags. Before
+  packaging, verify the complete retained stack, required GitHub merge commits
+  and outstanding release branches. Keep source-inclusion evidence separate
+  from the installed-binary tests that prove the behavior still works.
 - **Refresh native dependency patches after lock updates.** Cargo can pass
   while Bazel still applies a patch written for an older transitive crate.
   Inspect the new crate source, drop changes already implemented upstream,

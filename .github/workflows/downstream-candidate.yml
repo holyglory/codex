@@ -74,6 +74,9 @@ jobs:
     name: Critical producer and consumer regressions
     needs: identity
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
@@ -107,6 +110,8 @@ jobs:
       - name: Verify long-compilation cache survival and reuse
         run: python3 .github/scripts/probe_compiler_cache.py
       - name: Require both focused test families
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/run_candidate_preflight.py
 
   rust-validation:

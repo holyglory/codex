@@ -171,7 +171,11 @@ class LocalCandidateTests(unittest.TestCase):
         for tag in ("fixture-upstream", "fixture-rollback"):
             subprocess.run(["git", "-C", str(root), "tag", tag], check=True)
         manifest = {
-            "schema": 1,
+            "schema": 2,
+            "github_repository": "fixture/repository",
+            "required_pull_requests": [],
+            "release_branch_prefixes": [],
+            "retained_stacks": [],
             "upstream": {"tag": "fixture-upstream", "commit": commit},
             "rollback": {"tag": "fixture-rollback", "commit": commit},
             "rust_version": "0.162.1+multi.1",
@@ -193,6 +197,106 @@ class LocalCandidateTests(unittest.TestCase):
         migration.write_text("CREATE TABLE overwritten (id INTEGER);\n")
         with self.assertRaisesRegex(ValueError, "migration missing or changed"):
             inclusion.verify(root, manifest)
+        migration.write_text("CREATE TABLE preserved (id INTEGER);\n")
+
+        def git(*args):
+            return subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    *args,
+                ],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+
+        source.write_text("fn retained_feature() { repaired(); }\n")
+        git("add", ".")
+        git("commit", "-qm", "original feature repair")
+        original = git("rev-parse", "HEAD")
+        original_patch = inclusion.patch_identity(root, original)
+        capability = manifest["capabilities"][0]
+        capability["source_commit"] = original
+        row = {
+            "source_commit": original,
+            "applied_commit": original,
+            "source_patch_id": original_patch,
+            "applied_patch_id": original_patch,
+        }
+        capability["included_patches"] = [row]
+        git("tag", "fixture-original", original)
+        manifest["retained_stacks"] = [
+            {
+                "branch": "codex/original-feature",
+                "tag": "fixture-original",
+                "base_commit": commit,
+                "tip_commit": original,
+                "source_commits": [original],
+            }
+        ]
+        git("checkout", "--detach", commit)
+        with self.assertRaisesRegex(ValueError, "missing or unapplied recorded patch"):
+            inclusion.verify(root, manifest)
+        (root / "unrelated.txt").write_text("different replay parent\n")
+        git("add", ".")
+        git("commit", "-qm", "different replay parent")
+        git("cherry-pick", original)
+        applied = git("rev-parse", "HEAD")
+        self.assertNotEqual(applied, original)
+        row["applied_commit"] = applied
+        self.assertEqual(inclusion.verify(root, manifest)["recorded_patch_sources"], 1)
+        row["applied_patch_id"] = "0" * 40
+        with self.assertRaisesRegex(ValueError, "patch identity changed"):
+            inclusion.verify(root, manifest)
+        row["applied_patch_id"] = original_patch
+        capability["included_patches"] = []
+        with self.assertRaisesRegex(
+            ValueError, "retained commits lack inclusion mappings"
+        ):
+            inclusion.verify(root, manifest)
+        capability["included_patches"] = [row]
+
+        manifest["required_pull_requests"] = [7]
+        manifest["release_branch_prefixes"] = ["codex/release-fixture-"]
+        merged = {
+            "number": 7,
+            "state": "closed",
+            "merged_at": "2026-10-18",
+            "merge_commit_sha": applied,
+            "head_ref": "codex/release-fixture-fix",
+        }
+        with patch.object(inclusion, "pull_request_inventory", return_value=[merged]):
+            self.assertEqual(
+                inclusion.verify(root, manifest)["merged_pull_requests"],
+                [{"number": 7, "merge_commit": applied}],
+            )
+            merged["merged_at"] = None
+            with self.assertRaisesRegex(ValueError, "PR #7: not merged"):
+                inclusion.verify(root, manifest)
+            merged["merged_at"] = "2026-10-18"
+            merged["merge_commit_sha"] = original
+            with self.assertRaisesRegex(
+                ValueError, "merged commit absent from candidate"
+            ):
+                inclusion.verify(root, manifest)
+        merged["merge_commit_sha"] = applied
+        pending = {
+            "number": 8,
+            "state": "open",
+            "merged_at": None,
+            "merge_commit_sha": None,
+            "head_ref": "codex/release-fixture-missed",
+        }
+        with patch.object(
+            inclusion, "pull_request_inventory", return_value=[merged, pending]
+        ):
+            with self.assertRaisesRegex(ValueError, "PR #8: release branch still open"):
+                inclusion.verify(root, manifest)
 
     def test_each_gate_failure_prevents_all_expensive_lanes(self):
         for failed in candidate.GATES:
