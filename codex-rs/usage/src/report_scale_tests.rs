@@ -396,6 +396,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             "expected_open_operations": (requests + 510) / 511,
             "expected_wait_spans": (requests + 15) / 16,
             "expected_thread_count": 64,
+            "expected_phase_activity_pairs": 4,
             "expected_token_facts": requests * 6 + 1,
             "root_thread_id": "scale-root",
             "include_descendants": true,
