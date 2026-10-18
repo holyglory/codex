@@ -20,6 +20,8 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
+use codex_app_server_protocol::NetworkPolicyAmendment;
+use codex_app_server_protocol::NetworkPolicyRuleAction;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStartParams;
@@ -460,8 +462,12 @@ async fn turn_start_shell_zsh_fork_exec_approval_cancel_v2() -> Result<()> {
     Ok(())
 }
 
+#[test_case(false; "subcommand_cancel")]
+#[test_case(true; "subcommand_network_rule_deny")]
 #[tokio::test]
-async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2() -> Result<()> {
+async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2(
+    network_rule_deny: bool,
+) -> Result<()> {
     // TODO(anp): Remove after zsh-fork fixtures can run in the selected remote environment.
     skip_if_remote!(
         Ok(()),
@@ -569,10 +575,21 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
     let mut approved_subcommand_strings = Vec::new();
     let mut approved_subcommand_ids = Vec::new();
     let mut saw_parent_approval = false;
-    let target_decisions = [
-        CommandExecutionApprovalDecision::Accept,
-        CommandExecutionApprovalDecision::Cancel,
-    ];
+    let target_decisions = if network_rule_deny {
+        vec![
+            CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+                network_policy_amendment: NetworkPolicyAmendment {
+                    host: "example.invalid".to_string(),
+                    action: NetworkPolicyRuleAction::Deny,
+                },
+            },
+        ]
+    } else {
+        vec![
+            CommandExecutionApprovalDecision::Accept,
+            CommandExecutionApprovalDecision::Cancel,
+        ]
+    };
     let mut target_decision_index = 0;
     let first_file_str = first_file.to_string_lossy().into_owned();
     let second_file_str = second_file.to_string_lossy().into_owned();
@@ -648,11 +665,15 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
         saw_parent_approval,
         "expected parent shell approval request"
     );
-    assert_eq!(approved_subcommand_ids.len(), 2);
-    assert_ne!(approved_subcommand_ids[0], approved_subcommand_ids[1]);
-    assert_eq!(approved_subcommand_strings.len(), 2);
+    assert_eq!(approved_subcommand_ids.len(), target_decisions.len());
+    if !network_rule_deny {
+        assert_ne!(approved_subcommand_ids[0], approved_subcommand_ids[1]);
+    }
+    assert_eq!(approved_subcommand_strings.len(), target_decisions.len());
     assert!(approved_subcommand_strings[0].contains(&first_file.display().to_string()));
-    assert!(approved_subcommand_strings[1].contains(&second_file.display().to_string()));
+    if !network_rule_deny {
+        assert!(approved_subcommand_strings[1].contains(&second_file.display().to_string()));
+    }
     let parent_completed_command_execution = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed_notif = mcp
