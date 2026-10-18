@@ -605,6 +605,16 @@ async fn filters_clip_intervals_and_keep_observation_time_distinct_from_operatio
 #[tokio::test]
 async fn finite_window_selection_scales_with_lifetime_history() {
     let fixture = Fixture::new().await;
+    fixture
+        .store
+        .ensure_thread(&NewThread {
+            id: ThreadId::new("scale-child").expect("child thread"),
+            parent_thread_id: Some(ThreadId::new("spec").expect("parent thread")),
+            source_kind: ThreadSourceKind::new("subagent").expect("source"),
+            created_at_ms: 1_000_000,
+        })
+        .await
+        .expect("child thread");
     let mut connection = fixture.store.pool.acquire().await.expect("connection");
     use sqlx::Connection;
     let mut transaction = connection.begin().await.expect("seed transaction");
@@ -617,7 +627,7 @@ async fn finite_window_selection_scales_with_lifetime_history() {
                  id, process_id, thread_id, operation_kind, started_at_ms,
                  taxonomy_version, phase, activity, activity_state, attribution_provenance
              )
-             SELECT printf('scale-op-%05d', ?1 + n), ?2, 'spec', 'local_tool',
+             SELECT printf('scale-op-%05d', ?1 + n), ?2, 'spec', 'model_request',
                     1000000 + ?1 + n, 1, 'implementation', 'coding', 'tool_active',
                     'agent_declared'
              FROM sequence",
@@ -646,6 +656,40 @@ async fn finite_window_selection_scales_with_lifetime_history() {
             "WITH RECURSIVE sequence(n) AS (
                  SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
              )
+             INSERT INTO model_requests(
+                 id, operation_id, provider_kind, model, transport_kind, attempt_number, client_origin
+             )
+             SELECT printf('scale-request-%05d', ?1 + n), printf('scale-op-%05d', ?1 + n),
+                    'openai', 'fixture', 'http', 1, 'test'
+             FROM sequence",
+        )
+        .bind(start)
+        .execute(&mut *transaction)
+        .await
+        .expect("old model requests");
+        sqlx::query(
+            "WITH RECURSIVE sequence(n) AS (
+                 SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
+             )
+             INSERT INTO token_observations(
+                 id, model_request_id, source_event_id, category_path, token_count, unit,
+                 measurement_provenance, coverage_state, repository_bucket, observed_at_ms
+             )
+             SELECT printf('scale-old-token-%05d', ?1 + n),
+                    printf('scale-request-%05d', ?1 + n),
+                    printf('50000000-0000-4000-8000-%012x', ?1 + n),
+                    'total_tokens', 1, 'tokens', 'provider_reported', 'complete', 'unknown',
+                    1000001 + ?1 + n
+             FROM sequence",
+        )
+        .bind(start)
+        .execute(&mut *transaction)
+        .await
+        .expect("old token observations");
+        sqlx::query(
+            "WITH RECURSIVE sequence(n) AS (
+                 SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
+             )
              INSERT INTO coverage_events(
                  event_id, operation_id, scope_kind, coverage_state, occurred_at_ms
              )
@@ -664,8 +708,12 @@ async fn finite_window_selection_scales_with_lifetime_history() {
              taxonomy_version, phase, activity, activity_state, attribution_provenance
          ) VALUES
              ('scale-late', ?, 'spec', 'model_request', 8000000, 1, 'implementation', 'coding', 'model_active', 'agent_declared'),
-             ('scale-target', ?, 'spec', 'model_request', 9000000, 1, 'implementation', 'coding', 'model_active', 'agent_declared')",
+             ('scale-target', ?, 'spec', 'model_request', 9000000, 1, 'implementation', 'coding', 'model_active', 'agent_declared'),
+             ('scale-open', ?, 'spec', 'local_tool', 8500000, 1, 'implementation', 'coding', 'tool_active', 'agent_declared'),
+             ('scale-child', ?, 'scale-child', 'local_tool', 9000001, 1, 'implementation', 'coding', 'tool_active', 'agent_declared')",
     )
+    .bind(fixture.process.as_string())
+    .bind(fixture.process.as_string())
     .bind(fixture.process.as_string())
     .bind(fixture.process.as_string())
     .execute(&mut *transaction)
@@ -676,7 +724,8 @@ async fn finite_window_selection_scales_with_lifetime_history() {
              event_id, operation_id, event_kind, terminal, occurred_at_ms, duration_ns
          ) VALUES
              ('scale-late-event', 'scale-late', 'completed', 1, 8000010, 10000000),
-             ('scale-target-event', 'scale-target', 'completed', 1, 9000002, 2000000)",
+             ('scale-target-event', 'scale-target', 'completed', 1, 9000002, 2000000),
+             ('scale-child-event', 'scale-child', 'completed', 1, 9000004, 3000000)",
     )
     .execute(&mut *transaction)
     .await
@@ -703,6 +752,22 @@ async fn finite_window_selection_scales_with_lifetime_history() {
     .await
     .expect("late token observations");
     sqlx::query(
+        "INSERT INTO repository_attributions(
+             event_id, operation_id, repository_id, attribution_kind, provenance, occurred_at_ms
+         ) VALUES
+             ('30000000-0000-4000-8000-000000000001', 'scale-late', ?, 'primary', 'runtime_observed', 8000000),
+             ('30000000-0000-4000-8000-000000000002', 'scale-target', ?, 'primary', 'runtime_observed', 9000000),
+             ('30000000-0000-4000-8000-000000000003', 'scale-open', ?, 'primary', 'runtime_observed', 8500000),
+             ('30000000-0000-4000-8000-000000000004', 'scale-child', ?, 'primary', 'runtime_observed', 9000001)",
+    )
+    .bind(fixture.repository.as_str())
+    .bind(fixture.repository.as_str())
+    .bind(fixture.repository.as_str())
+    .bind(fixture.repository.as_str())
+    .execute(&mut *transaction)
+    .await
+    .expect("repository attributions");
+    sqlx::query(
         "INSERT INTO coverage_events(
              event_id, operation_id, scope_kind, coverage_state, occurred_at_ms
          ) VALUES ('scale-target-coverage', 'scale-target', 'model_attempt', 'complete', 9000007)",
@@ -715,6 +780,7 @@ async fn finite_window_selection_scales_with_lifetime_history() {
     let query = PerformanceReviewQuery {
         thread_id: Some(ThreadId::new("spec").expect("thread")),
         time_range: Some(UtcTimeRange::new(9_000_000, 9_000_010).expect("window")),
+        include_descendants: true,
         ..Default::default()
     };
     let source = super::query::Selection {
@@ -743,13 +809,92 @@ async fn finite_window_selection_scales_with_lifetime_history() {
         .remove_progress_handler();
     assert_eq!(
         ids,
-        Some(vec!["scale-late".to_string(), "scale-target".to_string()])
+        Some(vec![
+            "scale-child".to_string(),
+            "scale-late".to_string(),
+            "scale-open".to_string(),
+            "scale-target".to_string()
+        ])
     );
     let callback_count = callbacks.load(Ordering::Relaxed);
     assert!(
         callback_count < 800,
         "finite window selection used {callback_count} SQLite progress callbacks"
     );
+
+    let warm = fixture
+        .store
+        .performance_review_packet(query.clone())
+        .await
+        .expect("warm public review");
+    assert_eq!(
+        warm.operations,
+        vec![
+            ReviewCategory {
+                category: "local_tool".to_string(),
+                count: 2,
+                measured_interval_sum_ms: 3,
+                unknown_intervals: 1,
+            },
+            ReviewCategory {
+                category: "model_request".to_string(),
+                count: 1,
+                measured_interval_sum_ms: 2,
+                unknown_intervals: 0,
+            },
+        ]
+    );
+    assert_eq!(
+        warm.tokens,
+        vec![ReviewTokens {
+            category: "total_tokens".to_string(),
+            provenance: "provider_reported".to_string(),
+            measured_tokens: 18,
+            exact_tokens: Some(18),
+            observations: 2,
+            unknown_observations: 0,
+        }]
+    );
+    assert_eq!(
+        (
+            warm.window.clone(),
+            warm.coverage.raw_operations,
+            warm.coverage.deduplicated_operations,
+            warm.coverage.unknown_operation_intervals,
+            warm.coverage.operations_without_repository,
+            warm.coverage.raw_token_observations,
+            warm.coverage.deduplicated_token_observations,
+            warm.coverage.unattributed_coverage_events_in_window,
+            warm.coverage.coverage_events.clone(),
+        ),
+        (
+            ReviewWindow {
+                from_at_ms: Some(9_000_000),
+                to_at_ms: Some(9_000_010),
+            },
+            3,
+            3,
+            1,
+            0,
+            2,
+            2,
+            0,
+            vec![ReviewCoverageCount {
+                state: "complete".to_string(),
+                count: 1,
+            }],
+        )
+    );
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready = 0")
+        .execute(&fixture.store.pool)
+        .await
+        .expect("disable report cache");
+    let canonical = fixture
+        .store
+        .performance_review_packet(query)
+        .await
+        .expect("canonical public review");
+    assert_eq!(canonical, warm);
 }
 
 #[tokio::test]
