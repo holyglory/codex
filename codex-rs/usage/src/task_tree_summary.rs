@@ -312,7 +312,9 @@ impl UsageStore {
             .push_bind(range.end_ms())
             .push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
             .push_bind(range.start_ms())
-            .push(") ORDER BY operation.started_at_ms, operation.id LIMIT ")
+            .push(" OR (terminal.occurred_at_ms = operation.started_at_ms AND operation.started_at_ms >= ")
+            .push_bind(range.start_ms())
+            .push(")) ORDER BY operation.started_at_ms, operation.id LIMIT ")
             .push_bind(i64::try_from(MAX_TASK_TREE_OPERATIONS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
