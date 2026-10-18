@@ -1,6 +1,80 @@
 use super::*;
+use crate::PerformanceReviewQuery;
 use pretty_assertions::assert_eq;
 use std::time::Instant;
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn finite_review_shape_includes_root_descendants() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    sqlx::query("INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES ('scale-root',NULL,'cli',0),('scale-child','scale-root','subagent',0)")
+        .execute(&store.pool).await.expect("threads");
+    let mut root = operation(process, "scale-root", OperationKind::ModelRequest);
+    root.started_at_ms = 1_000;
+    let root_request = record_request(&store, &root).await;
+    let mut child = operation(process, "scale-child", OperationKind::ModelRequest);
+    child.started_at_ms = 1_100;
+    let child_request = record_request(&store, &child).await;
+    for (operation, ended_at_ms) in [(&root, 2_000), (&child, 2_100)] {
+        sqlx::query("INSERT INTO operation_events(event_id,operation_id,event_kind,terminal,occurred_at_ms,duration_ns) VALUES (?,?,'completed',1,?,1000000000)")
+            .bind(FactEventId::new().as_string())
+            .bind(operation.id.as_string())
+            .bind(ended_at_ms)
+            .execute(&store.pool).await.expect("terminal");
+    }
+    for (request, count) in [(root_request, 11), (child_request, 13)] {
+        store
+            .record_token_observation(&NewTokenObservation {
+                id: FactEventId::new(),
+                source_event_id: FactEventId::new(),
+                source: TokenObservationSource::ModelRequest(request),
+                category_path: TokenCategoryPath::new("total_tokens").expect("category"),
+                token_count: Some(count),
+                unit: TokenUnit::Tokens,
+                measurement_provenance: MeasurementProvenance::ProviderReported,
+                coverage_state: CoverageState::Complete,
+                repository_bucket: RepositoryBucket::Unknown,
+                observed_at_ms: 1_500,
+            })
+            .await
+            .expect("token");
+    }
+    let root_query = |include_descendants| PerformanceReviewQuery {
+        thread_id: Some(ThreadId::new("scale-root").expect("root")),
+        include_descendants,
+        time_range: Some(UtcTimeRange::new(900, 2_200).expect("range")),
+        ..Default::default()
+    };
+    let root_only = store
+        .performance_review_packet(root_query(false))
+        .await
+        .expect("root review");
+    let tree = store
+        .performance_review_packet(root_query(true))
+        .await
+        .expect("tree review");
+    assert_eq!(
+        (
+            root_only.coverage.raw_operations,
+            root_only.coverage.raw_token_observations
+        ),
+        (1, 1)
+    );
+    assert_eq!(
+        (
+            tree.coverage.raw_operations,
+            tree.coverage.raw_token_observations
+        ),
+        (2, 2)
+    );
+    assert_eq!(tree.tokens[0].measured_tokens, 24);
+}
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -33,11 +107,16 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
         .await
         .expect("process");
-    for index in 0..4 {
-        insert_thread(&store, &format!("scale-{index}")).await;
-        sqlx::query("INSERT INTO agents(id,thread_id,parent_agent_id,role_kind,created_at_ms) VALUES (?, ?, NULL, 'root', 0)")
-            .bind(format!("agent-{index}")).bind(format!("scale-{index}"))
-            .execute(&store.pool).await.expect("agent");
+    insert_thread(&store, "scale-root").await;
+    sqlx::query("INSERT INTO agents(id,thread_id,parent_agent_id,role_kind,created_at_ms) VALUES ('agent-root', 'scale-root', NULL, 'root', 0)")
+        .execute(&store.pool).await.expect("root agent");
+    for index in 0..63 {
+        let thread = format!("scale-{index:02}");
+        sqlx::query("INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES (?, 'scale-root', 'subagent', 0)")
+            .bind(&thread).execute(&store.pool).await.expect("child thread");
+        sqlx::query("INSERT INTO agents(id,thread_id,parent_agent_id,role_kind,created_at_ms) VALUES (?, ?, 'agent-root', 'worker', 0)")
+            .bind(format!("agent-{index:02}")).bind(thread)
+            .execute(&store.pool).await.expect("child agent");
     }
     let mut repositories = Vec::new();
     for index in 0..8 {
@@ -80,7 +159,10 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         sqlx::query("INSERT INTO seed WITH RECURSIVE sequence(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM sequence WHERE n+1 < ?2) SELECT n FROM sequence")
             .bind(start).bind(end).execute(&mut *tx).await.expect("seed page");
         sqlx::query("INSERT INTO operations(id,process_id,thread_id,agent_id,operation_kind,started_at_ms,taxonomy_version,phase,activity,activity_state,attribution_provenance)
-            SELECT printf('10000000-0000-4000-8000-%012x',n),?,'scale-'||(n%4),'agent-'||(n%4),'model_request',n*10000,1,'implementation','coding','model_active','agent_declared' FROM seed")
+            SELECT printf('10000000-0000-4000-8000-%012x',n),?,printf('scale-%02d',n%63),printf('agent-%02d',n%63),'model_request',n*10000,1,
+              CASE n%4 WHEN 0 THEN 'implementation' WHEN 1 THEN 'planning' WHEN 2 THEN 'testing' ELSE 'reporting' END,
+              CASE n%4 WHEN 0 THEN 'coding' WHEN 1 THEN 'repository_analysis' WHEN 2 THEN 'integration_testing' ELSE 'review_feedback' END,
+              'model_active','agent_declared' FROM seed")
             .bind(process.as_string()).execute(&mut *tx).await.expect("operations");
         sqlx::query("INSERT INTO operation_work_contexts(operation_id,native_project_id,workstream_id,outcome_id,provenance)
             SELECT printf('10000000-0000-4000-8000-%012x',n),'scale-project','scale-workstream','outcome-'||(n%8),'runtime_observed' FROM seed")
@@ -96,8 +178,17 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
             FROM seed CROSS JOIN seed_components AS component JOIN seed_repositories AS repository ON repository.n = seed.n%8")
             .execute(&mut *tx).await.expect("token facts and all live projections");
         sqlx::query("INSERT INTO operation_events(event_id,operation_id,event_kind,terminal,occurred_at_ms,duration_ns)
-            SELECT printf('60000000-0000-4000-8000-%012x',n),printf('10000000-0000-4000-8000-%012x',n),'completed',1,n*10000+1000,1000000000 FROM seed")
+            SELECT printf('60000000-0000-4000-8000-%012x',n),printf('10000000-0000-4000-8000-%012x',n),'completed',1,n*10000+1000,1000000000 FROM seed WHERE n%511<>0")
             .execute(&mut *tx).await.expect("terminals");
+        sqlx::query("INSERT INTO activity_spans(id,operation_id,activity_state,started_at_ms)
+            SELECT printf('90000000-0000-4000-8000-%012x',n),printf('10000000-0000-4000-8000-%012x',n),
+              CASE n%3 WHEN 0 THEN 'external_wait' WHEN 1 THEN 'user_wait' ELSE 'blocked_wait' END,n*10000+250
+            FROM seed WHERE n%16=0")
+            .execute(&mut *tx).await.expect("wait spans");
+        sqlx::query("INSERT INTO activity_span_events(event_id,activity_span_id,event_kind,occurred_at_ms)
+            SELECT printf('a0000000-0000-4000-8000-%012x',n),printf('90000000-0000-4000-8000-%012x',n),'ended',n*10000+750
+            FROM seed WHERE n%16=0")
+            .execute(&mut *tx).await.expect("wait span ends");
         sqlx::query("INSERT INTO coverage_events(event_id,operation_id,scope_kind,coverage_state,occurred_at_ms)
             SELECT printf('70000000-0000-4000-8000-%012x',seed.n*2+marker.n),printf('10000000-0000-4000-8000-%012x',seed.n),'model_attempt',CASE marker.n WHEN 0 THEN 'capture_started' ELSE 'partial' END,seed.n*10000+marker.n*1000
             FROM seed JOIN seed_components AS marker ON marker.n < 2")
@@ -247,15 +338,21 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         const WINDOW_START_MS: i64 = 6_000_000_000;
         const WINDOW_END_MS: i64 = 6_086_400_000;
         let mut expected_operations = [0_i64; 8];
+        let mut expected_provider_tokens = [0_i64; 8];
         for index in 0..requests {
             let started_at_ms = index * 10_000;
-            let ended_at_ms = started_at_ms + 1_000;
-            if started_at_ms < WINDOW_END_MS && ended_at_ms > WINDOW_START_MS {
+            let ended_at_ms = (index % 511 != 0).then_some(started_at_ms + 1_000);
+            if started_at_ms < WINDOW_END_MS
+                && ended_at_ms.is_none_or(|ended_at_ms| ended_at_ms > WINDOW_START_MS)
+            {
                 expected_operations[(index % 8) as usize] += 1;
+            }
+            let observed_at_ms = started_at_ms + 500;
+            if (WINDOW_START_MS..WINDOW_END_MS).contains(&observed_at_ms) {
+                expected_provider_tokens[(index % 8) as usize] += 1_050;
             }
         }
         assert!(expected_operations.iter().all(|operations| *operations > 0));
-        let expected_provider_tokens = expected_operations.map(|operations| operations * 1_050);
         let expected_all_provider_tokens = requests * 1_050 + 7;
         assert!(
             crate::report_cache::is_ready(&store.pool)
@@ -292,6 +389,11 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         let scope = serde_json::json!({
             "window_start_ms": WINDOW_START_MS,
             "window_end_ms": WINDOW_END_MS,
+            "fixture_shape_version": 2,
+            "expected_open_operations": (requests + 510) / 511,
+            "expected_wait_spans": (requests + 15) / 16,
+            "expected_thread_count": 64,
+            "expected_token_facts": requests * 6 + 1,
             "expected_all_operations": requests,
             "expected_all_provider_tokens": expected_all_provider_tokens,
             "repositories": repositories.iter().enumerate().map(|(index, repository)| {

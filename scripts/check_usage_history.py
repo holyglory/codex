@@ -18,6 +18,20 @@ from check_root_usage import Server
 MARKER = (
     "Disposable isolated accounting verification copy. Never a production collector.\n"
 )
+FIXTURE_SHAPE_VERSION = 2
+
+
+def expected_shape(requests):
+    """Return deterministic lifetime-shape counts for the production fixture."""
+    if type(requests) is not int or requests <= 0:
+        raise ValueError("requests must be a positive integer")
+    return {
+        "open_operations": (requests + 510) // 511,
+        "wait_spans": (requests + 15) // 16,
+        "thread_count": 64,
+        "phase_activity_pairs": 4,
+        "token_facts": requests * 6 + 1,
+    }
 
 
 def native_probe(root, state, fixture, environment, test):
@@ -53,6 +67,12 @@ def scopes_for(fixture):
     if (fixture / "fixture-marker").read_text() != MARKER:
         raise ValueError("Unexpected usage fixture provenance")
     scopes = json.loads((fixture / "scope.json").read_text())
+    if scopes.get("fixture_shape_version") != FIXTURE_SHAPE_VERSION:
+        raise ValueError("Unsupported or legacy usage fixture shape")
+    shape = expected_shape(scopes["expected_all_operations"])
+    for key, expected in shape.items():
+        if scopes.get(f"expected_{key}") != expected:
+            raise ValueError(f"Invalid fixture shape count for {key}")
     rows = scopes["repositories"]
     if len(rows) != 8 or [row["name"] for row in rows] != [
         f"synthetic-{n}" for n in range(8)
@@ -67,7 +87,7 @@ def scopes_for(fixture):
 
 
 def copy_warming(ready, warming):
-    scopes_for(ready)
+    scopes = scopes_for(ready)
     warming.mkdir(mode=0o700)
     (warming / "usage").mkdir(mode=0o700)
     with sqlite3.connect(
@@ -82,6 +102,26 @@ def copy_warming(ready, warming):
         ).fetchone()[0]
         if count < 1_300_000 or synthetic != count or observations < 7_800_000:
             raise ValueError("Missing production-shaped synthetic history")
+        open_operations = source.execute(
+            "SELECT COUNT(*) FROM operations AS operation WHERE NOT EXISTS "
+            "(SELECT 1 FROM operation_events AS event "
+            "WHERE event.operation_id = operation.id AND event.terminal = 1)"
+        ).fetchone()[0]
+        wait_spans = source.execute("SELECT COUNT(*) FROM activity_spans").fetchone()[0]
+        thread_count = source.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+        phase_activity_pairs = source.execute(
+            "SELECT COUNT(DISTINCT phase || ':' || activity) FROM operations"
+        ).fetchone()[0]
+        if (
+            open_operations != scopes["expected_open_operations"]
+            or wait_spans != scopes["expected_wait_spans"]
+            or thread_count != scopes["expected_thread_count"]
+            or phase_activity_pairs != scopes["expected_phase_activity_pairs"]
+            or observations != scopes["expected_token_facts"]
+        ):
+            raise ValueError(
+                "Generated fixture does not have the required lifetime shape"
+            )
         if source.execute("SELECT ready FROM _usage_report_cache_meta").fetchall() != [
             (1,)
         ]:
