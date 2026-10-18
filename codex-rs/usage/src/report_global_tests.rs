@@ -4,6 +4,78 @@ use crate::NewActivitySpan;
 use crate::NewActivitySpanEvent;
 use pretty_assertions::assert_eq;
 
+#[derive(Debug, Eq, PartialEq)]
+struct GlobalProjectionSnapshot {
+    classifications: Vec<(String, String, String, i64)>,
+    unresolved: Vec<(String, String, i64)>,
+    unpriced: Vec<String>,
+    gap: i64,
+    gap_events: Vec<(String, i64, String)>,
+    time: Vec<(i64, String, String, i64, i64, i64, i64)>,
+    tools: Vec<(i64, String, i64, i64, i64)>,
+    request: (Option<i64>, Option<i64>, i64, i64),
+    request_hours: Vec<(i64, Option<i64>, Option<i64>, i64, i64)>,
+}
+
+async fn global_projection_snapshot(pool: &sqlx::SqlitePool) -> GlobalProjectionSnapshot {
+    GlobalProjectionSnapshot {
+        classifications: sqlx::query_as(
+            "SELECT phase,activity,provenance,operation_count FROM _usage_report_global_classifications ORDER BY phase,activity,provenance",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global classifications"),
+        unresolved: sqlx::query_as(
+            "SELECT operation_id,scope_kind,unresolved FROM _usage_report_global_unresolved ORDER BY operation_id,scope_kind",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global unresolved projection"),
+        unpriced: sqlx::query_scalar(
+            "SELECT operation_id FROM _usage_report_global_unpriced ORDER BY operation_id",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global unpriced projection"),
+        gap: sqlx::query_scalar(
+            "SELECT has_gap FROM _usage_report_global_gap_v9 WHERE singleton=1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("global gap projection"),
+        gap_events: sqlx::query_as(
+            "SELECT event_id,occurred_at_ms,coverage_state FROM _usage_report_global_gap_events ORDER BY occurred_at_ms,event_id",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global gap events"),
+        time: sqlx::query_as(
+            "SELECT hour_index,kind,label,measured_ms,unknown_intervals,zero_intervals,interval_count FROM _usage_report_global_time ORDER BY hour_index,kind,label",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global time projection"),
+        tools: sqlx::query_as(
+            "SELECT hour_index,outcome,measured_ms,unknown_intervals,operation_count FROM _usage_report_global_tools ORDER BY hour_index,outcome",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global tools projection"),
+        request: sqlx::query_as(
+            "SELECT min_start_ms,max_end_ms,unknown_intervals,request_count FROM _usage_report_global_request WHERE singleton=1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("global request projection"),
+        request_hours: sqlx::query_as(
+            "SELECT hour_index,min_start_ms,max_end_ms,unknown_intervals,request_count FROM _usage_report_global_request_hours ORDER BY hour_index",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("global request hours"),
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn global_component_initializes_and_reopens_from_core_schema() {
@@ -200,6 +272,26 @@ async fn v2_global_upgrade_preserves_partial_queues_and_aggregates() {
         })
         .await
         .expect("applied terminal");
+    let mut model = operation(process_id, "v2-upgrade-thread", OperationKind::ModelRequest);
+    model.started_at_ms = 3_000;
+    record_request(&store, &model).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: model.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 4_000,
+            duration_ns: 1_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("model terminal");
+    sqlx::query(
+        "INSERT INTO coverage_events(event_id,operation_id,scope_kind,coverage_state,reason_code,occurred_at_ms) VALUES ('v2-partial-coverage',?,'model_attempt','partial',NULL,4_000), ('v2-global-gap',NULL,'global','partial',NULL,5_000)",
+    )
+    .bind(model.id.as_string())
+    .execute(&store.pool)
+    .await
+    .expect("coverage projections");
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("apply v2 aggregate");
@@ -240,8 +332,18 @@ async fn v2_global_upgrade_preserves_partial_queues_and_aggregates() {
     .fetch_all(&store.pool)
     .await
     .expect("v2 hour queue");
+    let before_projection = global_projection_snapshot(&store.pool).await;
     assert_eq!(before_meta.0, crate::report_global::COMPONENT_VERSION);
-    assert_eq!(before_operations.len(), 1);
+    assert_eq!(before_operations.len(), 2);
+    assert!(!before_projection.classifications.is_empty());
+    assert!(!before_projection.unresolved.is_empty());
+    assert!(!before_projection.unpriced.is_empty());
+    assert_eq!(before_projection.gap, 1);
+    assert!(!before_projection.gap_events.is_empty());
+    assert!(!before_projection.time.is_empty());
+    assert!(!before_projection.tools.is_empty());
+    assert!(before_projection.request.3 > 0);
+    assert!(!before_projection.request_hours.is_empty());
     assert!(before_dirty_operations.contains(&queued.id.as_string()));
     assert!(
         before_dirty_hours
@@ -343,6 +445,10 @@ async fn v2_global_upgrade_preserves_partial_queues_and_aggregates() {
         .count(),
         0
     );
+    assert_eq!(
+        global_projection_snapshot(&reopened.pool).await,
+        before_projection
+    );
     // A v2 binary leaves this additive table behind when it rolls a v3 cache
     // back to its own schema. Re-upgrading must replace stale frontiers too.
     sqlx::query("UPDATE _usage_report_global_meta SET component_version=2")
@@ -411,6 +517,12 @@ async fn newer_global_component_is_preserved_for_newer_reader() {
             .await
             .expect("future support")
     );
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        store.require_report_ready(/*range*/ None).await,
+        Err(UsageStoreError::ReportWarming(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
     crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
         .await
         .expect("future component remains untouched");

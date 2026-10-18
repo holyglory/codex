@@ -124,8 +124,9 @@ impl UsageStore {
                 let global_was_ready: Option<i64> = tokio::time::timeout_at(
                     deadline,
                     sqlx::query_scalar(
-                        "SELECT ready FROM _usage_report_global_meta WHERE singleton=1",
+                        "SELECT ready FROM _usage_report_global_meta WHERE singleton=1 AND component_version=?",
                     )
+                    .bind(crate::report_global::COMPONENT_VERSION)
                     .fetch_optional(&self.pool),
                 )
                 .await
