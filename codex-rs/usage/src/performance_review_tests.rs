@@ -1,6 +1,9 @@
 use super::*;
 use crate::*;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -597,6 +600,141 @@ async fn filters_clip_intervals_and_keep_observation_time_distinct_from_operatio
     assert_eq!(packet.operations[0].measured_interval_sum_ms, 5);
     assert!(packet.tokens.is_empty());
     assert_eq!(packet.coverage.model_requests_without_provider_total, 1);
+}
+
+#[tokio::test]
+async fn finite_window_selection_scales_with_lifetime_history() {
+    let fixture = Fixture::new().await;
+    let mut connection = fixture.store.pool.acquire().await.expect("connection");
+    use sqlx::Connection;
+    let mut transaction = connection.begin().await.expect("seed transaction");
+    for start in (0..8_000).step_by(500) {
+        sqlx::query(
+            "WITH RECURSIVE sequence(n) AS (
+                 SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
+             )
+             INSERT INTO operations(
+                 id, process_id, thread_id, operation_kind, started_at_ms,
+                 taxonomy_version, phase, activity, activity_state, attribution_provenance
+             )
+             SELECT printf('scale-op-%05d', ?1 + n), ?2, 'spec', 'local_tool',
+                    1000000 + ?1 + n, 1, 'implementation', 'coding', 'tool_active',
+                    'agent_declared'
+             FROM sequence",
+        )
+        .bind(start)
+        .bind(fixture.process.as_string())
+        .execute(&mut *transaction)
+        .await
+        .expect("operations");
+        sqlx::query(
+            "WITH RECURSIVE sequence(n) AS (
+                 SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 499
+             )
+             INSERT INTO operation_events(
+                 event_id, operation_id, event_kind, terminal, occurred_at_ms, duration_ns
+             )
+             SELECT printf('scale-event-%05d', ?1 + n), printf('scale-op-%05d', ?1 + n),
+                    'completed', 1, 1000001 + ?1 + n, 1000000
+             FROM sequence",
+        )
+        .bind(start)
+        .execute(&mut *transaction)
+        .await
+        .expect("operation events");
+    }
+    sqlx::query(
+        "INSERT INTO operations(
+             id, process_id, thread_id, operation_kind, started_at_ms,
+             taxonomy_version, phase, activity, activity_state, attribution_provenance
+         ) VALUES
+             ('scale-late', ?, 'spec', 'model_request', 8000000, 1, 'implementation', 'coding', 'model_active', 'agent_declared'),
+             ('scale-target', ?, 'spec', 'model_request', 9000000, 1, 'implementation', 'coding', 'model_active', 'agent_declared')",
+    )
+    .bind(fixture.process.as_string())
+    .bind(fixture.process.as_string())
+    .execute(&mut *transaction)
+    .await
+    .expect("boundary operations");
+    sqlx::query(
+        "INSERT INTO operation_events(
+             event_id, operation_id, event_kind, terminal, occurred_at_ms, duration_ns
+         ) VALUES
+             ('scale-late-event', 'scale-late', 'completed', 1, 8000010, 10000000),
+             ('scale-target-event', 'scale-target', 'completed', 1, 9000002, 2000000)",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("boundary events");
+    sqlx::query(
+        "INSERT INTO model_requests(
+             id, operation_id, provider_kind, model, transport_kind, attempt_number, client_origin
+         ) VALUES
+             ('scale-late-request', 'scale-late', 'openai', 'fixture', 'http', 1, 'test'),
+             ('scale-target-request', 'scale-target', 'openai', 'fixture', 'http', 1, 'test')",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("model requests");
+    sqlx::query(
+        "INSERT INTO token_observations(
+             id, model_request_id, source_event_id, category_path, token_count, unit,
+             measurement_provenance, coverage_state, repository_bucket, observed_at_ms
+         ) VALUES
+             ('scale-late-token', 'scale-late-request', '10000000-0000-4000-8000-000000000001', 'total_tokens', 7, 'tokens', 'provider_reported', 'complete', 'unknown', 9000005),
+             ('scale-target-token', 'scale-target-request', '10000000-0000-4000-8000-000000000002', 'total_tokens', 11, 'tokens', 'provider_reported', 'complete', 'unknown', 9000006)",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("late token observations");
+    sqlx::query(
+        "INSERT INTO coverage_events(
+             event_id, operation_id, scope_kind, coverage_state, occurred_at_ms
+         ) VALUES ('scale-target-coverage', 'scale-target', 'model_attempt', 'complete', 9000007)",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("coverage event");
+    transaction.commit().await.expect("commit seed");
+
+    let query = PerformanceReviewQuery {
+        thread_id: Some(ThreadId::new("spec").expect("thread")),
+        time_range: Some(UtcTimeRange::new(9_000_000, 9_000_010).expect("window")),
+        ..Default::default()
+    };
+    let source = super::query::Selection {
+        classification: super::query::ClassificationSource::Cache,
+        operation_ids: None,
+        scope_materialized: false,
+        materialized: false,
+    };
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let observed_callbacks = Arc::clone(&callbacks);
+    connection
+        .lock_handle()
+        .await
+        .expect("sqlite handle")
+        .set_progress_handler(/*num_ops*/ 100, move || {
+            observed_callbacks.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+    let ids = super::query::window_operation_ids(&mut connection, &query, &source)
+        .await
+        .expect("window operation ids");
+    connection
+        .lock_handle()
+        .await
+        .expect("sqlite handle")
+        .remove_progress_handler();
+    assert_eq!(
+        ids,
+        Some(vec!["scale-late".to_string(), "scale-target".to_string()])
+    );
+    let callback_count = callbacks.load(Ordering::Relaxed);
+    assert!(
+        callback_count < 1_000,
+        "finite window selection used {callback_count} SQLite progress callbacks"
+    );
 }
 
 #[tokio::test]
