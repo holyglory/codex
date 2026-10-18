@@ -10,9 +10,12 @@ use crate::ReportTimeMetrics;
 use crate::ToolMetrics;
 use crate::ToolOutcomeCount;
 use crate::UsageStoreError;
+use sqlx::Connection;
 use sqlx::Row;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
+use tokio::time::Duration;
+use tokio::time::Instant;
 
 #[path = "report_global_schema.rs"]
 mod schema;
@@ -339,14 +342,14 @@ async fn rebuild_hour(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.id,operation.operation_kind,operation.agent_id,COALESCE(effective.phase,operation.phase) phase,COALESCE(effective.activity_state,operation.activity_state) activity_state,operation.started_at_ms source_started_at_ms,terminal.event_kind terminal_status,terminal.occurred_at_ms ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN terminal.occurred_at_ms>=operation.started_at_ms AND MIN(terminal.occurred_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(terminal.occurred_at_ms,?2) END e FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN effective_classification_events effective ON effective.operation_id=operation.id WHERE operation.started_at_ms<?2 AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?1)",
+        "CREATE TEMP TABLE _usage_global_timed AS SELECT operation.operation_id id,operation.operation_kind,operation.agent_id,operation.phase,operation.activity_state,operation.started_at_ms source_started_at_ms,operation.terminal_status,operation.ended_at_ms,MAX(operation.started_at_ms,?1) s,CASE WHEN operation.ended_at_ms>=operation.started_at_ms AND MIN(operation.ended_at_ms,?2)>=MAX(operation.started_at_ms,?1) THEN MIN(operation.ended_at_ms,?2) END e FROM _usage_report_operations operation WHERE operation.started_at_ms<?2 AND (operation.ended_at_ms IS NULL OR operation.ended_at_ms>?1)",
     )
     .bind(lower)
     .bind(upper)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "CREATE TEMP TABLE _usage_global_spans AS SELECT span.operation_id,span.activity_state,span.started_at_ms source_started_at_ms,MAX(span.started_at_ms,?1) s,CASE WHEN ended.occurred_at_ms>=span.started_at_ms AND MIN(ended.occurred_at_ms,?2)>=MAX(span.started_at_ms,?1) THEN MIN(ended.occurred_at_ms,?2) END e FROM _usage_global_timed operation JOIN activity_spans span ON span.operation_id=operation.id LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.started_at_ms<?2 AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms>?1)",
+        "CREATE TEMP TABLE _usage_global_spans AS SELECT span.operation_id,span.activity_state,span.started_at_ms source_started_at_ms,MAX(span.started_at_ms,?1) s,CASE WHEN span.ended_at_ms>=span.started_at_ms AND MIN(span.ended_at_ms,?2)>=MAX(span.started_at_ms,?1) THEN MIN(span.ended_at_ms,?2) END e FROM _usage_global_timed operation JOIN _usage_report_spans span ON span.operation_id=operation.id WHERE span.started_at_ms<?2 AND (span.ended_at_ms IS NULL OR span.ended_at_ms>?1)",
     )
     .bind(lower)
     .bind(upper)
@@ -405,8 +408,19 @@ async fn rebuild_hour(
     Ok(())
 }
 
-pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(1);
+
+async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(&mut connection, Instant::now() + GLOBAL_STEP_BUDGET)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 100")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::raw_sql(
         "DROP TABLE IF EXISTS temp._usage_global_dirty_batch; DROP TABLE IF EXISTS temp._usage_global_old_ops;",
     )
@@ -419,49 +433,6 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     .fetch_one(&mut *tx)
     .await?;
     if core_ready == 0 {
-        tx.rollback().await?;
-        return Ok(false);
-    }
-    let pending_range: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some((hour, end_hour)) = pending_range {
-        rebuild_hour(&mut tx, hour).await?;
-        if hour < end_hour {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
-                .bind(hour)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(
-                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
-            )
-            .bind(hour + 1)
-            .bind(end_hour)
-            .execute(&mut *tx)
-            .await?;
-        } else {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
-                .bind(hour)
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
-        return Ok(false);
-    }
-    let pending: Option<i64> = sqlx::query_scalar(
-        "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some(hour) = pending {
-        rebuild_hour(&mut tx, hour).await?;
-        sqlx::query("DELETE FROM _usage_report_global_dirty_hours WHERE hour_index=?")
-            .bind(hour)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
         return Ok(false);
     }
     sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 256")
@@ -517,16 +488,121 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        return Ok(false);
+        return Ok(true);
     }
     sqlx::query("DROP TABLE _usage_global_dirty_batch")
         .execute(&mut *tx)
         .await?;
+    Ok(false)
+}
+
+async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(&mut connection, Instant::now() + GLOBAL_STEP_BUDGET)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 100")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    let core_ready: i64 = sqlx::query_scalar(
+        "SELECT ready FROM _usage_report_cache_meta WHERE singleton=1 AND schema_version=?",
+    )
+    .bind(crate::report_cache::REPORT_CACHE_SCHEMA_VERSION)
+    .fetch_one(&mut *tx)
+    .await?;
+    if core_ready == 0 {
+        return Ok(false);
+    }
+    let pending_range: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((hour, end_hour)) = pending_range {
+        rebuild_hour(&mut tx, hour).await?;
+        if hour < end_hour {
+            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+                .bind(hour)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+            )
+            .bind(hour + 1)
+            .bind(end_hour)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+                .bind(hour)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        return Ok(true);
+    }
+    let pending: Option<i64> = sqlx::query_scalar(
+        "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(hour) = pending {
+        rebuild_hour(&mut tx, hour).await?;
+        sqlx::query("DELETE FROM _usage_report_global_dirty_hours WHERE hour_index=?")
+            .bind(hour)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn finish_step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(&mut connection, Instant::now() + GLOBAL_STEP_BUDGET)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 100")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    let core_ready: i64 = sqlx::query_scalar(
+        "SELECT ready FROM _usage_report_cache_meta WHERE singleton=1 AND schema_version=?",
+    )
+    .bind(crate::report_cache::REPORT_CACHE_SCHEMA_VERSION)
+    .fetch_one(&mut *tx)
+    .await?;
+    if core_ready == 0 {
+        return Ok(false);
+    }
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _usage_report_global_dirty_operations) OR EXISTS(SELECT 1 FROM _usage_report_global_dirty_hours) OR EXISTS(SELECT 1 FROM _usage_report_global_dirty_hour_ranges)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if pending != 0 {
+        return Ok(false);
+    }
     sqlx::query("UPDATE _usage_report_global_meta SET ready=1, core_generation=(SELECT COALESCE(SUM(high_water),0) FROM _usage_report_backfill), applied_revision=dirty_revision WHERE singleton=1")
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
     Ok(true)
+}
+
+pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let operation_progress = step_operation_page(pool).await?;
+    let hour_progress = step_hour_page(pool).await?;
+    if operation_progress || hour_progress {
+        return Ok(false);
+    }
+    finish_step(pool).await
 }
 
 #[cfg(test)]
