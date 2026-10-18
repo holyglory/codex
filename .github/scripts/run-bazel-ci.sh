@@ -255,30 +255,16 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-windows_msvc_fallback=0
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
   # Windows cross-compilation depends on authenticated RBE. Preserve the local
   # Windows build shape when credentials are unavailable, including a matching
   # MSVC target so native C dependencies do not feed MinGW objects to rust-lld.
   ci_config=ci-windows
   windows_msvc_host_platform=1
-  windows_msvc_fallback=1
+  export CODEX_BAZEL_WINDOWS_MSVC_FALLBACK=1
 fi
 
 post_config_bazel_args=()
-if [[ $windows_msvc_fallback -eq 1 ]]; then
-  has_target_platform_override=0
-  for arg in "${bazel_args[@]}"; do
-    if [[ "$arg" == --platforms=* ]]; then
-      has_target_platform_override=1
-      break
-    fi
-  done
-  if [[ $has_target_platform_override -eq 0 ]]; then
-    post_config_bazel_args+=("--platforms=//:windows_x86_64_msvc")
-  fi
-fi
-
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
