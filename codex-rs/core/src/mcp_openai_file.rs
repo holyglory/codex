@@ -46,7 +46,13 @@ pub(crate) async fn rewrite_mcp_tool_arguments_for_openai_files(
     let Some(arguments) = arguments_value.as_object() else {
         return Ok(Some(arguments_value));
     };
-    let auth = sess.services.auth_manager.auth().await;
+    let auth_manager = step_context
+        .turn
+        .auth_lease()
+        .filter(|lease| lease.is_profile_scoped())
+        .map(|lease| Arc::clone(lease.auth_manager()))
+        .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
+    let auth = auth_manager.auth().await;
     let mut rewritten_arguments = arguments.clone();
 
     for (field_name, optional_fields) in openai_file_input_optional_fields {

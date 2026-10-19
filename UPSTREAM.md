@@ -591,6 +591,7 @@ the authority for release outcomes and verification receipts.
   requests use the selected account. Native tools must select credentials in
   `tools_for_step`; turn-scoped policy and background samplers must read the
   turn lease and keep caches keyed by its account identity and auth generation.
+  Apps file uploads must also resolve the lease at tool execution time.
   History notes and
   MCP Apps use thread or shared state and require explicit lease-aware APIs;
   treat them as separate follow-up work. Add regression fixtures with distinct
