@@ -6,7 +6,7 @@ on:
 jobs:
   python-sdk-installation:
     runs-on: ${{ github.repository_owner == 'openai' && fromJSON(format('{{"group":"{0}-runners","labels":"{0}-linux-x64"}}', github.event.repository.name)) || 'ubuntu-24.04' }}
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.repository_owner == 'openai' && 10 || 30 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -35,7 +35,7 @@ jobs:
 
   sdks:
     runs-on: ${{ github.repository_owner == 'openai' && fromJSON(format('{{"group":"{0}-runners","labels":"{0}-linux-x64"}}', github.event.repository.name)) || 'ubuntu-24.04' }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.repository_owner == 'openai' && 20 || 45 }}
     environment:
       name: bazel
       deployment: false
