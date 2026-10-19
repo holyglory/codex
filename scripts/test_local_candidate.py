@@ -297,6 +297,11 @@ class LocalCandidateTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "PR #8: release branch still open"):
                 inclusion.verify(root, manifest)
+        pending["head_sha"] = candidate.git(root, "rev-parse", "HEAD")
+        with patch.object(
+            inclusion, "pull_request_inventory", return_value=[merged, pending]
+        ):
+            inclusion.verify(root, manifest)
 
     def test_each_gate_failure_prevents_all_expensive_lanes(self):
         for failed in candidate.GATES:

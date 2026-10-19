@@ -47,7 +47,7 @@ def pull_request_inventory(root, repository):
             "--paginate",
             f"repos/{repository}/pulls?state=all&per_page=100",
             "--jq",
-            ".[] | {number, state, merged_at, merge_commit_sha, head_ref: .head.ref}",
+            ".[] | {number, state, merged_at, merge_commit_sha, head_ref: .head.ref, head_sha: .head.sha}",
         ],
         cwd=root,
         text=True,
@@ -142,6 +142,7 @@ def verify(root, manifest):
     if required_pulls or prefixes:
         inventory = pull_request_inventory(root, manifest["github_repository"])
         pulls = {row["number"]: row for row in inventory}
+        candidate_commit = git("rev-parse", "HEAD")
         for number in sorted(required_pulls):
             row = pulls.get(number)
             if not row or not row["merged_at"] or not row["merge_commit_sha"]:
@@ -155,7 +156,11 @@ def verify(root, manifest):
             except subprocess.CalledProcessError:
                 errors.append(f"PR #{number}: merged commit absent from candidate")
         for row in inventory:
-            if row["state"] == "open" and row["head_ref"].startswith(prefixes):
+            if (
+                row["state"] == "open"
+                and row["head_ref"].startswith(prefixes)
+                and row.get("head_sha") != candidate_commit
+            ):
                 errors.append(f"PR #{row['number']}: release branch still open")
     for path, expected in manifest["migrations"].items():
         source = root / path
