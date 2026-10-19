@@ -259,8 +259,12 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUI
   # Use the native MSVC target and host when authenticated Linux RBE is
   # unavailable. The wrapper strips ci-windows-cross and normalizes any
   # explicit gnullvm target before invoking local Bazel.
-  ci_config=ci-windows-cross
+  # Keep the native Windows CI settings (including the local Windows
+  # repository/toolchain configuration) and replace only the unavailable
+  # remote cross-build target in the wrapper.
+  ci_config=ci-windows
   windows_msvc_host_platform=1
+  export CODEX_BAZEL_WINDOWS_MSVC_FALLBACK=1
 fi
 
 post_config_bazel_args=()
