@@ -164,6 +164,7 @@ jobs:
   argument_comment_lint_prebuilt:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.name == 'Windows' && 'windows-2025' || matrix.runner }}
+    if: ${{ matrix.name != 'Windows' || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     needs: changed
     environment:

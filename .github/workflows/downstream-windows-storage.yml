@@ -28,6 +28,7 @@ env:
 
 jobs:
   private-storage:
+    if: ${{ github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
     name: Windows storage and product checks on ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60

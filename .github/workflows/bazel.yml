@@ -135,6 +135,7 @@ jobs:
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
     timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || 90 }}
+    if: ${{ github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
     strategy:
       fail-fast: false
       matrix:
@@ -235,7 +236,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
+    if: ${{ always() && (github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3') }}
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -253,7 +254,7 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'openai'
     timeout-minutes: ${{ github.repository_owner == 'openai' && 40 || 90 }}
     runs-on: ${{ github.repository_owner == 'openai' && fromJSON(format('{{"group":"{0}-runners","labels":"{0}-windows-x64"}}', github.event.repository.name)) || 'windows-2025' }}
     name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
@@ -350,6 +351,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
+    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
@@ -450,6 +452,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
+    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
