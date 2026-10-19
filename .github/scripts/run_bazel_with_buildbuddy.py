@@ -288,6 +288,7 @@ def bazel_args_with_remote_config(
         and env.get("RUNNER_OS") == "Windows"
         and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
         and not env.get("BUILDBUDDY_API_KEY")
+        and "--config=ci-windows-cross" not in configured_args[:separator_idx]
         and (
             explicit_windows_gnullvm
             or not any(
