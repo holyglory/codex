@@ -10,6 +10,7 @@ struct OperationLinks {
 impl UsageStore {
     pub(super) async fn task_tree_rework_flags(
         &self,
+        connection: &mut SqliteConnection,
         operations: &[OperationRow],
     ) -> Result<HashMap<String, bool>, UsageStoreError> {
         let mut links = operations
@@ -40,7 +41,7 @@ impl UsageStore {
             query.push(')');
             let rows = query
                 .build()
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *connection)
                 .await
                 .map_err(UsageStoreError::Database)?;
             if rows.len() != batch.len() {

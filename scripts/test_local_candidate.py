@@ -477,8 +477,18 @@ class UsageHistoryVerifierTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.scopes = {
+            "fixture_shape_version": 2,
             "window_start_ms": 6_000_000_000,
             "window_end_ms": 6_086_400_000,
+            "expected_open_operations": 1,
+            "expected_wait_spans": 1,
+            "expected_thread_count": 64,
+            "expected_phase_activity_pairs": 4,
+            "expected_token_facts": 49,
+            "root_thread_id": "scale-root",
+            "include_descendants": True,
+            "expected_root_window_operations": 8,
+            "expected_root_window_provider_tokens": 8400,
             "expected_all_operations": 8,
             "expected_all_provider_tokens": 8400,
             "repositories": [
@@ -491,6 +501,55 @@ class UsageHistoryVerifierTests(unittest.TestCase):
                 for n in range(8)
             ],
         }
+
+    def test_usage_fixture_shape_rejects_legacy_and_calculates_lifetime_counts(self):
+        import check_usage_history as history
+
+        self.assertEqual(
+            history.expected_shape(1300),
+            {
+                "open_operations": 3,
+                "wait_spans": 82,
+                "thread_count": 64,
+                "phase_activity_pairs": 4,
+                "token_facts": 7801,
+            },
+        )
+        (self.directory / "fixture-marker").write_text(history.MARKER)
+        (self.directory / "scope.json").write_text(json.dumps(self.scopes))
+        self.assertEqual(history.scopes_for(self.directory), self.scopes)
+        legacy = dict(self.scopes)
+        legacy["fixture_shape_version"] = 1
+        (self.directory / "scope.json").write_text(json.dumps(legacy))
+        with self.assertRaisesRegex(ValueError, "legacy usage fixture shape"):
+            history.scopes_for(self.directory)
+
+    def test_missing_generated_history_preserves_failure_without_running_reports(self):
+        import check_usage_history as history
+
+        for status in (0, 100):
+            with (
+                self.subTest(status=status),
+                patch.object(history.subprocess, "run"),
+                patch.object(history.shutil, "disk_usage") as disk_usage,
+                patch.object(history, "native_probe", return_value=status),
+                patch.object(history, "copy_warming") as copy_warming,
+                redirect_stdout(io.StringIO()),
+            ):
+                disk_usage.return_value.free = 64 * 1024**3
+                state = self.directory / f"missing-history-{status}"
+                self.assertEqual(
+                    history.check(self.directory, state, Path("unused")), 1
+                )
+                copy_warming.assert_not_called()
+                self.assertEqual(
+                    json.loads((state / "report.json").read_text()),
+                    {
+                        "checks": {"scale": status == 0, "fixture_ready": False},
+                        "unavailable_checks": "generated_history_not_ready",
+                        "live_data_used": False,
+                    },
+                )
 
     def server_binary(self, *, faults, warming=False):
         binary = self.directory / "fixture-server"

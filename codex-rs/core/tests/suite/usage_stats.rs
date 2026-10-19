@@ -2,6 +2,31 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
+use codex_usage::AccountAttributionSnapshot;
+use codex_usage::Activity;
+use codex_usage::ActivityState;
+use codex_usage::AttributionProvenance;
+use codex_usage::FactEventId;
+use codex_usage::MeasurementProvenance;
+use codex_usage::ModelName;
+use codex_usage::NewModelRequest;
+use codex_usage::NewOperation;
+use codex_usage::NewThread;
+use codex_usage::NewTokenObservation;
+use codex_usage::OperationId;
+use codex_usage::OperationKind;
+use codex_usage::Phase;
+use codex_usage::ProcessId;
+use codex_usage::ProviderKind;
+use codex_usage::RepositoryBucket;
+use codex_usage::TerminalOperation;
+use codex_usage::TerminalStatus;
+use codex_usage::ThreadId;
+use codex_usage::ThreadSourceKind;
+use codex_usage::TokenCategoryPath;
+use codex_usage::TokenObservationSource;
+use codex_usage::TokenUnit;
+use codex_usage::TransportKind;
 use codex_usage::UsageDetailKind;
 use codex_usage::UsageDetailListQuery;
 use codex_usage::UsageDetailRecord;
@@ -78,6 +103,186 @@ fn ev_completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> V
             }
         }
     })
+}
+
+async fn seed_small_performance_review(home: &TempDir) -> Result<()> {
+    let store = UsageStore::open(home.path()).await?;
+    let process = ProcessId::new();
+    store
+        .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
+        .await?;
+    for (id, parent) in [
+        ("scale-root", None),
+        ("scale-child", Some("scale-root")),
+        ("scale-other", None),
+    ] {
+        store
+            .ensure_thread(&NewThread {
+                id: ThreadId::new(id)?,
+                parent_thread_id: parent.map(ThreadId::new).transpose()?,
+                source_kind: ThreadSourceKind::new(if parent.is_some() {
+                    "subagent"
+                } else {
+                    "cli"
+                })?,
+                created_at_ms: 0,
+            })
+            .await?;
+    }
+    for (thread, started_at_ms, tokens) in [
+        ("scale-root", 1_000, 11),
+        ("scale-child", 1_100, 13),
+        ("scale-other", 1_200, 99),
+    ] {
+        let operation = NewOperation {
+            work_context: None,
+            id: OperationId::new(),
+            process_id: process,
+            thread_id: Some(ThreadId::new(thread)?),
+            turn_id: None,
+            agent_id: None,
+            parent_operation_id: None,
+            retry_of_operation_id: None,
+            rework_of_operation_id: None,
+            kind: OperationKind::ModelRequest,
+            started_at_ms,
+            phase: Phase::Implementation,
+            activity: Activity::Coding,
+            activity_state: ActivityState::ModelActive,
+            attribution_provenance: AttributionProvenance::AgentDeclared,
+        };
+        store.begin_operation(&operation).await?;
+        let request = codex_usage::ModelRequestId::new();
+        store
+            .record_model_request(&NewModelRequest {
+                id: request,
+                operation_id: operation.id,
+                provider_kind: ProviderKind::new("openai")?,
+                model: ModelName::new("fixture")?,
+                transport_kind: TransportKind::new("http")?,
+                attempt_number: 1,
+                account: AccountAttributionSnapshot::unknown(),
+                client_origin: codex_usage::ClientOrigin::new("test")?,
+            })
+            .await?;
+        store
+            .record_token_observation(&NewTokenObservation {
+                id: FactEventId::new(),
+                source_event_id: FactEventId::new(),
+                source: TokenObservationSource::ModelRequest(request),
+                category_path: TokenCategoryPath::new("total_tokens")?,
+                token_count: Some(tokens),
+                unit: TokenUnit::Tokens,
+                measurement_provenance: MeasurementProvenance::ProviderReported,
+                coverage_state: codex_usage::CoverageState::Complete,
+                repository_bucket: RepositoryBucket::Unknown,
+                observed_at_ms: 1_500,
+            })
+            .await?;
+        store
+            .finish_operation(&TerminalOperation {
+                operation_id: operation.id,
+                status: TerminalStatus::Completed,
+                occurred_at_ms: started_at_ms + 1_000,
+                duration_ns: 1_000_000_000,
+                error_category: None,
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+async fn prepare_performance_review_fixture(home: &TempDir) -> Result<(i64, i64, u64, u64)> {
+    #[cfg(unix)]
+    if let Some(fixture) = std::env::var_os("CXM_USAGE_SCALE_FIXTURE") {
+        let fixture = std::path::PathBuf::from(fixture);
+        let scopes: Value = serde_json::from_slice(&std::fs::read(fixture.join("scope.json"))?)?;
+        anyhow::ensure!(scopes["fixture_shape_version"] == 2);
+        std::os::unix::fs::symlink(fixture.join("usage"), home.path().join("usage"))?;
+        return Ok((
+            scopes["window_start_ms"].as_i64().context("window start")?,
+            scopes["window_end_ms"].as_i64().context("window end")?,
+            scopes["expected_root_window_operations"]
+                .as_u64()
+                .context("root operation total")?,
+            scopes["expected_root_window_provider_tokens"]
+                .as_u64()
+                .context("root token total")?,
+        ));
+    }
+    seed_small_performance_review(home).await?;
+    Ok((900, 2_200, 2, 24))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_reads_finite_performance_review_with_descendants() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let (from_at_ms, to_at_ms, expected_operations, expected_provider_tokens) =
+        prepare_performance_review_fixture(&home).await?;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-review"),
+                ev_function_call(
+                    "read-review",
+                    "usage_stats",
+                    &json!({
+                        "action": "performance_review",
+                        "thread_id": "scale-root",
+                        "include_descendants": true,
+                        "from_at_ms": from_at_ms,
+                        "to_at_ms": to_at_ms
+                    })
+                    .to_string(),
+                ),
+                ev_completed("resp-review"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-review-followup"),
+                ev_assistant_message("msg-review", "review read"),
+                ev_completed("resp-review-followup"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_config(|config| config.local_control_tools_enabled = true)
+        .build(&server)
+        .await?;
+    test.submit_turn("inspect the finite performance review")
+        .await?;
+
+    let requests = response_mock.requests();
+    let review = requests
+        .iter()
+        .find_map(|request| request.function_call_output_text("read-review"))
+        .context("performance review tool output")?;
+    let review: Value = serde_json::from_str(&review)?;
+    assert_eq!(review["kind"], "performanceReview");
+    assert_eq!(review["window"]["fromAtMs"], from_at_ms);
+    assert_eq!(review["window"]["toAtMs"], to_at_ms);
+    assert_eq!(review["coverage"]["rawOperations"], expected_operations);
+    assert!(
+        review["coverage"]["rawTokenObservations"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(
+        review["tokens"][0]["measuredTokens"],
+        expected_provider_tokens
+    );
+    assert_eq!(
+        review["outcomes"]["totals"]["operations"],
+        expected_operations
+    );
+    assert_eq!(review["reportingOperationInProgress"], true);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
