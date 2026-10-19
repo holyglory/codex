@@ -256,9 +256,9 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape when credentials are unavailable, including a matching
-  # MSVC target so native C dependencies do not feed MinGW objects to rust-lld.
+  # Preserve the upstream gnullvm target and use the local MSVC host platform
+  # when authenticated RBE is unavailable. This keeps target and host ABIs
+  # separate while allowing Windows tests and generators to run locally.
   ci_config=ci-windows-cross
   windows_msvc_host_platform=1
 fi

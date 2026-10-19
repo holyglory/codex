@@ -186,15 +186,27 @@ def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
     return config
 
 
-def bazel_args_without_remote_execution(args: Sequence[str]) -> list[str]:
+def bazel_args_without_remote_execution(
+    args: Sequence[str], env: Mapping[str, str]
+) -> list[str]:
     # Remote CI configs require BuildBuddy credentials. Removing them preserves
-    # the local fallback used for fork pull requests.
+    # the local fallback used for fork pull requests. The Windows cross config
+    # is also the source of the gnullvm target and the MSVC-host test
+    # toolchain. It does not enable remote execution by itself, so retain it
+    # for keyless Windows runs and override only the host platform in the CI
+    # launcher.
     try:
         separator_idx = args.index("--")
     except ValueError:
         separator_idx = len(args)
+    preserve_windows_cross_config = env.get("RUNNER_OS") == "Windows"
     return [
-        *(arg for arg in args[:separator_idx] if arg not in REMOTE_EXECUTION_CONFIGS),
+        *(
+            arg
+            for arg in args[:separator_idx]
+            if arg not in REMOTE_EXECUTION_CONFIGS
+            or (preserve_windows_cross_config and arg == "--config=ci-windows-cross")
+        ),
         *args[separator_idx:],
     ]
 
@@ -211,7 +223,7 @@ def bazel_args_with_remote_config(
 
     config = remote_config(args, env)
     if config is None:
-        configured_args = bazel_args_without_remote_execution(args)
+        configured_args = bazel_args_without_remote_execution(args, env)
     else:
         # `remote_config()` returns a configuration only when this key is present.
         api_key = env["BUILDBUDDY_API_KEY"]
@@ -274,27 +286,15 @@ def bazel_args_with_remote_config(
         else []
     )
     fallback_args = []
-    explicit_windows_gnullvm = any(
-        arg == "--platforms=//:windows_x86_64_gnullvm"
-        or (
-            arg == "--platforms"
-            and idx + 1 < separator_idx
-            and configured_args[idx + 1] == "//:windows_x86_64_gnullvm"
-        )
-        for idx, arg in enumerate(configured_args[:separator_idx])
-    )
     if (
         args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
         and env.get("RUNNER_OS") == "Windows"
         and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
         and not env.get("BUILDBUDDY_API_KEY")
         and "--config=ci-windows-cross" not in configured_args[:separator_idx]
-        and (
-            explicit_windows_gnullvm
-            or not any(
-                arg == "--platforms" or arg.startswith("--platforms=")
-                for arg in configured_args[:separator_idx]
-            )
+        and not any(
+            arg == "--platforms" or arg.startswith("--platforms=")
+            for arg in configured_args[:separator_idx]
         )
     ):
         fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
