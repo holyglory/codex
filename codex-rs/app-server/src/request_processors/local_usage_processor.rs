@@ -131,7 +131,7 @@ impl LocalUsageRequestProcessor {
             .map_err(store_error)?
             .ok_or_else(resource_not_found)?;
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: Some(id),
@@ -194,7 +194,7 @@ impl LocalUsageRequestProcessor {
             .map_err(store_error)?
             .ok_or_else(resource_not_found)?;
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: None,
@@ -230,6 +230,8 @@ impl LocalUsageRequestProcessor {
             .id;
         let label = SafeRepositoryLabel::new(params.label)
             .map_err(|_| invalid_params("repository label is invalid"))?;
+        self.ensure_report_ready(&store, /*from_at*/ None, /*to_at*/ None)
+            .await?;
         store
             .append_repository_alias(FactEventId::new(), &canonical, &label, now_ms())
             .await
@@ -262,6 +264,8 @@ impl LocalUsageRequestProcessor {
         if source == target {
             return Err(invalid_params("repository merge would create a cycle"));
         }
+        self.ensure_report_ready(&store, /*from_at*/ None, /*to_at*/ None)
+            .await?;
         store
             .append_repository_merge(FactEventId::new(), &source, &target, now_ms())
             .await
@@ -468,7 +472,7 @@ impl LocalUsageRequestProcessor {
         let include_unassigned_worktrees =
             filters.include_unassigned.unwrap_or(worktree_ids.is_none());
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids,
                 include_unassigned_worktrees,
                 thread_id: filters.thread_id.map(thread_id).transpose()?,
@@ -534,7 +538,7 @@ impl LocalUsageRequestProcessor {
         record: UsageRepositoryRecord,
     ) -> Result<LocalUsageRepository, JSONRPCErrorError> {
         let summary = store
-            .usage_summary_query(UsageSummaryQuery {
+            .usage_summary_query_strict(UsageSummaryQuery {
                 worktree_ids: None,
                 include_unassigned_worktrees: true,
                 thread_id: None,

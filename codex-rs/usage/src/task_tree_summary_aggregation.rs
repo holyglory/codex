@@ -10,27 +10,29 @@ struct TokenFact {
 impl UsageStore {
     pub(super) async fn task_tree_tool_roles(
         &self,
-        thread_ids: &[String],
-        range: UtcTimeRange,
+        connection: &mut SqliteConnection,
+        operations: &[OperationRow],
     ) -> Result<(HashSet<String>, ToolCounts), UsageStoreError> {
+        if operations.is_empty() {
+            return Ok((HashSet::new(), ToolCounts::default()));
+        }
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT operation.id, tool.execution_group_id, tool.execution_role
                FROM operations AS operation
                JOIN tool_invocations AS tool ON tool.operation_id = operation.id
-               LEFT JOIN operation_events AS terminal
-                 ON terminal.operation_id = operation.id AND terminal.terminal = 1
-               WHERE operation.thread_id IN ("#,
+               WHERE operation.id IN ("#,
         );
-        push_string_binds(&mut query, thread_ids);
+        let operation_ids = operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect::<Vec<_>>();
         query
-            .push(") AND operation.started_at_ms < ")
-            .push_bind(range.end_ms())
-            .push(" AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms > ")
-            .push_bind(range.start_ms())
-            .push(')');
+            .push("SELECT value FROM json_each(")
+            .push_bind(sqlx::types::Json(operation_ids))
+            .push("))");
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         let mut wrappers = Vec::new();
@@ -81,6 +83,7 @@ impl UsageStore {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn task_tree_tokens(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
         operations: &[OperationRow],
@@ -139,7 +142,7 @@ impl UsageStore {
             .push_bind(i64::try_from(MAX_TASK_TREE_FACT_ROWS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_FACT_ROWS {
@@ -235,6 +238,7 @@ impl UsageStore {
 
     pub(super) async fn task_tree_context(
         &self,
+        connection: &mut SqliteConnection,
         thread_ids: &[String],
         range: UtcTimeRange,
         operations: &[OperationRow],
@@ -256,8 +260,8 @@ impl UsageStore {
                       context.tool_output_estimated_tokens, context.estimator,
                       request.operation_id
                FROM model_request_context_sources AS context
-               JOIN model_requests AS request ON request.id = context.model_request_id
-               JOIN operations AS operation ON operation.id = request.operation_id
+               CROSS JOIN model_requests AS request ON request.id = context.model_request_id
+               CROSS JOIN operations AS operation ON operation.id = request.operation_id
                WHERE context.observed_at_ms >= "#,
         );
         query
@@ -272,7 +276,7 @@ impl UsageStore {
             .push_bind(i64::try_from(MAX_TASK_TREE_FACT_ROWS + 1).unwrap_or(i64::MAX));
         let rows = query
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(UsageStoreError::Database)?;
         if rows.len() > MAX_TASK_TREE_FACT_ROWS {
