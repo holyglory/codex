@@ -30,10 +30,33 @@ enum ReportSource {
     Canonical,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SummaryReadMode {
+    CanonicalFallback,
+    RequireReady,
+}
+
 impl UsageStore {
     pub(crate) async fn bounded_usage_summary(
         &self,
         query: UsageSummaryQuery,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        self.bounded_usage_summary_with_mode(query, SummaryReadMode::CanonicalFallback)
+            .await
+    }
+
+    pub(crate) async fn bounded_usage_summary_strict(
+        &self,
+        query: UsageSummaryQuery,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        self.bounded_usage_summary_with_mode(query, SummaryReadMode::RequireReady)
+            .await
+    }
+
+    async fn bounded_usage_summary_with_mode(
+        &self,
+        query: UsageSummaryQuery,
+        mode: SummaryReadMode,
     ) -> Result<UsageSummary, UsageStoreError> {
         let deadline = tokio::time::Instant::now() + crate::report_read::REPORT_BUDGET;
         let admission_started = StdInstant::now();
@@ -51,10 +74,14 @@ impl UsageStore {
             "usage report progress"
         );
         let mut reader = reader_result?;
-        let result = tokio::time::timeout_at(
-            deadline,
-            self.read_usage_summary(query, &mut reader.connection),
-        )
+        let result = tokio::time::timeout_at(deadline, async {
+            if mode == SummaryReadMode::CanonicalFallback {
+                self.read_usage_summary(query, &mut reader.connection).await
+            } else {
+                self.read_usage_summary_with_mode(query, &mut reader.connection, mode)
+                    .await
+            }
+        })
         .await
         .unwrap_or(Err(UsageStoreError::ReportTimedOut));
         reader.finish(result, deadline).await
@@ -62,8 +89,18 @@ impl UsageStore {
 
     pub(crate) async fn read_usage_summary(
         &self,
+        query: UsageSummaryQuery,
+        connection: &mut SqliteConnection,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        self.read_usage_summary_with_mode(query, connection, SummaryReadMode::CanonicalFallback)
+            .await
+    }
+
+    async fn read_usage_summary_with_mode(
+        &self,
         mut query: UsageSummaryQuery,
         connection: &mut SqliteConnection,
+        mode: SummaryReadMode,
     ) -> Result<UsageSummary, UsageStoreError> {
         let setup_started = StdInstant::now();
         query.repository_id = match query.repository_id {
@@ -84,6 +121,7 @@ impl UsageStore {
             && family.is_none()
             && query.worktree_ids.is_none()
             && query.include_unassigned_worktrees;
+        let unbounded = query.time_range.is_none_or(|range| !range.is_finite());
         // Five store connections at 2 MiB each leave room for bounded returned
         // groups under the 128 MiB accounting working-memory target. Sorts and
         // selections spill to SQLite-owned temporary files instead of Rust Vecs.
@@ -95,6 +133,17 @@ impl UsageStore {
         .map_err(database_error)?;
         use sqlx::Connection;
         let mut tx = connection.begin().await.map_err(database_error)?;
+        if mode == SummaryReadMode::RequireReady && unbounded {
+            let status = crate::report_cache::status_on(&mut tx)
+                .await
+                .map_err(database_error)?;
+            let core_ready = crate::report_cache::is_ready_on(&mut tx)
+                .await
+                .map_err(database_error)?;
+            if !core_ready || (include_global && !status.ready) {
+                return Err(UsageStoreError::ReportWarming(Box::new(status)));
+            }
+        }
         let global_ready = crate::report_global::is_ready_on(&mut tx)
             .await
             .unwrap_or(false);

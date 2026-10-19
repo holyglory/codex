@@ -200,6 +200,10 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
     .await
     .expect("thread");
     store
+        .require_report_ready(/*range*/ None)
+        .await
+        .expect("ready guard before capture");
+    store
         .begin_operation(&crate::NewOperation {
             work_context: None,
             id: crate::OperationId::new(),
@@ -225,12 +229,25 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
             .expect("dirty readiness")
     );
 
+    let query = crate::UsageSummaryQuery {
+        worktree_ids: None,
+        include_unassigned_worktrees: true,
+        thread_id: None,
+        repository_id: None,
+        account_profile_ref: None,
+        time_range: None,
+    };
+    assert!(matches!(
+        store.usage_summary_query_strict(query.clone()).await,
+        Err(crate::UsageStoreError::ReportWarming(_))
+    ));
+
     store
         .require_report_ready(/*range*/ None)
         .await
         .expect("first bounded catch-up");
     let summary = store
-        .usage_summary(crate::UsageSummaryScope::All)
+        .usage_summary_query_strict(query.clone())
         .await
         .expect("first unbounded summary after refresh");
     assert_eq!(summary.operation_count, 1);
@@ -260,7 +277,7 @@ async fn ready_global_refreshes_after_capture_before_unbounded_report() {
         .await
         .expect("second bounded catch-up");
     let summary = store
-        .usage_summary(crate::UsageSummaryScope::All)
+        .usage_summary_query_strict(query)
         .await
         .expect("second unbounded summary after refresh");
     assert_eq!(summary.operation_count, 2);
