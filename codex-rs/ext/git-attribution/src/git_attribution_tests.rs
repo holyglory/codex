@@ -41,11 +41,24 @@ fn cached_policy_is_scoped_to_the_selected_profile() {
     });
 
     assert_eq!(
-        cached_attribution_policy(&thread_store, &turn_store, 1, Some("account-a"))
-            .map(|policy| policy.enabled),
+        cached_attribution_policy(
+            &thread_store,
+            &turn_store,
+            /*auth_generation*/ 1,
+            Some("account-a"),
+        )
+        .map(|policy| policy.enabled),
         Some(true)
     );
-    assert!(cached_attribution_policy(&thread_store, &turn_store, 1, Some("account-b")).is_none());
+    assert!(
+        cached_attribution_policy(
+            &thread_store,
+            &turn_store,
+            /*auth_generation*/ 1,
+            Some("account-b"),
+        )
+        .is_none()
+    );
 }
 
 fn enterprise_auth(account_id: &str) -> CodexAuth {
