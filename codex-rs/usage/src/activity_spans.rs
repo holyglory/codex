@@ -119,5 +119,6 @@ impl UsageStore {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 #[path = "activity_spans_tests.rs"]
 mod tests;

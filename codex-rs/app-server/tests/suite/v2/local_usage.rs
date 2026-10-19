@@ -95,6 +95,7 @@ use codex_usage::UsageSummaryQuery;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tempfile::TempDir;
@@ -936,6 +937,7 @@ async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> R
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn export_is_private_atomic_no_clobber_and_content_free() -> Result<()> {
     let codex_home = TempDir::new()?;
@@ -988,6 +990,7 @@ async fn export_is_private_atomic_no_clobber_and_content_free() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn corruption_returns_a_stable_redacted_error_without_resetting() -> Result<()> {
     let codex_home = TempDir::new()?;
