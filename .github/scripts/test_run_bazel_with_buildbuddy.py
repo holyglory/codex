@@ -98,6 +98,52 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_keyless_windows_fallback_selects_msvc_target(self) -> None:
+        env = {
+            "RUNNER_OS": "Windows",
+            "CODEX_BAZEL_WINDOWS_MSVC_FALLBACK": "1",
+        }
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "//codex-rs/..."], env
+            ),
+            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+        )
+        for args in (["query", "//codex-rs/..."], ["info", "bazel-testlogs"]):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+                    args,
+                )
+
+        for explicit in (
+            ["--platforms=//:windows_x86_64_gnullvm"],
+            ["--platforms", "//:windows_x86_64_gnullvm"],
+        ):
+            with self.subTest(explicit=explicit):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["test", *explicit, "//codex-rs/..."], env
+                    ),
+                    ["test", *explicit, "//codex-rs/..."],
+                )
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "//codex-rs/..."],
+                {
+                    **env,
+                    "BUILDBUDDY_API_KEY": "token",
+                },
+            ),
+            [
+                "test",
+                "--config=buildbuddy-generic",
+                "--remote_header=x-buildbuddy-api-key=token",
+                "//codex-rs/...",
+            ],
+        )
+
         acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
         for runner, value, explicit, expected in (
             ("Windows", "1", [], [f"--repo_env={acknowledgement}=1"]),
@@ -113,6 +159,64 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ),
                     ["build", *explicit, *expected, "--", "//codex-rs/cli:codex"],
                 )
+
+        voice_env = {
+            "RUNNER_OS": "Windows",
+            "VOICE_WINDOWS_BAZEL_REPOSITORY": r"D:\voice-tools",
+            "VOICE_WINDOWS_SYSTEM_ROOT": r"C:\Windows",
+            "VOICE_WINDOWS_HOST_ARCH": "AMD64",
+        }
+        for command, operand in (("query", "tests(//...)"), ("info", "bazel-testlogs")):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        [command, operand], voice_env
+                    ),
+                    [command, operand],
+                )
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["build", "--", "//third_party/voice:native_runtime"],
+                voice_env,
+            ),
+            [
+                "build",
+                r"--inject_repository=voice_windows_tools=D:\voice-tools",
+                "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools",
+                r"--action_env=SystemRoot=C:\Windows",
+                r"--host_action_env=SystemRoot=C:\Windows",
+                "--action_env=PROCESSOR_ARCHITECTURE=AMD64",
+                "--host_action_env=PROCESSOR_ARCHITECTURE=AMD64",
+                "--workspace_status_command=./scripts/workspace-status.cmd",
+                "--",
+                "//third_party/voice:native_runtime",
+            ],
+        )
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                [
+                    "build",
+                    r"--inject_repository=voice_windows_tools=D:\other-tools",
+                    r"--action_env=SystemRoot=C:\OtherWindows",
+                    "--workspace_status_command=custom.cmd",
+                    "--",
+                    "//third_party/voice:native_runtime",
+                ],
+                voice_env,
+            ),
+            [
+                "build",
+                r"--inject_repository=voice_windows_tools=D:\other-tools",
+                r"--action_env=SystemRoot=C:\OtherWindows",
+                "--workspace_status_command=custom.cmd",
+                "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools",
+                r"--host_action_env=SystemRoot=C:\Windows",
+                "--action_env=PROCESSOR_ARCHITECTURE=AMD64",
+                "--host_action_env=PROCESSOR_ARCHITECTURE=AMD64",
+                "--",
+                "//third_party/voice:native_runtime",
+            ],
+        )
 
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
         expression = 'kind("rust_library rule", //codex-rs/...)'

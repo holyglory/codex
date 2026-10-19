@@ -115,8 +115,40 @@ impl UsageStore {
         range: Option<crate::UtcTimeRange>,
     ) -> Result<(), UsageStoreError> {
         if range.is_none_or(|range| !range.is_finite()) {
-            let status = self.report_cache_status().await?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            let status = tokio::time::timeout_at(deadline, crate::report_cache::status(&self.pool))
+                .await
+                .map_err(|_| UsageStoreError::ReportTimedOut)?
+                .map_err(UsageStoreError::Database)?;
             if !status.ready {
+                let global_was_ready: Option<i64> = tokio::time::timeout_at(
+                    deadline,
+                    sqlx::query_scalar(
+                        "SELECT ready FROM _usage_report_global_meta WHERE singleton=1 AND component_version=?",
+                    )
+                    .bind(crate::report_global::COMPONENT_VERSION)
+                    .fetch_optional(&self.pool),
+                )
+                .await
+                .map_err(|_| UsageStoreError::ReportTimedOut)?
+                .map_err(UsageStoreError::Database)?;
+                let core_ready =
+                    tokio::time::timeout_at(deadline, crate::report_cache::is_ready(&self.pool))
+                        .await
+                        .map_err(|_| UsageStoreError::ReportTimedOut)?
+                        .map_err(UsageStoreError::Database)?;
+                if global_was_ready == Some(1) && core_ready {
+                    self.report_refresh.kick(self.pool.clone());
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if self
+                        .report_refresh
+                        .wait_for_ready(&self.pool, remaining)
+                        .await
+                        .map_err(UsageStoreError::Database)?
+                    {
+                        return Ok(());
+                    }
+                }
                 return Err(UsageStoreError::ReportWarming(Box::new(status)));
             }
         }

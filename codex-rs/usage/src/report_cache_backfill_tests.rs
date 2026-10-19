@@ -48,6 +48,9 @@ async fn cache_backfill_resumes_pages_and_includes_new_facts_once() {
         .usage_summary(UsageSummaryScope::All)
         .await
         .expect("warm");
+    // The remainder of this test manually resets and advances the derived
+    // frontier; stop the automatic refresh so those assertions own the queue.
+    store.report_refresh.cancel();
     sqlx::query("DELETE FROM _usage_report_cache_meta")
         .execute(&store.pool)
         .await

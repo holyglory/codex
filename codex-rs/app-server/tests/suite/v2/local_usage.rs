@@ -872,6 +872,71 @@ async fn corrections_and_repository_mutations_are_append_only_and_notify() -> Re
 }
 
 #[tokio::test]
+async fn repository_mutations_reject_before_append_when_usage_cache_warms() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let seeded = seed_usage(codex_home.path()).await?;
+    let mut server = initialized_server(codex_home.path()).await?;
+
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ false).await?;
+    let update_error = raw_error(
+        &mut server,
+        "localUsageRepository/update",
+        serde_json::to_value(LocalUsageRepositoryUpdateParams {
+            repository_key: seeded.repository_one.as_str().to_string(),
+            label: "Warming Label".to_string(),
+        })?,
+    )
+    .await?;
+    assert!(update_error.error.message.contains("warming"));
+    assert_eq!(repository_alias_count(codex_home.path()).await?, 0);
+
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ true).await?;
+    let updated: LocalUsageRepositoryUpdateResponse = server
+        .request(|request_id| ClientRequest::LocalUsageRepositoryUpdate {
+            request_id,
+            params: LocalUsageRepositoryUpdateParams {
+                repository_key: seeded.repository_one.as_str().to_string(),
+                label: "Warming Label".to_string(),
+            },
+        })
+        .await?;
+    assert_eq!(updated.repository.label, "Warming Label");
+    let _: LocalUsageUpdatedNotification = server.read_notification("localUsage/updated").await?;
+    assert_eq!(repository_alias_count(codex_home.path()).await?, 1);
+
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ false).await?;
+    let merge_error = raw_error(
+        &mut server,
+        "localUsageRepository/merge",
+        serde_json::to_value(LocalUsageRepositoryMergeParams {
+            source_repository_key: seeded.repository_one.as_str().to_string(),
+            target_repository_key: seeded.repository_two.as_str().to_string(),
+        })?,
+    )
+    .await?;
+    assert!(merge_error.error.message.contains("warming"));
+    assert_eq!(repository_merge_count(codex_home.path()).await?, 0);
+
+    set_usage_core_cache_ready(codex_home.path(), /*ready*/ true).await?;
+    let merged: LocalUsageRepositoryMergeResponse = server
+        .request(|request_id| ClientRequest::LocalUsageRepositoryMerge {
+            request_id,
+            params: LocalUsageRepositoryMergeParams {
+                source_repository_key: seeded.repository_one.as_str().to_string(),
+                target_repository_key: seeded.repository_two.as_str().to_string(),
+            },
+        })
+        .await?;
+    assert_eq!(
+        merged.repository.repository_key,
+        seeded.repository_two.as_str()
+    );
+    let _: LocalUsageUpdatedNotification = server.read_notification("localUsage/updated").await?;
+    assert_eq!(repository_merge_count(codex_home.path()).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn export_is_private_atomic_no_clobber_and_content_free() -> Result<()> {
     let codex_home = TempDir::new()?;
     seed_usage(codex_home.path()).await?;
@@ -1006,6 +1071,46 @@ async fn initialized_server(codex_home: &Path) -> Result<TestAppServer> {
     usage.close().await;
     assert!(ready, "usage report cache did not become ready");
     Ok(server)
+}
+
+async fn set_usage_core_cache_ready(codex_home: &Path, ready: bool) -> Result<()> {
+    let database = codex_home.join("usage").join("usage.sqlite3");
+    let pool =
+        codex_state::open_sqlite_pool(&database, codex_state::SqlitePoolProfile::DurableEvents)
+            .await?;
+    sqlx::query("PRAGMA busy_timeout = 5000")
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE _usage_report_cache_meta SET ready=? WHERE singleton=1")
+        .bind(if ready { 1_i64 } else { 0_i64 })
+        .execute(&pool)
+        .await?;
+    pool.close().await;
+    Ok(())
+}
+
+async fn repository_alias_count(codex_home: &Path) -> Result<i64> {
+    let database = codex_home.join("usage").join("usage.sqlite3");
+    let pool =
+        codex_state::open_sqlite_pool(&database, codex_state::SqlitePoolProfile::DurableEvents)
+            .await?;
+    let count = sqlx::query_scalar("SELECT COUNT(*) FROM repository_alias_events")
+        .fetch_one(&pool)
+        .await?;
+    pool.close().await;
+    Ok(count)
+}
+
+async fn repository_merge_count(codex_home: &Path) -> Result<i64> {
+    let database = codex_home.join("usage").join("usage.sqlite3");
+    let pool =
+        codex_state::open_sqlite_pool(&database, codex_state::SqlitePoolProfile::DurableEvents)
+            .await?;
+    let count = sqlx::query_scalar("SELECT COUNT(*) FROM repository_merge_events")
+        .fetch_one(&pool)
+        .await?;
+    pool.close().await;
+    Ok(count)
 }
 
 async fn raw_error(
