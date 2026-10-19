@@ -1,3 +1,36 @@
+# Dedicated Windows runners use an existing local build directory. Fail closed
+# when it is invalid rather than falling through to hosted-runner provisioning.
+if ($env:CODEX_WINDOWS_BUILD_ROOT) {
+    if ($env:CODEX_WINDOWS_BUILD_ROOT -match "[\r\n]") {
+        throw "CODEX_WINDOWS_BUILD_ROOT must be a single filesystem path."
+    }
+
+    $BuildRoot = Get-Item -LiteralPath $env:CODEX_WINDOWS_BUILD_ROOT -ErrorAction Stop
+    if ($BuildRoot.PSProvider.Name -ne 'FileSystem' -or -not $BuildRoot.PSIsContainer) {
+        throw "CODEX_WINDOWS_BUILD_ROOT must be an existing filesystem directory."
+    }
+    if ($BuildRoot.FullName -notmatch '^[A-Za-z]:\\.+') {
+        throw "CODEX_WINDOWS_BUILD_ROOT must be a directory below a local drive root."
+    }
+
+    $BuildVolume = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($BuildRoot.FullName))
+    if ($BuildVolume.DriveType -ne [System.IO.DriveType]::Fixed) {
+        throw "CODEX_WINDOWS_BUILD_ROOT must be on a fixed local volume."
+    }
+
+    for ($Parent = $BuildRoot; $null -ne $Parent; $Parent = $Parent.Parent) {
+        if ($Parent.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw "CODEX_WINDOWS_BUILD_ROOT must not traverse a reparse point."
+        }
+    }
+
+    # Forward slashes also work with the Git Bash steps that consume this value.
+    $BuildPath = $BuildRoot.FullName.Replace('\', '/')
+    "CI_BUILD_ROOT=$BuildPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    Write-Output "Using pre-provisioned Windows build directory at $BuildPath"
+    return
+}
+
 # Configure a fast drive for Windows CI jobs.
 #
 # GitHub-hosted Windows runners do not always expose a secondary D: volume. When
