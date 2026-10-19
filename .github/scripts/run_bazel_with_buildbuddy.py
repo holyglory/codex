@@ -299,7 +299,9 @@ def bazel_args_with_remote_config(
             arg.startswith("--extra_toolchains=")
             for arg in configured_args[:separator_idx]
         ):
-            fallback_args.append("--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows")
+            fallback_args.append(
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows"
+            )
         has_target_platform = False
         replaced_gnullvm_platform = False
         normalized_args = []
