@@ -107,7 +107,13 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(
                 ["test", "//codex-rs/..."], env
             ),
-            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+            [
+                "test",
+                "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
         )
         for args in (["query", "//codex-rs/..."], ["info", "bazel-testlogs"]):
             with self.subTest(args=args):
@@ -133,6 +139,8 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                             else ("--platforms", "//:windows_x86_64_msvc")
                         ),
                         "//codex-rs/...",
+                        "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                        "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
                     ],
                 )
 
@@ -141,7 +149,13 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ["test", "--config=ci-windows-cross", "//codex-rs/..."],
                 env,
             ),
-            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+            [
+                "test",
+                "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
         )
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(
@@ -152,6 +166,8 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "test",
                 "--config=ci-windows",
                 "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
                 "--platforms=//:windows_x86_64_msvc",
             ],
         )

@@ -289,6 +289,17 @@ def bazel_args_with_remote_config(
         )
     )
     if use_windows_msvc_fallback:
+        if not any(
+            arg == "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0"
+            or arg.startswith("--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=")
+            for arg in configured_args[:separator_idx]
+        ):
+            fallback_args.append("--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0")
+        if not any(
+            arg.startswith("--extra_toolchains=")
+            for arg in configured_args[:separator_idx]
+        ):
+            fallback_args.append("--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows")
         has_target_platform = False
         replaced_gnullvm_platform = False
         normalized_args = []
