@@ -477,7 +477,7 @@ async fn rebuild_hour(
 // deliberately separate from the 15-second user report budget: a production
 // sized historical page must have enough time to finish and commit, while the
 // worker still rolls back and resumes when SQLite interrupts it.
-const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(10);
+const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(60);
 const GLOBAL_SEED_PAGE_ROWS: i64 = 16_384;
 
 async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
