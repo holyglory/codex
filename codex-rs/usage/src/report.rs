@@ -134,6 +134,14 @@ impl UsageStore {
     ) -> Result<UsageSummary, UsageStoreError> {
         self.bounded_usage_summary(query).await
     }
+
+    /// Read a public unbounded summary only from a ready derived cache.
+    pub async fn usage_summary_query_strict(
+        &self,
+        query: UsageSummaryQuery,
+    ) -> Result<UsageSummary, UsageStoreError> {
+        self.bounded_usage_summary_strict(query).await
+    }
 }
 
 #[cfg(test)]

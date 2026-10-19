@@ -1,6 +1,7 @@
 //! Physical schema for the versioned global report component.
 
-pub(crate) const COMPONENT_VERSION: i64 = 2;
+pub(crate) const COMPONENT_VERSION: i64 = 3;
+pub(crate) const PREVIOUS_COMPONENT_VERSION: i64 = 2;
 
 pub(crate) const RESET_SQL: &str = r#"
 DROP TRIGGER IF EXISTS _usage_report_global_operation_insert;
@@ -28,6 +29,19 @@ DROP TABLE IF EXISTS _usage_report_global_operations;
 DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
 DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
 DROP TABLE IF EXISTS _usage_report_global_meta;
+DROP TABLE IF EXISTS _usage_report_global_seed;
+"#;
+
+/// Additive metadata used by the bounded source seeder.
+///
+/// This is kept separate from the derived projection schema so a v2 cache can
+/// receive it without dropping any already-applied queues or aggregates.
+pub(crate) const SEED_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS _usage_report_global_seed(
+ source TEXT PRIMARY KEY NOT NULL,
+ cursor INTEGER NOT NULL,
+ high_water INTEGER NOT NULL CHECK(high_water>=cursor)
+) STRICT;
 "#;
 
 pub(crate) const SCHEMA: &str = r#"
