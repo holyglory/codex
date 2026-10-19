@@ -127,7 +127,11 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ),
                     [
                         "test",
-                        *explicit,
+                        *(
+                            ("--platforms=//:windows_x86_64_msvc",)
+                            if explicit == ["--platforms=//:windows_x86_64_gnullvm"]
+                            else ("--platforms", "//:windows_x86_64_msvc")
+                        ),
                         "//codex-rs/...",
                     ],
                 )
@@ -137,7 +141,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ["test", "--config=ci-windows-cross", "//codex-rs/..."],
                 env,
             ),
-            ["test", "--config=ci-windows-cross", "//codex-rs/..."],
+            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
         )
 
         self.assertEqual(

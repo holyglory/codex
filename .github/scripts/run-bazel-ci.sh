@@ -256,9 +256,9 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Preserve the upstream gnullvm target and use the local MSVC host platform
-  # when authenticated RBE is unavailable. This keeps target and host ABIs
-  # separate while allowing Windows tests and generators to run locally.
+  # Use the native MSVC target and host when authenticated Linux RBE is
+  # unavailable. The wrapper strips ci-windows-cross and normalizes any
+  # explicit gnullvm target before invoking local Bazel.
   ci_config=ci-windows-cross
   windows_msvc_host_platform=1
 fi
