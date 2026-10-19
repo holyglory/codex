@@ -148,7 +148,12 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ["test", "--config=ci-windows", "//codex-rs/..."],
                 env,
             ),
-            ["test", "--config=ci-windows", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+            [
+                "test",
+                "--config=ci-windows",
+                "//codex-rs/...",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
         )
 
         self.assertEqual(
