@@ -274,14 +274,26 @@ def bazel_args_with_remote_config(
         else []
     )
     fallback_args = []
+    explicit_windows_gnullvm = any(
+        arg == "--platforms=//:windows_x86_64_gnullvm"
+        or (
+            arg == "--platforms"
+            and idx + 1 < separator_idx
+            and configured_args[idx + 1] == "//:windows_x86_64_gnullvm"
+        )
+        for idx, arg in enumerate(configured_args[:separator_idx])
+    )
     if (
         args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
         and env.get("RUNNER_OS") == "Windows"
         and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
         and not env.get("BUILDBUDDY_API_KEY")
-        and not any(
-            arg == "--platforms" or arg.startswith("--platforms=")
-            for arg in configured_args[:separator_idx]
+        and (
+            explicit_windows_gnullvm
+            or not any(
+                arg == "--platforms" or arg.startswith("--platforms=")
+                for arg in configured_args[:separator_idx]
+            )
         )
     ):
         fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
