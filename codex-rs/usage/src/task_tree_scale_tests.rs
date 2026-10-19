@@ -82,3 +82,63 @@ async fn large_task_tree_includes_all_descendants_and_agent_totals() {
         }
     );
 }
+
+#[tokio::test]
+async fn task_tree_summary_handles_more_than_sqlite_variable_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let (process, root, _, _, child_agent) = register_tree(&store).await;
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 32999)
+         INSERT INTO operations(
+             id, process_id, thread_id, agent_id, operation_kind, started_at_ms,
+             taxonomy_version, phase, activity, activity_state, attribution_provenance
+         )
+             SELECT printf('10000000-0000-4000-8000-%012x', i), ?, 'child-task', ?,
+                CASE WHEN i IN (32768, 32769) THEN 'local_tool' ELSE 'activity_control' END,
+                1000 + i, 1, 'implementation', 'coding',
+                'tool_active', 'agent_declared'
+         FROM n",
+    )
+    .bind(process.as_string())
+    .bind(child_agent.as_str())
+    .execute(&store.pool)
+    .await
+    .expect("bulk operations");
+    sqlx::query(
+        "INSERT INTO tool_invocations(
+             id, operation_id, operation_kind, tool_kind, safe_tool_name,
+             operation_family, observation_timing, covering_model_request_id,
+             execution_group_id, execution_role
+         ) VALUES
+             ('20000000-0000-4000-8000-000000008000', '10000000-0000-4000-8000-000000008000',
+              'local_tool', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+              '30000000-0000-4000-8000-000000000000', 'wrapper'),
+             ('20000000-0000-4000-8000-000000008001', '10000000-0000-4000-8000-000000008001',
+              'local_tool', 'builtin', 'exec', 'exec', 'dispatch', NULL,
+              '30000000-0000-4000-8000-000000000000', 'nested')",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("bulk tool invocations");
+
+    let summary = store
+        .task_tree_summary(TaskTreeSummaryQuery {
+            root_thread_id: root,
+            include_descendants: true,
+            time_range: UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 40_000).expect("range"),
+        })
+        .await
+        .expect("summary")
+        .expect("tree");
+    assert_eq!(summary.counts.threads, 2);
+    assert_eq!(summary.counts.agents, 1);
+    assert_eq!(summary.counts.raw_operations, 33_000);
+    assert_eq!(summary.counts.deduplicated_operations, 32_999);
+    assert_eq!(summary.counts.model_requests, 0);
+    assert_eq!(summary.counts.raw_tool_operations, 2);
+    assert_eq!(summary.counts.deduplicated_tool_operations, 1);
+    assert_eq!(summary.counts.wrapper_tool_operations, 1);
+    assert_eq!(summary.counts.nested_tool_operations, 1);
+    assert_eq!(summary.totals.operations, 32_999);
+}

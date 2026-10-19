@@ -18,19 +18,42 @@ from check_root_usage import Server
 MARKER = (
     "Disposable isolated accounting verification copy. Never a production collector.\n"
 )
+FIXTURE_SHAPE_VERSION = 2
 
 
-def native_probe(root, state, fixture, environment, test):
+def expected_shape(requests):
+    """Return deterministic lifetime-shape counts for the production fixture."""
+    if type(requests) is not int or requests <= 0:
+        raise ValueError("requests must be a positive integer")
+    return {
+        "open_operations": (requests + 510) // 511,
+        "wait_spans": (requests + 15) // 16,
+        "thread_count": 64,
+        "phase_activity_pairs": 4,
+        "token_facts": requests * 6 + 1,
+    }
+
+
+def native_probe(
+    root,
+    state,
+    fixture,
+    environment,
+    test,
+    package="codex-usage",
+    lib=True,
+    run_ignored="only",
+):
+    command = ["just", "test", "--locked", "-p", package]
+    if lib:
+        command.append("--lib")
+    else:
+        command.extend(["--test", "all"])
+    if run_ignored is not None:
+        command.extend(["--run-ignored", run_ignored])
     return subprocess.run(
-        [
-            "just",
-            "test",
-            "--locked",
-            "-p",
-            "codex-usage",
-            "--lib",
-            "--run-ignored",
-            "only",
+        command
+        + [
             "--success-output",
             "final",
             "--retries",
@@ -53,6 +76,12 @@ def scopes_for(fixture):
     if (fixture / "fixture-marker").read_text() != MARKER:
         raise ValueError("Unexpected usage fixture provenance")
     scopes = json.loads((fixture / "scope.json").read_text())
+    if scopes.get("fixture_shape_version") != FIXTURE_SHAPE_VERSION:
+        raise ValueError("Unsupported or legacy usage fixture shape")
+    shape = expected_shape(scopes["expected_all_operations"])
+    for key, expected in shape.items():
+        if scopes.get(f"expected_{key}") != expected:
+            raise ValueError(f"Invalid fixture shape count for {key}")
     rows = scopes["repositories"]
     if len(rows) != 8 or [row["name"] for row in rows] != [
         f"synthetic-{n}" for n in range(8)
@@ -63,11 +92,20 @@ def scopes_for(fixture):
         for row in rows
     ):
         raise ValueError("Usage windows must carry independently calculated totals")
+    if (
+        scopes.get("root_thread_id") != "scale-root"
+        or scopes.get("include_descendants") is not True
+        or scopes.get("expected_root_window_operations")
+        != sum(row["expected_operations"] for row in rows)
+        or scopes.get("expected_root_window_provider_tokens")
+        != sum(row["expected_provider_tokens"] for row in rows)
+    ):
+        raise ValueError("Missing root descendant finite-window expectations")
     return scopes
 
 
 def copy_warming(ready, warming):
-    scopes_for(ready)
+    scopes = scopes_for(ready)
     warming.mkdir(mode=0o700)
     (warming / "usage").mkdir(mode=0o700)
     with sqlite3.connect(
@@ -82,6 +120,26 @@ def copy_warming(ready, warming):
         ).fetchone()[0]
         if count < 1_300_000 or synthetic != count or observations < 7_800_000:
             raise ValueError("Missing production-shaped synthetic history")
+        open_operations = source.execute(
+            "SELECT COUNT(*) FROM operations AS operation WHERE NOT EXISTS "
+            "(SELECT 1 FROM operation_events AS event "
+            "WHERE event.operation_id = operation.id AND event.terminal = 1)"
+        ).fetchone()[0]
+        wait_spans = source.execute("SELECT COUNT(*) FROM activity_spans").fetchone()[0]
+        thread_count = source.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+        phase_activity_pairs = source.execute(
+            "SELECT COUNT(DISTINCT phase || ':' || activity) FROM operations"
+        ).fetchone()[0]
+        if (
+            open_operations != scopes["expected_open_operations"]
+            or wait_spans != scopes["expected_wait_spans"]
+            or thread_count != scopes["expected_thread_count"]
+            or phase_activity_pairs != scopes["expected_phase_activity_pairs"]
+            or observations != scopes["expected_token_facts"]
+        ):
+            raise ValueError(
+                "Generated fixture does not have the required lifetime shape"
+            )
         if source.execute("SELECT ready FROM _usage_report_cache_meta").fetchall() != [
             (1,)
         ]:
@@ -292,6 +350,19 @@ def check(root, state, binary):
         scale_environment,
         "accounting_scale_bounds_memory_refresh_and_wal",
     )
+    results = {
+        "scale": scale_status == 0,
+        "fixture_ready": (ready / "fixture-marker").is_file(),
+    }
+    if not results["fixture_ready"]:
+        report = {
+            "checks": results,
+            "unavailable_checks": "generated_history_not_ready",
+            "live_data_used": False,
+        }
+        (state / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report), flush=True)
+        return 1
     copy_warming(ready, warming)
     # Initialize before pinning the snapshot, then keep refresh incomplete for
     # both public and native windows rather than accidentally testing warm data.
@@ -302,7 +373,6 @@ def check(root, state, binary):
         stdout=subprocess.DEVNULL,
         timeout=180,
     )
-    results = {"scale": scale_status == 0}
     with sqlite3.connect(
         f"file:{warming}/usage/usage.sqlite3?mode=ro", uri=True
     ) as reader:
@@ -340,6 +410,19 @@ def check(root, state, binary):
                 )
             except (OSError, ValueError, KeyError):
                 results[f"{label}_native"] = False
+            results[f"{label}_native_finite_review"] = (
+                native_probe(
+                    root,
+                    state,
+                    fixture,
+                    environment,
+                    "agent_reads_finite_performance_review_with_descendants",
+                    package="codex-core",
+                    lib=False,
+                    run_ignored=None,
+                )
+                == 0
+            )
         reader.rollback()
     with sqlite3.connect(
         f"file:{warming}/usage/usage.sqlite3?mode=ro", uri=True
