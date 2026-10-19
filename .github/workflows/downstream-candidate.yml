@@ -315,7 +315,7 @@ jobs:
     # After focused regressions pass, compile alongside complete validation.
     # Publication still requires every validation and packaging job to succeed.
     needs: [identity, preflight]
-    if: ${{ !contains(matrix.target, 'windows') || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
+    if: ${{ !contains(matrix.target, 'windows') || github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
     permissions:

@@ -135,7 +135,7 @@ jobs:
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
     timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || 90 }}
-    if: ${{ github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
+    if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     strategy:
       fail-fast: false
       matrix:
@@ -236,7 +236,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: ${{ always() && (github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3') }}
+    if: ${{ always() && (github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3')) }}
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -351,7 +351,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
-    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
+    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
@@ -452,7 +452,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
-    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || github.head_ref != 'codex/release1621-candidate-v3' }}
+    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
