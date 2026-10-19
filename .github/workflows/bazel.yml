@@ -351,7 +351,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
-    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
+    if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
@@ -452,7 +452,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
-    if: ${{ matrix.os != 'windows-latest' || github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
+    if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
