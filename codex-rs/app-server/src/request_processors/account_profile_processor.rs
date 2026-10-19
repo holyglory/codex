@@ -556,7 +556,7 @@ fn api_profile(
         email: account
             .email
             .as_deref()
-            .map(|email| bounded_metadata(email, 512)),
+            .map(|email| bounded_metadata(email, /*max_chars*/ 512)),
         plan_type: account.plan_type.clone().map(Into::into),
         enabled: account.enabled,
         authenticated: is_authenticated(config, account)?,
@@ -567,7 +567,7 @@ fn api_profile(
         note: account
             .note
             .as_deref()
-            .map(|note| bounded_metadata(note, 1024)),
+            .map(|note| bounded_metadata(note, /*max_chars*/ 1024)),
         is_default: registry.default_account_id.as_ref() == Some(&account.id),
         is_active: active_account_id == Some(&account.id),
     })

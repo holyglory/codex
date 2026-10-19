@@ -55,7 +55,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::OpenProcessToken;
 
 pub(super) fn protect_directory(path: &Path) -> Result<(), PrivateStorageError> {
-    apply_current_user_dacl(path, true)
+    apply_current_user_dacl(path, /*directory*/ true)
 }
 
 pub(super) fn verify_directory(path: &Path) -> Result<(), PrivateStorageError> {
@@ -63,7 +63,7 @@ pub(super) fn verify_directory(path: &Path) -> Result<(), PrivateStorageError> {
 }
 
 pub(super) fn protect_file(path: &Path) -> Result<(), PrivateStorageError> {
-    apply_current_user_dacl(path, false)
+    apply_current_user_dacl(path, /*directory*/ false)
 }
 
 pub(super) fn verify_file(path: &Path) -> Result<(), PrivateStorageError> {

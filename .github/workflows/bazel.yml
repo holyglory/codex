@@ -60,6 +60,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
@@ -142,9 +143,7 @@ jobs:
           - 2
           - 3
           - 4
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-windows-x64
+    runs-on: ${{ github.repository_owner == 'openai' && fromJSON(format('{{"group":"{0}-runners","labels":"{0}-windows-x64"}}', github.event.repository.name)) || 'windows-2025' }}
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
     environment:
       name: bazel
@@ -169,6 +168,8 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
+          prepare-windows-voice: true
           target: x86_64-pc-windows-gnullvm
           # Reuse the former monolithic Windows test cache for restores. Do
           # not save it from every shard below; duplicate uploads would sit on
@@ -254,9 +255,7 @@ jobs:
     # it a larger timeout.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 40
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-windows-x64
+    runs-on: ${{ github.repository_owner == 'openai' && fromJSON(format('{{"group":"{0}-runners","labels":"{0}-windows-x64"}}', github.event.repository.name)) || 'windows-2025' }}
     name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
     environment:
       name: bazel
@@ -271,6 +270,8 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
+          prepare-windows-voice: true
           target: x86_64-pc-windows-msvc
           cache-scope: bazel-${{ github.job }}
 
@@ -348,7 +349,7 @@ jobs:
             runs_on:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
-    runs-on: ${{ matrix.runs_on || matrix.os }}
+    runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
@@ -363,6 +364,8 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
+          prepare-windows-voice: true
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
@@ -447,7 +450,7 @@ jobs:
             runs_on:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
-    runs-on: ${{ matrix.runs_on || matrix.os }}
+    runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
@@ -462,6 +465,8 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
+          prepare-windows-voice: true
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 

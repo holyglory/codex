@@ -57,7 +57,7 @@ async fn account_reset_recovers_lost_reply_without_consuming_another_credit() ->
             .and(header("chatgpt-account-id", "workspace-beta"))
             .respond_with(move |_: &wiremock::Request| {
                 let used = *pending.lock().unwrap();
-                let mut credits = vec![credit("never", None)];
+                let mut credits = vec![credit("never", /*expiry*/ None)];
                 if used == 0 {
                     credits.push(credit("soon", Some("2030-01-01T00:00:00Z")));
                 }
@@ -251,7 +251,7 @@ async fn account_reset_filters_invalid_credits_and_retains_backend_outcomes() ->
     Mock::given(method("GET"))
         .and(path("/api/codex/rate-limit-reset-credits"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "available_count":1, "credits":[credit("   ", None)]
+            "available_count":1, "credits":[credit("   ", /*expiry*/ None)]
         })))
         .mount(&server)
         .await;

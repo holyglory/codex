@@ -28,6 +28,72 @@ REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS = {
     "--experimental_remote_repo_contents_cache",
     "--noexperimental_remote_repo_contents_cache",
 }
+WINDOWS_MSVC_TARGET_PLATFORM = "--platforms=//:windows_x86_64_msvc"
+
+
+def windows_voice_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
+    """Return the verified voice inputs required by Windows Bazel analysis."""
+    if env.get("RUNNER_OS") != "Windows":
+        return []
+    values = {
+        "repository": env.get("VOICE_WINDOWS_BAZEL_REPOSITORY"),
+        "system_root": env.get("VOICE_WINDOWS_SYSTEM_ROOT"),
+        "host_architecture": env.get("VOICE_WINDOWS_HOST_ARCH"),
+    }
+    if not all(values.values()):
+        return []
+    try:
+        separator_idx = args.index("--")
+    except ValueError:
+        separator_idx = len(args)
+    configured_args = args[:separator_idx]
+    options = [
+        f"--inject_repository=voice_windows_tools={values['repository']}",
+        "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools",
+        f"--action_env=SystemRoot={values['system_root']}",
+        f"--host_action_env=SystemRoot={values['system_root']}",
+        f"--action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
+        f"--host_action_env=PROCESSOR_ARCHITECTURE={values['host_architecture']}",
+        "--workspace_status_command=./scripts/workspace-status.cmd",
+    ]
+    return [
+        option
+        for option in options
+        if not any(
+            existing == option
+            or (
+                option.startswith("--inject_repository=")
+                and existing.startswith("--inject_repository=voice_windows_tools=")
+            )
+            or (
+                option.startswith("--//third_party/voice:windows_installed_tools=")
+                and existing.startswith(
+                    "--//third_party/voice:windows_installed_tools="
+                )
+            )
+            or (
+                option.startswith("--action_env=SystemRoot=")
+                and existing.startswith("--action_env=SystemRoot=")
+            )
+            or (
+                option.startswith("--host_action_env=SystemRoot=")
+                and existing.startswith("--host_action_env=SystemRoot=")
+            )
+            or (
+                option.startswith("--action_env=PROCESSOR_ARCHITECTURE=")
+                and existing.startswith("--action_env=PROCESSOR_ARCHITECTURE=")
+            )
+            or (
+                option.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
+                and existing.startswith("--host_action_env=PROCESSOR_ARCHITECTURE=")
+            )
+            or (
+                option.startswith("--workspace_status_command=")
+                and existing.startswith("--workspace_status_command=")
+            )
+            for existing in configured_args
+        )
+    ]
 
 
 def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
@@ -50,6 +116,11 @@ def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
         arg.startswith("--output_user_root=") for arg in configured_startup_args
     ):
         injected_args.append(f"--output_user_root={output_user_root}")
+
+    if env.get("CODEX_BAZEL_BATCH") == "1" and not any(
+        arg in {"--batch", "--nobatch"} for arg in configured_startup_args
+    ):
+        injected_args.append("--batch")
 
     if env.get("GITHUB_ACTIONS") == "true" and not any(
         arg in REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS
@@ -175,6 +246,46 @@ def bazel_args_with_remote_config(
         )
     ]
     if (
+        env.get("GITHUB_ACTIONS") == "true"
+        and env.get("RUNNER_ENVIRONMENT") == "github-hosted"
+        and not any(
+            arg.startswith("--disk_cache=") for arg in configured_args[:separator_idx]
+        )
+    ):
+        # The unkeyed fallback skips the remote CI config, including its disk
+        # cache setting. Avoid duplicating all build outputs on ephemeral
+        # runners; preserve explicit bounded caches and repository downloads.
+        cache_args.append("--disk_cache=")
+    license_args = []
+    acknowledgement = "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA"
+    if (
+        env.get("RUNNER_OS") == "Windows"
+        and env.get(acknowledgement) == "1"
+        and not any(
+            arg == f"--repo_env={acknowledgement}"
+            or arg.startswith(f"--repo_env={acknowledgement}=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        license_args.append(f"--repo_env={acknowledgement}=1")
+    voice_args = (
+        windows_voice_args(configured_args, env)
+        if args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
+        else []
+    )
+    fallback_args = []
+    if (
+        args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
+        and env.get("RUNNER_OS") == "Windows"
+        and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
+        and not env.get("BUILDBUDDY_API_KEY")
+        and not any(
+            arg == "--platforms" or arg.startswith("--platforms=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
+    if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")
         and env.get("CODEX_BAZEL_REMOTE_CACHE_URL")
@@ -195,6 +306,9 @@ def bazel_args_with_remote_config(
     return [
         *configured_args[:separator_idx],
         *cache_args,
+        *license_args,
+        *voice_args,
+        *fallback_args,
         *configured_args[separator_idx:],
     ]
 

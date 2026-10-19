@@ -285,6 +285,121 @@ async fn alias_and_merge_evidence_is_append_only() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn repository_merge_waits_for_writer_and_preserves_concurrent_capture() {
+    use crate::Activity;
+    use crate::ActivityState;
+    use crate::AttributionProvenance;
+    use crate::NewOperation;
+    use crate::OperationId;
+    use crate::OperationKind;
+    use crate::Phase;
+    use crate::ProcessId;
+    use crate::ThreadId;
+    use sqlx::Connection;
+    use std::sync::Arc;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(UsageStore::open(temp.path()).await.expect("open store"));
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 42, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    sqlx::query(
+        "INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES ('merge-capture-thread',NULL,'test',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("thread");
+    let source = store
+        .resolve_repository(
+            &RepositoryIdentityInput::new(canonical("/merge-source")),
+            &label("merge-source"),
+            /*observed_at_ms*/ 1,
+        )
+        .await
+        .expect("source");
+    let target = store
+        .resolve_repository(
+            &RepositoryIdentityInput::new(canonical("/merge-target")),
+            &label("merge-target"),
+            /*observed_at_ms*/ 2,
+        )
+        .await
+        .expect("target");
+
+    let mut blocker = store.pool.acquire().await.expect("blocker connection");
+    let blocker_transaction = blocker
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .expect("block writer");
+    let merge_event_id = FactEventId::new();
+    let merge_store = Arc::clone(&store);
+    let merge_source = source.clone();
+    let merge_target = target.clone();
+    let merge = tokio::spawn(async move {
+        merge_store
+            .append_repository_merge(
+                merge_event_id,
+                &merge_source,
+                &merge_target,
+                /*occurred_at_ms*/ 3,
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !merge.is_finished(),
+        "merge must wait for the active writer"
+    );
+
+    blocker_transaction
+        .rollback()
+        .await
+        .expect("release writer");
+    let capture = NewOperation {
+        work_context: None,
+        id: OperationId::new(),
+        process_id,
+        thread_id: Some(ThreadId::new("merge-capture-thread").expect("thread id")),
+        turn_id: None,
+        agent_id: None,
+        parent_operation_id: None,
+        retry_of_operation_id: None,
+        rework_of_operation_id: None,
+        kind: OperationKind::LocalTool,
+        started_at_ms: 4,
+        phase: Phase::Implementation,
+        activity: Activity::Coding,
+        activity_state: ActivityState::ToolActive,
+        attribution_provenance: AttributionProvenance::AgentDeclared,
+    };
+    let (merge_result, capture_result) = tokio::join!(merge, store.begin_operation(&capture));
+    merge_result.expect("merge task").expect("append merge");
+    capture_result.expect("capture operation");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM repository_merge_events WHERE source_repository_id=? AND target_repository_id=?",
+        )
+        .bind(source.as_str())
+        .bind(target.as_str())
+        .fetch_one(&store.pool)
+        .await
+        .expect("merge history"),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM operations WHERE id=?")
+            .bind(capture.id.as_string())
+            .fetch_one(&store.pool)
+            .await
+            .expect("captured operation"),
+        1
+    );
+}
+
 #[test]
 fn canonical_paths_reject_relative_dot_url_and_separator_aliases() {
     for invalid in [

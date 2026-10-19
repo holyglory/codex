@@ -1,0 +1,45 @@
+--- a/build.rs
++++ b/build.rs
+@@ -76,6 +76,33 @@
+     }
+ }
+ 
++#[cfg(windows)]
++fn materialize_installed_headers(out_dir: &path::Path) {
++    // These are Opus_PUBLIC_HEADER in the pinned CMake project. CMake can
++    // preserve invalid Windows symlinks here, so copy from the crate's source
++    // tree instead of following the installed link target.
++    const PUBLIC_HEADERS: [&str; 5] = [
++        "opus.h",
++        "opus_defines.h",
++        "opus_multistream.h",
++        "opus_projection.h",
++        "opus_types.h",
++    ];
++    let source_dir = path::Path::new("opus").join("include");
++    let include_dir = out_dir.join("include").join("opus");
++    for name in PUBLIC_HEADERS {
++        let destination = include_dir.join(name);
++        let metadata = std::fs::symlink_metadata(&destination)
++            .expect("cannot inspect an opusic-sys installed Opus header");
++        if metadata.file_type().is_symlink() {
++            std::fs::remove_file(&destination)
++                .expect("cannot replace a symlinked opusic-sys installed Opus header");
++            std::fs::copy(source_dir.join(name), &destination)
++                .expect("cannot copy a pinned opusic-sys source Opus header");
++        }
++    }
++}
++
+ #[cfg(feature = "bundled")]
+ fn set_cmake_define_if_present(config: &mut cmake::Config, name: &str) {
+     if let Ok(value) = std::env::var(name) {
+@@ -235,6 +262,8 @@
+     }
+ 
+     let mut out_dir = cmake.build();
++    #[cfg(windows)]
++    materialize_installed_headers(&out_dir);
+ 
+     println!("cargo:rustc-link-lib=static=opus");
+ 

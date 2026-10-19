@@ -282,7 +282,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &root_agent,
         OperationKind::ModelRequest,
         ActivityState::ModelActive,
-        1_000,
+        /*started_at_ms*/ 1_000,
     );
     let request = record_model_request(&store, &model, Some((10, 20, 5))).await;
     let execution_group = ToolExecutionGroupId::from_stable_key(b"root-code-mode-execution");
@@ -292,7 +292,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &root_agent,
         OperationKind::LocalTool,
         ActivityState::ToolActive,
-        1_100,
+        /*started_at_ms*/ 1_100,
     );
     wrapper.parent_operation_id = Some(model.id);
     record_tool(
@@ -300,7 +300,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &wrapper,
         "builtin",
         "exec",
-        None,
+        /*covering_model_request_id*/ None,
         Some(execution_group),
         ToolExecutionRole::Wrapper,
     )
@@ -311,7 +311,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &root_agent,
         OperationKind::HostedTool,
         ActivityState::ToolActive,
-        1_200,
+        /*started_at_ms*/ 1_200,
     );
     nested.parent_operation_id = Some(model.id);
     let nested_tool = record_tool(
@@ -329,21 +329,42 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &store,
         TokenObservationSource::ModelRequest(request),
         provider_event,
-        100,
-        1_600,
+        /*count*/ 100,
+        /*observed_at_ms*/ 1_600,
     )
     .await;
     record_total_tokens(
         &store,
         TokenObservationSource::ToolInvocation(nested_tool),
         provider_event,
-        100,
-        1_600,
+        /*count*/ 100,
+        /*observed_at_ms*/ 1_600,
     )
     .await;
-    finish(&store, &nested, 1_500, TerminalStatus::Completed, None).await;
-    finish(&store, &wrapper, 1_900, TerminalStatus::Completed, None).await;
-    finish(&store, &model, 2_000, TerminalStatus::Completed, None).await;
+    finish(
+        &store,
+        &nested,
+        /*ended_at_ms*/ 1_500,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
+    finish(
+        &store,
+        &wrapper,
+        /*ended_at_ms*/ 1_900,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
+    finish(
+        &store,
+        &model,
+        /*ended_at_ms*/ 2_000,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
 
     let intentional_wait = operation(
         process_id,
@@ -351,24 +372,24 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &child_agent,
         OperationKind::LocalTool,
         ActivityState::ExternalWait,
-        2_100,
+        /*started_at_ms*/ 2_100,
     );
     record_tool(
         &store,
         &intentional_wait,
         "collaboration",
         "collaboration",
-        None,
-        None,
+        /*covering_model_request_id*/ None,
+        /*execution_group_id*/ None,
         ToolExecutionRole::Standalone,
     )
     .await;
     finish(
         &store,
         &intentional_wait,
-        2_500,
+        /*ended_at_ms*/ 2_500,
         TerminalStatus::TimedOut,
-        None,
+        /*error_category*/ None,
     )
     .await;
     let failed_wait = operation(
@@ -377,22 +398,22 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &child_agent,
         OperationKind::LocalTool,
         ActivityState::ExternalWait,
-        2_600,
+        /*started_at_ms*/ 2_600,
     );
     record_tool(
         &store,
         &failed_wait,
         "builtin",
         "utility",
-        None,
-        None,
+        /*covering_model_request_id*/ None,
+        /*execution_group_id*/ None,
         ToolExecutionRole::Standalone,
     )
     .await;
     finish(
         &store,
         &failed_wait,
-        2_800,
+        /*ended_at_ms*/ 2_800,
         TerminalStatus::TimedOut,
         Some(ErrorCategory::Timeout),
     )
@@ -404,7 +425,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &child_agent,
         OperationKind::ModelRequest,
         ActivityState::ModelActive,
-        3_000,
+        /*started_at_ms*/ 3_000,
     );
     rework_model.rework_of_operation_id = Some(model.id);
     let rework_request = record_model_request(&store, &rework_model, Some((3, 4, 5))).await;
@@ -412,8 +433,8 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &store,
         TokenObservationSource::ModelRequest(rework_request),
         FactEventId::new(),
-        40,
-        3_400,
+        /*count*/ 40,
+        /*observed_at_ms*/ 3_400,
     )
     .await;
     let mut rework_nested = operation(
@@ -422,7 +443,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &child_agent,
         OperationKind::LocalTool,
         ActivityState::ToolActive,
-        3_100,
+        /*started_at_ms*/ 3_100,
     );
     rework_nested.parent_operation_id = Some(rework_model.id);
     record_tool(
@@ -430,25 +451,25 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         &rework_nested,
         "shell",
         "shell",
-        None,
-        None,
+        /*covering_model_request_id*/ None,
+        /*execution_group_id*/ None,
         ToolExecutionRole::Nested,
     )
     .await;
     finish(
         &store,
         &rework_nested,
-        3_400,
+        /*ended_at_ms*/ 3_400,
         TerminalStatus::Completed,
-        None,
+        /*error_category*/ None,
     )
     .await;
     finish(
         &store,
         &rework_model,
-        3_500,
+        /*ended_at_ms*/ 3_500,
         TerminalStatus::Completed,
-        None,
+        /*error_category*/ None,
     )
     .await;
 
@@ -456,7 +477,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         .task_tree_summary(TaskTreeSummaryQuery {
             root_thread_id: root_thread.clone(),
             include_descendants: true,
-            time_range: UtcTimeRange::new(900, 4_000).expect("time range"),
+            time_range: UtcTimeRange::new(/*start_ms*/ 900, /*end_ms*/ 4_000).expect("time range"),
         })
         .await
         .expect("task tree summary")
@@ -483,7 +504,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         TaskTreeEffort {
             operations: 6,
             model_requests: 2,
-            provider_total_tokens: tokens(140),
+            provider_total_tokens: tokens(/*measured_tokens*/ 140),
             wall_time: duration(2_100 * NS_PER_MS),
         }
     );
@@ -495,7 +516,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
                 role: "worker".to_string(),
                 operations: 4,
                 model_requests: 1,
-                provider_total_tokens: tokens(40),
+                provider_total_tokens: tokens(/*measured_tokens*/ 40),
                 wall_time: duration(1_100 * NS_PER_MS),
             },
             TaskTreeAgentSummary {
@@ -503,7 +524,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
                 role: "root".to_string(),
                 operations: 2,
                 model_requests: 1,
-                provider_total_tokens: tokens(100),
+                provider_total_tokens: tokens(/*measured_tokens*/ 100),
                 wall_time: duration(1_000 * NS_PER_MS),
             },
         ]
@@ -511,11 +532,11 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
     assert_eq!(
         summary.waits,
         TaskTreeWaitSummary {
-            completed: outcome(0, 0),
-            intentional_expiry: outcome(1, 400 * NS_PER_MS),
-            failed: outcome(1, 200 * NS_PER_MS),
-            cancelled: outcome(0, 0),
-            unknown: outcome(0, 0),
+            completed: outcome(/*count*/ 0, /*measured_ns*/ 0),
+            intentional_expiry: outcome(/*count*/ 1, 400 * NS_PER_MS),
+            failed: outcome(/*count*/ 1, 200 * NS_PER_MS),
+            cancelled: outcome(/*count*/ 0, /*measured_ns*/ 0),
+            unknown: outcome(/*count*/ 0, /*measured_ns*/ 0),
         }
     );
     assert_eq!(
@@ -546,13 +567,13 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
             first_pass: TaskTreeEffort {
                 operations: 4,
                 model_requests: 1,
-                provider_total_tokens: tokens(100),
+                provider_total_tokens: tokens(/*measured_tokens*/ 100),
                 wall_time: duration(1_600 * NS_PER_MS),
             },
             post_integration_rework: TaskTreeEffort {
                 operations: 2,
                 model_requests: 1,
-                provider_total_tokens: tokens(40),
+                provider_total_tokens: tokens(/*measured_tokens*/ 40),
                 wall_time: duration(500 * NS_PER_MS),
             },
         }
@@ -583,7 +604,7 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
         .task_tree_summary(TaskTreeSummaryQuery {
             root_thread_id: root_thread,
             include_descendants: false,
-            time_range: UtcTimeRange::new(900, 4_000).expect("time range"),
+            time_range: UtcTimeRange::new(/*start_ms*/ 900, /*end_ms*/ 4_000).expect("time range"),
         })
         .await
         .expect("root-only summary")
@@ -591,13 +612,17 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
     assert_eq!(root_only.counts.threads, 1);
     assert_eq!(root_only.counts.raw_operations, 3);
     assert_eq!(root_only.counts.deduplicated_operations, 2);
-    assert_eq!(root_only.totals.provider_total_tokens, tokens(100));
+    assert_eq!(
+        root_only.totals.provider_total_tokens,
+        tokens(/*measured_tokens*/ 100)
+    );
 
     let windowed = store
         .task_tree_summary(TaskTreeSummaryQuery {
             root_thread_id: ThreadId::new("root-task").expect("root thread"),
             include_descendants: true,
-            time_range: UtcTimeRange::new(1_250, 1_750).expect("time range"),
+            time_range: UtcTimeRange::new(/*start_ms*/ 1_250, /*end_ms*/ 1_750)
+                .expect("time range"),
         })
         .await
         .expect("windowed summary")
@@ -607,9 +632,115 @@ async fn management_summary_deduplicates_and_preserves_factual_breakdowns() {
     assert_eq!(windowed.counts.raw_operations, 3);
     assert_eq!(windowed.counts.deduplicated_operations, 2);
     assert_eq!(windowed.totals.wall_time, duration(500 * NS_PER_MS));
-    assert_eq!(windowed.totals.provider_total_tokens, tokens(100));
+    assert_eq!(
+        windowed.totals.provider_total_tokens,
+        tokens(/*measured_tokens*/ 100)
+    );
     assert_eq!(windowed.context.observed_requests, 0);
     assert_eq!(windowed.context.unknown_requests, 1);
+}
+
+#[tokio::test]
+async fn task_tree_window_includes_lower_bound_point_and_excludes_upper_bound_point() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("open store");
+    let (process_id, root_thread, _, root_agent, _) = register_tree(&store).await;
+    for started_at_ms in [1_000, 2_000] {
+        let operation = operation(
+            process_id,
+            &root_thread,
+            &root_agent,
+            OperationKind::ActivityControl,
+            ActivityState::ToolActive,
+            started_at_ms,
+        );
+        store
+            .begin_operation(&operation)
+            .await
+            .expect("begin point operation");
+        finish(
+            &store,
+            &operation,
+            started_at_ms,
+            TerminalStatus::Completed,
+            /*error_category*/ None,
+        )
+        .await;
+    }
+
+    let summary = store
+        .task_tree_summary(TaskTreeSummaryQuery {
+            root_thread_id: root_thread,
+            include_descendants: true,
+            time_range: UtcTimeRange::new(/*start_ms*/ 1_000, /*end_ms*/ 2_000)
+                .expect("time range"),
+        })
+        .await
+        .expect("summary")
+        .expect("root exists");
+    assert_eq!(
+        summary.counts,
+        TaskTreeCounts {
+            threads: 2,
+            agents: 1,
+            raw_operations: 1,
+            deduplicated_operations: 1,
+            model_requests: 0,
+            raw_tool_operations: 0,
+            deduplicated_tool_operations: 0,
+            wrapper_tool_operations: 0,
+            nested_tool_operations: 0,
+            unlinked_wrapper_tool_operations: 0,
+            unlinked_nested_tool_operations: 0,
+        }
+    );
+    assert_eq!(summary.totals.wall_time, duration(0));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn task_tree_summary_waits_for_report_admission() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("open store");
+    let (process_id, root_thread, _, root_agent, _) = register_tree(&store).await;
+    let operation = operation(
+        process_id,
+        &root_thread,
+        &root_agent,
+        OperationKind::ActivityControl,
+        ActivityState::ToolActive,
+        /*started_at_ms*/ 1_000,
+    );
+    store
+        .begin_operation(&operation)
+        .await
+        .expect("begin operation");
+    finish(
+        &store,
+        &operation,
+        /*ended_at_ms*/ 1_100,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
+
+    let permit = store
+        .report_refresh
+        .reader
+        .acquire()
+        .await
+        .expect("hold report admission");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        store.task_tree_summary(TaskTreeSummaryQuery {
+            root_thread_id: root_thread,
+            include_descendants: true,
+            time_range: UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 2_000).expect("time range"),
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "summary bypassed report admission");
+    drop(permit);
 }
 
 #[cfg(unix)]
@@ -624,45 +755,66 @@ async fn missing_historical_measurements_remain_explicitly_unknown() {
         &root_agent,
         OperationKind::ActivityControl,
         ActivityState::ToolActive,
-        600,
+        /*started_at_ms*/ 600,
     );
     store
         .begin_operation(&original)
         .await
         .expect("begin original operation");
-    finish(&store, &original, 700, TerminalStatus::Completed, None).await;
+    finish(
+        &store,
+        &original,
+        /*ended_at_ms*/ 700,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
     let mut prior_rework = operation(
         process_id,
         &root_thread,
         &root_agent,
         OperationKind::ActivityControl,
         ActivityState::ToolActive,
-        750,
+        /*started_at_ms*/ 750,
     );
     prior_rework.rework_of_operation_id = Some(original.id);
     store
         .begin_operation(&prior_rework)
         .await
         .expect("begin prior rework");
-    finish(&store, &prior_rework, 800, TerminalStatus::Completed, None).await;
+    finish(
+        &store,
+        &prior_rework,
+        /*ended_at_ms*/ 800,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
     let mut model = operation(
         process_id,
         &root_thread,
         &root_agent,
         OperationKind::ModelRequest,
         ActivityState::ModelActive,
-        1_000,
+        /*started_at_ms*/ 1_000,
     );
     model.parent_operation_id = Some(prior_rework.id);
     model.retry_of_operation_id = Some(prior_rework.id);
-    record_model_request(&store, &model, None).await;
-    finish(&store, &model, 1_100, TerminalStatus::Completed, None).await;
+    record_model_request(&store, &model, /*context*/ None).await;
+    finish(
+        &store,
+        &model,
+        /*ended_at_ms*/ 1_100,
+        TerminalStatus::Completed,
+        /*error_category*/ None,
+    )
+    .await;
 
     let summary = store
         .task_tree_summary(TaskTreeSummaryQuery {
             root_thread_id: root_thread,
             include_descendants: false,
-            time_range: UtcTimeRange::new(900, 1_200).expect("time range"),
+            time_range: UtcTimeRange::new(/*start_ms*/ 900, /*end_ms*/ 1_200).expect("time range"),
         })
         .await
         .expect("summary")
@@ -711,7 +863,7 @@ async fn unknown_root_returns_no_summary() {
             .task_tree_summary(TaskTreeSummaryQuery {
                 root_thread_id: ThreadId::new("missing").expect("thread id"),
                 include_descendants: true,
-                time_range: UtcTimeRange::new(0, 1).expect("time range"),
+                time_range: UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 1).expect("time range"),
             })
             .await
             .expect("query"),

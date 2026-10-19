@@ -48,8 +48,8 @@ impl ToolExecutor<ToolInvocation> for AwaitWorkHandler {
             strict: false, defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
                 ("source".into(), JsonSchema::string(Some("Existing event publisher name.".into()))),
-                ("event_types".into(), JsonSchema::array(JsonSchema::string(None), Some("Meaningful completion/failure event kinds.".into()))),
-                ("labels".into(), JsonSchema::object(BTreeMap::new(), None, Some(JsonSchema::string(None).into()))),
+                ("event_types".into(), JsonSchema::array(JsonSchema::string(/*description*/ None), Some("Meaningful completion/failure event kinds.".into()))),
+                ("labels".into(), JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(JsonSchema::string(/*description*/ None).into()))),
                 ("after_sequence".into(), JsonSchema::number(Some("Last observed source sequence.".into()))),
                 ("deadline_at_ms".into(), JsonSchema::number(Some("Expected-event deadline as UTC Unix milliseconds.".into()))),
             ]), Some(vec!["source".into(),"event_types".into(),"deadline_at_ms".into()]), Some(false.into())), output_schema: None,

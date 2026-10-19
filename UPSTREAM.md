@@ -63,6 +63,12 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Refresh native dependency patches after lock updates.** Cargo can pass
+  while Bazel still applies a patch written for an older transitive crate.
+  Inspect the new crate source, drop changes already implemented upstream,
+  retain the remaining platform fix, and exercise Bazel repository loading.
+  For example, zstd-sys 2.1.2 already avoids the visibility flag for MSVC but
+  still needs the downstream MSVC header-search paths.
 - **Verify the toolchain before diagnosing compile failures.** Read
   `codex-rs/rust-toolchain.toml`, resolve the actual `rustc` and `cargo` selected
   by the shell, and compare them with the toolchain used by DevCoordinator's
@@ -296,6 +302,30 @@ the authority for release outcomes and verification receipts.
   dependencies when checks intentionally share the same isolated environment.
   A failing sandbox test remains unverified when skipped: fix its boundary or
   retain the explicit missing acceptance instead of reporting a successful test.
+- **Resolve runner groups before debugging hosted build failures.** Upstream
+  workflows can request organization-owned runner groups that the fork cannot
+  use. Inspect job annotations when no steps ran. Preserve upstream routing for
+  its owner and select approved GitHub-hosted runners for the fork, keeping the
+  test commands and required-check aggregation intact. Validate the actual fork
+  jobs; repeated retries cannot create a missing runner group.
+- **Keep required upstream checks in local release acceptance.** The broad
+  Bazel test command excludes the separate argument-comment aspect. Run that
+  aspect explicitly, including manual unit-test binaries, before freezing a
+  release. A passing Rust suite or Bazel test graph does not cover this lint.
+  Apply compiler-reported parameter names mechanically and verify that the
+  correction changes only comments, whitespace, and trailing commas.
+- **Inspect the cache settings of unauthenticated CI jobs.** Without a
+  BuildBuddy key, the wrapper omits remote CI configurations, including their
+  disabled disk cache. GitHub-hosted jobs must also disable the default local
+  action cache so large outputs are not duplicated on the ephemeral disk.
+  Preserve explicitly configured bounded caches and repository-download
+  caches; test the fallback without exposing credentials to pull requests.
+- **Honor batch mode for governed Bazel runs.** The local candidate requests
+  `CODEX_BAZEL_BATCH=1`; the Bazel wrapper must turn it into the startup option
+  `--batch`, preserving an explicit caller override. Otherwise an idle Java
+  server can keep the governed run alive after all test assertions finish.
+  Verify terminal run completion as well as test output. Batch mode retains
+  the configured persistent action and repository caches.
 - **Freeze all candidate inputs.** Even a workflow-only commit changes the
   candidate identity. Make remaining repairs in a separate checkout, integrate
   them after the accepted run finishes, and bind the next run to that commit.
@@ -408,7 +438,25 @@ the authority for release outcomes and verification receipts.
   model-list and message paths to fail even though each binary started alone.
   After switching releases, require `codex app-server daemon version` to report
   matching `cliVersion`, `managedCodexVersion`, and `appServerVersion`, and
-  stop unmanaged app-server processes before testing the Desktop protocol.
+  verify the control socket's peer executable and package hashes. Matching
+  versions do not prove that the process is managed. A schema-changing release
+  also needs a compatible recovery binary; an older package cannot reopen newer
+  migrations merely because its files were retained.
+- **Keep a restart independent of the app-server hosting the release task.**
+  Direct signals can terminate the agent's own connection before its installation
+  step runs, and Desktop can immediately relaunch the selected old package.
+  Use the supported handover or an explicitly authorized, independently governed
+  maintenance operation with exact process identity, verified online backups,
+  compatible recovery and a bounded terminal result. Reconcile the actual socket
+  owner after any failed bootstrap before another mutation. Preserve a correctly
+  serving candidate; do not restart it just to make an administrative status green.
+- **Use WebSocket framing for the shared Unix control endpoint.** The
+  `app-server proxy` command forwards transport bytes; it is not the stdio
+  app-server's newline-delimited JSON interface. Release probes must perform the
+  WebSocket handshake, initialize JSON-RPC, retain notifications received before
+  RPC responses, and close the client on failure. Measure skill listing and
+  reporting separately from model-turn startup. A verifier transport timeout is
+  not evidence that the serving binary failed to initialize.
 
 - **Verify usage reporting through its public boundary.** A warming response
   proves bounded behavior, not usable reporting. Exercise finite-window reviews
@@ -434,6 +482,17 @@ the authority for release outcomes and verification receipts.
   narrower window, increase the budget, or split admission lanes without evidence.
   Time unresolved coverage and classification work separately: a missing cost
   completion trace does not prove execution reached the cost query.
+- **Exercise long-lived task scopes in finite-window review fixtures.** A large
+  fixture spread across repositories did not expose a review that materialized
+  the task's lifetime operations before selecting a short interval. Measure the
+  complete public review and the selection stage with the bundled SQLite version;
+  the host Python can use a different query planner. Seek the observation and
+  interval indexes before looking up scoped owners, then materialize the selected
+  facts once. Removing a CTE materialization hint alone can let SQLite reorder
+  joins into lifetime scans, including token and coverage branches. Compare exact
+  selected identities in one read snapshot
+  and preserve late observations, open intervals and descendant scope in regression
+  coverage; matching counts alone is insufficient.
 - **Reuse ready projections when selecting report operations.** A global
   report copied and indexed 1.3 million cached rows before aggregating them;
   finite ready reports still joined raw terminal and classification history.

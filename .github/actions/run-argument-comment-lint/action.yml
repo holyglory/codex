@@ -5,6 +5,9 @@ inputs:
   target:
     description: Runner target passed to setup-bazel-ci.
     required: true
+  accept-msvc-runtime-license:
+    description: Explicit operator acknowledgement of the Visual Studio terms.
+    default: 'false'
   buildbuddy-api-key:
     description: BuildBuddy API key used by Bazel CI.
     required: false
@@ -16,6 +19,7 @@ runs:
     - uses: ./.github/actions/setup-bazel-ci
       with:
         target: ${{ inputs.target }}
+        accept-msvc-runtime-license: ${{ inputs.accept-msvc-runtime-license }}
 
     - name: Install Linux sandbox build dependencies
       if: ${{ runner.os == 'Linux' }}

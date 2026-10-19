@@ -59,12 +59,12 @@ async fn project_identity_resolution_renames_foreign_key_children() {
         .project_command(
             "project-workspace",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -110,7 +110,7 @@ async fn project_identity_resolution_renames_foreign_key_children() {
                     kind: ProjectIdentityKind::WorkspacePath,
                 }],
             },
-            200,
+            /*now_ms*/ 200,
         )
         .await
         .unwrap();
@@ -172,17 +172,22 @@ async fn project_identity_resolution_enrolls_new_canonical_with_workspace_alias(
 
     assert_eq!(
         store
-            .resolve_project_identity(&candidates, 100)
+            .resolve_project_identity(&candidates, /*now_ms*/ 100)
             .await
             .unwrap(),
         "project-git"
     );
     let project = store
-        .project_enroll_thread("project-git", owner, None, 101)
+        .project_enroll_thread(
+            "project-git",
+            owner,
+            /*parent_thread_id*/ None,
+            /*now_ms*/ 101,
+        )
         .await
         .unwrap();
     store
-        .register_project_identity_aliases(&candidates, "project-git", 101)
+        .register_project_identity_aliases(&candidates, "project-git", /*now_ms*/ 101)
         .await
         .unwrap();
 
@@ -219,7 +224,7 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
     };
     assert_eq!(
         store
-            .resolve_project_identity(&identities, 1)
+            .resolve_project_identity(&identities, /*now_ms*/ 1)
             .await
             .unwrap(),
         "project-git"
@@ -229,12 +234,12 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
         .project_command(
             "project-provisional",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: Some("review".into()),
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -246,11 +251,11 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
             ProjectAutomationCommand::RequestReview {
                 evidence_ref: "usage-operation:provisional".into(),
             },
-            101,
+            /*now_ms*/ 101,
         )
         .await
         .unwrap();
-    store.collect_due_heartbeats(500).await.unwrap();
+    store.collect_due_heartbeats(/*now_ms*/ 500).await.unwrap();
     let worker = ThreadId::new();
     let job_id = Uuid::now_v7();
     sqlx::query(
@@ -284,12 +289,12 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
         .project_command(
             "project-git",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: Some("review".into()),
             },
-            200,
+            /*now_ms*/ 200,
         )
         .await
         .unwrap();
@@ -301,12 +306,12 @@ async fn project_identity_resolution_merges_provisional_clock_and_keeps_one_subs
             ProjectAutomationCommand::RequestReview {
                 evidence_ref: "usage-operation:canonical".into(),
             },
-            201,
+            /*now_ms*/ 201,
         )
         .await
         .unwrap();
     let resolved = store
-        .resolve_project_identity(&identities, 300)
+        .resolve_project_identity(&identities, /*now_ms*/ 300)
         .await
         .unwrap();
     assert_eq!(resolved, "project-git");
@@ -373,12 +378,12 @@ async fn automatic_enrollment_inherits_concurrent_children_without_reopening_com
         .project_command(
             "inherited",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Implementation,
                 workstream: Some("delivery".into()),
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -393,15 +398,15 @@ async fn automatic_enrollment_inherits_concurrent_children_without_reopening_com
                 clear_outcome: false,
                 clear_experiment: false,
             },
-            101,
+            /*now_ms*/ 101,
         )
         .await
         .unwrap();
     let first = ThreadId::new();
     let second = ThreadId::new();
     let (first_result, second_result) = tokio::join!(
-        store.project_enroll_thread("inherited", first, Some(owner), 102),
-        store.project_enroll_thread("inherited", second, Some(owner), 102),
+        store.project_enroll_thread("inherited", first, Some(owner), /*now_ms*/ 102),
+        store.project_enroll_thread("inherited", second, Some(owner), /*now_ms*/ 102),
     );
     first_result.unwrap();
     second_result.unwrap();
@@ -427,20 +432,25 @@ async fn automatic_enrollment_inherits_concurrent_children_without_reopening_com
             ProjectAutomationCommand::Complete {
                 outcome_ref: "outcome".into(),
             },
-            103,
+            /*now_ms*/ 103,
         )
         .await
         .unwrap();
     assert_eq!(
         store
-            .project_enroll_thread("inherited", ThreadId::new(), Some(owner), 104)
+            .project_enroll_thread(
+                "inherited",
+                ThreadId::new(),
+                Some(owner),
+                /*now_ms*/ 104
+            )
             .await
             .unwrap(),
         completed
     );
     assert_eq!(
         store
-            .project_enroll_thread("inherited", first, Some(owner), 105)
+            .project_enroll_thread("inherited", first, Some(owner), /*now_ms*/ 105)
             .await
             .unwrap(),
         completed
@@ -456,12 +466,12 @@ async fn delivery_metadata_persists_without_a_project_local_scheduler() {
         .project_command(
             "project-alpha",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Implementation,
                 workstream: None,
             },
-            1_000_000,
+            /*now_ms*/ 1_000_000,
         )
         .await
         .unwrap();
@@ -477,14 +487,14 @@ async fn delivery_metadata_persists_without_a_project_local_scheduler() {
                 delivery_interval_ms: Some(1000),
                 hard_stop_interval_ms: Some(2000),
             },
-            1_000_000,
+            /*now_ms*/ 1_000_000,
         )
         .await
         .unwrap();
     assert_eq!(store.next_heartbeat_deadline().await.unwrap(), None);
     assert!(
         store
-            .collect_due_heartbeats(1_001_000)
+            .collect_due_heartbeats(/*now_ms*/ 1_001_000)
             .await
             .unwrap()
             .is_empty()
@@ -494,11 +504,14 @@ async fn delivery_metadata_persists_without_a_project_local_scheduler() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(persisted.mode(1_001_000), ProjectMode::DeliveryDue);
+    assert_eq!(
+        persisted.mode(/*now_ms*/ 1_001_000),
+        ProjectMode::DeliveryDue
+    );
     assert!(store.pending_wake(owner).await.unwrap().is_none());
     assert!(
         store
-            .collect_due_heartbeats(1_002_000)
+            .collect_due_heartbeats(/*now_ms*/ 1_002_000)
             .await
             .unwrap()
             .is_empty()
@@ -509,7 +522,7 @@ async fn delivery_metadata_persists_without_a_project_local_scheduler() {
             .await
             .unwrap()
             .unwrap()
-            .mode(1_002_000),
+            .mode(/*now_ms*/ 1_002_000),
         ProjectMode::RecoveryOnly
     );
     assert!(
@@ -519,7 +532,7 @@ async fn delivery_metadata_persists_without_a_project_local_scheduler() {
                 owner,
                 Some(project.revision - 1),
                 ProjectAutomationCommand::Resume { target: None },
-                1_002_000
+                /*now_ms*/ 1_002_000
             )
             .await
             .is_err()
@@ -534,16 +547,19 @@ async fn specification_has_no_delivery_or_project_local_scheduler() {
         .project_command(
             "spec",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Specification,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
-    store.project_activity("spec", owner, 101).await.unwrap();
+    store
+        .project_activity("spec", owner, /*now_ms*/ 101)
+        .await
+        .unwrap();
     assert!(
         store
             .collect_due_heartbeats(7 * 86_400_000)
@@ -560,7 +576,7 @@ async fn specification_has_no_delivery_or_project_local_scheduler() {
             .project_command(
                 "spec",
                 owner,
-                None,
+                /*expected_revision*/ None,
                 ProjectAutomationCommand::Pause {
                     target: None,
                     authorization_ref: "owner".into()
@@ -580,12 +596,12 @@ async fn delivery_metadata_survives_restart_without_local_project_jobs() {
         .project_command(
             "recover",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Implementation,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -601,15 +617,27 @@ async fn delivery_metadata_survives_restart_without_local_project_jobs() {
                 delivery_interval_ms: Some(1000),
                 hard_stop_interval_ms: Some(2000),
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
     store.restore_unfinished_project_jobs().await.unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
     store.restore_unfinished_project_jobs().await.unwrap();
-    assert!(store.collect_due_heartbeats(1300).await.unwrap().is_empty());
-    assert!(store.collect_due_heartbeats(2100).await.unwrap().is_empty());
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 1300)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 2100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     store
         .project_command(
             "recover",
@@ -621,12 +649,18 @@ async fn delivery_metadata_survives_restart_without_local_project_jobs() {
                 hard_stop_at_ms: 4100,
                 authorization_ref: "owner postponed".into(),
             },
-            2200,
+            /*now_ms*/ 2200,
         )
         .await
         .unwrap();
     assert!(store.pending_wake(owner).await.unwrap().is_none());
-    assert!(store.collect_due_heartbeats(2500).await.unwrap().is_empty());
+    assert!(
+        store
+            .collect_due_heartbeats(/*now_ms*/ 2500)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -648,7 +682,7 @@ async fn event_wait_returns_only_its_matching_subscription_and_cancels_cleanly()
                 source_cursor: None,
                 heartbeat: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -671,7 +705,7 @@ async fn event_wait_returns_only_its_matching_subscription_and_cancels_cleanly()
                 labels: BTreeMap::from([("run".into(), "other-run".into())]),
                 occurred_at_ms: 101,
             },
-            101,
+            /*now_ms*/ 101,
         )
         .await
         .unwrap();
@@ -689,7 +723,7 @@ async fn event_wait_returns_only_its_matching_subscription_and_cancels_cleanly()
                 labels: BTreeMap::from([("run".into(), "actual-run".into())]),
                 occurred_at_ms: 102,
             },
-            102,
+            /*now_ms*/ 102,
         )
         .await
         .unwrap();
@@ -728,7 +762,7 @@ async fn event_wait_replays_completion_between_status_read_and_subscription() {
                 labels: BTreeMap::new(),
                 occurred_at_ms: 102,
             },
-            102,
+            /*now_ms*/ 102,
         )
         .await
         .unwrap();
@@ -747,12 +781,12 @@ async fn event_wait_replays_completion_between_status_read_and_subscription() {
                 }),
                 heartbeat: None,
             },
-            103,
+            /*now_ms*/ 103,
         )
         .await
         .unwrap();
     store
-        .replay_subscription_events(subscription.id, 103)
+        .replay_subscription_events(subscription.id, /*now_ms*/ 103)
         .await
         .unwrap();
     let result = store
@@ -771,12 +805,12 @@ async fn deleting_owner_preserves_deadlines_and_pauses_or_transfers() {
         .project_command(
             "owned",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -795,17 +829,17 @@ async fn review_worker_claim_is_idempotent_and_does_not_review_itself() {
         .project_command(
             "reviewed",
             owner,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
     store
-        .project_activity("reviewed", owner, 101)
+        .project_activity("reviewed", owner, /*now_ms*/ 101)
         .await
         .unwrap();
     let project = store
@@ -816,7 +850,7 @@ async fn review_worker_claim_is_idempotent_and_does_not_review_itself() {
             ProjectAutomationCommand::RequestReview {
                 evidence_ref: "usage-operation:measured".into(),
             },
-            200,
+            /*now_ms*/ 200,
         )
         .await
         .unwrap();
@@ -824,21 +858,26 @@ async fn review_worker_claim_is_idempotent_and_does_not_review_itself() {
     let worker = ThreadId::new();
     assert_eq!(
         store
-            .claim_project_review_worker("reviewed", job.id, worker, 200)
+            .claim_project_review_worker("reviewed", job.id, worker, /*now_ms*/ 200)
             .await
             .unwrap(),
         Some(worker)
     );
     assert_eq!(
         store
-            .claim_project_review_worker("reviewed", job.id, ThreadId::new(), 201)
+            .claim_project_review_worker("reviewed", job.id, ThreadId::new(), /*now_ms*/ 201)
             .await
             .unwrap(),
         Some(worker)
     );
     assert_eq!(
         store
-            .claim_project_review_worker("reviewed", Uuid::now_v7(), ThreadId::new(), 201)
+            .claim_project_review_worker(
+                "reviewed",
+                Uuid::now_v7(),
+                ThreadId::new(),
+                /*now_ms*/ 201
+            )
             .await
             .unwrap(),
         None
@@ -847,17 +886,17 @@ async fn review_worker_claim_is_idempotent_and_does_not_review_itself() {
         .project_command(
             "reviewed",
             worker,
-            None,
+            /*expected_revision*/ None,
             ProjectAutomationCommand::Bind {
                 purpose: WorkPurpose::Analysis,
                 workstream: None,
             },
-            202,
+            /*now_ms*/ 202,
         )
         .await
         .unwrap();
     store
-        .project_activity("reviewed", worker, 203)
+        .project_activity("reviewed", worker, /*now_ms*/ 203)
         .await
         .unwrap();
     let current = store.project_status("reviewed").await.unwrap().unwrap();
@@ -889,7 +928,7 @@ async fn source_attention_preserves_cursor_and_cannot_replace_real_completion() 
                 }),
                 heartbeat: None,
             },
-            100,
+            /*now_ms*/ 100,
         )
         .await
         .unwrap();
@@ -906,7 +945,7 @@ async fn source_attention_preserves_cursor_and_cannot_replace_real_completion() 
                 labels: BTreeMap::new(),
                 occurred_at_ms: 101,
             },
-            101,
+            /*now_ms*/ 101,
         )
         .await
         .unwrap();
@@ -933,7 +972,7 @@ async fn source_attention_preserves_cursor_and_cannot_replace_real_completion() 
                 labels: BTreeMap::new(),
                 occurred_at_ms: 102,
             },
-            102,
+            /*now_ms*/ 102,
         )
         .await
         .unwrap();
@@ -950,7 +989,7 @@ async fn source_attention_preserves_cursor_and_cannot_replace_real_completion() 
                 labels: BTreeMap::new(),
                 occurred_at_ms: 103,
             },
-            103,
+            /*now_ms*/ 103,
         )
         .await
         .unwrap();

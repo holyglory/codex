@@ -237,7 +237,7 @@ impl crate::CodexThread {
                 options,
                 /*trace*/ None,
                 turn_id,
-                None,
+                /*turn_extension_init*/ None,
             )
             .await
     }

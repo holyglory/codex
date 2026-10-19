@@ -124,7 +124,11 @@ impl UsageRuntime {
                 }
                 Err(error) => {
                     let retry = record.increment_replay_failures();
-                    self.latch_write_failure("pending_usage_replay", None, error);
+                    self.latch_write_failure(
+                        "pending_usage_replay",
+                        /*operation_id*/ None,
+                        error,
+                    );
                     tracing::warn!(retry, "usage accounting retry failed; work will continue");
                     break;
                 }

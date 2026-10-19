@@ -846,7 +846,9 @@ impl ToolRegistry {
             Err(err) => {
                 dispatch_trace.record_failed(&err);
                 let cancelled = invocation.cancellation_token.is_cancelled();
-                usage_attempt.finish_error(cancelled, None).await;
+                usage_attempt
+                    .finish_error(cancelled, /*typed_outcome*/ None)
+                    .await;
                 Err(err)
             }
         }

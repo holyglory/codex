@@ -177,6 +177,7 @@ jobs:
       - name: Set up Bazel
         uses: ./.github/actions/setup-bazel-ci
         with:
+          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
           target: ${{ matrix.target }}
 
       - name: Set up Python

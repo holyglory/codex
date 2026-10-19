@@ -503,7 +503,7 @@ impl UsageRuntime {
             .get_or_try_init(|| async {
                 let store =
                     Arc::new(UsageStore::open(&self.codex_home).await.map_err(|error| {
-                        self.latch_write_failure("store_open", None, error);
+                        self.latch_write_failure("store_open", /*operation_id*/ None, error);
                         unavailable()
                     })?);
                 store
@@ -514,7 +514,11 @@ impl UsageRuntime {
                     )
                     .await
                     .map_err(|error| {
-                        self.latch_write_failure("process_registration", None, error);
+                        self.latch_write_failure(
+                            "process_registration",
+                            /*operation_id*/ None,
+                            error,
+                        );
                         unavailable()
                     })?;
                 Ok(store)
@@ -584,7 +588,7 @@ impl UsageRuntime {
         result: Result<T, codex_usage::UsageStoreError>,
     ) -> Result<T, CodexErr> {
         result.map_err(|error| {
-            self.latch_write_failure("required_write", None, error);
+            self.latch_write_failure("required_write", /*operation_id*/ None, error);
             unavailable()
         })
     }

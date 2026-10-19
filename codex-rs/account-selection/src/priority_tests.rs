@@ -229,7 +229,7 @@ fn credit_fallback_returns_to_included_usage_and_never_overrides_service_denials
         select_account(
             &registry,
             &cache,
-            request(Some(&credit.id), None, &authenticated)
+            request(Some(&credit.id), /*pinned*/ None, &authenticated)
         )
         .unwrap()
         .account_id,
@@ -243,7 +243,7 @@ fn credit_fallback_returns_to_included_usage_and_never_overrides_service_denials
             select_account(
                 &registry,
                 &cache,
-                request(Some(&credit.id), None, &authenticated)
+                request(Some(&credit.id), /*pinned*/ None, &authenticated)
             )
             .unwrap()
             .account_id,
@@ -274,7 +274,7 @@ fn credit_fallback_returns_to_included_usage_and_never_overrides_service_denials
             select_account(
                 &registry,
                 &cache,
-                request(Some(&credit.id), None, &authenticated)
+                request(Some(&credit.id), /*pinned*/ None, &authenticated)
             )
             .unwrap()
             .account_id,
@@ -299,7 +299,7 @@ fn credit_fallback_returns_to_included_usage_and_never_overrides_service_denials
         select_account(
             &registry,
             &cache,
-            request(Some(&credit.id), None, &authenticated)
+            request(Some(&credit.id), /*pinned*/ None, &authenticated)
         )
         .unwrap()
         .account_id,
@@ -353,7 +353,8 @@ fn automatic_credit_capacity_requires_fresh_permission_and_available_credits() {
             .unwrap();
         assert_eq!(
             cache.automatic_capacity(
-                &profile, None, /*now*/ 1100, /*max_age_seconds*/ 300
+                &profile, /*relevant_limit_id*/ None, /*now*/ 1100,
+                /*max_age_seconds*/ 300
             ),
             expected
         );

@@ -22,7 +22,11 @@ fn reset_uses_main_codex_and_prioritizes_exhausted_then_used_windows() {
         (0.0, 0.0, "codex.primary", 200),
     ] {
         let snapshots = [
-            quota("codex_bengalfox", 0.0, 0.0),
+            quota(
+                "codex_bengalfox",
+                /*primary*/ 0.0,
+                /*secondary*/ 0.0,
+            ),
             quota("codex", primary, secondary),
         ];
         assert_eq!(
@@ -34,13 +38,17 @@ fn reset_uses_main_codex_and_prioritizes_exhausted_then_used_windows() {
 
 #[test]
 fn missing_main_quota_or_blocked_reset_stays_unknown() {
-    let spark = quota("codex_bengalfox", 0.0, 0.0);
+    let spark = quota(
+        "codex_bengalfox",
+        /*primary*/ 0.0,
+        /*secondary*/ 0.0,
+    );
     assert_eq!(
         next_codex_limit_reset(std::slice::from_ref(&spark), /*observed_at*/ 100),
         None
     );
     for reset in [None, Some(99), Some(100)] {
-        let mut codex = quota("codex", 10.0, 100.0);
+        let mut codex = quota("codex", /*primary*/ 10.0, /*secondary*/ 100.0);
         codex.secondary.as_mut().unwrap().resets_at = reset;
         assert_eq!(
             next_codex_limit_reset(&[spark.clone(), codex], /*observed_at*/ 100),
@@ -51,7 +59,7 @@ fn missing_main_quota_or_blocked_reset_stays_unknown() {
 
 #[test]
 fn individual_exhaustion_uses_its_own_reset() {
-    let mut codex = quota("codex", 42.0, 61.0);
+    let mut codex = quota("codex", /*primary*/ 42.0, /*secondary*/ 61.0);
     codex.individual_limit = Some(
         serde_json::from_value(json!({
             "limit": "25000", "used": "25000", "remaining_percent": 0, "resets_at": 800
