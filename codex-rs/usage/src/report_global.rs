@@ -473,8 +473,12 @@ async fn rebuild_hour(
     Ok(())
 }
 
-const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(1);
-const GLOBAL_SEED_PAGE_ROWS: i64 = 1_024;
+// These limits apply to the background derived-cache worker. They are
+// deliberately separate from the 15-second user report budget: a production
+// sized historical page must have enough time to finish and commit, while the
+// worker still rolls back and resumes when SQLite interrupts it.
+const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(10);
+const GLOBAL_SEED_PAGE_ROWS: i64 = 16_384;
 
 async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
@@ -581,7 +585,7 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if core_ready == 0 {
         return Ok(false);
     }
-    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 256")
+    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 8_192")
         .execute(&mut *tx).await?;
     let dirty_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _usage_global_dirty_batch")
         .fetch_one(&mut *tx)
