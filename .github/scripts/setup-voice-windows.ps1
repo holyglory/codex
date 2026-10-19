@@ -1,7 +1,8 @@
 # CI-only prerequisites. Never install these tools into a Codex package.
 param(
     [Parameter(Mandatory = $true)][string]$Target,
-    [Parameter(Mandatory = $true)][string]$SnapshotArchive
+    [Parameter(Mandatory = $true)][string]$SnapshotArchive,
+    [string]$PkgconfImage = $env:VOICE_PKGCONF_IMAGE
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,22 +67,39 @@ Get-ChildItem $Cache -File -Recurse | ForEach-Object {
        sha512 = (Get-FileHash $_.FullName -Algorithm SHA512).Hash.ToLowerInvariant() }
 } | ConvertTo-Json | Set-Content (Join-Path $Evidence "package-cache.json")
 
+# Service runners can use an administrator-provisioned, checksum-pinned image.
+# An explicit image takes precedence. Managed build roots may also provide the
+# conventional x64 image; hosted runners retain MSI extraction below.
+if (-not $PkgconfImage -and $env:CODEX_WINDOWS_BUILD_ROOT -and $Target -eq 'x86_64-pc-windows-msvc') {
+    $ProvisionedImage = Join-Path $env:CODEX_WINDOWS_BUILD_ROOT 'provisioned/pkgconf/3.0.6-x64/native'
+    if (Test-Path -LiteralPath $ProvisionedImage) { $PkgconfImage = $ProvisionedImage }
+}
 # Administrative extraction uses TARGETDIR, not a normal MSI installation:
 # no product registration or system PATH modification. Fail rather than fall
 # back to an ambient executable or ordinary installer if the payload is absent.
 $Image = Join-Path $Root "pkgconf-image"
-$Extract = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
-    "/a", "`"$(Join-Path $Root 'pkgconf.msi')`"", "/qn", "/norestart",
-    "TARGETDIR=`"$Image`"", "/L*v", "`"$(Join-Path $Evidence 'pkgconf-extract.log')`""
-)
-if ($Extract.ExitCode -ne 0) { throw "pkgconf extraction failed: $($Extract.ExitCode)" }
-$Candidates = @(Get-ChildItem $Image -Filter pkgconf.exe -File -Recurse)
-if ($Candidates.Count -ne 1) { throw "Expected exactly one native pkgconf executable" }
-# Bazel shell-quotes execpaths containing spaces; Cargo executes PKG_CONFIG
-# directly. Keep the executable and its support files at a space-free execpath.
 $Native = Join-Path $Image "native"
-if (Test-Path $Native) { throw "Native pkgconf destination must be fresh" }
-Move-Item -LiteralPath $Candidates[0].Directory.FullName -Destination $Native
+if ($PkgconfImage) {
+    & (Join-Path $PSScriptRoot 'copy-pinned-pkgconf.ps1') -Target $Target -Source $PkgconfImage -Destination $Native
+    @{ mode = 'pre-extracted'; source = $PkgconfImage; msi_sha256 = $PkgHashes[$Target][1] } |
+        ConvertTo-Json | Set-Content (Join-Path $Evidence 'pkgconf-image.json')
+} else {
+    $Extract = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+        "/a", "`"$(Join-Path $Root 'pkgconf.msi')`"", "/qn", "/norestart",
+        "TARGETDIR=`"$Image`"", "/L*v", "`"$(Join-Path $Evidence 'pkgconf-extract.log')`""
+    )
+    if ($Extract.ExitCode -ne 0) { throw "pkgconf extraction failed: $($Extract.ExitCode)" }
+    $Candidates = @(Get-ChildItem $Image -Filter pkgconf.exe -File -Recurse)
+    if ($Candidates.Count -ne 1) { throw "Expected exactly one native pkgconf executable" }
+    # Bazel shell-quotes execpaths containing spaces; Cargo executes PKG_CONFIG
+    # directly. Keep the executable and its support files at a space-free execpath.
+    if (Test-Path $Native) { throw "Native pkgconf destination must be fresh" }
+    $ImagePrefix = [IO.Path]::GetFullPath($Image).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $Candidates[0].Directory.FullName.StartsWith($ImagePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Extracted pkgconf payload must be inside its administrative image.'
+    }
+    Move-Item -LiteralPath $Candidates[0].Directory.FullName -Destination $Native
+}
 $PkgConfig = Join-Path $Native "pkgconf.exe"
 $Version = & $PkgConfig --version
 if ($LASTEXITCODE -ne 0 -or $Version -ne "3.0.6") { throw "Unexpected native pkgconf version" }
