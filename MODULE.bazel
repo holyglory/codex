@@ -288,9 +288,17 @@ nightly_rust.repository_set(
 )
 use_repo(nightly_rust, "rust_toolchains")
 
+# Match Cargo's MSVC static CRT policy for target and host dependencies.
+MSVC_RUSTC_FLAGS = {
+    "aarch64-pc-windows-msvc": ["-Ctarget-feature=+crt-static"],
+    "x86_64-pc-windows-msvc": ["-Ctarget-feature=+crt-static"],
+}
+
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
+    extra_exec_rustc_flags = MSVC_RUSTC_FLAGS,
+    extra_rustc_flags = MSVC_RUSTC_FLAGS,
     version = "1.95.0",
 )
 use_repo(toolchains, "default_rust_toolchains")
