@@ -342,6 +342,17 @@ the authority for release outcomes and verification receipts.
   action cache so large outputs are not duplicated on the ephemeral disk.
   Preserve explicitly configured bounded caches and repository-download
   caches; test the fallback without exposing credentials to pull requests.
+- **Keep Windows target and execution toolchains separate.** Upstream
+  `rust-v0.162.1` intentionally builds `x86_64-pc-windows-gnullvm` with a
+  Linux LLVM/MinGW execution toolchain and an MSVC Windows test host. A fork
+  job without BuildBuddy cannot run that Linux compiler locally: retaining
+  `ci-windows-cross` produces Win32 error 193. A native fallback must retain
+  `ci-windows`, select the MSVC target and host, and build `aws-lc`/`ring`
+  archives with the same MSVC ABI. Check the actual compiler executable and
+  archive symbols in hosted logs; wrapper argument tests and a successful
+  setup step do not prove ABI consistency. Keep this distinction when
+  rebasing, because MinGW is upstream build infrastructure rather than a
+  downstream runtime dependency.
 - **Honor batch mode for governed Bazel runs.** The local candidate requests
   `CODEX_BAZEL_BATCH=1`; the Bazel wrapper must turn it into the startup option
   `--batch`, preserving an explicit caller override. Otherwise an idle Java
