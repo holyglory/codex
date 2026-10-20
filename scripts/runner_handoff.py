@@ -19,7 +19,7 @@ from pathlib import Path
 import tarfile
 from typing import Iterable
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 
 SCHEMA = 1
@@ -201,8 +201,24 @@ def _download_artifact(artifact: dict, destination: Path) -> None:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(artifact["url"], headers=headers)
+
+    class _GithubRedirectHandler(HTTPRedirectHandler):
+        def redirect_request(self, request, new_url, code, msg, headers, content=None):
+            redirected = super().redirect_request(
+                request, new_url, code, msg, headers, content
+            )
+            if redirected and redirected.headers.get("Authorization"):
+                hostname = (urlparse(new_url).hostname or "").lower()
+                if hostname == "github.com" or hostname.endswith("githubusercontent.com"):
+                    redirected.add_unredirected_header(
+                        "Authorization", redirected.headers["Authorization"]
+                    )
+            return redirected
+
+    opener = build_opener(_GithubRedirectHandler()) if token else None
     try:
-        with urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+        response_stream = opener.open(request, timeout=120) if opener else urlopen(request, timeout=120)
+        with response_stream as response, temporary.open("wb") as output:
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
                 if size > expected_size:
