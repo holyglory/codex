@@ -332,6 +332,7 @@ impl UsageStore {
             "CREATE INDEX IF NOT EXISTS coverage_events_observed_owner_idx ON coverage_events(occurred_at_ms, operation_id)",
             "CREATE INDEX IF NOT EXISTS operation_events_terminal_observed_idx ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1",
             "CREATE INDEX IF NOT EXISTS operations_started_id_idx ON operations(started_at_ms, id)",
+            "CREATE INDEX IF NOT EXISTS classification_events_operation_time_idx ON classification_events(operation_id, occurred_at_ms, event_id)",
         ] {
             sqlx::query(index)
                 .execute(&pool)
