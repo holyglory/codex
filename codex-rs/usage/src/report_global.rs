@@ -647,7 +647,11 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
-    let hour_page_rows = if cfg!(test) { 1 } else { 8 };
+    let hour_page_rows = if cfg!(test) && std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_none() {
+        1
+    } else {
+        8
+    };
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
