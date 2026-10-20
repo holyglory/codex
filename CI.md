@@ -16,12 +16,19 @@ checksums and attestations must all identify the frozen source being released.
 4. Run `scripts/local_candidate.py check` in the isolated local environment
    described below. Local helpers, formatting, packaging prerequisites, focused
    tests, generated schema drift, Bazel lock and actual Bazel socket/migration
-   fixture checks must pass first. Then full
-   Clippy/Rust tests/Linux packaging and full Bazel validation run as separate
-   sequences. An ordinary failure does not cancel the other sequence.
-5. Dispatch one complete candidate run with the successful local receipt. Its identity/helper checks and focused
-   preflight must succeed before full Rust, full Bazel and six native builds begin.
-   Those expensive jobs then run in parallel. All are still required for npm.
+   fixture checks must pass first. Then full Clippy/Rust tests/Linux packaging
+   and full Bazel validation run locally as separate sequences. An ordinary
+   failure does not cancel the other sequence.
+5. Produce the Linux package bundle on the VPS and the Windows package bundle
+   on the private controller. `scripts/prepare_runner_handoff.py` uploads both
+   bundles to a draft `codex-runner-handoff-<commit>` release and writes the
+   commit-bound manifests. Dispatch `downstream-candidate` with the local
+   acceptance receipt and both manifests. The workflow verifies and imports
+   those bundles, builds only macOS and the unavoidable ARM64 Linux
+   publication artifact on GitHub, then stages npm from the complete
+   six-target set. Missing manifests, changed commits, untrusted hosts,
+   size/digest mismatches, or missing target directories fail before npm
+   staging.
 
 The preflight currently covers saved-task recovery, bounded command-output capture,
 and the dependent TUI turn
@@ -92,22 +99,30 @@ ordinary failure. Linux packaging creates stripped CLI/app-server gzip and zstd
 packages, a shared symbols archive and checksums, and smoke-tests both formats.
 No installation or publication is performed.
 
-After pushing the frozen commit to its candidate branch:
+After pushing the frozen commit to its candidate branch and completing the
+private Windows run:
 
 ```sh
 python3 scripts/local_candidate.py dispatch \
   --receipt /mnt/build-storage/codex/state/local-first/accept-EXACT/receipt.json \
-  --branch codex/EXACT-CANDIDATE-BRANCH
+  --branch codex/EXACT-CANDIDATE-BRANCH \
+  --linux-handoff /mnt/build-storage/codex/state/handoff/linux-handoff-SHA.json \
+  --windows-handoff /mnt/build-storage/codex/state/handoff/windows-handoff-SHA.json
 ```
 
 Dispatch rejects incomplete/failed receipts, changed logs, dirty source, a remote
-SHA mismatch and an active candidate on that branch. The hosted identity job also
-rejects missing or wrong-commit receipts before expensive jobs start. This is an
-owner-operated workflow gate, not a cryptographic attestation that local tests
-ran: all existing hosted verification, artifact provenance and publication gates
-remain required. Local Linux success does not establish macOS or Windows behavior.
-Those platforms and ARM builds continue using the existing GitHub-hosted runners;
-no additional machines, self-hosted runners or runner credentials are configured.
+SHA mismatch, missing handoff manifests, and an active candidate on that branch.
+The hosted identity job verifies both manifests before importing any archive.
+The handoff helper accepts only HTTPS GitHub release assets, checks the declared
+byte count and SHA-256 digest, rejects unsafe archive paths, and requires the
+exact candidate commit. The draft release is an owner-operated transport
+boundary; it is not a product release and must be retained with the candidate
+evidence until npm publication succeeds.
+
+The VPS currently has no aarch64 musl toolchain, so GitHub builds the ARM64
+Linux package as a publication-only artifact. It does not run the Linux test or
+validation graph. The private Windows controller owns both Windows target
+builds and tests; its bundle is imported through the same manifest contract.
 
 ## Compilation reuse and storage
 

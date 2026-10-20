@@ -456,6 +456,44 @@ class LocalCandidateTests(unittest.TestCase):
         receipt = self.receipt()
         path = self.directory / "receipt.json"
         path.write_text(json.dumps(receipt))
+        linux_manifest = {
+            "schema": 1,
+            "commit": self.commit,
+            "producer": "linux-local",
+            "status": "success",
+            "checks": [
+                {"name": "local-acceptance", "exit_code": 0, "log_sha256": "b" * 64}
+            ],
+            "artifacts": [
+                {
+                    "name": "linux.tar.gz",
+                    "url": "https://github.com/holyglory/codex/releases/download/t/linux.tar.gz",
+                    "sha256": "c" * 64,
+                    "size_bytes": 1,
+                    "targets": ["x86_64-unknown-linux-musl"],
+                }
+            ],
+        }
+        windows_manifest = {
+            **linux_manifest,
+            "producer": "windows-private-controller",
+            "artifacts": [
+                {
+                    "name": "windows.tar.gz",
+                    "url": "https://github.com/holyglory/codex/releases/download/t/windows.tar.gz",
+                    "sha256": "d" * 64,
+                    "size_bytes": 1,
+                    "targets": [
+                        "x86_64-pc-windows-msvc",
+                        "aarch64-pc-windows-msvc",
+                    ],
+                }
+            ],
+        }
+        linux_path = self.directory / "linux.json"
+        windows_path = self.directory / "windows.json"
+        linux_path.write_text(json.dumps(linux_manifest))
+        windows_path.write_text(json.dumps(windows_manifest))
         for remote, runs, accepted in (
             ("b" * 40, [], False),
             (self.commit, [{"status": "queued"}], False),
@@ -473,12 +511,30 @@ class LocalCandidateTests(unittest.TestCase):
                 patch.object(candidate.subprocess, "run") as dispatch,
             ):
                 if accepted:
-                    candidate.dispatch(self.directory, path, "codex/fixture")
+                    candidate.dispatch(
+                        self.directory,
+                        path,
+                        "codex/fixture",
+                        linux_path,
+                        windows_path,
+                    )
                     payload = json.loads(dispatch.call_args.kwargs["input"])
                     self.assertEqual(json.loads(payload["local_acceptance"]), receipt)
+                    self.assertEqual(
+                        json.loads(payload["linux_handoff"]), linux_manifest
+                    )
+                    self.assertEqual(
+                        json.loads(payload["windows_handoff"]), windows_manifest
+                    )
                 else:
                     with self.assertRaises(ValueError):
-                        candidate.dispatch(self.directory, path, "codex/fixture")
+                        candidate.dispatch(
+                            self.directory,
+                            path,
+                            "codex/fixture",
+                            linux_path,
+                            windows_path,
+                        )
                     dispatch.assert_not_called()
         log = self.directory / "helpers.log"
         for missing in (False, True):
@@ -491,7 +547,13 @@ class LocalCandidateTests(unittest.TestCase):
                 patch.object(candidate.subprocess, "check_output") as remote,
                 self.assertRaises((ValueError, OSError)),
             ):
-                candidate.dispatch(self.directory, path, "codex/fixture")
+                candidate.dispatch(
+                    self.directory,
+                    path,
+                    "codex/fixture",
+                    linux_path,
+                    windows_path,
+                )
             remote.assert_not_called()
 
     def test_real_checkout_rejects_dirty_and_untracked_source(self):

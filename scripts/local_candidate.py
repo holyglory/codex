@@ -17,6 +17,8 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
+import runner_handoff
+
 
 GATES = (
     "toolchain",
@@ -448,10 +450,22 @@ def check(root, state, cargo_target, release_target):
     return 0 if receipt["status"] == "success" else 1
 
 
-def dispatch(root, receipt_path, branch):
+def dispatch(root, receipt_path, branch, linux_handoff, windows_handoff):
     commit = frozen_commit(root)
     receipt = json.loads(receipt_path.read_text())
     validate(receipt, commit)
+    linux_manifest = runner_handoff.validate(
+        json.loads(linux_handoff.read_text()),
+        commit,
+        "linux-local",
+        ["x86_64-unknown-linux-musl"],
+    )
+    windows_manifest = runner_handoff.validate(
+        json.loads(windows_handoff.read_text()),
+        commit,
+        "windows-private-controller",
+        ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"],
+    )
     for entry in receipt["checks"]:
         if digest(receipt_path.parent / f"{entry['name']}.log") != entry["log_sha256"]:
             raise ValueError("Local check log changed or is unavailable")
@@ -503,7 +517,13 @@ def dispatch(root, receipt_path, branch):
             branch,
             "--json",
         ],
-        input=json.dumps({"local_acceptance": json.dumps(receipt)}),
+        input=json.dumps(
+            {
+                "local_acceptance": json.dumps(receipt),
+                "linux_handoff": json.dumps(linux_manifest),
+                "windows_handoff": json.dumps(windows_manifest),
+            }
+        ),
         text=True,
         check=True,
     )
@@ -520,6 +540,8 @@ def main():
     item = sub.add_parser("dispatch")
     item.add_argument("--receipt", type=Path, required=True)
     item.add_argument("--branch", required=True)
+    item.add_argument("--linux-handoff", type=Path, required=True)
+    item.add_argument("--windows-handoff", type=Path, required=True)
     item = sub.add_parser("verify")
     item.add_argument("--commit", required=True)
     item = sub.add_parser("verify-package")
@@ -532,7 +554,13 @@ def main():
         elif args.action == "verify-package":
             verify_package(args.directory, frozen_commit(root))
         elif args.action == "dispatch":
-            dispatch(root, args.receipt, args.branch)
+            dispatch(
+                root,
+                args.receipt,
+                args.branch,
+                args.linux_handoff,
+                args.windows_handoff,
+            )
         elif args.action == "plan":
             print(
                 json.dumps(

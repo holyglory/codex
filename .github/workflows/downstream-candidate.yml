@@ -7,6 +7,14 @@ on:
         description: Exact-commit successful Linux receipt from scripts/local_candidate.py
         type: string
         required: true
+      linux_handoff:
+        description: Signed manifest for Linux artifacts produced by the local server
+        type: string
+        required: true
+      windows_handoff:
+        description: Signed manifest for Windows artifacts produced by the private controller
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -30,10 +38,30 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Require local Linux acceptance before hosted compilation
+      - name: Require local Linux acceptance and external runner handoffs
         env:
           LOCAL_ACCEPTANCE: ${{ inputs.local_acceptance }}
+          LINUX_HANDOFF: ${{ inputs.linux_handoff }}
+          WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
         run: python3 scripts/local_candidate.py verify --commit "$GITHUB_SHA"
+      - name: Validate Linux handoff manifest
+        env:
+          LINUX_HANDOFF: ${{ inputs.linux_handoff }}
+        run: >-
+          python3 scripts/runner_handoff.py verify
+          --manifest "$LINUX_HANDOFF"
+          --commit "$GITHUB_SHA"
+          --producer linux-local
+          --targets x86_64-unknown-linux-musl
+      - name: Validate Windows handoff manifest
+        env:
+          WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
+        run: >-
+          python3 scripts/runner_handoff.py verify
+          --manifest "$WINDOWS_HANDOFF"
+          --commit "$GITHUB_SHA"
+          --producer windows-private-controller
+          --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
       - name: Validate downstream versions
         id: version
         shell: bash
@@ -63,6 +91,8 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_stage*.py'
           python3 -m unittest discover -s scripts -p 'test_run_candidate_preflight.py'
           python3 -m unittest discover -s scripts -p 'test_local_candidate.py'
+          python3 -m unittest discover -s scripts -p 'test_runner_handoff.py'
+          python3 -m unittest discover -s scripts -p 'test_prepare_runner_handoff.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bounded_bazel_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_bazel_remote_cache.py'
           python3 -m unittest discover -s .github/scripts -p 'test_run_bazel_with_buildbuddy.py'
@@ -70,251 +100,53 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_persistent_compiler_wrapper.py'
           python3 -m unittest discover -s .github/scripts -p 'test_cache_ssh_key_format.py'
 
-  preflight:
-    name: Critical producer and consumer regressions
+  # Full Linux validation and x86_64 packaging are produced by the owner-operated
+  # local runner. The handoff job below verifies and imports those immutable
+  # outputs; no GitHub-hosted Linux compiler or test graph runs for this candidate.
+  handoff:
+    name: Import local Linux and private Windows handoffs
     needs: identity
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pull-requests: read
-    timeout-minutes: 90
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-ci
-      - name: Install and verify Linux test prerequisites
-        run: |
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev bubblewrap
-          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          components: rustfmt
-      - name: Check formatting before compilation
-        working-directory: codex-rs
-        run: cargo fmt -- --config imports_granularity=Item --check
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: nextest
-          version: 0.9.103
-      - uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-unknown-linux-gnu
-      - uses: ./.github/actions/downstream-compiler-cache
-      - name: Verify long-compilation cache survival and reuse
-        run: python3 .github/scripts/probe_compiler_cache.py
-      - name: Require both focused test families
+      - name: Download and verify local Linux artifacts
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/run_candidate_preflight.py
-
-  rust-validation:
-    name: Complete Rust validation
-    needs: [identity, preflight]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 300
-    defaults:
-      run:
-        working-directory: codex-rs
-    env:
-      NEXTEST_RETRIES: "3"
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.3"
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
-      - name: Verify the Linux sandbox prerequisite
-        run: bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          components: clippy, rustfmt
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: nextest
-          version: 0.9.103
-      - uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-unknown-linux-gnu
-      - name: Check formatting
-        run: cargo fmt -- --config imports_granularity=Item --check
-      - uses: ./.github/actions/downstream-compiler-cache
-      - name: Prepare Bazel for pinned native Cargo inputs
-        uses: ./.github/actions/prepare-bazel-ci
-        with:
-          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
-          target: x86_64-unknown-linux-gnu
-          cache-scope: downstream-candidate-cargo-native
-      - name: Prepare the pinned voice SDK and runtime for Cargo
-        working-directory: ${{ github.workspace }}
+          LINUX_HANDOFF: ${{ inputs.linux_handoff }}
+          RUNNER_HANDOFF_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/runner_handoff.py download
+          --manifest "$LINUX_HANDOFF"
+          --commit "$GITHUB_SHA"
+          --producer linux-local
+          --targets x86_64-unknown-linux-musl
+          --destination native-artifacts
+      - name: Download and verify private Windows artifacts
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
-          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
-          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
-        run: |
-          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
-            python3 scripts/cargo_native_inputs.py prepare --state "$RUNNER_TEMP/cargo-native"
-      - name: Run complete Clippy
-        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Reclaim Clippy build output
-        run: cargo clean
-      - name: Run complete Rust suite
-        run: python3 ../scripts/cargo_native_inputs.py run --state "$RUNNER_TEMP/cargo-native" -- just test --features codex-v8-poc/sandbox
-      - name: Regenerate schemas
-        run: |
-          just write-config-schema
-          just write-app-server-schema
-          just write-app-server-schema --experimental
-      - name: Verify generated files and Cargo lock
-        working-directory: ${{ github.workspace }}
-        run: |
-          cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1 >/dev/null
-          git diff --exit-code
-  bazel-validation:
-    name: Complete Bazel validation
-    needs: [identity, preflight]
-    runs-on: ubuntu-24.04
-    # The measured full graph takes about 4h15m on this standard runner;
-    # reserve time for the required release-only build that follows it.
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Verify and prepare disposable runner storage and short test paths
-        run: |
-          python3 -m unittest discover -s .github/scripts -p 'test_prepare_downstream_bazel.py'
-          python3 .github/scripts/prepare_downstream_bazel.py
-      - name: Prepare Bazel CI
-        id: bazel-setup
-        uses: ./.github/actions/prepare-bazel-ci
-        with:
-          accept-msvc-runtime-license: ${{ github.repository_owner != 'openai' && vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA == '1' }}
-          target: x86_64-unknown-linux-gnu
-          cache-scope: downstream-candidate-bazel
-      - name: Restore bounded Bazel build results
-        id: bazel-cache
-        continue-on-error: true
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ${{ runner.temp }}/bazel-action-cache/ac
-            ${{ runner.temp }}/bazel-action-cache/cas
-          key: downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            downstream-bazel-actions-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}-
-      - name: Check Bazel lock and V8 checksums
-        shell: bash
-        run: |
-          python3 .github/scripts/rusty_v8_bazel.py check-module-bazel
-          ./scripts/check-module-bazel-lock.sh
-      - name: Test the complete Bazel graph
-        shell: bash
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
-          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
-          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
-        run: |
-          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
-          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
-            ./.github/scripts/run-bazel-ci.sh \
-            --print-failed-action-summary \
-            --print-failed-test-logs \
-            -- \
-            test \
-            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
-            --test_tmpdir="$CODEX_BAZEL_TEST_TMPDIR" \
-            --sandbox_writable_path=/tmp \
-            --sandbox_tmpfs_path=/tmp \
-            --test_env=TMPDIR=/tmp \
-            --test_env=TEST_TMPDIR=/tmp \
-            --test_env=HOME=/tmp/codex-test-home \
-            --keep_going \
-            --local_test_jobs=2 \
-            --test_env=RUST_TEST_THREADS=1 \
-            --test_env=RUST_MIN_STACK=16777216 \
-            --test_env=INSTA_UPDATE=no \
-            --test_timeout=300,600,1200,3600 \
-            --flaky_test_attempts=3 \
-            --test_tag_filters=-argument-comment-lint \
-            --test_verbose_timeout_warnings \
-            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
-            -- \
-            //... \
-            -//third_party/v8:all \
-            -//codex-rs/v8-poc:v8-poc-unit-tests
-      - name: Verify release-only Bazel targets
-        shell: bash
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          CODEX_BAZEL_CACHE_HOST: ${{ vars.CODEX_BAZEL_CACHE_HOST }}
-          CODEX_BAZEL_CACHE_HOST_KEY: ${{ vars.CODEX_BAZEL_CACHE_HOST_KEY }}
-          CODEX_BAZEL_CACHE_SSH_KEY: ${{ secrets.CODEX_BAZEL_CACHE_SSH_KEY }}
-        run: |
-          mapfile -t bazel_targets < <(bash ./scripts/list-bazel-release-targets.sh)
-          python3 .github/scripts/run_with_bazel_remote_cache.py -- \
-          python3 .github/scripts/run_with_bounded_bazel_cache.py -- \
-            ./.github/scripts/run-bazel-ci.sh \
-            -- \
-            build \
-            --disk_cache="$RUNNER_TEMP/bazel-action-cache" \
-            --compilation_mode=fastbuild \
-            --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no \
-            --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no \
-            --build_metadata=COMMIT_SHA="$GITHUB_SHA" \
-            -- \
-            "${bazel_targets[@]}"
-      - name: Save reusable Bazel build results even after test failures
-        if: ${{ !cancelled() && steps.bazel-cache.outcome != 'skipped' }}
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ${{ runner.temp }}/bazel-action-cache/ac
-            ${{ runner.temp }}/bazel-action-cache/cas
-          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
-      - name: Save reusable Bazel dependency downloads
-        if: ${{ !cancelled() && steps.bazel-setup.outputs.repository-cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ steps.bazel-setup.outputs.repository-cache-path }}
-          key: ${{ steps.bazel-setup.outputs.repository-cache-key }}
-      - name: Preserve Bazel execution and per-test evidence
-        if: always()
+          WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
+          RUNNER_HANDOFF_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/runner_handoff.py download
+          --manifest "$WINDOWS_HANDOFF"
+          --commit "$GITHUB_SHA"
+          --producer windows-private-controller
+          --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+          --destination native-artifacts
+      - name: Preserve imported handoff artifacts for npm staging
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel_validation_${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/bazel-execution-logs
-            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.xml
-            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test.log
-            ${{ env.BAZEL_OUTPUT_BASE }}/execroot/_main/bazel-out/**/testlogs/**/test_attempts/*.log
+          name: runner-handoff-${{ github.sha }}
+          path: native-artifacts
+          if-no-files-found: error
           retention-days: 14
 
   native:
     name: Build ${{ matrix.target }}
     # After focused regressions pass, compile alongside complete validation.
     # Publication still requires every validation and packaging job to succeed.
-    needs: [identity, preflight]
+    needs: [identity]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes || 240 }}
     permissions:
@@ -325,8 +157,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
+          # The local VPS owns x86_64 Linux validation and packaging. This
+          # ARM64 build remains only because that host has no ARM cross-toolchain
+          # and the npm matrix still requires an ARM64 Linux package.
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
           - runner: macos-15-xlarge
@@ -335,10 +168,6 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             timeout_minutes: 360
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
     defaults:
       run:
         working-directory: codex-rs
@@ -525,76 +354,9 @@ jobs:
           done
           exit "$cache_check_status"
 
-  root-usage:
-    name: Verify UID 0 usage from Linux package
-    # This consumes the exact x86_64 Linux archive produced by native. Keep it
-    # between native packaging and npm/final candidate completion so those
-    # results cannot pass without the installed-package acceptance.
-    needs: [identity, native]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.3"
-      - name: Install bubblewrap for the UID 0 fixture
-        run: |
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap
-      - name: Download the canonical Linux package archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: x86_64-unknown-linux-musl
-          path: native-artifacts
-      - name: Extract the declared package entrypoint
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$(find native-artifacts -type f -name 'codex-package-x86_64-unknown-linux-musl.tar.gz' -print -quit)"
-          test -n "$archive"
-          export ARCHIVE="$archive"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import shutil
-          import tarfile
-
-          archive = Path(os.environ["ARCHIVE"])
-          package = Path(os.environ["RUNNER_TEMP"]) / "root-usage-package"
-          shutil.rmtree(package, ignore_errors=True)
-          package.mkdir()
-          with tarfile.open(archive, "r:gz") as source:
-              source.extractall(package, filter="data")
-          metadata = json.loads((package / "codex-package.json").read_text())
-          entrypoint = Path(metadata["entrypoint"])
-          if entrypoint.is_absolute() or ".." in entrypoint.parts:
-              raise SystemExit("package entrypoint escapes the package root")
-          binary = (package / entrypoint).resolve()
-          if not binary.is_relative_to(package.resolve()) or not binary.is_file():
-              raise SystemExit(f"declared package entrypoint is missing: {entrypoint}")
-          if not os.access(binary, os.X_OK):
-              raise SystemExit(f"declared package entrypoint is not executable: {entrypoint}")
-          with open(os.environ["GITHUB_ENV"], "a") as environment:
-              environment.write(f"ROOT_USAGE_BINARY={binary}\n")
-          print(f"Testing package entrypoint declared by codex-package.json: {binary}")
-          PY
-      - name: Run the frozen UID 0 usage acceptance
-        env:
-          PYTHONPATH: ${{ github.workspace }}/sdk/python/src:${{ github.workspace }}/sdk/python/tests
-        run: |
-          uv run --frozen --project scripts/codex_package/smoke_tests \
-            python scripts/check_root_usage.py --binary "$ROOT_USAGE_BINARY"
-
   npm:
     name: Build and verify seven npm tarballs
-    needs: [identity, native, root-usage]
+    needs: [identity, handoff, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -614,7 +376,27 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: native-artifacts
-          pattern: "*-*-*"
+          pattern: "{aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin}"
+      - name: Import verified local and Windows package archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runner-handoff-${{ github.sha }}
+          path: ${{ runner.temp }}/runner-handoff
+      - name: Merge imported package archives into the npm input layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-artifacts
+          cp -a "$RUNNER_TEMP/runner-handoff/." native-artifacts/
+          for target in \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            x86_64-pc-windows-msvc \
+            aarch64-pc-windows-msvc; do
+            test -f "native-artifacts/$target/codex-package-$target.tar.gz"
+          done
       - name: Build npm tarballs
         shell: bash
         env:
@@ -622,7 +404,6 @@ jobs:
         run: |
           ./scripts/stage_npm_packages.py \
             --release-version "$VERSION" \
-            --workflow-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --artifacts-dir native-artifacts \
             --output-dir dist/npm \
             --package codex
@@ -657,11 +438,8 @@ jobs:
     needs:
       [
         identity,
-        preflight,
-        rust-validation,
-        bazel-validation,
+        handoff,
         native,
-        root-usage,
         npm,
       ]
     runs-on: ubuntu-24.04

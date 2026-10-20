@@ -175,12 +175,16 @@ the authority for release outcomes and verification receipts.
 - **Separate local acceptance from hosted artifact gates explicitly.** The VPS
   can run the canonical Linux acceptance graph with Rust 1.95.0, retained V8
   inputs, and the persistent Bazel/compiler cache, but GitHub's required fan-in
-  does not consume that receipt automatically. Use the existing exact-commit
-  local acceptance receipt and dispatch handoff before removing duplicate Linux
-  validation; keep GitHub for macOS, final artifacts, and npm gates. A private
-  Windows controller has the same boundary: a healthy machine smoke test does
-  not prove a release run, and runner communication loss is an infrastructure
-  failure that must remain visible.
+  does not consume that receipt automatically. The handoff must therefore bind
+  the exact commit, producer, successful checks, HTTPS release-asset URLs,
+  declared sizes, and SHA-256 digests before the candidate imports any package.
+  `scripts/prepare_runner_handoff.py` stages those bundles in a draft
+  `codex-runner-handoff-<commit>` release; `runner_handoff.py` verifies and
+  extracts them inside GitHub. Keep GitHub for macOS, the unavoidable ARM64
+  Linux publication artifact, final artifacts, and npm gates. A private Windows
+  controller has the same boundary: a healthy machine smoke test does not prove
+  a release run, and runner communication loss is an infrastructure failure
+  that must remain visible.
 - **Freeze editor setup with the candidate.** Initialize navigation metadata
   before sealing a worktree, or navigate the mutable integration checkout.
   Creating `.serena/` during a governed run changes its source fingerprint even
