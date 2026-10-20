@@ -105,6 +105,10 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     // assertion fails. It is diagnostic evidence, not a ready fixture.
     temp.disable_cleanup(retained_home.is_some());
     let store = UsageStore::open(temp.path()).await.expect("store");
+    // The opener schedules its normal refresh worker. Stop it before seeding
+    // the disposable history so fixture construction has one writer and cannot
+    // fail spuriously with SQLITE_BUSY.
+    store.report_refresh.cancel();
     let process = ProcessId::new();
     store
         .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
