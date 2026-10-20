@@ -3,7 +3,11 @@
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
-const PAGE_ROWS: i64 = 1_024;
+// The worker commits each page transactionally and interrupts it at the
+// separate background deadline. Larger pages keep production-sized histories
+// from spending hours in per-thousand-row setup while still rolling back
+// cleanly on contention or cancellation.
+const PAGE_ROWS: i64 = 16_384;
 const MAX_PENDING_WAL_PAGES: i64 = 8_192;
 
 pub(crate) enum Progress {
