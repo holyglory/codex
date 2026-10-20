@@ -585,7 +585,7 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if core_ready == 0 {
         return Ok(false);
     }
-    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 8_192")
+    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 2_048")
         .execute(&mut *tx).await?;
     let dirty_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _usage_global_dirty_batch")
         .fetch_one(&mut *tx)
