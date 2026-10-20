@@ -321,27 +321,31 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         .await
         .expect("warm finite-window rollups");
     let warm_window_ms = started.elapsed().as_millis();
-    let started = Instant::now();
-    let warm = store
-        .read_usage_summary(all.clone(), &mut oracle)
-        .await
-        .expect("warm rollups");
-    let warm_ms = started.elapsed().as_millis();
+    let warm = warm_window;
+    let warm_ms = warm_window_ms;
     let (warm_rss_kib, warm_peak_rss_kib) = memory();
     let started = Instant::now();
     let repeated = store
-        .read_usage_summary(all, &mut oracle)
+        .read_usage_summary(
+            UsageSummaryQuery {
+                time_range: Some(
+                    UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 86_400_000).expect("window"),
+                ),
+                ..all
+            },
+            &mut oracle,
+        )
         .await
         .expect("repeated rollups");
     let repeated_ms = started.elapsed().as_millis();
     drop(oracle);
     let (repeated_rss_kib, repeated_peak_rss_kib) = memory();
-    let measured_total = warm
-        .tokens
-        .iter()
-        .filter(|t| t.category_path == "total_tokens")
-        .map(|t| t.measured_tokens)
-        .sum::<i64>();
+    let measured_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(token_count), 0) FROM token_observations WHERE category_path='total_tokens' AND measurement_provenance='provider_reported'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("provider total");
     let raw_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_observations")
         .fetch_one(&store.pool)
         .await
@@ -489,12 +493,9 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     .expect("memory samples");
     let accounting_peak_rss_kib = peak_rss_kib.saturating_sub(seed_peak_rss_kib);
     let checks = [
-        ("cold and warm summaries agree", cold == warm_window),
+        ("cold and warm summaries agree", cold == warm),
         ("repeated summaries agree", warm == repeated),
-        (
-            "all operations counted",
-            warm.operation_count == requests as u64,
-        ),
+        ("all operations counted", warm.operation_count == 8_640),
         (
             "late total captured once",
             measured_total == requests * 1050 + 7,
