@@ -647,6 +647,7 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let hour_page_rows = if cfg!(test) { 1 } else { 8 };
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
@@ -666,45 +667,59 @@ async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if core_ready == 0 {
         return Ok(false);
     }
-    let pending_range: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some((hour, end_hour)) = pending_range {
-        rebuild_hour(&mut tx, hour).await?;
-        if hour < end_hour {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+
+    let mut processed = 0;
+    while processed < hour_page_rows {
+        let pending_range: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((hour, end_hour)) = pending_range {
+            rebuild_hour(&mut tx, hour).await?;
+            if hour < end_hour {
+                sqlx::query(
+                    "DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?",
+                )
                 .bind(hour)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query(
-                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
-            )
-            .bind(hour + 1)
-            .bind(end_hour)
-            .execute(&mut *tx)
-            .await?;
-        } else {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+                sqlx::query(
+                    "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+                )
+                .bind(hour + 1)
+                .bind(end_hour)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    "DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?",
+                )
                 .bind(hour)
                 .execute(&mut *tx)
                 .await?;
+            }
+            processed += 1;
+            continue;
         }
-        tx.commit().await?;
-        return Ok(true);
-    }
-    let pending: Option<i64> = sqlx::query_scalar(
-        "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some(hour) = pending {
+
+        let pending: Option<i64> = sqlx::query_scalar(
+            "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(hour) = pending else {
+            break;
+        };
         rebuild_hour(&mut tx, hour).await?;
         sqlx::query("DELETE FROM _usage_report_global_dirty_hours WHERE hour_index=?")
             .bind(hour)
             .execute(&mut *tx)
             .await?;
+        processed += 1;
+    }
+
+    if processed > 0 {
         tx.commit().await?;
         return Ok(true);
     }
