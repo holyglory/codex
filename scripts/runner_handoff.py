@@ -34,6 +34,7 @@ DEFAULT_ALLOWED_HOSTS = frozenset(
         "raw.githubusercontent.com",
     }
 )
+MAX_ARTIFACT_BYTES = 8 * 1024**3
 
 
 class HandoffError(ValueError):
@@ -94,8 +95,11 @@ def _validate_artifact(
     if not HEX64.fullmatch(digest):
         raise HandoffError(f"invalid handoff artifact digest for {name!r}")
     size = artifact.get("size_bytes")
-    if type(size) is not int or size <= 0:
-        raise HandoffError(f"handoff artifact {name!r} must declare a positive size")
+    if type(size) is not int or size <= 0 or size > MAX_ARTIFACT_BYTES:
+        raise HandoffError(
+            f"handoff artifact {name!r} must declare a size between 1 byte and "
+            f"{MAX_ARTIFACT_BYTES} bytes"
+        )
     targets = artifact.get("targets")
     if (
         not isinstance(targets, list)
