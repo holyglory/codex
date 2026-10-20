@@ -13,7 +13,9 @@ import runner_handoff as handoff
 COMMIT = "a" * 40
 
 
-def manifest(*, url="https://github.com/holyglory/codex/releases/download/t/bundle.tar.gz"):
+def manifest(
+    *, url="https://github.com/holyglory/codex/releases/download/t/bundle.tar.gz"
+):
     return {
         "schema": 1,
         "commit": COMMIT,
@@ -44,13 +46,17 @@ class RunnerHandoffTests(unittest.TestCase):
     def test_rejects_commit_producer_and_target_mismatches(self):
         for mutate, message in (
             (lambda value: value.update(commit="d" * 40), "commit"),
-            (lambda value: value.update(producer="windows-private-controller"), "producer"),
+            (
+                lambda value: value.update(producer="windows-private-controller"),
+                "producer",
+            ),
             (lambda value: value["artifacts"][0].update(targets=["other"]), "targets"),
         ):
             value = manifest()
             mutate(value)
-            with self.subTest(message=message), self.assertRaisesRegex(
-                handoff.HandoffError, message
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(handoff.HandoffError, message),
             ):
                 handoff.validate(
                     value, COMMIT, "linux-local", ["x86_64-unknown-linux-musl"]
@@ -75,8 +81,9 @@ class RunnerHandoffTests(unittest.TestCase):
         ):
             value = manifest()
             mutate(value)
-            with self.subTest(message=message), self.assertRaisesRegex(
-                handoff.HandoffError, message
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(handoff.HandoffError, message),
             ):
                 handoff.validate(
                     value, COMMIT, "linux-local", ["x86_64-unknown-linux-musl"]

@@ -14,23 +14,29 @@ class PrepareRunnerHandoffTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "x86_64-unknown-linux-musl").mkdir()
-            package = source / "x86_64-unknown-linux-musl/codex-package-x86_64-unknown-linux-musl.tar.gz"
+            package = (
+                source
+                / "x86_64-unknown-linux-musl/codex-package-x86_64-unknown-linux-musl.tar.gz"
+            )
             package.write_bytes(b"fixture")
             archive = root / "linux.tar.gz"
             prepare._archive_tree(source, archive)
             manifest = prepare._manifest(
                 commit="a" * 40,
                 producer="linux-local",
-                checks=[
-                    {"name": "local", "exit_code": 0, "log_sha256": "b" * 64}
-                ],
+                checks=[{"name": "local", "exit_code": 0, "log_sha256": "b" * 64}],
                 artifact=archive,
                 targets=["x86_64-unknown-linux-musl"],
                 repository="holyglory/codex",
                 tag="codex-runner-handoff-" + "a" * 40,
             )
-            self.assertEqual(manifest["artifacts"][0]["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
-            self.assertEqual(manifest["artifacts"][0]["size_bytes"], archive.stat().st_size)
+            self.assertEqual(
+                manifest["artifacts"][0]["sha256"],
+                hashlib.sha256(archive.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                manifest["artifacts"][0]["size_bytes"], archive.stat().st_size
+            )
             self.assertEqual(manifest["commit"], "a" * 40)
 
     def test_linux_source_requires_the_canonical_package(self):

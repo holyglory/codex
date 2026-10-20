@@ -80,7 +80,9 @@ def _validate_url(url: str, allowed_hosts: frozenset[str]) -> None:
         raise HandoffError("handoff artifact URLs cannot contain credentials")
 
 
-def _validate_artifact(artifact: object, allowed_hosts: frozenset[str]) -> tuple[str, set[str]]:
+def _validate_artifact(
+    artifact: object, allowed_hosts: frozenset[str]
+) -> tuple[str, set[str]]:
     if not isinstance(artifact, dict):
         raise HandoffError("each handoff artifact must be an object")
     name = _require_string(artifact.get("name"), "artifacts[].name")
@@ -95,8 +97,10 @@ def _validate_artifact(artifact: object, allowed_hosts: frozenset[str]) -> tuple
     if type(size) is not int or size <= 0:
         raise HandoffError(f"handoff artifact {name!r} must declare a positive size")
     targets = artifact.get("targets")
-    if not isinstance(targets, list) or not targets or any(
-        not isinstance(target, str) or not target for target in targets
+    if (
+        not isinstance(targets, list)
+        or not targets
+        or any(not isinstance(target, str) or not target for target in targets)
     ):
         raise HandoffError(f"handoff artifact {name!r} must declare targets")
     return name, set(targets)
@@ -179,7 +183,9 @@ def _safe_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     for member in members:
         path = Path(member.name)
         if path.is_absolute() or ".." in path.parts:
-            raise HandoffError(f"handoff archive contains an unsafe path: {member.name}")
+            raise HandoffError(
+                f"handoff archive contains an unsafe path: {member.name}"
+            )
     return members
 
 
@@ -200,11 +206,15 @@ def _download_artifact(artifact: dict, destination: Path) -> None:
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
                 if size > expected_size:
-                    raise HandoffError(f"handoff artifact is larger than declared: {artifact['name']}")
+                    raise HandoffError(
+                        f"handoff artifact is larger than declared: {artifact['name']}"
+                    )
                 digest.update(chunk)
                 output.write(chunk)
         if size != expected_size or digest.hexdigest() != expected_digest:
-            raise HandoffError(f"handoff artifact digest or size mismatch: {artifact['name']}")
+            raise HandoffError(
+                f"handoff artifact digest or size mismatch: {artifact['name']}"
+            )
         temporary.replace(destination)
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -260,7 +270,9 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="action", required=True)
     for action in ("verify", "download"):
         subparser = subparsers.add_parser(action)
-        subparser.add_argument("--manifest", required=True, help="JSON or @manifest.json")
+        subparser.add_argument(
+            "--manifest", required=True, help="JSON or @manifest.json"
+        )
         subparser.add_argument("--commit", required=True)
         subparser.add_argument("--producer", required=True)
         subparser.add_argument("--targets", required=True, type=_parse_targets)
@@ -278,16 +290,33 @@ def main() -> int:
                 args.targets,
                 allowed_hosts=args.allowed_host,
             )
-            print(json.dumps({"status": "success", "targets": sorted({target for artifact in normalized["artifacts"] for target in artifact["targets"]})}))
+            print(
+                json.dumps(
+                    {
+                        "status": "success",
+                        "targets": sorted(
+                            {
+                                target
+                                for artifact in normalized["artifacts"]
+                                for target in artifact["targets"]
+                            }
+                        ),
+                    }
+                )
+            )
         else:
-            print(json.dumps(download(
-                manifest,
-                args.destination,
-                args.commit,
-                args.producer,
-                args.targets,
-                allowed_hosts=args.allowed_host,
-            )))
+            print(
+                json.dumps(
+                    download(
+                        manifest,
+                        args.destination,
+                        args.commit,
+                        args.producer,
+                        args.targets,
+                        allowed_hosts=args.allowed_host,
+                    )
+                )
+            )
     except (HandoffError, OSError, tarfile.TarError) as error:
         parser.exit(1, f"Runner handoff refused: {error}\n")
     return 0

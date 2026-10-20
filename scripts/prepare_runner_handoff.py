@@ -65,7 +65,9 @@ def _archive_tree(source: Path, output: Path) -> None:
                 archive.addfile(info, stream)
 
 
-def _copy_target_tree(source: Path, targets: Iterable[str], destination: Path) -> list[str]:
+def _copy_target_tree(
+    source: Path, targets: Iterable[str], destination: Path
+) -> list[str]:
     destination.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for target in targets:
@@ -178,12 +180,23 @@ def _ensure_release(repository: str, tag: str) -> None:
 
 def _upload(repository: str, tag: str, paths: Iterable[Path]) -> None:
     subprocess.run(
-        ["gh", "release", "upload", tag, "--repo", repository, "--clobber", *map(str, paths)],
+        [
+            "gh",
+            "release",
+            "upload",
+            tag,
+            "--repo",
+            repository,
+            "--clobber",
+            *map(str, paths),
+        ],
         check=True,
     )
 
 
-def _download_windows_run(repository: str, run_id: str, source_sha: str, destination: Path) -> Path:
+def _download_windows_run(
+    repository: str, run_id: str, source_sha: str, destination: Path
+) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     artifact_name = f"windows-handoff-{source_sha}"
     subprocess.run(
@@ -228,7 +241,9 @@ def main() -> int:
     receipt = json.loads(args.linux_receipt.read_text())
     local_candidate.validate(receipt, commit)
     if bool(args.windows_artifacts) == bool(args.windows_run_id):
-        raise SystemExit("provide exactly one of --windows-artifacts or --windows-run-id")
+        raise SystemExit(
+            "provide exactly one of --windows-artifacts or --windows-run-id"
+        )
 
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -254,7 +269,9 @@ def main() -> int:
             or windows_manifest.get("producer") != "windows-private-controller"
             or windows_manifest.get("status") != "success"
         ):
-            raise SystemExit("Windows controller manifest identity or status is invalid")
+            raise SystemExit(
+                "Windows controller manifest identity or status is invalid"
+            )
         windows_checks = runner_handoff.validate_checks(windows_manifest.get("checks"))
         windows_targets = _find_windows_targets(windows_source, windows_root)
         linux_bundle = output / f"linux-handoff-{commit}.tar.gz"
@@ -316,7 +333,15 @@ def main() -> int:
             ],
             check=True,
         )
-    print(json.dumps({"tag": tag, "linux": str(linux_manifest_path), "windows": str(windows_manifest_path)}))
+    print(
+        json.dumps(
+            {
+                "tag": tag,
+                "linux": str(linux_manifest_path),
+                "windows": str(windows_manifest_path),
+            }
+        )
+    )
     return 0
 
 
