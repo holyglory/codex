@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -236,7 +235,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     commit = args.commit
-    if local_candidate.git(Path.cwd(), "rev-parse", "HEAD") != commit:
+    repository_root = Path(__file__).resolve().parents[1]
+    if local_candidate.git(repository_root, "rev-parse", "HEAD") != commit:
         raise SystemExit("handoff source checkout does not match --commit")
     receipt = json.loads(args.linux_receipt.read_text())
     local_candidate.validate(receipt, commit)
