@@ -297,8 +297,12 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         account_profile_ref: None,
         time_range: None,
     };
+    let cold_window = UsageSummaryQuery {
+        time_range: Some(UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 86_400_000).expect("window")),
+        ..all.clone()
+    };
     let cold = store
-        .read_usage_summary(all.clone(), &mut oracle)
+        .read_usage_summary(cold_window.clone(), &mut oracle)
         .await
         .expect("bounded raw fallback");
     let cold_ms = started.elapsed().as_millis();
@@ -312,6 +316,12 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let (refresh_rss_kib, refresh_peak_rss_kib) = memory();
     let started = Instant::now();
     let mut oracle = store.pool.acquire().await.expect("oracle connection");
+    let warm_window = store
+        .read_usage_summary(cold_window, &mut oracle)
+        .await
+        .expect("warm finite-window rollups");
+    let warm_window_ms = started.elapsed().as_millis();
+    let started = Instant::now();
     let warm = store
         .read_usage_summary(all.clone(), &mut oracle)
         .await
@@ -479,7 +489,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     .expect("memory samples");
     let accounting_peak_rss_kib = peak_rss_kib.saturating_sub(seed_peak_rss_kib);
     let checks = [
-        ("cold and warm summaries agree", cold == warm),
+        ("cold and warm summaries agree", cold == warm_window),
         ("repeated summaries agree", warm == repeated),
         (
             "all operations counted",
@@ -499,7 +509,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     ];
     println!(
         "{}",
-        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"accounting_peak_rss_kib":accounting_peak_rss_kib,"memory_kib":{"seed":[seed_rss_kib,seed_peak_rss_kib],"cold":[cold_rss_kib,cold_peak_rss_kib],"refresh":[refresh_rss_kib,refresh_peak_rss_kib],"warm":[warm_rss_kib,warm_peak_rss_kib],"repeated":[repeated_rss_kib,repeated_peak_rss_kib],"wide":[wide_rss_kib,wide_peak_rss_kib]},"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
+        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_window_ms":warm_window_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"accounting_peak_rss_kib":accounting_peak_rss_kib,"memory_kib":{"seed":[seed_rss_kib,seed_peak_rss_kib],"cold":[cold_rss_kib,cold_peak_rss_kib],"refresh":[refresh_rss_kib,refresh_peak_rss_kib],"warm":[warm_rss_kib,warm_peak_rss_kib],"repeated":[repeated_rss_kib,repeated_peak_rss_kib],"wide":[wide_rss_kib,wide_peak_rss_kib]},"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
     );
     assert!(
         checks.iter().all(|(_, passed)| *passed),
