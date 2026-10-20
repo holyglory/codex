@@ -110,7 +110,11 @@ def _find_windows_targets(source: Path, destination: Path) -> list[str]:
         target_destination = destination / target
         target_destination.mkdir(parents=True, exist_ok=True)
         for path in target_source.iterdir():
-            if path.is_file() and not path.is_symlink():
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and (path.name.startswith("codex-package-") or path.name == "SHA256SUMS")
+            ):
                 shutil.copy2(path, target_destination / path.name)
     return targets
 
