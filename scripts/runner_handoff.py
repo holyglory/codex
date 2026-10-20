@@ -213,7 +213,9 @@ def _download_artifact(artifact: dict, destination: Path) -> None:
             )
             if redirected and redirected.headers.get("Authorization"):
                 hostname = (urlparse(new_url).hostname or "").lower()
-                if hostname == "github.com" or hostname.endswith("githubusercontent.com"):
+                if hostname == "github.com" or hostname.endswith(
+                    "githubusercontent.com"
+                ):
                     redirected.add_unredirected_header(
                         "Authorization", redirected.headers["Authorization"]
                     )
@@ -221,7 +223,11 @@ def _download_artifact(artifact: dict, destination: Path) -> None:
 
     opener = build_opener(_GithubRedirectHandler()) if token else None
     try:
-        response_stream = opener.open(request, timeout=120) if opener else urlopen(request, timeout=120)
+        response_stream = (
+            opener.open(request, timeout=120)
+            if opener
+            else urlopen(request, timeout=120)
+        )
         with response_stream as response, temporary.open("wb") as output:
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)

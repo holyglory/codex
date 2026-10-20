@@ -120,7 +120,9 @@ def _find_windows_targets(source: Path, destination: Path) -> list[str]:
             if (
                 path.is_file()
                 and not path.is_symlink()
-                and (path.name.startswith("codex-package-") or path.name == "SHA256SUMS")
+                and (
+                    path.name.startswith("codex-package-") or path.name == "SHA256SUMS"
+                )
             ):
                 shutil.copy2(path, target_destination / path.name)
     return targets
@@ -254,7 +256,9 @@ def main() -> int:
     for check in receipt["checks"]:
         log = args.linux_receipt.parent / f"{check['name']}.log"
         if not log.is_file() or local_candidate.digest(log) != check["log_sha256"]:
-            raise SystemExit(f"Linux acceptance log is missing or changed: {check['name']}")
+            raise SystemExit(
+                f"Linux acceptance log is missing or changed: {check['name']}"
+            )
     if bool(args.windows_artifacts) == bool(args.windows_run_id):
         raise SystemExit(
             "provide exactly one of --windows-artifacts or --windows-run-id"
