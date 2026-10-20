@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 // cleanly on contention or cancellation.
 const PAGE_ROWS: i64 = 16_384;
 const MAX_PENDING_WAL_PAGES: i64 = 8_192;
+const BACKFILL_STEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub(crate) enum Progress {
     Ready,
@@ -175,7 +176,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
     cancellation
         .install(
             &mut connection,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            tokio::time::Instant::now() + BACKFILL_STEP_BUDGET,
         )
         .await?;
     sqlx::query("PRAGMA busy_timeout = 100")
