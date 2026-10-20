@@ -103,6 +103,17 @@ After pushing the frozen commit to its candidate branch and completing the
 private Windows run:
 
 ```sh
+python3 scripts/prepare_runner_handoff.py \
+  --commit "$(git rev-parse HEAD)" \
+  --linux-receipt /mnt/build-storage/codex/state/local-first/accept-EXACT/receipt.json \
+  --linux-package /mnt/build-storage/codex/state/local-first/accept-EXACT/linux-package \
+  --windows-run-id WINDOWS_RUN_ID \
+  --output-dir /mnt/build-storage/codex/state/handoff \
+  --branch codex/EXACT-CANDIDATE-BRANCH \
+  --dispatch
+
+# The equivalent explicit dispatch is useful when the draft handoff was
+# prepared earlier and its two manifests are already available:
 python3 scripts/local_candidate.py dispatch \
   --receipt /mnt/build-storage/codex/state/local-first/accept-EXACT/receipt.json \
   --branch codex/EXACT-CANDIDATE-BRANCH \
