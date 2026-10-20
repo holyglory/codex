@@ -46,6 +46,21 @@ class PrepareRunnerHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "native-dist"):
                 prepare._linux_bundle_source(source, Path(directory) / "bundle")
 
+    def test_windows_bundle_excludes_private_build_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "controller"
+            for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
+                target_dir = source / target
+                target_dir.mkdir(parents=True)
+                (target_dir / f"codex-package-{target}.tar.gz").write_bytes(b"package")
+                (target_dir / "build.log").write_text("private workspace path\n")
+            destination = root / "bundle"
+            prepare._find_windows_targets(source, destination)
+            self.assertFalse(
+                any(destination.glob("**/build.log")),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
