@@ -435,13 +435,7 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: always()
-    needs:
-      [
-        identity,
-        handoff,
-        native,
-        npm,
-      ]
+    needs: [identity, handoff, native, npm]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate job
