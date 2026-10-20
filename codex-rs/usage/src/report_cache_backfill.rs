@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 // separate background deadline. Larger pages keep production-sized histories
 // from spending hours in per-thousand-row setup while still rolling back
 // cleanly on contention or cancellation.
-const PAGE_ROWS: i64 = 16_384;
+const PAGE_ROWS: i64 = 4_096;
 const MAX_PENDING_WAL_PAGES: i64 = 8_192;
 
 pub(crate) enum Progress {
