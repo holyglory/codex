@@ -43,8 +43,11 @@ class PrepareRunnerHandoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "package"
             source.mkdir()
+            (source / "source-commit.txt").write_text("a" * 40)
             with self.assertRaisesRegex(ValueError, "native-dist"):
-                prepare._linux_bundle_source(source, Path(directory) / "bundle")
+                prepare._linux_bundle_source(
+                    source, Path(directory) / "bundle", "a" * 40
+                )
 
     def test_windows_bundle_excludes_private_build_logs(self):
         with tempfile.TemporaryDirectory() as directory:

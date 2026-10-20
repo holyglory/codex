@@ -79,7 +79,14 @@ def _copy_target_tree(
     return copied
 
 
-def _linux_bundle_source(package_directory: Path, destination: Path) -> list[str]:
+def _linux_bundle_source(
+    package_directory: Path, destination: Path, expected_commit: str
+) -> list[str]:
+    source_commit = package_directory / "source-commit.txt"
+    if not source_commit.is_file():
+        raise ValueError("Linux package handoff lacks source-commit.txt")
+    if source_commit.read_text().strip() != expected_commit:
+        raise ValueError("Linux package handoff source identity does not match commit")
     native_dist = package_directory / "native-dist"
     if not native_dist.is_dir():
         raise ValueError("Linux package handoff lacks native-dist")
@@ -244,6 +251,10 @@ def main() -> int:
         raise SystemExit("handoff source checkout does not match --commit")
     receipt = json.loads(args.linux_receipt.read_text())
     local_candidate.validate(receipt, commit)
+    for check in receipt["checks"]:
+        log = args.linux_receipt.parent / f"{check['name']}.log"
+        if not log.is_file() or local_candidate.digest(log) != check["log_sha256"]:
+            raise SystemExit(f"Linux acceptance log is missing or changed: {check['name']}")
     if bool(args.windows_artifacts) == bool(args.windows_run_id):
         raise SystemExit(
             "provide exactly one of --windows-artifacts or --windows-run-id"
@@ -256,7 +267,7 @@ def main() -> int:
         temporary_root = Path(temporary)
         linux_root = temporary_root / "linux"
         windows_root = temporary_root / "windows"
-        linux_targets = _linux_bundle_source(args.linux_package, linux_root)
+        linux_targets = _linux_bundle_source(args.linux_package, linux_root, commit)
         windows_source = args.windows_artifacts
         if windows_source is None:
             windows_source = _download_windows_run(
