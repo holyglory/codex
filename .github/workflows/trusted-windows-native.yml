@@ -1,0 +1,465 @@
+# Called only by the owner-approved private controller, pinned to an exact commit.
+# Public pushes and fork PRs cannot enter this workflow or access its private runner.
+name: Trusted native Windows MSVC
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact holyglory/codex commit to validate
+        required: true
+        type: string
+      boot_after_utc:
+        description: Optional UTC timestamp; require a reboot after it
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-msvc:
+    if: >-
+      github.repository == 'holyglory/codex-win-msvc-ci' &&
+      github.event.repository.private == true &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'holyglory' &&
+      github.triggering_actor == 'holyglory'
+    runs-on: [self-hosted, Windows, X64, codex-win-msvc]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CODEX_WINDOWS_BUILD_ROOT: H:/codex-ci
+      EXPECTED_BOOT_AFTER_UTC: ${{ inputs.boot_after_utc }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      # Leave eight logical cores for the runner service, antivirus, and the
+      # interactive Windows session while keeping native builds parallel.
+      CARGO_BUILD_JOBS: "56"
+    steps:
+      - name: Verify source identity input
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'source_sha must be a full 40-character commit ID.'
+          }
+
+      - name: Checkout exact public candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: holyglory/codex
+          ref: ${{ inputs.source_sha }}
+          token: ${{ github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify runner identity, reboot boundary, and checkout
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($identity.Name -notmatch '\\svc_codex_runner$') { throw 'Unexpected runner identity.' }
+          if (([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The runner must not be an administrator.'
+          }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          if (-not $workspace.StartsWith('H:\codex-ci\_work\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The workspace must be beneath H:\codex-ci\_work.'
+          }
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          if ($env:EXPECTED_BOOT_AFTER_UTC) {
+            $minimumBoot = [DateTimeOffset]::Parse($env:EXPECTED_BOOT_AFTER_UTC, [Globalization.CultureInfo]::InvariantCulture)
+            if ($boot -le $minimumBoot.UtcDateTime) { throw 'Windows has not rebooted since the requested checkpoint.' }
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -cne $env:SOURCE_SHA) { throw "Checked out $actual instead of $env:SOURCE_SHA." }
+          [ordered]@{
+            machine = $env:COMPUTERNAME
+            identity = $identity.Name
+            runner = $env:RUNNER_NAME
+            workspace = $workspace
+            sourceSha = $actual
+            lastBootUtc = $boot
+          } | ConvertTo-Json
+
+      - name: Configure preinstalled native build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'C:\ProgramData\CodexRunner\volume\Assert-CodexBuildVolume.ps1'
+          $mounted = [Text.StringBuilder]::new(128)
+          $drive = [Text.StringBuilder]::new(128)
+          if (-not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('H:\codex-ci\',$mounted,$mounted.Capacity) -or
+              -not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('R:\',$drive,$drive.Capacity) -or
+              $mounted.ToString() -ne $drive.ToString()) { throw 'R: is not the bounded build volume on H:.' }
+          $root = 'R:'
+          $repoRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).Replace('H:\codex-ci\','R:\')
+          if (-not $repoRoot.StartsWith('R:\_work\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected canonical repository path.' }
+          foreach ($name in @('CARGO_HOME','RUSTUP_HOME','BAZELISK_HOME','HOME','USERPROFILE','APPDATA','LOCALAPPDATA','RUNNER_TOOL_CACHE','PATH')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { "$name=$($value.Replace('H:\codex-ci','R:').Replace('H:/codex-ci','R:'))" | Add-Content -Path $env:GITHUB_ENV }
+          }
+          $dirs = @(
+            "$root/o",
+            "$root/b",
+            "$root/bazel-repository-cache",
+            "$root/bazel-repo-contents-cache",
+            "$root/cargo-target",
+            "$root/tmp",
+            "$env:RUNNER_TEMP/native-codex-evidence"
+          )
+          $dirs | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
+          @(
+            "SYSTEMROOT=$([Environment]::GetFolderPath('Windows'))",
+            "windir=$([Environment]::GetFolderPath('Windows'))",
+            "SystemDrive=C:",
+            "ComSpec=C:\Windows\System32\cmd.exe",
+            "CI_BUILD_ROOT=$root",
+            "BAZEL_OUTPUT_BASE=$root/o",
+            "BAZEL_OUTPUT_USER_ROOT=$root/b",
+            "BAZEL_REPOSITORY_CACHE=$root/bazel-repository-cache",
+            "BAZEL_REPO_CONTENTS_CACHE=$root/bazel-repo-contents-cache",
+            "CARGO_TARGET_DIR=$root/cargo-target",
+            "TEMP=$root/tmp",
+            "TMP=$root/tmp",
+            "CODEX_REPO_ROOT=$repoRoot",
+            "CODEX_BAZEL_WORKSPACE=$repoRoot",
+            "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1"
+          ) | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Import and verify the native x64 MSVC SDK environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The service account cannot enumerate the installer catalog through vswhere.
+          # This runner has a dedicated fixed installation, verified by compilation below.
+          $installPath = 'C:\BuildTools'
+          $vsDevCmd = Join-Path $installPath 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $vsDevCmd -PathType Leaf)) { throw 'The dedicated MSVC Build Tools installation is missing.' }
+          $envLines = & $env:ComSpec /d /c ('"{0}" -no_logo -arch=x64 -host_arch=x64 >nul && set' -f $vsDevCmd)
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }
+          $exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')
+          foreach ($line in $envLines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1]) {
+              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          foreach ($name in @('INCLUDE','LIB','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing MSVC environment: $name" }
+          }
+          if ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { throw 'Expected x64 MSVC host and target.' }
+          @(
+            "BAZEL_VC=$env:VCINSTALLDIR",
+            "BAZEL_VC_FULL_VERSION=$((Split-Path $env:VCToolsInstallDir.TrimEnd('\') -Leaf))",
+            "BAZEL_WINSDK_FULL_VERSION=$($env:WindowsSDKVersion.TrimEnd('\'))"
+          ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/msvc-probe'
+          New-Item -ItemType Directory -Force $probe | Out-Null
+          '#include <windows.h>', '#include <stdio.h>', 'int main(void) { printf("MSVC x64 SDK compile passed\n"); return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content (Join-Path $probe 'probe.c')
+          & cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe/probe.obj" "/Fe$probe/probe.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Native MSVC compilation failed.' }
+          & (Join-Path $probe 'probe.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native MSVC probe failed.' }
+          $rust = & rustc --version
+          if ($LASTEXITCODE -ne 0 -or $rust -notmatch '^rustc 1\.95\.0 ') { throw "Expected Rust 1.95.0; got $rust" }
+          Write-Host $rust
+          Write-Host "MSVC: $((Get-Command cl.exe).Source)"
+          Write-Host "Windows SDK: $env:WindowsSdkDir$env:WindowsSDKVersion"
+
+      - name: Prepare pinned Windows voice inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
+          if (-not $env:SystemRoot -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Expected the native x64 Windows OS environment.' }
+          "VOICE_WINDOWS_SYSTEM_ROOT=$env:SystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VOICE_WINDOWS_HOST_ARCH=$env:PROCESSOR_ARCHITECTURE" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $pin = $manifest.archive
+          $source = $manifest.sourceArchive
+          $directory = Join-Path $env:RUNNER_TEMP 'voice-cygwin-snapshot'
+          New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          foreach ($asset in @($pin, $source)) {
+            $uri = "https://github.com/openai/codex/releases/download/$($pin.tag)/$($asset.name)"
+            Invoke-WebRequest -Uri $uri -OutFile (Join-Path $directory $asset.name)
+          }
+          $sourceFile = Join-Path $directory $source.name
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
+              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+            throw 'Public Cygwin source archive mismatch.'
+          }
+          $archiveFile = Join-Path $directory $pin.name
+          if ((Get-Item $archiveFile).Length -ne $pin.bytes -or
+              (Get-FileHash $archiveFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
+            throw 'Pinned Cygwin archive mismatch.'
+          }
+          "VOICE_WINDOWS_TARGET=x86_64-pc-windows-msvc" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VOICE_CYGWIN_ARCHIVE=$archiveFile" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          # Use the normal drive path so the pinned-image helper can reject reparse points.
+          & ./.github/scripts/setup-voice-windows.ps1 -Target x86_64-pc-windows-msvc -SnapshotArchive $archiveFile -PkgconfImage 'R:\provisioned\pkgconf\3.0.6-x64\native'
+
+      - name: Provide a working python3 launcher for native actions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          $venv = Join-Path $env:CI_BUILD_ROOT 'tools/python-native'
+          # Use Python's venv launcher, which retains the base interpreter and DLL paths.
+          # A renamed copy of the base python.exe outside its installation is insufficient.
+          & $python -m venv --without-pip --system-site-packages $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the Python launcher environment.' }
+          $shim = Join-Path $venv 'Scripts'
+          Copy-Item -LiteralPath (Join-Path $shim 'python.exe') -Destination (Join-Path $shim 'python3.exe') -Force
+          & (Join-Path $shim 'python3.exe') -c 'import sys, ssl; print(sys.executable); print(sys.version)'
+          if ($LASTEXITCODE -ne 0) { throw 'The python3 launcher failed.' }
+          "PATH=$shim;$env:PATH" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CODEX_PYTHON_BIN=$shim" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare checksum-pinned zstd for local package archives
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from codex_package.dotslash import fetch_dotslash_executable
+          from codex_package.targets import TARGET_SPECS
+          # The zstd DotSlash manifest has leading comments; the shared fetcher's
+          # JSON reader only strips its shebang. Normalize a separate evidence copy.
+          lines = Path('.github/workflows/zstd').read_text(encoding='utf-8').splitlines()
+          while lines and (not lines[0].strip() or lines[0].lstrip().startswith(('#!', '//'))):
+              lines.pop(0)
+          manifest = Path(os.environ['RUNNER_TEMP']) / 'native-codex-evidence' / 'zstd-manifest.json'
+          manifest.write_text(json.dumps(json.loads('\n'.join(lines))), encoding='utf-8')
+          path = fetch_dotslash_executable(TARGET_SPECS['x86_64-pc-windows-msvc'], manifest_path=manifest, artifact_label='zstd', cache_key='zstd-windows-x64', dest_name='zstd.exe')
+          print(path)
+          '@
+          $zstd = & python3.exe -c $code
+          if ($LASTEXITCODE -ne 0 -or -not $zstd) { throw 'Could not prepare checksum-pinned zstd.' }
+          $zstd = $zstd.Trim()
+          if (-not ([IO.Path]::GetFullPath($zstd)).StartsWith('R:\', [StringComparison]::OrdinalIgnoreCase)) { throw 'zstd must be cached on the bounded build volume.' }
+          & $zstd --version
+          if ($LASTEXITCODE -ne 0) { throw 'zstd failed to execute.' }
+          Split-Path -Parent $zstd | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compute and verify the native Windows Bazel path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./.github/scripts/compute-bazel-windows-path.ps1
+          # The upstream filter recognizes hosted Visual Studio paths but misses C:\BuildTools.
+          $derived = Get-Content $env:GITHUB_ENV | Where-Object { $_.StartsWith('CODEX_BAZEL_WINDOWS_PATH=') } | Select-Object -Last 1
+          if (-not $derived) { throw 'Stable Windows Bazel PATH was not generated.' }
+          $entries = @(
+            (Join-Path $env:VCToolsInstallDir 'bin/HostX64/x64'),
+            (Join-Path $env:WindowsSdkBinPath "$($env:WindowsSDKVersion.TrimEnd('\'))/x64"),
+            $env:CODEX_PYTHON_BIN
+          ) + ($derived.Substring('CODEX_BAZEL_WINDOWS_PATH='.Length) -split ';')
+          $stablePath = ($entries | Where-Object { $_ } | Select-Object -Unique) -join ';'
+          $env:PATH = $stablePath
+          foreach ($command in @('cl.exe','link.exe','rc.exe','python3.exe','git.exe','node.exe','pwsh.exe')) {
+            Write-Host "$command -> $((Get-Command $command -ErrorAction Stop).Source)"
+          }
+          & python3.exe -c 'import ssl, sys; print(sys.version)'
+          if ($LASTEXITCODE -ne 0) { throw 'Python failed under the Bazel action PATH.' }
+          "CODEX_BAZEL_WINDOWS_PATH=$stablePath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'Bazel target: //:windows_x86_64_msvc; host: //:local_windows_msvc'
+
+      - name: Run native Windows Bazel tests
+        shell: bash
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: '1'
+        run: |
+          set -euo pipefail
+          cd "$(cygpath -u "$CODEX_BAZEL_WORKSPACE")"
+          targets=(
+            //...
+            -//third_party/v8:all
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+          )
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            -- \
+            test \
+            --platforms=//:windows_x86_64_msvc \
+            --action_env="SystemRoot=${SYSTEMROOT:?Windows directory missing}" \
+            --host_action_env="SystemRoot=${SYSTEMROOT}" \
+            --test_env="SystemRoot=${SYSTEMROOT}" \
+            --action_env="PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:?Windows host architecture missing}" \
+            --host_action_env="PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}" \
+            --disk_cache=R:/bazel-disk-cache \
+            --experimental_disk_cache_gc_max_size=200G \
+            --experimental_disk_cache_gc_max_age=14d \
+            --jobs=56 \
+            --local_resources=cpu=56 \
+            --local_test_jobs=56 \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings \
+            --build_metadata=COMMIT_SHA="$SOURCE_SHA" \
+            --build_metadata=TAG_windows_native_private=true \
+            -- \
+            "${targets[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/native-codex-evidence/bazel.log"
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Prepare V8 inputs for the x64 Windows package target
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build the x64 Windows npm handoff package
+        shell: bash
+        env:
+          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "codex-cli"))')"
+          target=x86_64-pc-windows-msvc
+          handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
+          mkdir -p "$handoff"
+          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "$target" \
+            --bin codex --bin codex-app-server --bin codex-code-mode-host \
+            --bin codex-command-runner --bin codex-windows-sandbox-setup \
+            2>&1 | tee "$handoff/build.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          release="$CARGO_TARGET_DIR/$target/release"
+          python3 scripts/build_codex_package.py \
+            --target "$target" --variant codex --package-version "$version" \
+            --entrypoint-bin "$release/codex.exe" \
+            --code-mode-host-bin "$release/codex-code-mode-host.exe" \
+            --codex-command-runner-bin "$release/codex-command-runner.exe" \
+            --codex-windows-sandbox-setup-bin "$release/codex-windows-sandbox-setup.exe" \
+            --archive-output "$handoff/codex-package-$target.tar.gz" \
+            --archive-output "$handoff/codex-package-$target.tar.zst" \
+            2>&1 | tee "$handoff/package.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          sha256sum "$handoff"/* > "$handoff/SHA256SUMS"
+
+      - name: Import and verify the ARM64 MSVC package environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vsDevCmd = 'C:\BuildTools\Common7\Tools\VsDevCmd.bat'
+          $envLines = & $env:ComSpec /d /c ('"{0}" -no_logo -arch=arm64 -host_arch=x64 >nul && set' -f $vsDevCmd)
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 VsDevCmd failed.' }
+          $exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')
+          foreach ($line in $envLines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1]) {
+              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          if ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or $env:VSCMD_ARG_TGT_ARCH -ne 'arm64') { throw 'Expected x64 host / ARM64 target for the package build.' }
+          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/arm64-probe'
+          New-Item -ItemType Directory -Force $probe | Out-Null
+          '#include <windows.h>', 'int main(void) { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content (Join-Path $probe 'probe.c')
+          & cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe/probe.obj" "/Fe$probe/probe.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 MSVC SDK compilation failed.' }
+          $bytes = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0xaa64) { throw 'Compiler did not produce an ARM64 PE executable.' }
+          & rustup target add --toolchain 1.95.0-x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 Rust standard library setup failed.' }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$((Get-Command link.exe).Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "ARM64 compiler: $((Get-Command cl.exe).Source)"
+
+      - name: Prepare V8 inputs for the ARM64 Windows package target
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-pc-windows-msvc
+
+      - name: Build the ARM64 Windows npm handoff package
+        shell: bash
+        env:
+          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "codex-cli"))')"
+          target=aarch64-pc-windows-msvc
+          handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
+          mkdir -p "$handoff"
+          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "$target" \
+            --bin codex --bin codex-app-server --bin codex-code-mode-host \
+            --bin codex-command-runner --bin codex-windows-sandbox-setup \
+            2>&1 | tee "$handoff/build.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          release="$CARGO_TARGET_DIR/$target/release"
+          python3 scripts/build_codex_package.py \
+            --target "$target" --variant codex --package-version "$version" \
+            --entrypoint-bin "$release/codex.exe" \
+            --code-mode-host-bin "$release/codex-code-mode-host.exe" \
+            --codex-command-runner-bin "$release/codex-command-runner.exe" \
+            --codex-windows-sandbox-setup-bin "$release/codex-windows-sandbox-setup.exe" \
+            --archive-output "$handoff/codex-package-$target.tar.gz" \
+            --archive-output "$handoff/codex-package-$target.tar.zst" \
+            2>&1 | tee "$handoff/package.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          sha256sum "$handoff"/* > "$handoff/SHA256SUMS"
+
+      - name: Write Windows handoff manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-codex-evidence'
+          $bazelLog = Join-Path $evidence 'bazel.log'
+          if (-not (Test-Path -LiteralPath $bazelLog)) { throw 'Bazel evidence is missing.' }
+          $digest = (Get-FileHash -LiteralPath $bazelLog -Algorithm SHA256).Hash.ToLowerInvariant()
+          $x64Build = Join-Path $evidence 'windows-handoff/x86_64-pc-windows-msvc/build.log'
+          $x64Package = Join-Path $evidence 'windows-handoff/x86_64-pc-windows-msvc/package.log'
+          $arm64Build = Join-Path $evidence 'windows-handoff/aarch64-pc-windows-msvc/build.log'
+          $arm64Package = Join-Path $evidence 'windows-handoff/aarch64-pc-windows-msvc/package.log'
+          foreach ($path in @($x64Build, $x64Package, $arm64Build, $arm64Package)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Windows package evidence is missing: $path" }
+          }
+          [ordered]@{
+            schema = 1
+            commit = $env:SOURCE_SHA
+            producer = 'windows-private-controller'
+            status = 'success'
+            checks = @(
+              [ordered]@{ name = 'windows-bazel'; exit_code = 0; log_sha256 = $digest }
+              [ordered]@{ name = 'windows-package-x64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $x64Build -Algorithm SHA256).Hash.ToLowerInvariant() }
+              [ordered]@{ name = 'windows-package-x64-stage'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $x64Package -Algorithm SHA256).Hash.ToLowerInvariant() }
+              [ordered]@{ name = 'windows-package-arm64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $arm64Build -Algorithm SHA256).Hash.ToLowerInvariant() }
+              [ordered]@{ name = 'windows-package-arm64-stage'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $arm64Package -Algorithm SHA256).Hash.ToLowerInvariant() }
+            )
+          } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'windows-manifest.json')
+
+      - name: Record source and runner evidence
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\native-codex-evidence" | Out-Null
+          [ordered]@{
+            sourceSha = $env:SOURCE_SHA
+            machine = $env:COMPUTERNAME
+            runner = $env:RUNNER_NAME
+            target = 'x86_64-pc-windows-msvc'
+            host = 'local_windows_msvc'
+            workspaceRoot = 'H:/codex-ci'
+            bazelBuildRoot = 'R:/'
+            backingImage = 'H:/CodexRunnerVolume/build-20tb.vhdx'
+          } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\native-codex-evidence\identity.json"
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-codex-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/native-codex-evidence
+          if-no-files-found: error
+
+      - name: Upload Windows package handoff
+        if: success()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-handoff-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/native-codex-evidence/windows-handoff
+            ${{ runner.temp }}/native-codex-evidence/windows-manifest.json
+          if-no-files-found: error
+          retention-days: 14

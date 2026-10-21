@@ -252,12 +252,11 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout.
-    if: github.repository == 'holyglory/codex' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 40
-    runs-on: [self-hosted, Windows, X64, codex-win-msvc]
-    env:
-      # Pre-provisioned by the runner administrator; never format a host volume.
-      CODEX_WINDOWS_BUILD_ROOT: H:/codex-ci
+    runs-on:
+      group: ${{ github.event.repository.name }}-runners
+      labels: ${{ github.event.repository.name }}-windows-x64
     name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
     environment:
       name: bazel
