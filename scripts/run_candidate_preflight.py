@@ -102,8 +102,23 @@ def run_preflight(root: Path) -> None:
         "suite::models_cache_ttl::",
         "suite::search_tool::",
     ):
+        family_command = command
+        if family == "suite::v2::thread_reconnect::":
+            # These restart tests own an app-server mock and are sensitive to
+            # unrelated package binaries being scheduled in the same nextest
+            # invocation. Keep their package boundary identical to the
+            # standalone app-server acceptance while retaining the broad
+            # package union for the other producer/consumer families.
+            family_command = [
+                "just",
+                "test",
+                "--locked",
+                "-p",
+                "codex-app-server",
+                "--no-tests=fail",
+            ]
         subprocess.run(
-            [*command, "-E", f"test({family})"],
+            [*family_command, "-E", f"test({family})"],
             cwd=root / "codex-rs",
             check=True,
         )
