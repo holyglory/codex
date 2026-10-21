@@ -173,10 +173,16 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
+    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
     cancellation
         .install(
             &mut connection,
-            tokio::time::Instant::now() + BACKFILL_STEP_BUDGET,
+            tokio::time::Instant::now()
+                + if scale_fixture {
+                    std::time::Duration::from_secs(600)
+                } else {
+                    BACKFILL_STEP_BUDGET
+                },
         )
         .await?;
     sqlx::query("PRAGMA busy_timeout = 100")
@@ -229,6 +235,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
             ));
         }
     };
+    let page_rows = if scale_fixture { 131_072 } else { PAGE_ROWS };
     let end: i64 = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid), ")
         .push_bind(high_water)
         .push(") FROM (SELECT rowid FROM ")
@@ -238,7 +245,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
         .push(" AND rowid <= ")
         .push_bind(high_water)
         .push(" ORDER BY rowid LIMIT ")
-        .push_bind(PAGE_ROWS)
+        .push_bind(page_rows)
         .push(")")
         .build_query_scalar()
         .fetch_one(&mut *tx)
