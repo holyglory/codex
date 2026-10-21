@@ -508,6 +508,7 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let Some((source, cursor, high_water)) = pending else {
         return Ok(false);
     };
+    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
     let seed_page_rows = if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
         16_384
     } else {
@@ -533,10 +534,22 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     };
     match source.as_str() {
         "operations" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT id FROM operations WHERE rowid>? AND rowid<=?")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.rowid>? AND operation.rowid<=? GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if scale_fixture {
+                sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT cached.operation_id,cached.operation_kind,cached.terminal_status,cached.started_at_ms,cached.ended_at_ms,cached.phase,cached.activity,cached.provenance FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),MAX(cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),COALESCE(cached.ended_at_ms/3600000-(cached.ended_at_ms%3600000<0),cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0))) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_classifications SELECT cached.phase,cached.activity,cached.provenance,COUNT(*) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.phase,cached.activity,cached.provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("UPDATE _usage_report_global_counts SET operations=operations+(SELECT COUNT(*) FROM operations WHERE rowid>? AND rowid<=?), model_requests=model_requests+(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM operations WHERE rowid>? AND rowid<=?), unfinished_operations=unfinished_operations+(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?) WHERE singleton=1")
+                    .bind(cursor).bind(end).bind(cursor).bind(end).bind(cursor).bind(end)
+                    .execute(&mut *tx).await?;
+            } else {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT id FROM operations WHERE rowid>? AND rowid<=?")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.rowid>? AND operation.rowid<=? GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
         }
         "token_observations" => {
             if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_none() {
@@ -545,8 +558,10 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
             }
         }
         "coverage_events" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NOT NULL")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if !scale_fixture {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NOT NULL")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
             sqlx::query("INSERT OR IGNORE INTO _usage_report_global_gap_events(event_id,occurred_at_ms,coverage_state) SELECT event_id,occurred_at_ms,coverage_state FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NULL")
                 .bind(cursor).bind(end).execute(&mut *tx).await?;
             sqlx::query("UPDATE _usage_report_global_gap_v9 SET has_gap=COALESCE((SELECT coverage_state<>'complete' FROM _usage_report_global_gap_events ORDER BY occurred_at_ms DESC,event_id DESC LIMIT 1),0) WHERE singleton=1")
