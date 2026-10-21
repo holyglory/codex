@@ -282,12 +282,15 @@ jobs:
             -//third_party/v8:all
             -//codex-rs/v8-poc:v8-poc-unit-tests
           )
+          # The local wrapper omits CI configs without BuildBuddy credentials.
+          # Retain the repository's native Windows policy and override caches below.
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --print-failed-test-logs \
             --windows-msvc-host-platform \
             -- \
             test \
+            --config=ci-windows \
             --keep_going \
             --platforms=//:windows_x86_64_msvc \
             --action_env="SystemRoot=${SYSTEMROOT:?Windows directory missing}" \
