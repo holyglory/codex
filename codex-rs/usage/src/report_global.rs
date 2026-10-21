@@ -850,6 +850,11 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         drop(connection);
         if global_operations == 0 {
             snapshot_scale_global(pool).await?;
+        } else if global_operations >= 1_000_000 {
+            let mut connection = pool.acquire().await?;
+            sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+                .execute(&mut *connection)
+                .await?;
         }
     }
     let seed_progress = step_seed_page(pool).await?;
