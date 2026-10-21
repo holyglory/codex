@@ -122,8 +122,39 @@ def run_preflight(root: Path) -> None:
             cwd=root / "codex-rs",
             check=True,
         )
+    # Maintenance recovery cases share a daemon checkpoint and can contend
+    # when nextest schedules the family together. Run each named case in its
+    # own app-server invocation so the retry budget applies to the case that
+    # actually flakes, while preserving coverage of every required scenario.
+    maintenance_tests = (
+        "daemon_update_recovery::maintenance_tests::maintenance_corrupt_checkpoint_is_retained_without_claiming_restoration",
+        "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::owner_exits_before_ready",
+        "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::legacy_child_keeps_its_model",
+        "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::continue_both",
+        "daemon_update_recovery::maintenance_tests::managed_maintenance_cancel_reopens_admission_and_commit_restores_threads",
+        "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::stop_child_after_ready",
+        "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::stop_while_restoration_waits",
+        "daemon_update_recovery::maintenance_tests::maintenance_blocked_snapshot_reopens_server_without_killing_work",
+    )
+    for test_name in maintenance_tests:
+        subprocess.run(
+            [
+                "just",
+                "test",
+                "--locked",
+                "-p",
+                "codex-app-server",
+                "--no-tests=fail",
+                "-E",
+                f"test({test_name})",
+            ],
+            cwd=root / "codex-rs",
+            check=True,
+        )
     for capability in manifest["capabilities"]:
         for selection in capability["filters"]:
+            if selection == "test(daemon_update_recovery::maintenance_tests::)":
+                continue
             print(
                 json.dumps({"capability": capability["id"], "selection": selection}),
                 flush=True,
