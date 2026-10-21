@@ -858,6 +858,18 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         }
     }
     let seed_progress = step_seed_page(pool).await?;
+    if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        let mut connection = pool.acquire().await?;
+        let global_operations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _usage_report_global_operations")
+                .fetch_one(&mut *connection)
+                .await?;
+        if global_operations >= 1_000_000 {
+            sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+                .execute(&mut *connection)
+                .await?;
+        }
+    }
     let operation_progress = step_operation_page(pool).await?;
     let hour_progress = step_hour_page(pool).await?;
     if seed_progress || operation_progress || hour_progress {
