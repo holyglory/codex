@@ -172,6 +172,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Bazel's injected repository must use the normal drive path too.
+          $env:RUNNER_TEMP = [IO.Path]::GetFullPath($env:RUNNER_TEMP).Replace('H:\codex-ci\','R:\')
+          if (-not $env:RUNNER_TEMP.StartsWith('R:\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Voice tools must use the bounded build volume.' }
           $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
           if (-not $env:SystemRoot -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Expected the native x64 Windows OS environment.' }
           "VOICE_WINDOWS_SYSTEM_ROOT=$env:SystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
