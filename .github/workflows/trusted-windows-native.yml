@@ -288,6 +288,7 @@ jobs:
             --windows-msvc-host-platform \
             -- \
             test \
+            --keep_going \
             --platforms=//:windows_x86_64_msvc \
             --action_env="SystemRoot=${SYSTEMROOT:?Windows directory missing}" \
             --host_action_env="SystemRoot=${SYSTEMROOT}" \
