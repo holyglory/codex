@@ -508,6 +508,11 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let Some((source, cursor, high_water)) = pending else {
         return Ok(false);
     };
+    let seed_page_rows = if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        16_384
+    } else {
+        GLOBAL_SEED_PAGE_ROWS
+    };
     let end: i64 = match source.as_str() {
         "operations" | "token_observations" | "coverage_events" | "activity_spans" => {
             let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid), ");
@@ -520,7 +525,7 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
                 .push(" AND rowid <= ")
                 .push_bind(high_water)
                 .push(" ORDER BY rowid LIMIT ")
-                .push_bind(GLOBAL_SEED_PAGE_ROWS)
+                .push_bind(seed_page_rows)
                 .push(")");
             query.build_query_scalar().fetch_one(&mut *tx).await?
         }
