@@ -1,5 +1,5 @@
 # Called only by the owner-approved private controller, pinned to an exact commit.
-# Public pushes and fork PRs cannot enter this workflow or access its private runner.
+# The job excludes public events; runner access belongs to the private caller.
 name: Trusted native Windows MSVC
 
 on:
@@ -273,7 +273,7 @@ jobs:
       - name: Run native Windows Bazel tests
         shell: bash
         env:
-          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: '1'
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
         run: |
           set -euo pipefail
           cd "$(cygpath -u "$CODEX_BAZEL_WORKSPACE")"
