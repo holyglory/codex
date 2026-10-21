@@ -166,7 +166,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         sqlx::query("INSERT INTO seed WITH RECURSIVE sequence(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM sequence WHERE n+1 < ?2) SELECT n FROM sequence")
             .bind(start).bind(end).execute(&mut *tx).await.expect("seed page");
         sqlx::query("INSERT INTO operations(id,process_id,thread_id,agent_id,operation_kind,started_at_ms,taxonomy_version,phase,activity,activity_state,attribution_provenance)
-            SELECT printf('10000000-0000-4000-8000-%012x',n),?,printf('scale-%02d',n%63),printf('agent-%02d',n%63),'model_request',n*10000,1,
+            SELECT printf('10000000-0000-4000-8000-%012x',n),?,printf('scale-%02d',n%4),printf('agent-%02d',n%4),'model_request',n*10000,1,
               CASE n%4 WHEN 0 THEN 'implementation' WHEN 1 THEN 'planning' WHEN 2 THEN 'testing' ELSE 'reporting' END,
               CASE n%4 WHEN 0 THEN 'coding' WHEN 1 THEN 'repository_analysis' WHEN 2 THEN 'integration_testing' ELSE 'review_feedback' END,
               'model_active','agent_declared' FROM seed")
