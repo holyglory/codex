@@ -518,9 +518,9 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         return Ok(false);
     };
     if scale_fixture && source == "operations" && cursor == 0 {
-        sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,provenance FROM _usage_report_operations")
+        sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,attribution_provenance AS provenance FROM _usage_report_operations")
             .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+        sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,attribution_provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
             .execute(&mut *tx).await?;
         sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
             .execute(&mut *tx).await?;
@@ -560,11 +560,11 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     match source.as_str() {
         "operations" => {
             if scale_fixture {
-                sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT cached.operation_id,cached.operation_kind,cached.terminal_status,cached.started_at_ms,cached.ended_at_ms,cached.phase,cached.activity,cached.provenance FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?")
+                sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT cached.operation_id,cached.operation_kind,cached.terminal_status,cached.started_at_ms,cached.ended_at_ms,cached.phase,cached.activity,cached.attribution_provenance AS provenance FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?")
                     .bind(cursor).bind(end).execute(&mut *tx).await?;
                 sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),MAX(cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),COALESCE(cached.ended_at_ms/3600000-(cached.ended_at_ms%3600000<0),cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0))) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
                     .bind(cursor).bind(end).execute(&mut *tx).await?;
-                sqlx::query("INSERT INTO _usage_report_global_classifications SELECT cached.phase,cached.activity,cached.provenance,COUNT(*) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.phase,cached.activity,cached.provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+                sqlx::query("INSERT INTO _usage_report_global_classifications SELECT cached.phase,cached.activity,cached.attribution_provenance,COUNT(*) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.phase,cached.activity,cached.attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
                     .bind(cursor).bind(end).execute(&mut *tx).await?;
                 sqlx::query("UPDATE _usage_report_global_counts SET operations=operations+(SELECT COUNT(*) FROM operations WHERE rowid>? AND rowid<=?), model_requests=model_requests+(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM operations WHERE rowid>? AND rowid<=?), unfinished_operations=unfinished_operations+(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?) WHERE singleton=1")
                     .bind(cursor).bind(end).bind(cursor).bind(end).bind(cursor).bind(end)
@@ -615,9 +615,9 @@ async fn snapshot_scale_global(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .install(&mut connection, Instant::now() + Duration::from_secs(600))
         .await?;
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,provenance FROM _usage_report_operations")
+    sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,attribution_provenance AS provenance FROM _usage_report_operations")
         .execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+    sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,attribution_provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
         .execute(&mut *tx).await?;
