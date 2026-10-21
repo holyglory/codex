@@ -91,14 +91,24 @@ async fn dropped_report_stops_sql_without_waiting_for_the_deadline() {
         .expect("capture alongside report");
     task.abort();
     assert!(task.await.expect_err("cancelled report").is_cancelled());
-    let (busy, _, _): (i64, i64, i64) = tokio::time::timeout(
-        Duration::from_secs(1),
-        sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)").fetch_one(&fixture.store.pool),
-    )
+    // Aborting the task drops the Rust future before SQLx's connection worker
+    // has necessarily drained its rollback and close commands. A checkpoint
+    // may report SQLITE_BUSY immediately while that cleanup is in progress.
+    // Require it to finish within the same one-second budget.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+                .fetch_one(&fixture.store.pool)
+                .await
+                .expect("checkpoint");
+            if busy == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
     .await
-    .expect("snapshot released promptly")
-    .expect("checkpoint");
-    assert_eq!(busy, 0);
+    .expect("snapshot released promptly");
     assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
     assert_eq!(
         fixture

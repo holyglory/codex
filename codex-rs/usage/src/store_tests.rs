@@ -720,7 +720,7 @@ async fn migration_failure_is_preserved_and_display_is_redacted() {
     pool.close().await;
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[tokio::test]
 async fn unsupported_platform_fails_closed_before_filesystem_access() {
     let error = match UsageStore::open(Path::new("unused")).await {

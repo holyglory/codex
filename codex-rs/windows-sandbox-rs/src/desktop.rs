@@ -61,8 +61,11 @@ use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_SWITCHDESKTOP;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITE_DAC;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITE_OWNER;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITEOBJECTS;
+use windows_sys::Win32::System::StationsAndDesktops::GetProcessWindowStation;
+use windows_sys::Win32::System::StationsAndDesktops::GetUserObjectInformationW;
 use windows_sys::Win32::System::StationsAndDesktops::HDESK;
 use windows_sys::Win32::System::StationsAndDesktops::OpenDesktopW;
+use windows_sys::Win32::System::StationsAndDesktops::UOI_NAME;
 
 const PRIVATE_DESKTOP_PREFIX: &str = "CodexSandboxDesktop-";
 
@@ -145,6 +148,49 @@ impl DesktopPolicy {
     }
 }
 
+// CreateDesktopW and OpenDesktopW use the caller's window station. Services
+// may use a non-interactive station instead of Winsta0, so the child must use
+// that same station with the existing private desktop and its access policy.
+fn startup_desktop_name(name: &str) -> Result<Vec<u16>> {
+    let station = unsafe { GetProcessWindowStation() };
+    if station.is_null() {
+        anyhow::bail!("GetProcessWindowStation failed: {}", unsafe {
+            GetLastError()
+        });
+    }
+    let mut bytes_needed = 0;
+    unsafe {
+        GetUserObjectInformationW(station, UOI_NAME, ptr::null_mut(), 0, &mut bytes_needed);
+    }
+    if bytes_needed == 0 || bytes_needed > 65536 {
+        anyhow::bail!("invalid window station name length");
+    }
+    let mut station_name = vec![0_u16; (bytes_needed as usize).div_ceil(2)];
+    if unsafe {
+        GetUserObjectInformationW(
+            station,
+            UOI_NAME,
+            station_name.as_mut_ptr().cast(),
+            bytes_needed,
+            &mut bytes_needed,
+        )
+    } == 0
+    {
+        anyhow::bail!("GetUserObjectInformationW failed: {}", unsafe {
+            GetLastError()
+        });
+    }
+    let end = station_name
+        .iter()
+        .position(|character| *character == 0)
+        .ok_or_else(|| anyhow::anyhow!("unterminated window station name"))?;
+    let station_name = String::from_utf16(&station_name[..end])?;
+    if station_name.is_empty() {
+        anyhow::bail!("empty window station name");
+    }
+    Ok(to_wide(format!("{station_name}\\{name}")))
+}
+
 pub struct LaunchDesktop {
     _private_desktop: PrivateDesktop,
     startup_name: Vec<u16>,
@@ -215,7 +261,7 @@ impl LaunchDesktop {
 
     pub fn prepare(logs_base_dir: Option<&Path>) -> Result<Self> {
         let private_desktop = PrivateDesktop::create(logs_base_dir)?;
-        let startup_name = to_wide(format!("Winsta0\\{}", private_desktop.name));
+        let startup_name = startup_desktop_name(&private_desktop.name)?;
         Ok(Self {
             _private_desktop: private_desktop,
             startup_name,
@@ -251,7 +297,7 @@ impl LaunchDesktop {
                 handle,
                 name: name.to_owned(),
             },
-            startup_name: to_wide(format!("Winsta0\\{name}")),
+            startup_name: startup_desktop_name(name)?,
         })
     }
 

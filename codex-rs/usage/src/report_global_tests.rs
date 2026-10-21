@@ -5,6 +5,7 @@ use crate::NewActivitySpanEvent;
 use pretty_assertions::assert_eq;
 
 type RequestHour = (i64, Option<i64>, Option<i64>, i64, i64);
+type TimeHour = (i64, String, String, i64, i64, i64, i64);
 
 #[derive(Debug, Eq, PartialEq)]
 struct GlobalProjectionSnapshot {
@@ -13,7 +14,7 @@ struct GlobalProjectionSnapshot {
     unpriced: Vec<String>,
     gap: i64,
     gap_events: Vec<(String, i64, String)>,
-    time: Vec<(i64, String, String, i64, i64, i64, i64)>,
+    time: Vec<TimeHour>,
     tools: Vec<(i64, String, i64, i64, i64)>,
     request: (Option<i64>, Option<i64>, i64, i64),
     request_hours: Vec<RequestHour>,
