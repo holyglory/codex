@@ -539,8 +539,10 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
                 .bind(cursor).bind(end).execute(&mut *tx).await?;
         }
         "token_observations" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT COALESCE(request.operation_id,tool.operation_id) FROM token_observations token LEFT JOIN model_requests request ON request.id=token.model_request_id LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id WHERE token.rowid>? AND token.rowid<=? AND COALESCE(request.operation_id,tool.operation_id) IS NOT NULL")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_none() {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT COALESCE(request.operation_id,tool.operation_id) FROM token_observations token LEFT JOIN model_requests request ON request.id=token.model_request_id LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id WHERE token.rowid>? AND token.rowid<=? AND COALESCE(request.operation_id,tool.operation_id) IS NOT NULL")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
         }
         "coverage_events" => {
             sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NOT NULL")
