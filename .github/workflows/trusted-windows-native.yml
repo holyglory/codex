@@ -303,7 +303,8 @@ jobs:
             --experimental_disk_cache_gc_max_age=14d \
             --jobs=56 \
             --local_resources=cpu=56 \
-            --local_test_jobs=56 \
+            --local_test_jobs=8 \
+            --test_env=RUST_TEST_THREADS=4 \
             --test_tag_filters=-argument-comment-lint \
             --test_verbose_timeout_warnings \
             --build_metadata=COMMIT_SHA="$SOURCE_SHA" \
