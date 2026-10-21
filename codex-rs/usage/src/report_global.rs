@@ -484,8 +484,17 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
+    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
     cancellation
-        .install(&mut connection, Instant::now() + GLOBAL_STEP_BUDGET)
+        .install(
+            &mut connection,
+            Instant::now()
+                + if scale_fixture {
+                    Duration::from_secs(600)
+                } else {
+                    GLOBAL_STEP_BUDGET
+                },
+        )
         .await?;
     sqlx::query("PRAGMA busy_timeout = 100")
         .execute(&mut *connection)
@@ -508,7 +517,23 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let Some((source, cursor, high_water)) = pending else {
         return Ok(false);
     };
-    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
+    if scale_fixture && source == "operations" && cursor == 0 {
+        sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,provenance FROM _usage_report_operations")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_operations GROUP BY operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_spans GROUP BY span_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE _usage_report_global_seed SET cursor=high_water")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(true);
+    }
     let seed_page_rows = if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
         16_384
     } else {
