@@ -607,6 +607,34 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     Ok(true)
 }
 
+async fn snapshot_scale_global(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(&mut connection, Instant::now() + Duration::from_secs(600))
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,provenance FROM _usage_report_operations")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_operations GROUP BY operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_spans GROUP BY span_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+        .execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE _usage_report_global_seed SET cursor=high_water")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
@@ -813,6 +841,17 @@ async fn finish_step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        let mut connection = pool.acquire().await?;
+        let global_operations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _usage_report_global_operations")
+                .fetch_one(&mut *connection)
+                .await?;
+        drop(connection);
+        if global_operations == 0 {
+            snapshot_scale_global(pool).await?;
+        }
+    }
     let seed_progress = step_seed_page(pool).await?;
     let operation_progress = step_operation_page(pool).await?;
     let hour_progress = step_hour_page(pool).await?;
