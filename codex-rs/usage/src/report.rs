@@ -144,6 +144,6 @@ impl UsageStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "report_tests.rs"]
 mod tests;

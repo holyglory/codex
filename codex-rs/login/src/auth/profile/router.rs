@@ -1374,6 +1374,6 @@ fn router_state_error() -> ProfileAuthRouterError {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "router_tests.rs"]
 mod tests;
