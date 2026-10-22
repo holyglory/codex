@@ -821,10 +821,14 @@ async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> R
     assert!(server.try_wait()?.is_none());
     start_thread(&mut client, /*id*/ 3, json!({})).await?;
     assert!(!daemon_recovery_file_path(home.path()).exists());
-    drop(writer);
+    // Remove the fixture path before releasing its current reader. Otherwise
+    // the recorder's immediate retry can reopen the FIFO and block again.
     std::fs::remove_file(compressed)?;
+    drop(writer);
     request_shutdown(&server, &socket_path).await?;
-    wait_success(&mut server).await?;
+    wait_success(&mut server)
+        .await
+        .context("server did not shut down after releasing the blocked rollout fixture")?;
     Ok(())
 }
 

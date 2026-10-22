@@ -21,7 +21,9 @@ fn inherited_home_and_explicit_codex_home() {
     let explicit = temp.path().join("explicit");
     std::fs::create_dir(&inherited).unwrap();
     std::fs::create_dir(&explicit).unwrap();
-    let mut expected = inherited.canonicalize().unwrap().join(".codex");
+    // The inherited default preserves HOME's spelling, including macOS's /var
+    // symlink. Only an explicit CODEX_HOME is canonicalized by the resolver.
+    let mut expected = inherited.join(".codex");
     #[cfg(unix)]
     // SAFETY: geteuid has no arguments or failure mode.
     if unsafe { libc::geteuid() } == 0 {

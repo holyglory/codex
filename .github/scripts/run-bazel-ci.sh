@@ -305,10 +305,15 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on authenticated remote
-  # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
-  post_config_bazel_args+=(--jobs=8)
+  # Keep the cross job's serial Rust-test behavior after replacing its remote
+  # config with native MSVC. Hosted Windows runners cannot fit several large
+  # core/app-server/TUI compilers and linkers in memory at once.
+  post_config_bazel_args+=(--test_env=RUST_TEST_THREADS=1)
+  if [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
+    post_config_bazel_args+=(--jobs=2 --local_test_jobs=2)
+  else
+    post_config_bazel_args+=(--jobs=8)
+  fi
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then

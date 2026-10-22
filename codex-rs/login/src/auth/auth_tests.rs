@@ -34,6 +34,51 @@ const WORKSPACE_ID_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174000";
 const WORKSPACE_ID_SECOND_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174001";
 const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
 
+#[test]
+fn testing_auth_managers_own_isolated_homes_until_the_last_reference_drops() {
+    let first = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("first"));
+    let second = AuthManager::from_optional_auth_for_testing(None);
+    let overridden = AuthManager::from_auth_for_testing_with_agent_identity_authapi_base_url(
+        CodexAuth::from_api_key("overridden"),
+        "http://localhost".to_string(),
+    );
+    let homes = [
+        first.codex_home.clone(),
+        second.codex_home.clone(),
+        overridden.codex_home.clone(),
+    ];
+    for home in &homes {
+        assert!(home.is_absolute());
+        assert!(home.is_dir());
+        let lock = crate::auth::credential_lock::CredentialLock::new(home.clone());
+        let guard = lock.acquire().expect("create credential lock in test home");
+        drop(guard);
+    }
+    assert_ne!(homes[0], homes[1]);
+    assert_ne!(homes[0], homes[2]);
+    assert_ne!(homes[1], homes[2]);
+    let retained = Arc::clone(&first);
+    drop(first);
+    assert!(homes[0].is_dir());
+    drop(retained);
+    drop(second);
+    drop(overridden);
+    for home in homes {
+        assert!(!home.exists());
+    }
+}
+
+#[test]
+fn testing_auth_manager_preserves_a_caller_owned_home() {
+    let home = tempdir().expect("create caller-owned home");
+    let manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::from_api_key("caller-owned"),
+        home.path().to_path_buf(),
+    );
+    drop(manager);
+    assert!(home.path().is_dir());
+}
+
 struct CapturedLogWriter {
     buffer: Arc<std::sync::Mutex<Vec<u8>>>,
 }

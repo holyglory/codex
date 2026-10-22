@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "Fixture setup failures must fail the test immediately."
+)]
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
