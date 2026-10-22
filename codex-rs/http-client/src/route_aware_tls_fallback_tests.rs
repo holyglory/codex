@@ -27,13 +27,45 @@ use crate::client::RequestLogging;
 use crate::client::TransportClient;
 use crate::tls_backend_fallback::should_retry_with_rustls;
 
-const PROTOCOL_VERSION_TLS_ALERT: &[u8] = &[21, 3, 3, 0, 2, 2, 70];
-
 type SuccessfulTlsFallbackServer = (
     String,
     TransportClient,
     mpsc::Receiver<io::Result<Vec<String>>>,
 );
+
+fn reject_protocol_version(stream: &mut std::net::TcpStream) -> io::Result<()> {
+    // Consume the complete record before closing; a single TCP read can leave
+    // unread ClientHello bytes and reset the connection instead of delivering an alert.
+    let mut header = [0_u8; 5];
+    stream.read_exact(&mut header)?;
+    let length = usize::from(u16::from_be_bytes([header[3], header[4]]));
+    if header[0] != 22 || !(4..=16_384).contains(&length) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a bounded TLS handshake record",
+        ));
+    }
+    let mut hello = vec![0_u8; length];
+    stream.read_exact(&mut hello)?;
+    if hello[0] != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ClientHello",
+        ));
+    }
+    // No ServerHello has selected a version yet, so use the client's record version.
+    let alert = [21, header[1], header[2], 0, 2, 2, 70];
+    eprintln!(
+        "protocol rejection: record={}.{} hello_bytes={length}",
+        header[1], header[2]
+    );
+    stream.write_all(&alert)?;
+    stream.flush()?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut reply = [0_u8; 256];
+    while matches!(stream.read(&mut reply), Ok(n) if n > 0) {}
+    Ok(())
+}
 
 #[tokio::test]
 async fn default_pool_does_not_retry_a_native_tls_protocol_failure() {
@@ -395,15 +427,7 @@ fn spawn_successful_tls_fallback_server() -> io::Result<SuccessfulTlsFallbackSer
                 stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
                 if connection_index == 0 {
-                    let mut client_hello = [0_u8; 2_048];
-                    if stream.read(&mut client_hello)? == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "native TLS peer closed before sending a ClientHello",
-                        ));
-                    }
-                    stream.write_all(PROTOCOL_VERSION_TLS_ALERT)?;
-                    stream.flush()?;
+                    reject_protocol_version(&mut stream)?;
                     continue;
                 }
 
@@ -492,14 +516,7 @@ fn spawn_protocol_version_rejection_server(
                     Ok((mut stream, _)) => {
                         stream.set_nonblocking(false)?;
                         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-                        let mut client_hello = [0_u8; 2_048];
-                        if stream.read(&mut client_hello)? == 0 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "TLS peer closed before sending a ClientHello",
-                            ));
-                        }
-                        stream.write_all(PROTOCOL_VERSION_TLS_ALERT)?;
+                        reject_protocol_version(&mut stream)?;
                         attempts += 1;
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
