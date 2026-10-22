@@ -135,6 +135,8 @@ pub struct SubscriptionRunState {
 pub struct CapacityRetryContext {
     pub retryable_before_response: bool,
     pub guardian_review: bool,
+    /// Original server deadline from the exhausted retry budget for this turn.
+    pub retry_at: Option<tokio::time::Instant>,
 }
 
 impl Default for SubscriptionRunState {

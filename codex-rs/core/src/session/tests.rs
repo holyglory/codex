@@ -3762,6 +3762,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         error_kind: CodexErrKind,
         saw_session_store: bool,
         saw_thread_store: bool,
+        capacity_retry: Option<codex_event_subscriptions::CapacityRetryContext>,
     }
 
     struct TurnErrorRecorder {
@@ -3792,6 +3793,10 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
                             .thread_store
                             .get::<ThreadTurnErrorMarker>()
                             .is_some(),
+                        capacity_retry: input
+                            .turn_store
+                            .get::<codex_event_subscriptions::CapacityRetryContext>()
+                            .map(|context| *context),
                     });
             })
         }
@@ -3822,6 +3827,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         error_kind: CodexErrKind::QuotaExceeded,
         saw_session_store: true,
         saw_thread_store: true,
+        capacity_retry: None,
     };
 
     session
@@ -3845,12 +3851,69 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         )
         .await;
 
+    let retry_at = tokio::time::Instant::now() + Duration::from_secs(120);
+    session
+        .services
+        .thread_extension_data
+        .insert(crate::responses_retry::ExhaustedResponseRetry {
+            turn_id: turn_context.sub_id.clone(),
+            retry_at: Some(retry_at),
+        });
+    session
+        .emit_turn_error_lifecycle(
+            &turn_context,
+            CodexErrorInfo::ServerOverloaded,
+            &CodexErrorDetails::ServerOverloaded,
+        )
+        .await;
+    let expected_capacity = RecordedTurnError {
+        error: CodexErrorInfo::ServerOverloaded,
+        error_kind: CodexErrKind::ServerOverloaded,
+        capacity_retry: Some(codex_event_subscriptions::CapacityRetryContext {
+            retryable_before_response: true,
+            guardian_review: false,
+            retry_at: Some(retry_at),
+        }),
+        ..expected.clone()
+    };
+
+    session
+        .services
+        .thread_extension_data
+        .insert(crate::responses_retry::ExhaustedResponseRetry {
+            turn_id: format!("{}-previous", turn_context.sub_id),
+            retry_at: Some(retry_at),
+        });
+    session
+        .emit_turn_error_lifecycle(
+            &turn_context,
+            CodexErrorInfo::ServerOverloaded,
+            &CodexErrorDetails::ServerOverloaded,
+        )
+        .await;
+    let expected_stale = RecordedTurnError {
+        capacity_retry: Some(codex_event_subscriptions::CapacityRetryContext {
+            retryable_before_response: true,
+            guardian_review: false,
+            retry_at: None,
+        }),
+        ..expected_capacity.clone()
+    };
+
     let actual = records
         .lock()
         .expect("turn error records lock")
         .drain(..)
         .collect::<Vec<_>>();
-    assert_eq!(vec![expected, expected_override], actual);
+    assert_eq!(
+        vec![
+            expected,
+            expected_override,
+            expected_capacity,
+            expected_stale
+        ],
+        actual
+    );
 }
 
 #[tokio::test]

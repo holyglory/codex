@@ -18,13 +18,16 @@ use codex_event_subscriptions::HeartbeatSpec;
 use codex_event_subscriptions::ListSubscriptionsQuery;
 use codex_event_subscriptions::NewSubscription;
 use codex_event_subscriptions::PublishedEvent;
+use codex_event_subscriptions::ServiceError;
 use codex_event_subscriptions::SourceCursor;
+use codex_event_subscriptions::ValidationError;
 use codex_event_subscriptions::WakeBatch;
 use codex_event_subscriptions::WakeDisposition;
 use codex_event_subscriptions::WakeReason;
 use codex_event_subscriptions::WakeSink;
 use codex_protocol::ThreadId;
 use codex_utils_absolute_path::test_support::PathExt;
+use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 
 use crate::SqliteConfig;
@@ -268,27 +271,76 @@ fn event(sequence: u64, occurred_at_ms: i64) -> PublishedEvent {
 async fn capacity_retry_subscription_is_identified_and_cancelled() {
     let (runtime, _home) = runtime().await;
     let thread_id = ThreadId::new();
-    let subscription = runtime
-        .event_subscriptions()
-        .create(
-            NewSubscription {
-                thread_id,
-                filter: Some(EventFilter {
-                    source: CAPACITY_RETRY_SOURCE.to_string(),
-                    event_types: BTreeSet::from([CAPACITY_RETRY_EVENT_TYPE.to_string()]),
-                    labels: BTreeMap::new(),
-                }),
-                source_cursor: None,
-                heartbeat: Some(HeartbeatSpec {
-                    interval_ms: 1_000,
-                    first_deadline_at_ms: Some(2_000),
-                }),
-            },
-            /*now_ms*/ 1_000,
-        )
+    let queued_at_ms = 1_000;
+    let clock = TestClock::new(queued_at_ms);
+    let sink = RecordingWakeSink::new(WakeDisposition::Started);
+    let service = EventSubscriptionService::spawn(
+        runtime.event_subscriptions().clone(),
+        sink.clone(),
+        clock.clone(),
+    );
+    // Wait for scheduler restoration before deliberately blocking writes.
+    service
+        .list(ListSubscriptionsQuery {
+            thread_id: Some(thread_id),
+            offset: 0,
+            limit: 100,
+        })
         .await
-        .expect("capacity retry subscription");
-
+        .expect("scheduler ready");
+    let requested = NewSubscription {
+        thread_id,
+        filter: Some(EventFilter {
+            source: CAPACITY_RETRY_SOURCE.to_string(),
+            event_types: BTreeSet::from([CAPACITY_RETRY_EVENT_TYPE.to_string()]),
+            labels: BTreeMap::new(),
+        }),
+        source_cursor: None,
+        heartbeat: Some(HeartbeatSpec {
+            interval_ms: 1_000,
+            first_deadline_at_ms: Some(2_000),
+        }),
+    };
+    requested
+        .validate(queued_at_ms)
+        .expect("valid internal retry");
+    let writer = runtime
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .expect("hold writer");
+    let registration = runtime
+        .event_subscriptions()
+        .create(requested.clone(), queued_at_ms);
+    tokio::pin!(registration);
+    assert!(
+        std::future::poll_fn(|context| {
+            std::task::Poll::Ready(registration.as_mut().poll(context))
+        })
+        .await
+        .is_pending()
+    );
+    clock.advance_to(/*now_ms*/ 3_000);
+    writer.commit().await.expect("release queued registration");
+    let subscription = registration.await.expect("register overdue internal retry");
+    assert_eq!(subscription.next_heartbeat_at_ms, Some(2_000));
+    assert_eq!(
+        service.create(requested).await,
+        Err(ServiceError::Validation(ValidationError::HeartbeatDeadline))
+    );
+    sink.wait_for_count(/*expected*/ 1).await;
+    assert_eq!(
+        sink.batches(),
+        vec![WakeBatch {
+            thread_id,
+            items: vec![codex_event_subscriptions::WakeItem {
+                subscription_id: subscription.id,
+                reasons: BTreeSet::from([WakeReason::Heartbeat]),
+                event: None,
+                heartbeat_due_at_ms: Some(2_000),
+            }],
+        }]
+    );
     assert!(
         runtime
             .event_subscriptions()
@@ -308,6 +360,7 @@ async fn capacity_retry_subscription_is_identified_and_cancelled() {
             .await
             .expect("confirm cancellation")
     );
+    service.shutdown().await;
 }
 
 #[tokio::test]

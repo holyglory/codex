@@ -165,7 +165,9 @@ pub(crate) async fn handle_response_stream_error(
     if *retry_counter < retry_limit {
         *retry_counter += 1;
         let retry_count = *retry_counter;
-        let delay = if is_server_overloaded {
+        let delay = if let Some(retry_after) = retry_after {
+            retry_after.remaining_delay()
+        } else if is_server_overloaded {
             SERVER_OVERLOADED_RETRY_DELAYS[retry_count as usize - 1]
                 .mul_f64(rand::rng().random_range(1.0..2.0))
         } else {
@@ -173,12 +175,12 @@ pub(crate) async fn handle_response_stream_error(
         };
         log_retry(request, turn_context, &err, retry_count, retry_limit, delay);
 
-        // In release builds, hide the first websocket retry notification to reduce noisy
-        // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = is_server_overloaded
-            || retry_count > 1
-            || cfg!(debug_assertions)
-            || !sess.services.model_client.responses_websocket_enabled();
+        // Keep the first transient capacity retry quiet on every transport and build.
+        // Preserve ordinary retry diagnostics, including the release websocket exception.
+        let report_error = retry_count > 1
+            || (!is_server_overloaded
+                && (cfg!(debug_assertions)
+                    || !sess.services.model_client.responses_websocket_enabled()));
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
@@ -191,11 +193,7 @@ pub(crate) async fn handle_response_stream_error(
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = if is_server_overloaded {
-            now + delay
-        } else {
-            retry_after.map(RetryAfter::deadline).unwrap_or(now + delay)
-        };
+        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;

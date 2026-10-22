@@ -51,12 +51,14 @@ async fn sampling_retry_logs_stream_error_context() {
 }
 
 /// Time spent reporting a retry must count toward the server's original deadline.
+#[test_case::test_case(CodexErr::InternalServerError; "ordinary_retry")]
+#[test_case::test_case(CodexErr::ServerOverloaded; "capacity_retry")]
 #[tokio::test]
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "test holds the event-delivery lock to delay notification while virtual time advances"
 )]
-async fn stream_retry_preserves_deadline_across_delayed_notification() {
+async fn stream_retry_preserves_deadline_across_delayed_notification(error: CodexErr) {
     let (mut session, turn_context) = make_session_and_context().await;
     let step_context = StepContext::for_test(Arc::new(turn_context));
     session.realtime_history = Some(Mutex::new(RealtimeHistoryState::default()));
@@ -64,6 +66,7 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     // The second retry emits a notification even when release builds hide the first.
     let mut retry_state = ResponsesStreamRetryState {
         retries: 1,
+        server_overloaded_retries: 1,
         ..Default::default()
     };
 
@@ -76,7 +79,7 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     let retry = handle_response_stream_error(
         &mut retry_state,
         /*max_retries*/ 2,
-        CodexErr::InternalServerError.with_retry_after(advice),
+        error.with_retry_after(advice),
         &mut client_session,
         &session,
         &step_context,

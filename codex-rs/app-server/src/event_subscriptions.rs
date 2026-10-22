@@ -383,31 +383,45 @@ impl TurnLifecycleContributor for EventSubscriptionLifecycle {
             {
                 tracing::warn!(%error, "previous capacity retry alarm cleanup failed");
             }
+            let delay_ms = retry
+                .retry_at
+                .map(|deadline| {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let rounded_ms = remaining
+                        .as_millis()
+                        .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0));
+                    // UTC timestamps also lose submillisecond precision.
+                    let rounded_ms = rounded_ms.saturating_add(u128::from(!remaining.is_zero()));
+                    i64::try_from(rounded_ms).unwrap_or(i64::MAX)
+                })
+                .unwrap_or_else(|| capacity_retry_delay_seconds() * 1_000);
             let now_ms = codex_core::project_automation_now_ms();
-            let delay_seconds = capacity_retry_delay_seconds();
-            let first_deadline_at_ms = now_ms.saturating_add(delay_seconds * 1_000);
+            let first_deadline_at_ms = now_ms.saturating_add(delay_ms);
             let filter = EventFilter {
                 source: CAPACITY_RETRY_SOURCE.to_string(),
                 event_types: BTreeSet::from([CAPACITY_RETRY_EVENT_TYPE.to_string()]),
                 labels: BTreeMap::new(),
             };
-            if let Err(error) = self
-                .service
-                .create(NewSubscription {
-                    thread_id,
-                    filter: Some(filter),
-                    source_cursor: None,
-                    heartbeat: Some(HeartbeatSpec {
-                        interval_ms: 365 * 86_400_000,
-                        first_deadline_at_ms: Some(first_deadline_at_ms),
-                    }),
-                })
-                .await
-            {
+            let subscription = NewSubscription {
+                thread_id,
+                filter: Some(filter),
+                source_cursor: None,
+                heartbeat: Some(HeartbeatSpec {
+                    interval_ms: 365 * 86_400_000,
+                    first_deadline_at_ms: Some(first_deadline_at_ms),
+                }),
+            };
+            if let Err(error) = subscription.validate(now_ms) {
+                tracing::warn!(%error, %thread_id, "invalid capacity retry alarm");
+                return;
+            }
+            // This internal deadline may become due during persistence. The store notifies
+            // the same scheduler without revalidating an already elapsed deadline.
+            if let Err(error) = self.store.create(subscription, now_ms).await {
                 tracing::warn!(
                     %error,
                     %thread_id,
-                    delay_seconds,
+                    delay_ms,
                     "failed to schedule capacity retry alarm"
                 );
             }
