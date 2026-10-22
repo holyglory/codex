@@ -27,7 +27,7 @@ jobs:
       github.actor == 'holyglory' &&
       github.triggering_actor == 'holyglory'
     runs-on: [self-hosted, Windows, X64, codex-win-msvc]
-    timeout-minutes: 120
+    timeout-minutes: 360
     defaults:
       run:
         shell: pwsh
@@ -375,6 +375,48 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'ARM64 Rust standard library setup failed.' }
           "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$((Get-Command link.exe).Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "ARM64 compiler: $((Get-Command cl.exe).Source)"
+          $version = '21.1.8'
+          $archiveHash = '749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47'
+          $installation = 'R:\tools\llvm-21.1.8'
+          $manifestPath = Join-Path $installation 'codex-installation.json'
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.version -cne $version -or $manifest.archiveSha256 -cne $archiveHash) { throw 'LLVM installation provenance mismatch.' }
+          $bin = Join-Path $installation 'bin'
+          if (@($manifest.binaries.PSObject.Properties).Count -ne 6) { throw 'Incomplete LLVM installation inventory.' }
+          foreach ($entry in $manifest.binaries.PSObject.Properties) {
+              if ($entry.Name -notin @('clang.exe','clang-cl.exe','clang++.exe','llvm-lib.exe','llvm-ar.exe','lld-link.exe')) { throw 'Unexpected LLVM manifest entry.' }
+              $path = Join-Path $bin $entry.Name
+              if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value) { throw "LLVM binary checksum mismatch: $($entry.Name)" }
+          }
+          $env:PATH = "$bin;$env:PATH"
+          $clang = Join-Path $bin 'clang.exe'
+          $clangCl = Join-Path $bin 'clang-cl.exe'
+          $llvmLib = Join-Path $bin 'llvm-lib.exe'
+          & $clang --version
+          if ($LASTEXITCODE -ne 0) { throw 'Clang could not start.' }
+          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence\arm64-clang-probe'
+          $null = New-Item -ItemType Directory -Path $probe -Force
+          '#include <windows.h>', 'int main(void) { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content -LiteralPath (Join-Path $probe 'probe.c') -Encoding ascii
+          & $clangCl --target=aarch64-pc-windows-msvc /nologo /MT /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe\probe.obj" "/Fe$probe\probe.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Clang ARM64 C/Windows SDK/MSVC link probe failed.' }
+          $pe = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))
+          $peOffset = [BitConverter]::ToInt32($pe, 0x3c)
+          if ([BitConverter]::ToUInt16($pe, $peOffset + 4) -ne 0xaa64) { throw 'Clang did not produce an ARM64 PE executable.' }
+          '.text', '.globl codex_arm64_probe', 'codex_arm64_probe:', '  ret' | Set-Content -LiteralPath (Join-Path $probe 'probe.S') -Encoding ascii
+          & $clang --target=aarch64-pc-windows-msvc -c (Join-Path $probe 'probe.S') -o (Join-Path $probe 'assembly.obj')
+          if ($LASTEXITCODE -ne 0) { throw 'Clang ARM64 assembler probe failed.' }
+          $coff = [IO.File]::ReadAllBytes((Join-Path $probe 'assembly.obj'))
+          if ([BitConverter]::ToUInt16($coff, 0) -ne 0xaa64) { throw 'Assembler did not produce ARM64 COFF.' }
+          & $llvmLib "/out:$probe\probe.lib" (Join-Path $probe 'assembly.obj')
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM MSVC librarian probe failed.' }
+          @(
+              "PATH=$env:PATH",
+              "CC_aarch64_pc_windows_msvc=$clangCl",
+              "CXX_aarch64_pc_windows_msvc=$clangCl",
+              "AR_aarch64_pc_windows_msvc=$llvmLib"
+          ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          [ordered]@{version=$version;path=$installation;archiveSha256=$archiveHash;host='x86_64-pc-windows-msvc';target='aarch64-pc-windows-msvc';cAndSdkProbe='passed';assemblyProbe='passed';librarianProbe='passed'} |
+              ConvertTo-Json | Set-Content -LiteralPath (Join-Path $probe 'verification.json') -Encoding utf8
 
       - name: Prepare V8 inputs for the ARM64 Windows package target
         uses: ./.github/actions/setup-rusty-v8
