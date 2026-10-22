@@ -66,7 +66,7 @@ def _workspace_root_test_impl(ctx):
     )
 
     runfiles = ctx.runfiles(files = [test_bin, workspace_root_marker]).merge(ctx.attr.test_bin[DefaultInfo].default_runfiles)
-    for data_dep in ctx.attr.data:
+    for data_dep in ctx.attr.data + ctx.attr.runtime_deps:
         runfiles = runfiles.merge(ctx.runfiles(files = data_dep[DefaultInfo].files.to_list()))
         runfiles = runfiles.merge(data_dep[DefaultInfo].default_runfiles)
     for runfile_dep in ctx.attr.runfile_env:
@@ -114,6 +114,19 @@ def _windows_runfile_env_exports(ctx):
         lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(runfile)))
         lines.append("if errorlevel 1 exit /b 1")
         lines.append('set "{}=!resolve_runfile_result!"'.format(env_var))
+
+    # Windows resolves linked DLLs before Rust main runs. Resolve only declared
+    # runtime dependencies, including manifest-only runfiles, before launching.
+    dll_directories = {}
+    for dependency in ctx.attr.runtime_deps:
+        for file in dependency[DefaultInfo].default_runfiles.files.to_list():
+            if file.extension.lower() == "dll":
+                dll_directories[file.dirname] = file
+    for directory in sorted(dll_directories):
+        file = dll_directories[directory]
+        lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(file)))
+        lines.append("if errorlevel 1 exit /b 1")
+        lines.append('for %%I in ("!resolve_runfile_result!") do set "PATH=%%~dpI;!PATH!"')
     return "\n".join(lines)
 
 def _runfile_env_file(target):
@@ -153,6 +166,7 @@ workspace_root_test = rule(
         ),
         "env": attr.string_dict(),
         "env_inherit": attr.string_list(),
+        "runtime_deps": attr.label_list(),
         "runfile_env": attr.label_keyed_string_dict(
             cfg = "target",
         ),
@@ -205,6 +219,7 @@ def codex_rust_crate(
         binary_test_target_compatible_with = [],
         integration_test_timeout = None,
         test_data_extra = [],
+        test_runtime_deps = [],
         test_shard_counts = {},
         test_tags = [],
         test_threads = 0,
@@ -254,6 +269,9 @@ def codex_rust_crate(
         integration_test_timeout: Optional Bazel timeout for integration test
             targets generated from `tests/*.rs`.
         test_data_extra: Extra runtime data for tests.
+        test_runtime_deps: Declared native runtime dependencies. Their DLL
+            directories are resolved into PATH by the Windows test launcher.
+            Integration tests with these dependencies also use the launcher.
         test_shard_counts: Mapping from generated test target name to Bazel
             shard count. Matching tests use native Bazel sharding on the outer
             workspace-root launcher, not rules_rust's inner sharding wrapper.
@@ -384,6 +402,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = unit_test_name,
             env = test_env,
+            runtime_deps = test_runtime_deps,
             runfile_env = {
                 binary: "CARGO_BIN_EXE_" + Label(binary).name
                 for binary in extra_binaries
@@ -461,6 +480,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = binary_unit_test_name,
             env = test_env,
+            runtime_deps = test_runtime_deps,
             test_bin = ":" + binary_unit_test_binary,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             target_compatible_with = binary_test_target_compatible_with,
@@ -543,7 +563,8 @@ def codex_rust_crate(
         #
         # 1. Unsharded native tests keep the plain rust_test label for minimal
         #    churn and the usual rules_rust Cargo-like environment.
-        # 2. Sharded native tests split into a manual rust_test binary plus an
+        # 2. Sharded native tests and tests with native runtime dependencies
+        #    split into a manual rust_test binary plus an
         #    outer workspace_root_test. The outer test action receives Bazel's
         #    sharding environment, resolves the real binary through the
         #    runfiles manifest, and implements stable libtest sharding itself.
@@ -556,7 +577,7 @@ def codex_rust_crate(
         #    owns cleanup. The outer workspace_root_test resolves the runner,
         #    test, and server from runfiles, sets a Cargo-like cwd, and applies
         #    the native test's shard count.
-        if test_shard_count:
+        if test_shard_count or test_runtime_deps:
             # This target is intentionally a binary-like helper, not the public
             # test target. The wrapper below owns cwd setup, runfile env
             # materialization, sharding, and flaky retry behavior.
@@ -584,6 +605,8 @@ def codex_rust_crate(
             workspace_root_test(
                 name = test_name,
                 env = test_env,
+                chdir_workspace_root = bool(test_shard_count),
+                runtime_deps = test_runtime_deps,
                 # CARGO_BIN_EXE_* values are rlocation paths at analysis time.
                 # The launcher rewrites them to absolute paths at execution
                 # time so tests keep working after chdir_workspace_root and on
@@ -626,7 +649,7 @@ def codex_rust_crate(
 
         if run_tests_with_wine_exec:
             wine_test_name = test_name.removesuffix("-test") + "-wine-exec-test"
-            native_test_binary = ":" + (integration_test_binary if test_shard_count else test_name)
+            native_test_binary = ":" + (integration_test_binary if test_shard_count or test_runtime_deps else test_name)
             wine_test_binaries = dict(wine_host_binaries)
 
             wine_exec_server = wine_test_name + "-windows-exec-server"
