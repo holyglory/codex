@@ -702,6 +702,69 @@ async fn managed_children_launch_in_workdir_without_changing_private_state_direc
     if is_elevated_test_process().expect("query token elevation") {
         return;
     }
+    const CHILD: &str = "CODEX_TEST_MANAGED_CHILD_WORKDIR";
+    if std::env::var_os(CHILD).is_none() {
+        // Job membership is process-wide. Isolate this fixture so its inner
+        // breakaway job cannot affect other tests running in parallel.
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "backend::pid::tests::managed_children_launch_in_workdir_without_changing_private_state_directory",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+            .await
+            .expect("isolated workdir fixture timed out")
+            .expect("isolated workdir fixture");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+    use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+    use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
+    use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    // Detached children leave this inner job while retaining the test harness's
+    // outer job, including its cleanup limits. Production launch flags stay intact.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    assert!(!job.is_null(), "{}", std::io::Error::last_os_error());
+    let job = unsafe { OwnedHandle::from_raw_handle(job) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    assert_ne!(
+        unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    assert_ne!(
+        unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
     let temp = TempDir::new().expect("temp dir");
     let state_dir = temp.path().join("state");
     let codex_bin = temp.path().join("codex.cmd");
