@@ -101,6 +101,15 @@ fn workspace_roots_for(root: &Path) -> Vec<AbsolutePathBuf> {
     vec![AbsolutePathBuf::from_absolute_path(root).expect("absolute workspace root")]
 }
 
+fn windows_process_env() -> HashMap<String, String> {
+    // These APIs pass the supplied environment directly to Windows. Without SystemRoot,
+    // AppLocker cannot load its policy provider for PowerShell modules and batch files.
+    HashMap::from([(
+        "SystemRoot".to_string(),
+        std::env::var("SystemRoot").expect("Windows process environment has SystemRoot"),
+    )])
+}
+
 fn powershell_literal(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }
@@ -282,7 +291,7 @@ fn legacy_non_tty_cmd_emits_output() {
                 "echo LEGACY-NONTTY-CMD".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(5_000),
             &[],
             &[],
@@ -311,10 +320,11 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
         let cwd = sandbox_cwd();
         let codex_home = sandbox_home("elevated-non-tty-cmd");
         let permission_profile = PermissionProfile::workspace_write();
-        let env_map = HashMap::from([(
+        let mut env_map = HashMap::from([(
             "CODEX_ELEVATED_TEST".to_string(),
             "ELEVATED-ENV-OK".to_string(),
         )]);
+        env_map.extend(windows_process_env());
         let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
             &permission_profile,
             workspace_roots_for(cwd.as_path()).as_slice(),
@@ -428,7 +438,7 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
                 "echo deny-read".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(5_000),
             std::slice::from_ref(&secret_path),
             &[],
@@ -468,7 +478,7 @@ fn legacy_non_tty_powershell_interrupt_terminates_process() {
                 format!("{ASSERT_NO_CONSOLE} Write-Output LEGACY-NONTTY-DIRECT; [System.Threading.ManualResetEvent]::new($false).WaitOne()"),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             /*timeout_ms*/ None,
             &[],
             &[],
@@ -701,7 +711,7 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(10_000),
         /*cancellation*/ None,
     )
@@ -775,7 +785,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         )
         .expect("write delete script");
 
-        let env_map = HashMap::from([
+        let mut env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
             ("TMP".to_string(), tmp_root.to_string_lossy().into_owned()),
             (
@@ -800,6 +810,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             ),
         ]);
 
+        env_map.extend(windows_process_env());
         let permission_profile = PermissionProfile::workspace_write();
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
@@ -896,7 +907,7 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(30_000),
         /*cancellation*/ Some(cancellation),
     )
@@ -975,7 +986,7 @@ async fn assert_legacy_tty_descendant_lifecycle(
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(30_000),
         &[],
         &[],
@@ -1058,7 +1069,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
                 "$PID; Write-Output ready".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(10_000),
             &[],
             &[],
@@ -1107,7 +1118,7 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
                 "echo ready".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(10_000),
             &[],
             &[],

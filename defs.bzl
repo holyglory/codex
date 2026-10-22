@@ -127,7 +127,9 @@ def _windows_runfile_env_exports(ctx):
         lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(file)))
         lines.append("if errorlevel 1 exit /b 1")
         lines.append('for %%I in ("!resolve_runfile_result!") do set "PATH=%%~dpI;!PATH!"')
-    return "\n".join(lines)
+
+    # cmd.exe label scanning also requires CRLF in expanded template blocks.
+    return "\r\n".join(lines)
 
 def _runfile_env_file(target):
     executable = target[DefaultInfo].files_to_run.executable
@@ -150,8 +152,7 @@ def _bash_workspace_root_setup(ctx):
 def _windows_workspace_root_setup(ctx):
     if not ctx.attr.chdir_workspace_root:
         return ""
-    return """set "INSTA_WORKSPACE_ROOT=%workspace_root%"
-cd /d "%workspace_root%" || exit /b 1"""
+    return 'set "INSTA_WORKSPACE_ROOT=%workspace_root%"\r\ncd /d "%workspace_root%" || exit /b 1'
 
 workspace_root_test = rule(
     implementation = _workspace_root_test_impl,

@@ -266,7 +266,8 @@ fn overview_thread(
         model: None,
         reasoning_effort: None,
         created_at: *OVERVIEW_TIMESTAMP,
-        updated_at: *OVERVIEW_TIMESTAMP,
+        // Each fixture should start two minutes old, even late in a long test shard.
+        updated_at: chrono::Utc::now().timestamp() - 120,
         recency_at: Some(*OVERVIEW_TIMESTAMP),
         status,
         path: None,

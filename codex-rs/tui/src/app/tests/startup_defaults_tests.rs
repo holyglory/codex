@@ -250,6 +250,17 @@ async fn run_until_thread_start(
     Ok(())
 }
 
+async fn stop_startup_proxy(proxy: tokio::task::JoinHandle<Result<()>>) -> Result<()> {
+    // Startup-only tests drop App::run after recording thread/start, before its
+    // normal shutdown. Background request handles may keep the connection open.
+    proxy.abort();
+    match proxy.await {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[tokio::test]
 async fn fresh_startup_uses_server_defaults_with_explicit_and_managed_precedence() -> Result<()> {
     for (choice, managed, expected_model, expected_effort, expected_provider) in [
@@ -621,7 +632,7 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
             ),
             (&serde_json::Value::Null, &serde_json::Value::Null)
         );
-        tokio::time::timeout(TEST_PROXY_TIMEOUT, proxy).await???;
+        stop_startup_proxy(proxy).await?;
     }
     Ok(())
 }
@@ -681,7 +692,7 @@ async fn startup_reads_server_defaults_before_starting_thread() -> Result<()> {
         ),
         (&serde_json::Value::Null, &serde_json::Value::Null),
     );
-    tokio::time::timeout(TEST_PROXY_TIMEOUT, proxy).await???;
+    stop_startup_proxy(proxy).await?;
     Ok(())
 }
 

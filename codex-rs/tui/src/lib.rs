@@ -3075,16 +3075,46 @@ requires_openai_auth = {requires_openai_auth}
         let expected = Some(socket_path);
         #[cfg(windows)]
         let expected = {
-            // Existing Windows CI may run elevated; an elevated listener must
-            // never be selected implicitly, even when its directory is private.
-            let output = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
-                .output()?;
-            assert!(output.status.success());
-            match String::from_utf8(output.stdout)?.trim() {
-                "True" => None,
-                "False" => expected,
-                other => panic!("unexpected elevation result: {other}"),
+            use std::os::windows::io::FromRawHandle;
+            use std::os::windows::io::OwnedHandle;
+            use windows_sys::Win32::Security::GetTokenInformation;
+            use windows_sys::Win32::Security::TOKEN_ELEVATION;
+            use windows_sys::Win32::Security::TOKEN_QUERY;
+            use windows_sys::Win32::Security::TokenElevation;
+            use windows_sys::Win32::System::Threading::GetCurrentProcess;
+            use windows_sys::Win32::System::Threading::OpenProcessToken;
+
+            // The listener is this process. Service tokens can be elevated
+            // without administrator membership, so inspect the flag used by
+            // the peer policy instead of asking about group membership.
+            let mut token = std::ptr::null_mut();
+            assert_ne!(
+                unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+                0,
+                "{}",
+                std::io::Error::last_os_error(),
+            );
+            let _token = unsafe { OwnedHandle::from_raw_handle(token) };
+            let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+            let mut returned = 0;
+            assert_ne!(
+                unsafe {
+                    GetTokenInformation(
+                        token,
+                        TokenElevation,
+                        std::ptr::addr_of_mut!(elevation).cast(),
+                        std::mem::size_of_val(&elevation) as u32,
+                        &mut returned,
+                    )
+                },
+                0,
+                "{}",
+                std::io::Error::last_os_error(),
+            );
+            if elevation.TokenIsElevated != 0 {
+                None
+            } else {
+                expected
             }
         };
         assert_eq!(

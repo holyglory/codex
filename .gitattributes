@@ -1,3 +1,4 @@
 codex-rs/app-server-protocol/schema/** linguist-generated
 codex-rs/hooks/schema/generated/** linguist-generated
 third_party/voice/sources.json text eol=lf
+workspace_root_test_launcher.bat.tpl text eol=crlf
