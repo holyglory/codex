@@ -329,11 +329,12 @@ jobs:
           target=x86_64-pc-windows-msvc
           handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
           mkdir -p "$handoff"
-          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "$target" \
+          cargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml --locked --release --timings --target "$target" \
             --bin codex --bin codex-app-server --bin codex-code-mode-host \
             --bin codex-command-runner --bin codex-windows-sandbox-setup \
             2>&1 | tee "$handoff/build.log"
           test "${PIPESTATUS[0]}" -eq 0
+          cp "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" "$handoff/cargo-timing.html"
           release="$CARGO_TARGET_DIR/$target/release"
           python3 scripts/build_codex_package.py \
             --target "$target" --variant codex --package-version "$version" \
@@ -390,11 +391,12 @@ jobs:
           target=aarch64-pc-windows-msvc
           handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
           mkdir -p "$handoff"
-          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "$target" \
+          cargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml --locked --release --timings --target "$target" \
             --bin codex --bin codex-app-server --bin codex-code-mode-host \
             --bin codex-command-runner --bin codex-windows-sandbox-setup \
             2>&1 | tee "$handoff/build.log"
           test "${PIPESTATUS[0]}" -eq 0
+          cp "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" "$handoff/cargo-timing.html"
           release="$CARGO_TARGET_DIR/$target/release"
           python3 scripts/build_codex_package.py \
             --target "$target" --variant codex --package-version "$version" \
