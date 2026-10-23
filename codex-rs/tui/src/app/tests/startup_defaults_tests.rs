@@ -253,13 +253,24 @@ async fn run_until_thread_start(
 
 async fn stop_startup_proxy(proxy: JoinHandle<Result<()>>) -> Result<()> {
     // These request-order tests cancel App::run once thread/start is recorded.
-    // Its detached requests may retain the transport; finish the fixture task
-    // explicitly instead of treating cancellation as graceful client shutdown.
-    proxy.abort();
-    match proxy.await {
-        Ok(result) => result,
-        Err(error) if error.is_cancelled() => Ok(()),
-        Err(error) => Err(error.into()),
+    // The startup future has already been dropped by run_until_thread_start,
+    // so let the proxy finish its normal loop and call embedded.shutdown().
+    // Detached requests may retain the transport; use a bounded abort only as
+    // a cleanup fallback.
+    let mut proxy = proxy;
+    match tokio::time::timeout(Duration::from_secs(5), &mut proxy).await {
+        Ok(result) => match result {
+            Ok(result) => result,
+            Err(error) => Err(error.into()),
+        },
+        Err(_) => {
+            proxy.abort();
+            match proxy.await {
+                Ok(result) => result,
+                Err(error) if error.is_cancelled() => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        }
     }
 }
 
