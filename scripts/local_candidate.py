@@ -412,7 +412,9 @@ def check(root, state, cargo_target, release_target):
         CARGO_PROFILE_TEST_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
         NEXTEST_RETRIES="3",
-        GH_CONFIG_DIR=environ.get("GH_CONFIG_DIR", str(toolchain_home / ".config" / "gh")),
+        GH_CONFIG_DIR=environ.get(
+            "GH_CONFIG_DIR", str(toolchain_home / ".config" / "gh")
+        ),
         RUSTUP_HOME=environ.get("RUSTUP_HOME", str(toolchain_home / ".rustup")),
         CODEX_BAZEL_BATCH="1",
         RUST_MIN_STACK="16777216",
