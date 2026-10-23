@@ -4,6 +4,7 @@ use super::*;
 use crate::app::startup::prepare_fresh_startup_config;
 use crate::app::startup::startup_model;
 use crate::app::startup_bootstrap::bootstrap_server_owned_start;
+use color_eyre::eyre::WrapErr;
 use pretty_assertions::assert_eq;
 
 const TEST_PROXY_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 180);
@@ -248,6 +249,18 @@ async fn run_until_thread_start(
     })
     .await??;
     Ok(())
+}
+
+async fn stop_startup_proxy(proxy: JoinHandle<Result<()>>) -> Result<()> {
+    // These request-order tests cancel App::run once thread/start is recorded.
+    // Its detached requests may retain the transport; finish the fixture task
+    // explicitly instead of treating cancellation as graceful client shutdown.
+    proxy.abort();
+    match proxy.await {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[tokio::test]
@@ -611,7 +624,9 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
         )
         .await?;
         let bootstrap = server.bootstrap(&config).await?;
-        run_until_thread_start(server, config, bootstrap, &requests).await?;
+        run_until_thread_start(server, config, bootstrap, &requests)
+            .await
+            .wrap_err("waiting for startup thread/start")?;
         let starts = recorded_params(&requests, "thread/start");
         assert_eq!(starts.len(), 1);
         assert_eq!(
@@ -621,7 +636,7 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
             ),
             (&serde_json::Value::Null, &serde_json::Value::Null)
         );
-        tokio::time::timeout(TEST_PROXY_TIMEOUT, proxy).await???;
+        stop_startup_proxy(proxy).await?;
     }
     Ok(())
 }
@@ -681,7 +696,7 @@ async fn startup_reads_server_defaults_before_starting_thread() -> Result<()> {
         ),
         (&serde_json::Value::Null, &serde_json::Value::Null),
     );
-    tokio::time::timeout(TEST_PROXY_TIMEOUT, proxy).await???;
+    stop_startup_proxy(proxy).await?;
     Ok(())
 }
 

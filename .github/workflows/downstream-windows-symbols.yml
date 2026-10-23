@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   symbols:
-    if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Native Windows symbols on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15

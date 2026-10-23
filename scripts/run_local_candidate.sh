@@ -22,7 +22,10 @@ if [[ "${1:-}" != --inside ]]; then
   # The lock is held by the invoking account and inherited by bubblewrap. It
   # protects warm Cargo/Bazel stores without requiring a privileged helper.
   exec 9>"$state/environment.lock"
-  flock -n 9
+  if ! flock -n 9; then
+    echo 'Candidate environment is in use; inspect its active run or retained Bazel server before retrying.' >&2
+    exit 1
+  fi
 
   # Stable mounts let a warm Bazel server see the same backing files on later
   # runs. The directories are created before entering the namespace because
@@ -86,14 +89,14 @@ cd "$root"
 if [[ "${1:-}" == --command ]]; then
   shift
   test "$#" -gt 0
-  isolated_home=$(mktemp -d /tmp/ch.XXXXXX)
   exec env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN \
     HOME="$test_home" USER="$test_user" LOGNAME="$test_user" \
-    PATH="$test_home/.cargo/bin:$test_home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-    CODEX_HOME="$isolated_home" TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 "$@"
+    PATH="$test_home/.cargo/bin:$test_home/.local/bin:$PATH" \
+    TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 \
+    python3 scripts/local_candidate.py run --state-dir "$state" -- "$@"
 fi
 exec env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN \
   HOME="$test_home" USER="$test_user" LOGNAME="$test_user" \
-  PATH="$test_home/.cargo/bin:$test_home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  PATH="$test_home/.cargo/bin:$test_home/.local/bin:$PATH" \
   TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 \
   python3 scripts/local_candidate.py check --state-dir "$state" "$@"

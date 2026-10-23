@@ -111,6 +111,25 @@ the authority for release outcomes and verification receipts.
   rediscovered during testing. Keep the preflight and its mismatched-toolchain
   fixture in the release workflow, and use the canonical isolated runner rather
   than a hand-written substitute test graph.
+- Use the same environment for focused retries and complete acceptance through
+  `scripts/run_local_candidate.sh`; its `--command` mode shares the acceptance
+  environment. Preserve toolchain homes, GitHub CLI configuration, and approved
+  cache endpoints while isolating the test home, umask, and caller context.
+  Keep one persistent state directory across attempts. Move known generated
+  test outputs into retained evidence before enforcing a clean package source.
+  Run long acceptance through Coordinator and wait on its run identity; an
+  interrupted wrapper or successful diagnostic retry is not a release receipt.
+- **Preserve native shell startup semantics.** When a brokered validation must
+  suppress startup files, remove `BASH_ENV` only for that validation command.
+  Do not manually quote, expand, or restore it: Bash expands its filename and
+  startup scripts can inspect or unset the variable. Cover values such as
+  `$PWD/startup.sh`, startup visibility, and an intentional `unset BASH_ENV`
+  in the brokered snapshot fixture.
+- **Journal a check before cleanup.** A check result and its log digest must be
+  written and fsynced before moving generated test artifacts. If cleanup finds
+  an unexpected source change, retain a bounded failure record and fail the
+  acceptance; never lose evidence of the completed check or synthesize a
+  partial success receipt.
 - **Do not restore downstream behavior by replaying broad WIP checkpoints.**
   The 0.162.1 forward-port checkpoints carried downstream account, usage, event,
   and plugin code but also reverted or omitted newer stable interfaces. Replaying

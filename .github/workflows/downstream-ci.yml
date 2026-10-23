@@ -25,6 +25,7 @@ jobs:
     uses: ./.github/workflows/downstream-policy.yml
 
   quality:
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Format, lint, schemas, and locks
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -86,6 +87,7 @@ jobs:
         run: git diff --exit-code
 
   downstream-tests:
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Focused downstream tests
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -142,6 +144,7 @@ jobs:
           just test --locked "${package_args[@]}" --no-tests=fail
 
   linux-compile:
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Compile Linux product binaries
     runs-on: ubuntu-24.04
     timeout-minutes: 120

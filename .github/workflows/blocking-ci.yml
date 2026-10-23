@@ -12,7 +12,7 @@ jobs:
   # version-controlled list that the main-branch ruleset should require.
   bazel:
     name: Bazel
-    if: ${{ github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3' }}
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/bazel.yml
     secrets: inherit
 
@@ -38,13 +38,13 @@ jobs:
 
   rust-ci:
     name: rust-ci
-    if: ${{ github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3' }}
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/rust-ci.yml
     secrets: inherit
 
   sdk:
     name: sdk
-    if: ${{ github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3' }}
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/sdk.yml
     secrets: inherit
 
@@ -52,7 +52,7 @@ jobs:
     name: CI required
     # Without `always()`, GitHub skips this job after a failed dependency and a
     # required check can appear successful instead of reporting the failure.
-    if: ${{ always() }}
+    if: ${{ always() && github.repository != 'holyglory/codex' }}
     needs:
       - bazel
       - blob-size-policy
@@ -72,9 +72,20 @@ jobs:
       - name: Require successful dependencies
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          if [[ "$GITHUB_HEAD_REF" == 'codex/release1621-candidate-v3' || "$GITHUB_REF_NAME" == 'codex/release1621-candidate-v3' ]]; then
-            echo 'Candidate release uses the local Linux and private Windows handoff; downstream-candidate owns macOS and npm gates.'
-          else
-            python3 .github/scripts/check_ci_results.py
-          fi
+        run: python3 .github/scripts/check_ci_results.py
+
+  fork-policy:
+    name: CI policy checks
+    # Local Linux acceptance and private Windows handoffs are checked by the
+    # manual downstream candidate before its macOS builds and npm staging.
+    if: ${{ always() && github.repository == 'holyglory/codex' }}
+    needs: [blob-size-policy, cargo-deny, codespell, repo-checks]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require successful policy checks
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/check_ci_results.py

@@ -35,7 +35,7 @@ GATES = (
     "native-inputs",
 )
 LANES = {
-    "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
+    "rust": ("clippy", "rust-tests", "linux-package", "sdks", "root-usage"),
     "bazel": ("argument-comments", "bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
@@ -106,7 +106,11 @@ def commands(root, state, directory):
         ),
         "format": (["just", "fmt-check"], root),
         "package-prerequisites": (
-            ["bash", "scripts/build_local_linux_candidate.sh", "--check"],
+            [
+                "bash",
+                "-euc",
+                "bash scripts/build_local_linux_candidate.sh --check && bash scripts/check_local_sdks.sh --check",
+            ],
             root,
         ),
         "focused": (
@@ -249,6 +253,15 @@ def commands(root, state, directory):
             ],
             root,
         ),
+        "sdks": (
+            [
+                "bash",
+                "scripts/check_local_sdks.sh",
+                str(directory / "linux-package" / "bin" / "codex"),
+                str(directory / "sdk"),
+            ],
+            root,
+        ),
         "bazel-release": (
             [
                 "bash",
@@ -361,27 +374,16 @@ def validate(receipt, commit):
             raise ValueError("Local acceptance lacks a log digest")
 
 
-def check(root, state, cargo_target, release_target):
-    commit = frozen_commit(root)
+def verify_candidate_environment():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("Local acceptance requires Linux x86_64")
     if Path("/etc/codex/config.toml").exists():
         raise ValueError(
             "Use the isolated local test environment; host Codex configuration is present"
         )
-    for tool in (
-        "just",
-        "cargo",
-        "cargo-nextest",
-        "uv",
-        "dotslash",
-        os.environ.get("CODEX_BAZEL_BIN", "bazel"),
-    ):
-        if shutil.which(tool) is None:
-            raise ValueError(f"Required build tool is unavailable: {tool}")
-    for variable in ("RUSTY_V8_ARCHIVE", "RUSTY_V8_SRC_BINDING_PATH"):
-        if not Path(os.environ.get(variable, "")).is_file():
-            raise ValueError(f"Provide the verified GNU/Linux prerequisite: {variable}")
+
+
+def candidate_environment(root, state, cargo_target, release_target):
     if any(
         path == root or path.is_relative_to(root)
         for path in (state, cargo_target, release_target)
@@ -394,11 +396,11 @@ def check(root, state, cargo_target, release_target):
     state.mkdir(parents=True, exist_ok=True)
     cargo_target.mkdir(parents=True, exist_ok=True)
     release_target.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix="accept-", dir=state))
     environ = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("CODEX_", "DEVCOORDINATOR_"))
+        or key in {"CODEX_BAZEL_BIN", "CODEX_BAZEL_REMOTE_CACHE_URL"}
     }
     environ.pop("NO_COLOR", None)
     isolated_home = state / "test-environment" / "home"
@@ -428,6 +430,27 @@ def check(root, state, cargo_target, release_target):
         PYTHONDONTWRITEBYTECODE="1",
     )
     environ["LOCAL_RELEASE_TARGET"] = str(release_target)
+    return environ
+
+
+def check(root, state, cargo_target, release_target):
+    commit = frozen_commit(root)
+    verify_candidate_environment()
+    for tool in (
+        "just",
+        "cargo",
+        "cargo-nextest",
+        "uv",
+        "dotslash",
+        os.environ.get("CODEX_BAZEL_BIN", "bazel"),
+    ):
+        if shutil.which(tool) is None:
+            raise ValueError(f"Required build tool is unavailable: {tool}")
+    for variable in ("RUSTY_V8_ARCHIVE", "RUSTY_V8_SRC_BINDING_PATH"):
+        if not Path(os.environ.get(variable, "")).is_file():
+            raise ValueError(f"Provide the verified GNU/Linux prerequisite: {variable}")
+    environ = candidate_environment(root, state, cargo_target, release_target)
+    directory = Path(tempfile.mkdtemp(prefix="accept-", dir=state))
     print(json.dumps({"commit": commit, "logs": str(directory)}), flush=True)
 
     def unchanged():
@@ -443,8 +466,31 @@ def check(root, state, cargo_target, release_target):
         ):
             lock = stack.enter_context(path.open("a"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def record_step(name, command, cwd, environ, directory):
+            result = run_step(name, command, cwd, environ, directory)
+            with (directory / "completed-checks.jsonl").open("a") as journal:
+                journal.write(json.dumps(result) + "\n")
+                journal.flush()
+                os.fsync(journal.fileno())
+            # Retain the completed check even if an unexpected source change
+            # prevents cleanup and invalidates the acceptance run.
+            try:
+                preserve_generated_test_artifacts(root, directory / "after" / name)
+            except (OSError, ValueError) as error:
+                (directory / "artifact-preservation-failure.json").write_text(
+                    json.dumps({"check": name, "error_type": type(error).__name__})
+                    + "\n"
+                )
+                raise
+            return result
+
         results = execute(
-            commands(root, state, directory), environ, directory, unchanged
+            commands(root, state, directory),
+            environ,
+            directory,
+            unchanged,
+            runner=record_step,
         )
         preserve_generated_test_artifacts(root, directory)
         receipt = {
@@ -550,11 +596,13 @@ def dispatch(root, receipt_path, branch, linux_handoff, windows_handoff):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    for action in ("plan", "check"):
+    for action in ("plan", "check", "run"):
         item = sub.add_parser(action)
         item.add_argument("--state-dir", type=Path, required=True)
         item.add_argument("--cargo-target-dir", type=Path)
         item.add_argument("--release-target-dir", type=Path)
+        if action == "run":
+            item.add_argument("command", nargs=argparse.REMAINDER)
     item = sub.add_parser("dispatch")
     item.add_argument("--receipt", type=Path, required=True)
     item.add_argument("--branch", required=True)
@@ -593,6 +641,22 @@ def main():
                     indent=2,
                 )
             )
+        elif args.action == "run":
+            state = args.state_dir.resolve()
+            verify_candidate_environment()
+            environ = candidate_environment(
+                root,
+                state,
+                (args.cargo_target_dir or state / "cargo-target").resolve(),
+                (args.release_target_dir or state / "release-target").resolve(),
+            )
+            command = args.command
+            if command[:1] == ["--"]:
+                command = command[1:]
+            if not command:
+                raise ValueError("Provide a diagnostic command")
+            # This shares acceptance prerequisites but issues no release receipt.
+            os.execvpe(command[0], command, environ)
         else:
             state = args.state_dir.resolve()
             return check(
