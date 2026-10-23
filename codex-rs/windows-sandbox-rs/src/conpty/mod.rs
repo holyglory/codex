@@ -42,6 +42,10 @@ use crate::process::make_env_block;
 pub struct ConptyInstance {
     pseudoconsole: Option<PsuedoCon>,
     input_write: Option<OwnedHandle>,
+    // Closing ConPTY's last input writer shuts down the console and interrupts
+    // its clients. Closing a session's input channel must only stop new writes;
+    // retain a duplicate until the console owner tears down the session.
+    _input_keepalive: OwnedHandle,
     output_read: Option<OwnedHandle>,
     job: Option<Arc<JobObject>>,
     _desktop: Option<LaunchDesktop>,
@@ -91,10 +95,14 @@ pub fn create_conpty(cols: i16, rows: i16) -> Result<ConptyInstance> {
     // SAFETY: into_raw_handle transfers each pipe to its new owner.
     let input_write = unsafe { OwnedHandle::from_raw_handle(input_write.into_raw_handle()) };
     let output_read = unsafe { OwnedHandle::from_raw_handle(output_read.into_raw_handle()) };
+    let input_keepalive = input_write
+        .try_clone()
+        .context("retain pseudoconsole input while the session is active")?;
 
     Ok(ConptyInstance {
         pseudoconsole: Some(pseudoconsole),
         input_write: Some(input_write),
+        _input_keepalive: input_keepalive,
         output_read: Some(output_read),
         job: None,
         _desktop: None,
@@ -134,9 +142,13 @@ pub fn spawn_conpty_process_as_user(
     // SAFETY: into_raw_handle transfers each pipe to its new owner.
     let input_write = unsafe { OwnedHandle::from_raw_handle(input_write.into_raw_handle()) };
     let output_read = unsafe { OwnedHandle::from_raw_handle(output_read.into_raw_handle()) };
+    let input_keepalive = input_write
+        .try_clone()
+        .context("retain pseudoconsole input while the session is active")?;
     let conpty = ConptyInstance {
         pseudoconsole: Some(pseudoconsole),
         input_write: Some(input_write),
+        _input_keepalive: input_keepalive,
         output_read: Some(output_read),
         job: Some(Arc::clone(&job)),
         _desktop: Some(desktop),
