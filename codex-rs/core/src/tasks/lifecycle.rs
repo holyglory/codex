@@ -10,6 +10,7 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 
+use crate::responses_retry::ExhaustedResponseRetry;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 
@@ -166,6 +167,12 @@ impl Session {
                             codex_protocol::protocol::SubAgentSource::Other(label)
                         ) if label == "guardian"
                     ),
+                    retry_at: self
+                        .services
+                        .thread_extension_data
+                        .get::<ExhaustedResponseRetry>()
+                        .filter(|retry| retry.turn_id == turn_context.sub_id)
+                        .and_then(|retry| retry.retry_at),
                 });
         }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {

@@ -41,6 +41,7 @@ def test_capacity_response_recovers_in_same_turn(
         events = [json.loads(line) for line in output.splitlines() if line.strip()]
         assert sum(event["type"] == "turn.completed" for event in events) == 1
         assert "RECOVERED" in output
+        assert all(event["type"] != "error" for event in events)
         thread_id = next(
             event["thread_id"] for event in events if event["type"] == "thread.started"
         )
@@ -68,8 +69,7 @@ def test_capacity_response_recovers_in_same_turn(
         assert len(completed) == 1
         assert completed[0].status.value == "completed", completed[0].error
         retries = [event.payload for event in events if event.method == "error"]
-        assert len(retries) == 1 and retries[0].will_retry
-        assert retries[0].error.message == "Reconnecting... 1/5"
+        assert retries == []
         thread_id = thread.id
     requests = responses_server.requests()
     assert len(requests) == 2
