@@ -199,6 +199,7 @@ pub async fn exec_approval(
     }
     match decision {
         ReviewDecision::Abort => {
+            sess.mark_pending_exec_approval_declined(&approval_id).await;
             sess.interrupt_task().await;
         }
         other => sess.notify_approval(&approval_id, other).await,
