@@ -660,7 +660,6 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
     let call_id = "guardian-network-timeout";
-    let poll_call_id = "guardian-network-timeout-poll";
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -689,38 +688,51 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
         .set_delay(Duration::from_secs(300)),
     )
     .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
+    // Advancing the review clock can also release a command's yield timer.
+    // Follow the returned session until its terminal output reaches the model.
+    let (output_tx, output_rx) = std::sync::mpsc::channel();
+    let _parent = wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(move |request: &wiremock::Request| {
             !is_guardian_request(request) && request_body_contains(request, call_id)
-        },
-        sse(vec![
-            ev_response_created("resp-guardian-timeout-parent-followup"),
-            ev_function_call(
-                poll_call_id,
-                "write_stdin",
-                &serde_json::to_string(&json!({
-                    "session_id": 1000,
-                    "chars": "",
-                    "yield_time_ms": 1_000,
-                }))?,
-            ),
-            ev_completed("resp-guardian-timeout-parent-followup"),
-        ]),
-    )
-    .await;
-    let parent_final = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            !is_guardian_request(request) && request_body_contains(request, poll_call_id)
-        },
-        sse(vec![
-            ev_response_created("resp-guardian-timeout-parent-final"),
-            ev_assistant_message("msg-guardian-timeout-parent-final", "timed out"),
-            ev_completed("resp-guardian-timeout-parent-final"),
-        ]),
-    )
-    .await;
+        })
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(
+                &decoded_request_body(request).expect("decode parent request"),
+            )
+            .expect("parse parent request");
+            let input = body["input"].as_array().expect("parent input");
+            let output = input
+                .iter()
+                .rev()
+                .find(|item| item["type"] == "function_call_output")
+                .and_then(|item| item["output"].as_str())
+                .expect("network command or poll output");
+            let response_id = format!("{call_id}-{}", input.len());
+            let event = if let Some(session_id) = output
+                .lines()
+                .find_map(|line| line.strip_prefix("Process running with session ID "))
+            {
+                ev_function_call(
+                    &response_id,
+                    "write_stdin",
+                    &json!({
+                        "session_id": session_id.parse::<i32>().expect("session id"),
+                        "chars": "",
+                        "yield_time_ms": 1_000,
+                    })
+                    .to_string(),
+                )
+            } else {
+                output_tx
+                    .send(output.to_string())
+                    .expect("save final timeout output");
+                ev_assistant_message(&response_id, "timed out")
+            };
+            sse_response(sse(vec![event, ev_completed(&response_id)]))
+        })
+        .mount_as_scoped(&server)
+        .await;
 
     submit_managed_network_turn(
         &test,
@@ -736,10 +748,8 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     tokio::time::resume();
     wait_for_completion_without_network_prompt(&test).await;
 
-    let tool_output = parent_final
-        .requests()
-        .iter()
-        .find_map(|request| request.function_call_output_text(poll_call_id))
+    let tool_output = output_rx
+        .try_recv()
         .context("expected timed-out Guardian tool output")?;
     assert!(
         tool_output.contains(concat!(
