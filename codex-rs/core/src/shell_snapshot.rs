@@ -1048,6 +1048,24 @@ async fn run_script_with_timeout(
         credential_broker.network_proxy.apply_to_env(&mut env);
         prepared_env = Some(env);
     }
+    // PTY-backed non-login Bash can enter an interactive startup path and skip
+    // BASH_ENV. Source the reviewed file explicitly so snapshots observe the
+    // same shell environment in local and hosted runners, then restore the
+    // variable for the captured environment.
+    if shell.shell_type == ShellType::Bash
+        && credential_broker.is_some()
+        && !matches!(shell_mode, SnapshotShellMode::Login)
+        && let Some(env) = prepared_env.as_mut()
+        && let Some(bash_env) = env.remove("BASH_ENV")
+    {
+        let quoted = shlex::try_quote(&bash_env)
+            .map_err(|err| anyhow!("failed to quote BASH_ENV path: {err}"))?;
+        let command = args
+            .last_mut()
+            .ok_or_else(|| anyhow!("shell command is missing its script argument"))?;
+        *command =
+            format!("if [ -r {quoted} ]; then . {quoted}; fi\nexport BASH_ENV={quoted}\n{command}");
+    }
     if let Some(sandbox) = sandbox {
         let snapshot_read_path = match shell_mode {
             SnapshotShellMode::Validation(path) => Some(path),

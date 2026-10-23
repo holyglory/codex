@@ -387,11 +387,22 @@ def check(root, state, cargo_target, release_target):
         for path in (state, cargo_target, release_target)
     ):
         raise ValueError("Build storage must be outside the checkout")
+    # Keep disposable fixtures independent from the desktop caller. Its
+    # group-friendly umask and presentation/context variables otherwise leak
+    # into socket ownership and TUI snapshot expectations.
+    os.umask(0o022)
     state.mkdir(parents=True, exist_ok=True)
     cargo_target.mkdir(parents=True, exist_ok=True)
     release_target.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="accept-", dir=state))
-    environ = dict(os.environ)
+    environ = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CODEX_", "DEVCOORDINATOR_"))
+    }
+    environ.pop("NO_COLOR", None)
+    isolated_home = state / "test-environment" / "home"
+    isolated_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     environ.update(
         CARGO_TARGET_DIR=str(cargo_target),
         CARGO_INCREMENTAL="0",
@@ -406,6 +417,7 @@ def check(root, state, cargo_target, release_target):
         LOCAL_BAZEL_CACHE=str(state / "bazel-actions"),
         CODEX_REPO_ROOT=str(root),
         CODEX_HOME=tempfile.mkdtemp(prefix="ch.", dir="/tmp"),
+        HOME=str(isolated_home),
         TMPDIR="/tmp",
         PYTHONDONTWRITEBYTECODE="1",
     )
