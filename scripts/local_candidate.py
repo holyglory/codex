@@ -403,13 +403,16 @@ def check(root, state, cargo_target, release_target):
     environ.pop("NO_COLOR", None)
     isolated_home = state / "test-environment" / "home"
     isolated_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    toolchain_home = Path(os.environ.get("HOME", str(Path.home())))
     environ.update(
         CARGO_TARGET_DIR=str(cargo_target),
+        CARGO_HOME=environ.get("CARGO_HOME", str(toolchain_home / ".cargo")),
         CARGO_INCREMENTAL="0",
         CARGO_PROFILE_DEV_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG="0",
         CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
         NEXTEST_RETRIES="3",
+        RUSTUP_HOME=environ.get("RUSTUP_HOME", str(toolchain_home / ".rustup")),
         CODEX_BAZEL_BATCH="1",
         RUST_MIN_STACK="16777216",
         BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
