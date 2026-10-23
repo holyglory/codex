@@ -1367,13 +1367,15 @@ async fn sse_overload_retries_with_dedicated_budget(code: &str) -> Result<()> {
         }
     }
 
-    insta::assert_snapshot!(retry_messages.join("\n"), @"
-    Reconnecting... 1/5
-    Reconnecting... 2/5
-    Reconnecting... 3/5
-    Reconnecting... 4/5
-    Reconnecting... 5/5
-    ");
+    insta::allow_duplicates! {
+        insta::assert_snapshot!(retry_messages.join("\n"), @"
+        Reconnecting... 1/5
+        Reconnecting... 2/5
+        Reconnecting... 3/5
+        Reconnecting... 4/5
+        Reconnecting... 5/5
+        ");
+    }
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 7);
     assert_eq!(
