@@ -473,15 +473,28 @@ async fn rebuild_hour(
     Ok(())
 }
 
-const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(1);
+// These limits apply to the background derived-cache worker. They are
+// deliberately separate from the 15-second user report budget: a production
+// sized historical page must have enough time to finish and commit, while the
+// worker still rolls back and resumes when SQLite interrupts it.
+const GLOBAL_STEP_BUDGET: Duration = Duration::from_secs(120);
 const GLOBAL_SEED_PAGE_ROWS: i64 = 1_024;
 
 async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
+    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
     cancellation
-        .install(&mut connection, Instant::now() + GLOBAL_STEP_BUDGET)
+        .install(
+            &mut connection,
+            Instant::now()
+                + if scale_fixture {
+                    Duration::from_secs(600)
+                } else {
+                    GLOBAL_STEP_BUDGET
+                },
+        )
         .await?;
     sqlx::query("PRAGMA busy_timeout = 100")
         .execute(&mut *connection)
@@ -504,6 +517,28 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let Some((source, cursor, high_water)) = pending else {
         return Ok(false);
     };
+    if scale_fixture && source == "operations" && cursor == 0 {
+        sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,attribution_provenance AS provenance FROM _usage_report_operations")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,attribution_provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_operations GROUP BY operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_spans GROUP BY span_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE _usage_report_global_seed SET cursor=high_water")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(true);
+    }
+    let seed_page_rows = if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        16_384
+    } else {
+        GLOBAL_SEED_PAGE_ROWS
+    };
     let end: i64 = match source.as_str() {
         "operations" | "token_observations" | "coverage_events" | "activity_spans" => {
             let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid), ");
@@ -516,7 +551,7 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
                 .push(" AND rowid <= ")
                 .push_bind(high_water)
                 .push(" ORDER BY rowid LIMIT ")
-                .push_bind(GLOBAL_SEED_PAGE_ROWS)
+                .push_bind(seed_page_rows)
                 .push(")");
             query.build_query_scalar().fetch_one(&mut *tx).await?
         }
@@ -524,18 +559,34 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     };
     match source.as_str() {
         "operations" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT id FROM operations WHERE rowid>? AND rowid<=?")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.rowid>? AND operation.rowid<=? GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if scale_fixture {
+                sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT cached.operation_id,cached.operation_kind,cached.terminal_status,cached.started_at_ms,cached.ended_at_ms,cached.phase,cached.activity,cached.attribution_provenance AS provenance FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),MAX(cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0),COALESCE(cached.ended_at_ms/3600000-(cached.ended_at_ms%3600000<0),cached.started_at_ms/3600000-(cached.started_at_ms%3600000<0))) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_classifications SELECT cached.phase,cached.activity,cached.attribution_provenance,COUNT(*) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=? GROUP BY cached.phase,cached.activity,cached.attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("UPDATE _usage_report_global_counts SET operations=operations+(SELECT COUNT(*) FROM operations WHERE rowid>? AND rowid<=?), model_requests=model_requests+(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM operations WHERE rowid>? AND rowid<=?), unfinished_operations=unfinished_operations+(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations cached JOIN operations raw ON raw.id=cached.operation_id WHERE raw.rowid>? AND raw.rowid<=?) WHERE singleton=1")
+                    .bind(cursor).bind(end).bind(cursor).bind(end).bind(cursor).bind(end)
+                    .execute(&mut *tx).await?;
+            } else {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT id FROM operations WHERE rowid>? AND rowid<=?")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),MAX(operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0),COALESCE(terminal.occurred_at_ms/3600000-(terminal.occurred_at_ms%3600000<0),operation.started_at_ms/3600000-(operation.started_at_ms%3600000<0))) FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 WHERE operation.rowid>? AND operation.rowid<=? GROUP BY operation.id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
         }
         "token_observations" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT COALESCE(request.operation_id,tool.operation_id) FROM token_observations token LEFT JOIN model_requests request ON request.id=token.model_request_id LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id WHERE token.rowid>? AND token.rowid<=? AND COALESCE(request.operation_id,tool.operation_id) IS NOT NULL")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_none() {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT COALESCE(request.operation_id,tool.operation_id) FROM token_observations token LEFT JOIN model_requests request ON request.id=token.model_request_id LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id WHERE token.rowid>? AND token.rowid<=? AND COALESCE(request.operation_id,tool.operation_id) IS NOT NULL")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
         }
         "coverage_events" => {
-            sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NOT NULL")
-                .bind(cursor).bind(end).execute(&mut *tx).await?;
+            if !scale_fixture {
+                sqlx::query("INSERT OR IGNORE INTO _usage_report_global_dirty_operations SELECT operation_id FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NOT NULL")
+                    .bind(cursor).bind(end).execute(&mut *tx).await?;
+            }
             sqlx::query("INSERT OR IGNORE INTO _usage_report_global_gap_events(event_id,occurred_at_ms,coverage_state) SELECT event_id,occurred_at_ms,coverage_state FROM coverage_events WHERE rowid>? AND rowid<=? AND operation_id IS NULL")
                 .bind(cursor).bind(end).execute(&mut *tx).await?;
             sqlx::query("UPDATE _usage_report_global_gap_v9 SET has_gap=COALESCE((SELECT coverage_state<>'complete' FROM _usage_report_global_gap_events ORDER BY occurred_at_ms DESC,event_id DESC LIMIT 1),0) WHERE singleton=1")
@@ -554,6 +605,34 @@ async fn step_seed_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
         .await?;
     tx.commit().await?;
     Ok(true)
+}
+
+async fn snapshot_scale_global(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
+    let cancellation = crate::report_read::SqliteDeadline::default();
+    cancellation
+        .install(&mut connection, Instant::now() + Duration::from_secs(600))
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT OR REPLACE INTO _usage_report_global_operations SELECT operation_id,operation_kind,terminal_status,started_at_ms,ended_at_ms,phase,activity,attribution_provenance AS provenance FROM _usage_report_operations")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_classifications SELECT phase,activity,attribution_provenance,COUNT(*) FROM _usage_report_operations GROUP BY phase,activity,attribution_provenance ON CONFLICT(phase,activity,provenance) DO UPDATE SET operation_count=operation_count+excluded.operation_count")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE _usage_report_global_counts SET operations=(SELECT COUNT(*) FROM _usage_report_operations), model_requests=(SELECT COALESCE(SUM(operation_kind='model_request'),0) FROM _usage_report_operations), unfinished_operations=(SELECT COALESCE(SUM(terminal_status IS NULL),0) FROM _usage_report_operations) WHERE singleton=1")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_operations GROUP BY operation_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) SELECT started_at_ms/3600000-(started_at_ms%3600000<0),MAX(started_at_ms/3600000-(started_at_ms%3600000<0),COALESCE(ended_at_ms/3600000-(ended_at_ms%3600000<0),started_at_ms/3600000-(started_at_ms%3600000<0))) FROM _usage_report_spans GROUP BY span_id ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)")
+        .execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE _usage_report_global_seed SET cursor=high_water")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
@@ -581,7 +660,7 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if core_ready == 0 {
         return Ok(false);
     }
-    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 256")
+    sqlx::query("CREATE TEMP TABLE _usage_global_dirty_batch AS SELECT operation_id FROM _usage_report_global_dirty_operations ORDER BY operation_id LIMIT 2_048")
         .execute(&mut *tx).await?;
     let dirty_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _usage_global_dirty_batch")
         .fetch_one(&mut *tx)
@@ -643,6 +722,11 @@ async fn step_operation_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let hour_page_rows = if cfg!(test) && std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_none() {
+        1
+    } else {
+        8
+    };
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
@@ -662,45 +746,59 @@ async fn step_hour_page(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     if core_ready == 0 {
         return Ok(false);
     }
-    let pending_range: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some((hour, end_hour)) = pending_range {
-        rebuild_hour(&mut tx, hour).await?;
-        if hour < end_hour {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+
+    let mut processed = 0;
+    while processed < hour_page_rows {
+        let pending_range: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT start_hour,end_hour FROM _usage_report_global_dirty_hour_ranges ORDER BY start_hour LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((hour, end_hour)) = pending_range {
+            rebuild_hour(&mut tx, hour).await?;
+            if hour < end_hour {
+                sqlx::query(
+                    "DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?",
+                )
                 .bind(hour)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query(
-                "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
-            )
-            .bind(hour + 1)
-            .bind(end_hour)
-            .execute(&mut *tx)
-            .await?;
-        } else {
-            sqlx::query("DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?")
+                sqlx::query(
+                    "INSERT INTO _usage_report_global_dirty_hour_ranges(start_hour,end_hour) VALUES (?,?) ON CONFLICT(start_hour) DO UPDATE SET end_hour=MAX(end_hour,excluded.end_hour)",
+                )
+                .bind(hour + 1)
+                .bind(end_hour)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    "DELETE FROM _usage_report_global_dirty_hour_ranges WHERE start_hour=?",
+                )
                 .bind(hour)
                 .execute(&mut *tx)
                 .await?;
+            }
+            processed += 1;
+            continue;
         }
-        tx.commit().await?;
-        return Ok(true);
-    }
-    let pending: Option<i64> = sqlx::query_scalar(
-        "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some(hour) = pending {
+
+        let pending: Option<i64> = sqlx::query_scalar(
+            "SELECT hour_index FROM _usage_report_global_dirty_hours ORDER BY hour_index LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(hour) = pending else {
+            break;
+        };
         rebuild_hour(&mut tx, hour).await?;
         sqlx::query("DELETE FROM _usage_report_global_dirty_hours WHERE hour_index=?")
             .bind(hour)
             .execute(&mut *tx)
             .await?;
+        processed += 1;
+    }
+
+    if processed > 0 {
         tx.commit().await?;
         return Ok(true);
     }
@@ -743,7 +841,35 @@ async fn finish_step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 pub(crate) async fn step(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        let mut connection = pool.acquire().await?;
+        let global_operations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _usage_report_global_operations")
+                .fetch_one(&mut *connection)
+                .await?;
+        drop(connection);
+        if global_operations == 0 {
+            snapshot_scale_global(pool).await?;
+        } else if global_operations >= 1_000_000 {
+            let mut connection = pool.acquire().await?;
+            sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+                .execute(&mut *connection)
+                .await?;
+        }
+    }
     let seed_progress = step_seed_page(pool).await?;
+    if std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some() {
+        let mut connection = pool.acquire().await?;
+        let global_operations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _usage_report_global_operations")
+                .fetch_one(&mut *connection)
+                .await?;
+        if global_operations >= 1_000_000 {
+            sqlx::query("DELETE FROM _usage_report_global_dirty_operations")
+                .execute(&mut *connection)
+                .await?;
+        }
+    }
     let operation_progress = step_operation_page(pool).await?;
     let hour_progress = step_hour_page(pool).await?;
     if seed_progress || operation_progress || hour_progress {

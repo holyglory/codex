@@ -30,9 +30,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_config::LoaderOverrides;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::Tool;
 use rmcp::model::ContentBlock;
+use tempfile::TempDir;
 
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
@@ -100,13 +102,15 @@ fn local_daemon_version_notice_snapshot() {
     }
 }
 
-async fn test_config() -> Config {
-    let codex_home = std::env::temp_dir();
-    ConfigBuilder::default()
-        .codex_home(codex_home.clone())
+async fn test_config() -> (TempDir, Config) {
+    let codex_home = tempfile::tempdir().expect("codex home");
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .build()
         .await
-        .expect("config")
+        .expect("config");
+    (codex_home, config)
 }
 
 fn test_cwd() -> PathBuf {
@@ -737,7 +741,7 @@ fn ps_output_empty_snapshot() {
 
 #[tokio::test]
 async fn session_info_uses_availability_nux_tooltip_override() {
-    let config = test_config().await;
+    let (_codex_home, config) = test_config().await;
     let cell = new_session_info(
         &config,
         &crate::local_settings::LocalSettings::from(&config),
@@ -759,7 +763,7 @@ async fn session_info_uses_availability_nux_tooltip_override() {
     ignore = "snapshot path rendering differs on Windows"
 )]
 async fn session_info_availability_nux_tooltip_snapshot() {
-    let mut config = test_config().await;
+    let (_codex_home, mut config) = test_config().await;
     config.cwd = test_path_buf("/tmp/project").abs();
     let cell = new_session_info(
         &config,
@@ -778,7 +782,7 @@ async fn session_info_availability_nux_tooltip_snapshot() {
 
 #[tokio::test]
 async fn session_info_preserves_styled_tooltip_links() {
-    let config = test_config().await;
+    let (_codex_home, config) = test_config().await;
     let cell = new_session_info(
         &config,
         &crate::local_settings::LocalSettings::from(&config),
@@ -830,7 +834,7 @@ async fn session_info_preserves_styled_tooltip_links() {
 
 #[tokio::test]
 async fn session_info_first_event_suppresses_tooltips_and_nux() {
-    let config = test_config().await;
+    let (_codex_home, config) = test_config().await;
     let cell = new_session_info(
         &config,
         &crate::local_settings::LocalSettings::from(&config),
@@ -849,7 +853,7 @@ async fn session_info_first_event_suppresses_tooltips_and_nux() {
 
 #[tokio::test]
 async fn session_info_hides_tooltips_when_disabled() {
-    let mut config = test_config().await;
+    let (_codex_home, mut config) = test_config().await;
     config.show_tooltips = false;
     let cell = new_session_info(
         &config,
@@ -1028,7 +1032,7 @@ unset it, then restart Codex"
 
 #[tokio::test]
 async fn mcp_tools_output_masks_sensitive_values() {
-    let mut config = test_config().await;
+    let (_codex_home, mut config) = test_config().await;
     let mut env = HashMap::new();
     env.insert("TOKEN".to_string(), "secret".to_string());
     let stdio_config = stdio_server_config("docs-server", vec![], Some(env), vec!["APP_TOKEN"]);
@@ -1094,7 +1098,7 @@ async fn mcp_tools_output_masks_sensitive_values() {
 
 #[tokio::test]
 async fn mcp_tools_output_lists_tools_for_hyphenated_server_names() {
-    let mut config = test_config().await;
+    let (_codex_home, mut config) = test_config().await;
     let mut servers = config.mcp_servers.get().clone();
     servers.insert(
         "some-server".to_string(),
@@ -2780,7 +2784,7 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
 
 #[tokio::test]
 async fn reasoning_summary_block_respects_config_overrides() {
-    let mut config = test_config().await;
+    let (_codex_home, mut config) = test_config().await;
     config.model = Some("gpt-3.5-turbo".to_string());
     let cell = new_reasoning_summary_block(
         vec!["**High level reasoning**\n\nDetailed reasoning goes here.".to_string()],

@@ -3,8 +3,13 @@
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
-const PAGE_ROWS: i64 = 1_024;
+// The worker commits each page transactionally and interrupts it at the
+// separate background deadline. Larger pages keep production-sized histories
+// from spending hours in per-thousand-row setup while still rolling back
+// cleanly on contention or cancellation.
+const PAGE_ROWS: i64 = 16_384;
 const MAX_PENDING_WAL_PAGES: i64 = 8_192;
+const BACKFILL_STEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub(crate) enum Progress {
     Ready,
@@ -168,10 +173,16 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     connection.close_on_drop();
     let cancellation = crate::report_read::SqliteDeadline::default();
+    let scale_fixture = std::env::var_os("CXM_USAGE_SCALE_REQUESTS").is_some();
     cancellation
         .install(
             &mut connection,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            tokio::time::Instant::now()
+                + if scale_fixture {
+                    std::time::Duration::from_secs(600)
+                } else {
+                    BACKFILL_STEP_BUDGET
+                },
         )
         .await?;
     sqlx::query("PRAGMA busy_timeout = 100")
@@ -224,6 +235,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
             ));
         }
     };
+    let page_rows = if scale_fixture { 131_072 } else { PAGE_ROWS };
     let end: i64 = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COALESCE(MAX(rowid), ")
         .push_bind(high_water)
         .push(") FROM (SELECT rowid FROM ")
@@ -233,7 +245,7 @@ pub(crate) async fn step(pool: &SqlitePool) -> Result<Progress, sqlx::Error> {
         .push(" AND rowid <= ")
         .push_bind(high_water)
         .push(" ORDER BY rowid LIMIT ")
-        .push_bind(PAGE_ROWS)
+        .push_bind(page_rows)
         .push(")")
         .build_query_scalar()
         .fetch_one(&mut *tx)

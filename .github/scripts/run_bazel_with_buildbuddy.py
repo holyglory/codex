@@ -209,6 +209,12 @@ def bazel_args_with_remote_config(
     if command_idx is None:
         raise ValueError("expected a Bazel command")
 
+    try:
+        input_separator_idx = args.index("--")
+    except ValueError:
+        input_separator_idx = len(args)
+    windows_cross_config = "--config=ci-windows-cross" in args[:input_separator_idx]
+
     config = remote_config(args, env)
     if config is None:
         configured_args = bazel_args_without_remote_execution(args)
@@ -274,17 +280,60 @@ def bazel_args_with_remote_config(
         else []
     )
     fallback_args = []
-    if (
+    use_windows_msvc_fallback = (
         args[command_idx] in ("build", "test", "coverage", "run", "cquery", "aquery")
         and env.get("RUNNER_OS") == "Windows"
-        and env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
         and not env.get("BUILDBUDDY_API_KEY")
-        and not any(
-            arg == "--platforms" or arg.startswith("--platforms=")
-            for arg in configured_args[:separator_idx]
+        and (
+            windows_cross_config or env.get("CODEX_BAZEL_WINDOWS_MSVC_FALLBACK") == "1"
         )
-    ):
-        fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
+    )
+    if use_windows_msvc_fallback:
+        if not any(
+            arg == "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0"
+            or arg.startswith("--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=")
+            for arg in configured_args[:separator_idx]
+        ):
+            fallback_args.append("--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0")
+        if not any(
+            arg.startswith("--extra_toolchains=")
+            for arg in configured_args[:separator_idx]
+        ):
+            fallback_args.append(
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows"
+            )
+        has_target_platform = False
+        replaced_gnullvm_platform = False
+        normalized_args = []
+        idx = 0
+        while idx < separator_idx:
+            arg = configured_args[idx]
+            if arg == "--platforms" and idx + 1 < separator_idx:
+                has_target_platform = True
+                target = configured_args[idx + 1]
+                if target == "//:windows_x86_64_gnullvm":
+                    normalized_args.extend([arg, "//:windows_x86_64_msvc"])
+                    replaced_gnullvm_platform = True
+                else:
+                    normalized_args.extend([arg, target])
+                idx += 2
+                continue
+            if arg == "--platforms=//:windows_x86_64_gnullvm":
+                normalized_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
+                has_target_platform = True
+                replaced_gnullvm_platform = True
+            else:
+                has_target_platform |= arg == "--platforms" or arg.startswith(
+                    "--platforms="
+                )
+                normalized_args.append(arg)
+            idx += 1
+
+        if replaced_gnullvm_platform:
+            configured_args = [*normalized_args, *configured_args[separator_idx:]]
+            separator_idx = len(normalized_args)
+        elif not has_target_platform:
+            fallback_args.append(WINDOWS_MSVC_TARGET_PLATFORM)
     if (
         config is None
         and args[command_idx] in ("build", "test", "coverage", "run")

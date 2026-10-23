@@ -256,9 +256,12 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape when credentials are unavailable, including a matching
-  # MSVC target so native C dependencies do not feed MinGW objects to rust-lld.
+  # Use the native MSVC target and host when authenticated Linux RBE is
+  # unavailable. The wrapper strips ci-windows-cross and normalizes any
+  # explicit gnullvm target before invoking local Bazel.
+  # Keep the native Windows CI settings (including the local Windows
+  # repository/toolchain configuration) and replace only the unavailable
+  # remote cross-build target in the wrapper.
   ci_config=ci-windows
   windows_msvc_host_platform=1
   export CODEX_BAZEL_WINDOWS_MSVC_FALLBACK=1
@@ -390,6 +393,11 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
+  if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+    # Keep the complete cross-target/toolchain mapping for cold fork builds,
+    # while the host override above keeps test execution on Windows.
+    bazel_run_args+=("--config=${ci_config}")
+  fi
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")

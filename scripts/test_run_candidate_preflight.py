@@ -37,10 +37,15 @@ class CandidatePreflightTests(unittest.TestCase):
                     with self.assertRaises(subprocess.CalledProcessError):
                         run_preflight(Path("/candidate"))
                 selections = [call.args[0] for call in run.call_args_list[1:]]
-                self.assertTrue(
-                    all(command[:-1] == selections[0][:-1] for command in selections)
+                self.assertEqual(
+                    selections[0][1:5], ["test", "--locked", "-p", "codex-app-server"]
                 )
-                self.assertTrue(all("codex-cli" in command for command in selections))
+                self.assertTrue(
+                    all("--no-tests=fail" in command for command in selections)
+                )
+                self.assertTrue(
+                    all("codex-cli" in command for command in selections[1:])
+                )
 
     def test_release_inclusion_refusal_stops_before_build(self):
         with (
@@ -85,7 +90,10 @@ class CandidatePreflightTests(unittest.TestCase):
         )
         commands = [call.args[0] for call in run.call_args_list[1:]]
         self.assertEqual(len(commands), 6)
-        self.assertTrue(all(command[:-1] == commands[0][:-1] for command in commands))
+        self.assertEqual(
+            commands[0][1:5], ["test", "--locked", "-p", "codex-app-server"]
+        )
+        self.assertTrue(all("--no-tests=fail" in command for command in commands))
         self.assertEqual(
             [command[-1] for command in commands],
             [

@@ -7,8 +7,12 @@
 - Peeled commit: `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`
 - Selected: 2026-09-29
 - License: Apache-2.0; preserve the upstream `LICENSE` and `NOTICE`
-- Downstream Rust version: `0.162.1+multi.1`
-- Downstream npm version: `0.162.1-multi.1`
+- Downstream Rust version: `0.162.1+multi.2`
+- Downstream npm version: `0.162.1-multi.2`
+- Local rollback source: `npm-v0.162.1-multi.1` at
+  `10da2ab565b9c322ef12b852eef1ad2041f47d4e`; retain its installed package and
+  the older `npm-v0.159.1-multi.3` tag. The older package cannot open the current
+  usage schema, so it is not a direct rollback target for the live database.
 
 The tag object and peeled commit were fetched directly from the configured
 upstream remote. The tag is annotated but does not contain a cryptographic
@@ -63,6 +67,19 @@ the authority for release outcomes and verification receipts.
   using `git range-diff`. A downstream commit may have a new hash while still
   being the same patch. In particular, verify known commits such as `d6e5e7687f`
   by patch identity before applying them again.
+- **Make release inventory fields enforceable.** Required filenames do not
+  prove that a PR or worktree patch reached the candidate. Pin original and
+  replayed patch identities, record reviewed API adaptations explicitly, and
+  preserve original unmerged stacks under immutable archive tags. Before
+  packaging, verify the complete retained stack, required GitHub merge commits
+  and outstanding release branches. Keep source-inclusion evidence separate
+  from the installed-binary tests that prove the behavior still works.
+- **Prove shared CI prerequisites before propagating them through a PR stack.**
+  Keep focused repair checks and one current native platform diagnostic while
+  fixing common runner setup. Retire superseded or duplicate intermediate
+  matrices deliberately, retain their actual outcomes, and preserve sealed
+  release runs. Run complete local and hosted acceptance after the final source
+  is integrated and frozen; queued intermediate jobs are not release evidence.
 - **Refresh native dependency patches after lock updates.** Cargo can pass
   while Bazel still applies a patch written for an older transitive crate.
   Inspect the new crate source, drop changes already implemented upstream,
@@ -94,6 +111,25 @@ the authority for release outcomes and verification receipts.
   rediscovered during testing. Keep the preflight and its mismatched-toolchain
   fixture in the release workflow, and use the canonical isolated runner rather
   than a hand-written substitute test graph.
+- Use the same environment for focused retries and complete acceptance through
+  `scripts/run_local_candidate.sh`; its `--command` mode shares the acceptance
+  environment. Preserve toolchain homes, GitHub CLI configuration, and approved
+  cache endpoints while isolating the test home, umask, and caller context.
+  Keep one persistent state directory across attempts. Move known generated
+  test outputs into retained evidence before enforcing a clean package source.
+  Run long acceptance through Coordinator and wait on its run identity; an
+  interrupted wrapper or successful diagnostic retry is not a release receipt.
+- **Preserve native shell startup semantics.** When a brokered validation must
+  suppress startup files, remove `BASH_ENV` only for that validation command.
+  Do not manually quote, expand, or restore it: Bash expands its filename and
+  startup scripts can inspect or unset the variable. Cover values such as
+  `$PWD/startup.sh`, startup visibility, and an intentional `unset BASH_ENV`
+  in the brokered snapshot fixture.
+- **Journal a check before cleanup.** A check result and its log digest must be
+  written and fsynced before moving generated test artifacts. If cleanup finds
+  an unexpected source change, move all known generated outputs first, retain a
+  bounded failure record, and fail the acceptance; never lose evidence of the
+  completed check or synthesize a partial success receipt.
 - **Do not restore downstream behavior by replaying broad WIP checkpoints.**
   The 0.162.1 forward-port checkpoints carried downstream account, usage, event,
   and plugin code but also reverted or omitted newer stable interfaces. Replaying
@@ -155,6 +191,19 @@ the authority for release outcomes and verification receipts.
   a warm target can conceal a missing prerequisite until another target or
   package selection rebuilds V8. Preserve the package/feature union between
   focused runs to avoid rebuilding shared dependencies.
+- **Separate local acceptance from hosted artifact gates explicitly.** The VPS
+  can run the canonical Linux acceptance graph with Rust 1.95.0, retained V8
+  inputs, and the persistent Bazel/compiler cache, but GitHub's required fan-in
+  does not consume that receipt automatically. The handoff must therefore bind
+  the exact commit, producer, successful checks, HTTPS release-asset URLs,
+  declared sizes, and SHA-256 digests before the candidate imports any package.
+  `scripts/prepare_runner_handoff.py` stages those bundles in a draft
+  `codex-runner-handoff-<commit>` release; `runner_handoff.py` verifies and
+  extracts them inside GitHub. Keep GitHub for macOS, the unavoidable ARM64
+  Linux publication artifact, final artifacts, and npm gates. A private Windows
+  controller has the same boundary: a healthy machine smoke test does not prove
+  a release run, and runner communication loss is an infrastructure failure
+  that must remain visible.
 - **Freeze editor setup with the candidate.** Initialize navigation metadata
   before sealing a worktree, or navigate the mutable integration checkout.
   Creating `.serena/` during a governed run changes its source fingerprint even
@@ -229,6 +278,11 @@ the authority for release outcomes and verification receipts.
   distinguish startup/catalog, handshake/prewarm, request delivery, and score
   publication. Add bounded diagnostics, reproduce the exact await point, then
   remove diagnostics before committing the fixture repair.
+  A timeout of the Coordinator client is different from a test timeout: an
+  accepted run may already be executing or complete. Inspect the current run
+  and its source identity before resubmitting, then resume its supported wait.
+  Retain the operation ID and cursor; a transport failure does not prove that
+  admission failed or authorize a duplicate run.
 - **Preserve fixture configuration while isolating host settings.** The 0.159.1
   Guardian helper wrote its scoring configuration and then cleared the entire
   configuration stack, disabling prewarm and causing 25 identical timeouts.
@@ -320,6 +374,17 @@ the authority for release outcomes and verification receipts.
   action cache so large outputs are not duplicated on the ephemeral disk.
   Preserve explicitly configured bounded caches and repository-download
   caches; test the fallback without exposing credentials to pull requests.
+- **Keep Windows target and execution toolchains separate.** Upstream
+  `rust-v0.162.1` intentionally builds `x86_64-pc-windows-gnullvm` with a
+  Linux LLVM/MinGW execution toolchain and an MSVC Windows test host. A fork
+  job without BuildBuddy cannot run that Linux compiler locally: retaining
+  `ci-windows-cross` produces Win32 error 193. A native fallback must retain
+  `ci-windows`, select the MSVC target and host, and build `aws-lc`/`ring`
+  archives with the same MSVC ABI. Check the actual compiler executable and
+  archive symbols in hosted logs; wrapper argument tests and a successful
+  setup step do not prove ABI consistency. Keep this distinction when
+  rebasing, because MinGW is upstream build infrastructure rather than a
+  downstream runtime dependency.
 - **Honor batch mode for governed Bazel runs.** The local candidate requests
   `CODEX_BAZEL_BATCH=1`; the Bazel wrapper must turn it into the startup option
   `--batch`, preserving an explicit caller override. Otherwise an idle Java
@@ -500,6 +565,97 @@ the authority for release outcomes and verification receipts.
   as a transaction-local view, and select finite windows from the indexed ready
   projection. Verify identical account, repository, worktree and time filters,
   plus rollback/cancellation cleanup, before accepting the faster query.
+- **Include old open operations and spans in scale fixtures.** Volume alone
+  missed expensive hourly joins and unfair refresh scheduling during capture.
+  Mix completed and open operations, descendant threads, activity spans and
+  reporting windows. Keep operation and hour queues progressing together; a
+  short SQLite deadline alone can repeatedly interrupt an expensive page.
+  Measure the whole hourly calculation and preserve its reported aggregates.
+- **Exercise the production refresh worker in large-history acceptance.** A
+  direct `report_cache::ensure` call can return a page interruption that the
+  real worker already retries with backoff. Retain the failed database and
+  compare worker progress before changing production retry behavior. A fast
+  replay against warmed pages does not establish the cause of a cold failure.
+  Require eventual readiness, monotonic committed cursors, unchanged totals
+  and responsive concurrent capture; a successful retry alone is insufficient.
+- **Verify every public reporting entry point.** Performance-review deadlines
+  do not protect separate task-tree queries. Row and output caps do not bound
+  SQLite execution time. Exercise task-tree summaries on the same large,
+  synthetic history, require successful finite-window descendant reports, and
+  verify admission, cancellation, snapshot release and later capture through
+  the actual tool. Preserve accounting and requested scopes when adding the
+  existing report budget to another query path.
+- **Include generated integration binaries in focused lint.** The Rust crate
+  macro generates integration labels such as `core-all-test-bin` and
+  `app-server-all-test-bin`. A pass over libraries and unit-test binaries does
+  not cover those sources. Resolve the labels from `defs.bzl` and include the
+  changed integration boundary; keep the complete target-list check in frozen
+  release acceptance.
+- **Check the cache needed by each report scope.** Global unbounded summaries
+  need global aggregates; scoped summaries can use a ready core projection.
+  Missing bounds and one-sided bounds are both unbounded for admission, but
+  one-sided bounds must still filter counts, tokens and coverage. Only a
+  completely absent range can select all-time projections. Cover warming and
+  ready results through the actual interfaces, retain the global warming guard,
+  and preserve typed warming fields through response decoration. Use portable
+  SQL fixture setup instead of removing Windows coverage from existing tests.
+- **Preserve compatible cache state during startup upgrades.** Opening a
+  collector should capture source frontiers, not enqueue its entire history.
+  Test each background seed source and its page boundary. Compare populated
+  projections, dirty queues and metadata before and after a compatible
+  upgrade, including rollback and re-upgrade with stale frontier metadata.
+  Unsupported future components must not be reset or treated as refreshable.
+- **Check older live writers before a derived-cache upgrade.** Raw-schema
+  compatibility alone does not prove safe coexistence. The released
+  `0.162.1-multi.1` refresh preparation resets global components that differ
+  from version 2, including a newer version 3 component. Verify which serving
+  and worker processes share the collector during supported handover, and
+  require a stable component version and completed rebuild before reporting
+  recovery. Preserve sessions and raw history; a new launcher alone does not
+  replace already-running workers.
+- **Bound diagnostic logs globally before opening SQLite.** Per-thread and
+  per-process retention caps do not bound a database when each retry creates a
+  new thread partition. A large WAL can block pre-listener startup before the
+  normal age/size maintenance task runs, and repeated launch retries can leave
+  many stale processes. Check the database and sidecars before opening them,
+  preserve an oversized set together, create a fresh diagnostic database, and
+  run global size pruning on a short maintenance interval. Test a restart with
+  a sparse oversized database and verify the preserved backup, fresh listener,
+  bounded WAL, and no retry-process accumulation.
+- **Bind image generation to the step account lease.** Standalone extensions
+  receive a default authentication manager at installation time, but an agent
+  turn can select another account. Build image tools for each sampling step
+  from its `AuthManagerLease`, with the installation manager only as a legacy
+  fallback, and exercise direct and code-mode generation and editing against
+  an account-specific mock endpoint.
+- **Audit every remote extension at its execution boundary.** The same
+  installation-manager versus issuing-lease mistake can affect web search,
+  Git attribution, and Guardian's asynchronous sampler even when normal chat
+  requests use the selected account. Native tools must select credentials in
+  `tools_for_step`; turn-scoped policy and background samplers must read the
+  turn lease and keep caches keyed by its account identity and auth generation.
+  Apps file uploads must also resolve the lease at tool execution time.
+  History notes and
+  MCP Apps use thread or shared state and require explicit lease-aware APIs;
+  treat them as separate follow-up work. Add regression fixtures with distinct
+  default and selected-account credentials for every remote surface.
+- **Check build settings outside the test shell.** Language servers have their
+  own process environment; a shared Cargo target in test declarations does not
+  configure them. Inspect their effective target settings and newly created
+  local targets before blaming cache misses. Release unused language servers
+  through the current navigation session before requesting governed cleanup;
+  preserve active outputs, source and rollback artifacts.
+- **Match completion waits to actual event metadata.** Storage completion
+  events currently carry a storage-job subject and no repository identifier.
+  Filtering those events by repository hides completion. Retain the event
+  cursor, match the reported job identifier, and inspect authoritative status
+  after a wait deadline. A timed-out submission or observer does not establish
+  that the underlying operation was rejected or cancelled.
+  For native local-test waits, the connected `devcoordinator` publisher emits
+  `test.finished`; match both `repository_id` and the exact `run_id`.
+  `source.unavailable` requires checking provider health, and a wait deadline
+  is never a passing result. GitHub workflows need their own confirmed event
+  integration or the provider's existing watch command.
 - **Test effective-UID home resolution at the installed boundary.** A root
   launch with an inherited non-root `HOME` must use UID 0's passwd home when
   `CODEX_HOME` is unset; an explicit `CODEX_HOME` remains authoritative. The

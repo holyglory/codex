@@ -837,3 +837,6 @@ fn profile_probe_count(requests: &[Request], profile: &ManagedChatGptProfile) ->
 
 #[path = "account_auto_selection_credit_tests.rs"]
 mod credit_tests;
+
+#[path = "account_auto_selection_imagegen.rs"]
+mod imagegen;

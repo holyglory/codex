@@ -209,6 +209,7 @@ rules_rust.patch(
         # Skip transient native-Windows linker outputs while consolidating
         # dependency search paths.
         "//patches:rules_rust_windows_process_wrapper_skip_temp_outputs.patch",
+        "//patches:rules_rust_windows_process_wrapper_response_file.patch",
         # Group build-script argument files to avoid Windows command-line limits.
         "//patches:rules_rust_group_build_script_arg_files.patch",
         "//patches:rules_rust_windows_execroot_separators.patch",
@@ -288,9 +289,17 @@ nightly_rust.repository_set(
 )
 use_repo(nightly_rust, "rust_toolchains")
 
+# Match Cargo's MSVC static CRT policy for target and host dependencies.
+MSVC_RUSTC_FLAGS = {
+    "aarch64-pc-windows-msvc": ["-Ctarget-feature=+crt-static"],
+    "x86_64-pc-windows-msvc": ["-Ctarget-feature=+crt-static"],
+}
+
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
+    extra_exec_rustc_flags = MSVC_RUSTC_FLAGS,
+    extra_rustc_flags = MSVC_RUSTC_FLAGS,
     version = "1.95.0",
 )
 use_repo(toolchains, "default_rust_toolchains")

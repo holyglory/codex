@@ -107,7 +107,13 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(
                 ["test", "//codex-rs/..."], env
             ),
-            ["test", "//codex-rs/...", "--platforms=//:windows_x86_64_msvc"],
+            [
+                "test",
+                "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
         )
         for args in (["query", "//codex-rs/..."], ["info", "bazel-testlogs"]):
             with self.subTest(args=args):
@@ -125,8 +131,46 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     run_bazel_with_buildbuddy.bazel_args_with_remote_config(
                         ["test", *explicit, "//codex-rs/..."], env
                     ),
-                    ["test", *explicit, "//codex-rs/..."],
+                    [
+                        "test",
+                        *(
+                            ("--platforms=//:windows_x86_64_msvc",)
+                            if explicit == ["--platforms=//:windows_x86_64_gnullvm"]
+                            else ("--platforms", "//:windows_x86_64_msvc")
+                        ),
+                        "//codex-rs/...",
+                        "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                        "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                    ],
                 )
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "--config=ci-windows-cross", "//codex-rs/..."],
+                env,
+            ),
+            [
+                "test",
+                "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
+        )
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["test", "--config=ci-windows", "//codex-rs/..."],
+                env,
+            ),
+            [
+                "test",
+                "--config=ci-windows",
+                "//codex-rs/...",
+                "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0",
+                "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows",
+                "--platforms=//:windows_x86_64_msvc",
+            ],
+        )
 
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(

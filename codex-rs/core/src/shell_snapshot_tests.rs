@@ -678,7 +678,9 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
          export EXCLUDED_PARENT_HOME=\"${HOME-missing}\"\n\
          export STARTUP_PATH_OVERRIDE_SEEN=\"${PATH%%:*}\"\n\
          export STARTUP_CORP_REGION_SEEN=\"${CORP_REGION-missing}\"\n\
-         export STARTUP_NPM_TOKEN_SEEN=\"${NPM_TOKEN-missing}\"\n",
+         export STARTUP_NPM_TOKEN_SEEN=\"${NPM_TOKEN-missing}\"\n\
+         export BASH_ENV_SEEN=\"${BASH_ENV-missing}\"\n\
+         unset BASH_ENV\n",
     )?;
 
     let started_proxy = credential_snapshot_proxy().await?;
@@ -688,7 +690,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         shell_type: ShellType::Bash,
         shell_path: PathBuf::from("/bin/bash"),
     };
-    let trusted_startup = ("BASH_ENV".to_string(), startup.display().to_string());
+    let trusted_startup = ("BASH_ENV".to_string(), "$PWD/startup.sh".to_string());
     let shell_environment_policy = ShellEnvironmentPolicy {
         exclude: vec![
             EnvironmentVariablePattern::new_case_insensitive("HOME"),
@@ -758,6 +760,32 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             .map(String::as_str),
         Some("https://api.snapshot.example/v1")
     );
+    let capture_script = snapshot_capture_script(
+        ShellType::Bash,
+        SnapshotCaptureOptions {
+            startup: SnapshotStartup::NonInteractive,
+            declarations: true,
+            environment: true,
+        },
+    )
+    .expect("Bash snapshot capture script");
+    let raw_capture = run_script_with_timeout(
+        &shell,
+        &capture_script,
+        SNAPSHOT_TIMEOUT,
+        SnapshotShellMode::NonLogin,
+        &dir.path().abs(),
+        Some(&credential_broker),
+        /*sandbox*/ None,
+    )
+    .await?;
+    let captured = CapturedSnapshot::parse(ShellType::Bash, raw_capture.as_bytes())
+        .expect("Bash snapshot capture");
+    assert!(
+        !std::str::from_utf8(captured.environment)?
+            .split('\0')
+            .any(|entry| entry.starts_with("BASH_ENV="))
+    );
     let snapshot = fs::read_to_string(&path).await?;
 
     for secret in [
@@ -782,6 +810,8 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     assert!(snapshot.contains("declare -x PATH=\"/enterprise/bin\""));
     assert!(snapshot.contains("STARTUP_CORP_REGION_SEEN=\"production\""));
     assert!(snapshot.contains("STARTUP_NPM_TOKEN_SEEN=\"npm_enterprise_token\""));
+    assert!(snapshot.contains("BASH_ENV_SEEN="));
+    assert!(snapshot.contains("$PWD/startup.sh"));
     assert!(snapshot.contains("declare -rx HOMEBREW_GITHUB_API_TOKEN=\"${GITHUB_TOKEN-}\""));
     assert!(snapshot.contains("${VENDOR_PASSWORD-}"));
     assert!(!snapshot.contains("api.stripe.example"));

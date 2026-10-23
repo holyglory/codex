@@ -25,10 +25,11 @@ async fn database_with_logs(ages: &[i64]) -> (SqlitePool, PathBuf) {
     LOGS_MIGRATOR.run(&pool).await.unwrap();
     for age in ages {
         sqlx::query(
-            "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body) \
-             VALUES (?, 0, 'INFO', 'retention-test', ?)",
+            "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, estimated_bytes) \
+             VALUES (?, 0, 'INFO', 'retention-test', ?, length(?))",
         )
         .bind(NOW - age)
+        .bind("x".repeat(128 * 1024))
         .bind("x".repeat(128 * 1024))
         .execute(&pool)
         .await
@@ -83,11 +84,45 @@ async fn halves_again_when_first_halving_deletes_nothing() {
 
 #[tokio::test]
 async fn stops_at_one_second_when_recent_rows_exceed_budget() {
-    let (pool, directory) = database_with_logs(&[-1, 0, 1, 2, DAY]).await;
+    let (pool, directory) = database_with_logs(&[DAY, 2, 1, 0, -1]).await;
     prune_by_age_and_size(&pool, NOW, /*budget_bytes*/ 1)
         .await
         .unwrap();
-    assert_eq!(retained_ages(&pool).await, vec![-1, 0, 1]);
+    assert_eq!(retained_ages(&pool).await, vec![-1]);
+    pool.close().await;
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test]
+async fn global_size_cap_prunes_many_recent_partitions() {
+    let directory = super::super::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    let pool = SqliteConfig::new_for_testing(directory.as_path().abs())
+        .open_read_write_pool(&directory.join("logs.sqlite"))
+        .await
+        .unwrap();
+    LOGS_MIGRATOR.run(&pool).await.unwrap();
+    for index in 0..5 {
+        sqlx::query(
+            "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, estimated_bytes) \
+             VALUES (?, 0, 'INFO', 'retention-test', ?, ?, length(?))",
+        )
+        .bind(NOW)
+        .bind(format!("log-{index}"))
+        .bind(format!("thread-{index}"))
+        .bind(format!("log-{index}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    prune_by_age_and_size(&pool, NOW, /*budget_bytes*/ 5)
+        .await
+        .unwrap();
+    let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM logs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, 1);
     pool.close().await;
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
@@ -160,7 +195,7 @@ async fn startup_cleanup_runs_without_waiting_for_the_period() {
         }
     })
     .await
-    .expect("startup cleanup should run before the 30-minute interval");
+    .expect("startup cleanup should run before the periodic interval");
     runtime.close().await;
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }

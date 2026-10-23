@@ -694,7 +694,7 @@ async fn task_tree_window_includes_lower_bound_point_and_excludes_upper_bound_po
             unlinked_nested_tool_operations: 0,
         }
     );
-    assert_eq!(summary.totals.wall_time, duration(0));
+    assert_eq!(summary.totals.wall_time, duration(/*measured_ns*/ 0));
 }
 
 #[cfg(unix)]

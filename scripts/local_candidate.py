@@ -17,6 +17,8 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
+import runner_handoff
+
 
 GATES = (
     "toolchain",
@@ -33,7 +35,7 @@ GATES = (
     "native-inputs",
 )
 LANES = {
-    "rust": ("clippy", "rust-tests", "linux-package", "root-usage"),
+    "rust": ("clippy", "rust-tests", "linux-package", "sdks", "root-usage"),
     "bazel": ("argument-comments", "bazel-tests", "bazel-release"),
 }
 CHECKS = (*GATES, *LANES["rust"], *LANES["bazel"])
@@ -104,7 +106,11 @@ def commands(root, state, directory):
         ),
         "format": (["just", "fmt-check"], root),
         "package-prerequisites": (
-            ["bash", "scripts/build_local_linux_candidate.sh", "--check"],
+            [
+                "bash",
+                "-euc",
+                "bash scripts/build_local_linux_candidate.sh --check && bash scripts/check_local_sdks.sh --check",
+            ],
             root,
         ),
         "focused": (
@@ -247,6 +253,15 @@ def commands(root, state, directory):
             ],
             root,
         ),
+        "sdks": (
+            [
+                "bash",
+                "scripts/check_local_sdks.sh",
+                str(directory / "linux-package" / "bin" / "codex"),
+                str(directory / "sdk"),
+            ],
+            root,
+        ),
         "bazel-release": (
             [
                 "bash",
@@ -283,6 +298,7 @@ def run_step(name, command, cwd, environ, directory):
 def preserve_generated_test_artifacts(root, directory):
     """Move known test-only outputs out of the frozen source checkout."""
     status = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    unexpected = []
     for entry in status.split("\0"):
         if not entry:
             continue
@@ -292,12 +308,16 @@ def preserve_generated_test_artifacts(root, directory):
             path.endswith(".snap.new")
             or path == "codex-rs/non-existent/.auth-credential-lock-v1"
         ):
-            raise ValueError(
-                f"Acceptance run modified an unexpected source path: {path}"
-            )
+            unexpected.append(path)
+            continue
         target = directory / "generated" / path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(root / path), target)
+    if unexpected:
+        paths = ", ".join(unexpected[:8])
+        if len(unexpected) > 8:
+            paths += ", ..."
+        raise ValueError(f"Acceptance run modified an unexpected source path: {paths}")
 
 
 def execute(plan, environ, directory, unchanged, runner=run_step):
@@ -359,14 +379,68 @@ def validate(receipt, commit):
             raise ValueError("Local acceptance lacks a log digest")
 
 
-def check(root, state, cargo_target, release_target):
-    commit = frozen_commit(root)
+def verify_candidate_environment():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("Local acceptance requires Linux x86_64")
     if Path("/etc/codex/config.toml").exists():
         raise ValueError(
             "Use the isolated local test environment; host Codex configuration is present"
         )
+
+
+def candidate_environment(root, state, cargo_target, release_target):
+    if any(
+        path == root or path.is_relative_to(root)
+        for path in (state, cargo_target, release_target)
+    ):
+        raise ValueError("Build storage must be outside the checkout")
+    # Keep disposable fixtures independent from the desktop caller. Its
+    # group-friendly umask and presentation/context variables otherwise leak
+    # into socket ownership and TUI snapshot expectations.
+    os.umask(0o022)
+    state.mkdir(parents=True, exist_ok=True)
+    cargo_target.mkdir(parents=True, exist_ok=True)
+    release_target.mkdir(parents=True, exist_ok=True)
+    environ = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CODEX_", "DEVCOORDINATOR_"))
+        or key in {"CODEX_BAZEL_BIN", "CODEX_BAZEL_REMOTE_CACHE_URL"}
+    }
+    environ.pop("NO_COLOR", None)
+    isolated_home = state / "test-environment" / "home"
+    isolated_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    toolchain_home = Path(os.environ.get("HOME", str(Path.home())))
+    environ.update(
+        CARGO_TARGET_DIR=str(cargo_target),
+        CARGO_HOME=environ.get("CARGO_HOME", str(toolchain_home / ".cargo")),
+        CARGO_INCREMENTAL="0",
+        CARGO_PROFILE_DEV_DEBUG="0",
+        CARGO_PROFILE_TEST_DEBUG="0",
+        CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
+        NEXTEST_RETRIES="3",
+        GH_CONFIG_DIR=environ.get(
+            "GH_CONFIG_DIR", str(toolchain_home / ".config" / "gh")
+        ),
+        RUSTUP_HOME=environ.get("RUSTUP_HOME", str(toolchain_home / ".rustup")),
+        CODEX_BAZEL_BATCH="1",
+        RUST_MIN_STACK="16777216",
+        BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
+        BAZEL_REPOSITORY_CACHE=str(state / "bazel-downloads"),
+        LOCAL_BAZEL_CACHE=str(state / "bazel-actions"),
+        CODEX_REPO_ROOT=str(root),
+        CODEX_HOME=tempfile.mkdtemp(prefix="ch.", dir="/tmp"),
+        HOME=str(isolated_home),
+        TMPDIR="/tmp",
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    environ["LOCAL_RELEASE_TARGET"] = str(release_target)
+    return environ
+
+
+def check(root, state, cargo_target, release_target):
+    commit = frozen_commit(root)
+    verify_candidate_environment()
     for tool in (
         "just",
         "cargo",
@@ -380,34 +454,8 @@ def check(root, state, cargo_target, release_target):
     for variable in ("RUSTY_V8_ARCHIVE", "RUSTY_V8_SRC_BINDING_PATH"):
         if not Path(os.environ.get(variable, "")).is_file():
             raise ValueError(f"Provide the verified GNU/Linux prerequisite: {variable}")
-    if any(
-        path == root or path.is_relative_to(root)
-        for path in (state, cargo_target, release_target)
-    ):
-        raise ValueError("Build storage must be outside the checkout")
-    state.mkdir(parents=True, exist_ok=True)
-    cargo_target.mkdir(parents=True, exist_ok=True)
-    release_target.mkdir(parents=True, exist_ok=True)
+    environ = candidate_environment(root, state, cargo_target, release_target)
     directory = Path(tempfile.mkdtemp(prefix="accept-", dir=state))
-    environ = dict(os.environ)
-    environ.update(
-        CARGO_TARGET_DIR=str(cargo_target),
-        CARGO_INCREMENTAL="0",
-        CARGO_PROFILE_DEV_DEBUG="0",
-        CARGO_PROFILE_TEST_DEBUG="0",
-        CARGO_PROFILE_TEST_DEBUG_ASSERTIONS="true",
-        NEXTEST_RETRIES="3",
-        CODEX_BAZEL_BATCH="1",
-        RUST_MIN_STACK="16777216",
-        BAZEL_OUTPUT_USER_ROOT=str(state / "bazel-output"),
-        BAZEL_REPOSITORY_CACHE=str(state / "bazel-downloads"),
-        LOCAL_BAZEL_CACHE=str(state / "bazel-actions"),
-        CODEX_REPO_ROOT=str(root),
-        CODEX_HOME=tempfile.mkdtemp(prefix="ch.", dir="/tmp"),
-        TMPDIR="/tmp",
-        PYTHONDONTWRITEBYTECODE="1",
-    )
-    environ["LOCAL_RELEASE_TARGET"] = str(release_target)
     print(json.dumps({"commit": commit, "logs": str(directory)}), flush=True)
 
     def unchanged():
@@ -423,10 +471,43 @@ def check(root, state, cargo_target, release_target):
         ):
             lock = stack.enter_context(path.open("a"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def preserve_after(name, destination):
+            try:
+                preserve_generated_test_artifacts(root, destination)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                message = " ".join(str(error).split())[:512]
+                (directory / "artifact-preservation-failure.json").write_text(
+                    json.dumps(
+                        {
+                            "check": name,
+                            "error_type": type(error).__name__,
+                            "message": message,
+                        }
+                    )
+                    + "\n"
+                )
+                raise
+
+        def record_step(name, command, cwd, environ, directory):
+            result = run_step(name, command, cwd, environ, directory)
+            with (directory / "completed-checks.jsonl").open("a") as journal:
+                journal.write(json.dumps(result) + "\n")
+                journal.flush()
+                os.fsync(journal.fileno())
+            # Retain the completed check even if an unexpected source change
+            # prevents cleanup and invalidates the acceptance run.
+            preserve_after(name, directory / "after" / name)
+            return result
+
         results = execute(
-            commands(root, state, directory), environ, directory, unchanged
+            commands(root, state, directory),
+            environ,
+            directory,
+            unchanged,
+            runner=record_step,
         )
-        preserve_generated_test_artifacts(root, directory)
+        preserve_after("final", directory)
         receipt = {
             "schema": 1,
             "commit": commit,
@@ -448,10 +529,22 @@ def check(root, state, cargo_target, release_target):
     return 0 if receipt["status"] == "success" else 1
 
 
-def dispatch(root, receipt_path, branch):
+def dispatch(root, receipt_path, branch, linux_handoff, windows_handoff):
     commit = frozen_commit(root)
     receipt = json.loads(receipt_path.read_text())
     validate(receipt, commit)
+    linux_manifest = runner_handoff.validate(
+        json.loads(linux_handoff.read_text()),
+        commit,
+        "linux-local",
+        ["x86_64-unknown-linux-musl"],
+    )
+    windows_manifest = runner_handoff.validate(
+        json.loads(windows_handoff.read_text()),
+        commit,
+        "windows-private-controller",
+        ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"],
+    )
     for entry in receipt["checks"]:
         if digest(receipt_path.parent / f"{entry['name']}.log") != entry["log_sha256"]:
             raise ValueError("Local check log changed or is unavailable")
@@ -503,7 +596,13 @@ def dispatch(root, receipt_path, branch):
             branch,
             "--json",
         ],
-        input=json.dumps({"local_acceptance": json.dumps(receipt)}),
+        input=json.dumps(
+            {
+                "local_acceptance": json.dumps(receipt),
+                "linux_handoff": json.dumps(linux_manifest),
+                "windows_handoff": json.dumps(windows_manifest),
+            }
+        ),
         text=True,
         check=True,
     )
@@ -512,14 +611,18 @@ def dispatch(root, receipt_path, branch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    for action in ("plan", "check"):
+    for action in ("plan", "check", "run"):
         item = sub.add_parser(action)
         item.add_argument("--state-dir", type=Path, required=True)
         item.add_argument("--cargo-target-dir", type=Path)
         item.add_argument("--release-target-dir", type=Path)
+        if action == "run":
+            item.add_argument("command", nargs=argparse.REMAINDER)
     item = sub.add_parser("dispatch")
     item.add_argument("--receipt", type=Path, required=True)
     item.add_argument("--branch", required=True)
+    item.add_argument("--linux-handoff", type=Path, required=True)
+    item.add_argument("--windows-handoff", type=Path, required=True)
     item = sub.add_parser("verify")
     item.add_argument("--commit", required=True)
     item = sub.add_parser("verify-package")
@@ -532,7 +635,13 @@ def main():
         elif args.action == "verify-package":
             verify_package(args.directory, frozen_commit(root))
         elif args.action == "dispatch":
-            dispatch(root, args.receipt, args.branch)
+            dispatch(
+                root,
+                args.receipt,
+                args.branch,
+                args.linux_handoff,
+                args.windows_handoff,
+            )
         elif args.action == "plan":
             print(
                 json.dumps(
@@ -547,6 +656,22 @@ def main():
                     indent=2,
                 )
             )
+        elif args.action == "run":
+            state = args.state_dir.resolve()
+            verify_candidate_environment()
+            environ = candidate_environment(
+                root,
+                state,
+                (args.cargo_target_dir or state / "cargo-target").resolve(),
+                (args.release_target_dir or state / "release-target").resolve(),
+            )
+            command = args.command
+            if command[:1] == ["--"]:
+                command = command[1:]
+            if not command:
+                raise ValueError("Provide a diagnostic command")
+            # This shares acceptance prerequisites but issues no release receipt.
+            os.execvpe(command[0], command, environ)
         else:
             state = args.state_dir.resolve()
             return check(

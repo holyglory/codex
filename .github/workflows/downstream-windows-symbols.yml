@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   symbols:
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Native Windows symbols on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15

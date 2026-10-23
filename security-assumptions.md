@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-10-18
+Last reviewed: 2026-10-23
 
 ## Confirmed project context
 
@@ -62,6 +62,12 @@ Last reviewed: 2026-10-18
   `BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1` enables that acknowledgement for
   the fork's Windows jobs; it grants no unrelated host or credential authority
   (Coordinator `release1621-windows-msvc-approved-20261018`).
+- **Owner-operated build runners:** The owner subsequently requested Linux
+  acceptance on this VPS and Windows builds on the dedicated Windows PC via
+  its private controller. Hosted macOS runs wait for complete Linux acceptance;
+  GitHub retains final artifacts and npm publication gates. This separately
+  authorizes the existing private Windows runner, not public PR execution on it
+  or a new public cache listener (current release task; PR #26).
 - **Upstream D-Bus maintenance advisories:** For `0.162.1-multi.2`, the owner
   approved exceptions limited to `RUSTSEC-2026-0370`, `RUSTSEC-2026-0371`, and
   `RUSTSEC-2026-0372` on 2026-10-18. The affected versions are inherited unchanged
@@ -79,7 +85,8 @@ Last reviewed: 2026-10-18
   account data or npm authority. Pin the host key and expose the credential only
   to trusted manually dispatched fork workflows and the explicitly scoped cache
   proof branch. Retain 900 GiB with a 930 GiB write ceiling (below 1 TB).
-  No public cache listener, new runner or paid storage tier is approved.
+  This cache permission alone grants no public listener, new runner, or paid
+  storage tier; the existing Windows runner has the separate authority above.
 - **Authorized accounting scope:** The current request authorizes categorical
   token/tool usage accounting per chat and repository and totals across
   repositories. It does not authorize retaining the content of prompts,
@@ -158,7 +165,8 @@ Last reviewed: 2026-10-18
   missing facts are never synthesized and accounting failure never becomes a
   work-availability gate (user confirmation on 2026-09-03;
   UIL-BUSINESS-LOGIC-USAGE-ACCOUNTING-003).
-- Public release automation builds on GitHub-hosted runners, verifies the
+- Public release automation uses the approved local Linux server, private
+  Windows controller, and gated GitHub-hosted macOS builds. It verifies the
   complete platform package set before publication, stages platform payloads
   before the root wrapper, and keeps final publication behind npm's interactive
   2FA approval boundary.

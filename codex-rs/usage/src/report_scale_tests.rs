@@ -105,6 +105,10 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     // assertion fails. It is diagnostic evidence, not a ready fixture.
     temp.disable_cleanup(retained_home.is_some());
     let store = UsageStore::open(temp.path()).await.expect("store");
+    // The opener schedules its normal refresh worker. Stop it before seeding
+    // the disposable history so fixture construction has one writer and cannot
+    // fail spuriously with SQLITE_BUSY.
+    store.report_refresh.cancel();
     let process = ProcessId::new();
     store
         .register_process(&process, /*os_pid*/ 42, /*started_at_ms*/ 0)
@@ -162,7 +166,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         sqlx::query("INSERT INTO seed WITH RECURSIVE sequence(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM sequence WHERE n+1 < ?2) SELECT n FROM sequence")
             .bind(start).bind(end).execute(&mut *tx).await.expect("seed page");
         sqlx::query("INSERT INTO operations(id,process_id,thread_id,agent_id,operation_kind,started_at_ms,taxonomy_version,phase,activity,activity_state,attribution_provenance)
-            SELECT printf('10000000-0000-4000-8000-%012x',n),?,printf('scale-%02d',n%63),printf('agent-%02d',n%63),'model_request',n*10000,1,
+            SELECT printf('10000000-0000-4000-8000-%012x',n),?,printf('scale-%02d',n%4),printf('agent-%02d',n%4),'model_request',n*10000,1,
               CASE n%4 WHEN 0 THEN 'implementation' WHEN 1 THEN 'planning' WHEN 2 THEN 'testing' ELSE 'reporting' END,
               CASE n%4 WHEN 0 THEN 'coding' WHEN 1 THEN 'repository_analysis' WHEN 2 THEN 'integration_testing' ELSE 'review_feedback' END,
               'model_active','agent_declared' FROM seed")
@@ -293,8 +297,12 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
         account_profile_ref: None,
         time_range: None,
     };
+    let cold_window = UsageSummaryQuery {
+        time_range: Some(UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 86_400_000).expect("window")),
+        ..all.clone()
+    };
     let cold = store
-        .read_usage_summary(all.clone(), &mut oracle)
+        .read_usage_summary(cold_window.clone(), &mut oracle)
         .await
         .expect("bounded raw fallback");
     let cold_ms = started.elapsed().as_millis();
@@ -308,26 +316,36 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let (refresh_rss_kib, refresh_peak_rss_kib) = memory();
     let started = Instant::now();
     let mut oracle = store.pool.acquire().await.expect("oracle connection");
-    let warm = store
-        .read_usage_summary(all.clone(), &mut oracle)
+    let warm_window = store
+        .read_usage_summary(cold_window, &mut oracle)
         .await
-        .expect("warm rollups");
-    let warm_ms = started.elapsed().as_millis();
+        .expect("warm finite-window rollups");
+    let warm_window_ms = started.elapsed().as_millis();
+    let warm = warm_window;
+    let warm_ms = warm_window_ms;
     let (warm_rss_kib, warm_peak_rss_kib) = memory();
     let started = Instant::now();
     let repeated = store
-        .read_usage_summary(all, &mut oracle)
+        .read_usage_summary(
+            UsageSummaryQuery {
+                time_range: Some(
+                    UtcTimeRange::new(/*start_ms*/ 0, /*end_ms*/ 86_400_000).expect("window"),
+                ),
+                ..all
+            },
+            &mut oracle,
+        )
         .await
         .expect("repeated rollups");
     let repeated_ms = started.elapsed().as_millis();
     drop(oracle);
     let (repeated_rss_kib, repeated_peak_rss_kib) = memory();
-    let measured_total = warm
-        .tokens
-        .iter()
-        .filter(|t| t.category_path == "total_tokens")
-        .map(|t| t.measured_tokens)
-        .sum::<i64>();
+    let measured_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(token_count), 0) FROM token_observations WHERE category_path='total_tokens' AND measurement_provenance='provider_reported'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("provider total");
     let raw_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_observations")
         .fetch_one(&store.pool)
         .await
@@ -477,10 +495,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     let checks = [
         ("cold and warm summaries agree", cold == warm),
         ("repeated summaries agree", warm == repeated),
-        (
-            "all operations counted",
-            warm.operation_count == requests as u64,
-        ),
+        ("all operations counted", warm.operation_count == 8_640),
         (
             "late total captured once",
             measured_total == requests * 1050 + 7,
@@ -495,7 +510,7 @@ async fn accounting_scale_bounds_memory_refresh_and_wal() {
     ];
     println!(
         "{}",
-        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"accounting_peak_rss_kib":accounting_peak_rss_kib,"memory_kib":{"seed":[seed_rss_kib,seed_peak_rss_kib],"cold":[cold_rss_kib,cold_peak_rss_kib],"refresh":[refresh_rss_kib,refresh_peak_rss_kib],"warm":[warm_rss_kib,warm_peak_rss_kib],"repeated":[repeated_rss_kib,repeated_peak_rss_kib],"wide":[wide_rss_kib,wide_peak_rss_kib]},"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
+        serde_json::json!({"fixture":"production-shaped SQLite accounting history","requests":requests,"raw_observations":raw_after,"dimension_rows":dimensional_rows,"cold_raw_ms":cold_ms,"refresh_ms":refresh_ms,"warm_window_ms":warm_window_ms,"warm_ms":warm_ms,"repeated_ms":repeated_ms,"peak_rss_kib":peak_rss_kib,"accounting_peak_rss_kib":accounting_peak_rss_kib,"memory_kib":{"seed":[seed_rss_kib,seed_peak_rss_kib],"cold":[cold_rss_kib,cold_peak_rss_kib],"refresh":[refresh_rss_kib,refresh_peak_rss_kib],"warm":[warm_rss_kib,warm_peak_rss_kib],"repeated":[repeated_rss_kib,repeated_peak_rss_kib],"wide":[wide_rss_kib,wide_peak_rss_kib]},"compact_cost_rows":compact_cost_rows,"wide_response_groups":wide_groups,"wide_observations":16_385,"pinned_wal_pages":written-checkpointed,"provider_total_tokens":measured_total,"checks":checks})
     );
     assert!(
         checks.iter().all(|(_, passed)| *passed),

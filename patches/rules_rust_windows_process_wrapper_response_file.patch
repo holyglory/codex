@@ -1,0 +1,83 @@
+--- a/util/process_wrapper/main.rs
++++ b/util/process_wrapper/main.rs
+@@ -23,7 +23,11 @@
+ use std::collections::{HashSet, VecDeque};
+ use std::fmt;
+ use std::fs::{self, copy, OpenOptions};
++#[cfg(windows)]
++use std::fs::File;
+ use std::io;
++#[cfg(windows)]
++use std::io::Write;
+ use std::path::PathBuf;
+ use std::process::{exit, Command, Stdio};
+ #[cfg(windows)]
+@@ -292,11 +296,58 @@
+     rustc::process_json(line, format)
+ }
+ 
++#[cfg(windows)]
++fn rustc_arguments_with_response_file(
++    executable: &str,
++    arguments: &[String],
++) -> Result<(Vec<String>, Option<String>), ProcessWrapperError> {
++    let command_line_length = executable.len()
++        + arguments
++            .iter()
++            .map(|argument| argument.len().saturating_add(3))
++            .sum::<usize>();
++    let is_rustc = executable.ends_with("rustc.exe")
++        || executable.ends_with("rustc")
++        || executable.ends_with("clippy-driver.exe")
++        || executable.ends_with("clippy-driver");
++    if !is_rustc || command_line_length < 30_000 {
++        return Ok((arguments.to_vec(), None));
++    }
++
++    let path = std::env::temp_dir().join(format!(
++        "rules-rust-process-wrapper-{}-{}.rsp",
++        std::process::id(),
++        command_line_length
++    ));
++    let mut file = File::create(&path).map_err(|error| {
++        ProcessWrapperError(format!("failed to create rustc response file: {error}"))
++    })?;
++    for argument in arguments {
++        writeln!(file, "{argument}").map_err(|error| {
++            ProcessWrapperError(format!("failed to write rustc response file: {error}"))
++        })?;
++    }
++    Ok((
++        vec![format!("@{}", path.to_string_lossy())],
++        Some(path.to_string_lossy().into_owned()),
++    ))
++}
++
++#[cfg(not(windows))]
++fn rustc_arguments_with_response_file(
++    _executable: &str,
++    arguments: &[String],
++) -> Result<(Vec<String>, Option<String>), ProcessWrapperError> {
++    Ok((arguments.to_vec(), None))
++}
++
+ fn main() -> Result<(), ProcessWrapperError> {
+     let opts = options().map_err(|e| ProcessWrapperError(e.to_string()))?;
+ 
+     let (child_arguments, dep_dir_cleanup) =
+         consolidate_dependency_search_paths(&opts.child_arguments)?;
++    let (child_arguments, response_file) =
++        rustc_arguments_with_response_file(&opts.executable, &child_arguments)?;
+     let mut temp_dir_guard = TemporaryDirectoryGuard::new(dep_dir_cleanup);
+ 
+     let mut command = Command::new(opts.executable);
+@@ -372,6 +423,9 @@
+     let status = child
+         .wait()
+         .map_err(|e| ProcessWrapperError(format!("failed to wait for child process: {}", e)))?;
++    if let Some(response_file) = response_file {
++        let _ = fs::remove_file(response_file);
++    }
+     let code = status.code().unwrap_or(1);
+     if let Some(exit_code_file) = &opts.captured_exit_code_file {
+         fs::write(exit_code_file, format!("{code}\n")).map_err(|e| {

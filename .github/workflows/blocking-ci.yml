@@ -12,6 +12,7 @@ jobs:
   # version-controlled list that the main-branch ruleset should require.
   bazel:
     name: Bazel
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/bazel.yml
     secrets: inherit
 
@@ -37,11 +38,13 @@ jobs:
 
   rust-ci:
     name: rust-ci
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/rust-ci.yml
     secrets: inherit
 
   sdk:
     name: sdk
+    if: ${{ github.repository != 'holyglory/codex' }}
     uses: ./.github/workflows/sdk.yml
     secrets: inherit
 
@@ -49,7 +52,7 @@ jobs:
     name: CI required
     # Without `always()`, GitHub skips this job after a failed dependency and a
     # required check can appear successful instead of reporting the failure.
-    if: ${{ always() }}
+    if: ${{ always() && github.repository != 'holyglory/codex' }}
     needs:
       - bazel
       - blob-size-policy
@@ -67,6 +70,22 @@ jobs:
           persist-credentials: false
 
       - name: Require successful dependencies
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/check_ci_results.py
+
+  fork-policy:
+    name: CI policy checks
+    # Local Linux acceptance and private Windows handoffs are checked by the
+    # manual downstream candidate before its macOS builds and npm staging.
+    if: ${{ always() && github.repository == 'holyglory/codex' }}
+    needs: [blob-size-policy, cargo-deny, codespell, repo-checks]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require successful policy checks
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: python3 .github/scripts/check_ci_results.py

@@ -28,6 +28,7 @@ env:
 
 jobs:
   private-storage:
+    if: ${{ github.repository != 'holyglory/codex' }}
     name: Windows storage and product checks on ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60

@@ -89,6 +89,10 @@ pub use threads::ThreadFilterOptions;
 // metadata, rather than the exact sum of all persisted SQLite column bytes.
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
+// A diagnostic log is rebuildable. Keep a process with many short-lived
+// threads from growing the database without bound even when every individual
+// partition remains below its cap.
+const LOG_GLOBAL_ROW_LIMIT: i64 = 50_000;
 
 #[derive(Clone)]
 pub struct StateRuntime {
@@ -143,6 +147,14 @@ impl StateRuntime {
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
+        if let Some(backups) =
+            recovery::backup_oversized_logs_db_for_startup(logs_path.as_path()).await?
+        {
+            warn!(
+                backup_count = backups.len(),
+                "preserved oversized logs database before startup"
+            );
+        }
         let pool = match sqlite
             .open_state_db(&state_migrator, telemetry_override)
             .await
@@ -282,7 +294,7 @@ impl StateRuntime {
             runtime.close().await;
             return Err(err);
         }
-        runtime.start_periodic_logs_maintenance(std::time::Duration::from_secs(30 * 60));
+        runtime.start_periodic_logs_maintenance(std::time::Duration::from_secs(30));
         Ok(runtime)
     }
 

@@ -97,8 +97,15 @@ class LocalCandidateTests(unittest.TestCase):
             "home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir); "
             "socket = pathlib.Path('/tmp') / f'codex-daemon-{os.getuid()}'; "
             "assert os.getuid() != 0; "
-            "assert pathlib.Path(os.environ['HOME']) == home; "
-            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')); "
+            "assert pathlib.Path(os.environ['HOME']) != home; "
+            "assert pathlib.Path(os.environ['HOME']).is_dir(); "
+            "assert pathlib.Path(os.environ['CODEX_HOME']).is_dir(); "
+            "assert pathlib.Path(os.environ['RUSTUP_HOME']) == home / '.rustup'; "
+            "assert pathlib.Path(os.environ['CARGO_HOME']) == home / '.cargo'; "
+            "assert pathlib.Path(os.environ['GH_CONFIG_DIR']) == home / '.config' / 'gh'; "
+            "assert os.environ['CODEX_BAZEL_REMOTE_CACHE_URL'] == 'http://127.0.0.1:9095'; "
+            "assert os.umask(0o022) == 0o022; "
+            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'NO_COLOR', 'CODEX_THREAD_ID', 'DEVCOORDINATOR_WORK_CONTEXT')); "
             "assert not pathlib.Path('/etc/codex/config.toml').exists(); "
             "assert socket.stat().st_mode & 0o777 == 0o700; "
             "(socket / 'probe').write_text('namespace-only'); "
@@ -110,6 +117,10 @@ class LocalCandidateTests(unittest.TestCase):
                 OPENAI_API_KEY="fixture-secret",
                 CODEX_API_KEY="fixture-secret",
                 CODEX_ACCESS_TOKEN="fixture-secret",
+                CODEX_THREAD_ID="fixture-thread",
+                DEVCOORDINATOR_WORK_CONTEXT="fixture-context",
+                NO_COLOR="1",
+                CODEX_BAZEL_REMOTE_CACHE_URL="http://127.0.0.1:9095",
             )
             result = subprocess.run(
                 [
@@ -171,7 +182,11 @@ class LocalCandidateTests(unittest.TestCase):
         for tag in ("fixture-upstream", "fixture-rollback"):
             subprocess.run(["git", "-C", str(root), "tag", tag], check=True)
         manifest = {
-            "schema": 1,
+            "schema": 2,
+            "github_repository": "fixture/repository",
+            "required_pull_requests": [],
+            "release_branch_prefixes": [],
+            "retained_stacks": [],
             "upstream": {"tag": "fixture-upstream", "commit": commit},
             "rollback": {"tag": "fixture-rollback", "commit": commit},
             "rust_version": "0.162.1+multi.1",
@@ -192,6 +207,111 @@ class LocalCandidateTests(unittest.TestCase):
         source.write_text("fn retained_feature() {}\n")
         migration.write_text("CREATE TABLE overwritten (id INTEGER);\n")
         with self.assertRaisesRegex(ValueError, "migration missing or changed"):
+            inclusion.verify(root, manifest)
+        migration.write_text("CREATE TABLE preserved (id INTEGER);\n")
+
+        def git(*args):
+            return subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    *args,
+                ],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+
+        source.write_text("fn retained_feature() { repaired(); }\n")
+        git("add", ".")
+        git("commit", "-qm", "original feature repair")
+        original = git("rev-parse", "HEAD")
+        original_patch = inclusion.patch_identity(root, original)
+        capability = manifest["capabilities"][0]
+        capability["source_commit"] = original
+        row = {
+            "source_commit": original,
+            "applied_commit": original,
+            "source_patch_id": original_patch,
+            "applied_patch_id": original_patch,
+        }
+        capability["included_patches"] = [row]
+        git("tag", "fixture-original", original)
+        manifest["retained_stacks"] = [
+            {
+                "branch": "codex/original-feature",
+                "tag": "fixture-original",
+                "base_commit": commit,
+                "tip_commit": original,
+                "source_commits": [original],
+            }
+        ]
+        git("checkout", "--detach", commit)
+        with self.assertRaisesRegex(ValueError, "missing or unapplied recorded patch"):
+            inclusion.verify(root, manifest)
+        (root / "unrelated.txt").write_text("different replay parent\n")
+        git("add", ".")
+        git("commit", "-qm", "different replay parent")
+        git("cherry-pick", original)
+        applied = git("rev-parse", "HEAD")
+        self.assertNotEqual(applied, original)
+        row["applied_commit"] = applied
+        self.assertEqual(inclusion.verify(root, manifest)["recorded_patch_sources"], 1)
+        row["applied_patch_id"] = "0" * 40
+        with self.assertRaisesRegex(ValueError, "patch identity changed"):
+            inclusion.verify(root, manifest)
+        row["applied_patch_id"] = original_patch
+        capability["included_patches"] = []
+        with self.assertRaisesRegex(
+            ValueError, "retained commits lack inclusion mappings"
+        ):
+            inclusion.verify(root, manifest)
+        capability["included_patches"] = [row]
+
+        manifest["required_pull_requests"] = [7]
+        manifest["release_branch_prefixes"] = ["codex/release-fixture-"]
+        merged = {
+            "number": 7,
+            "state": "closed",
+            "merged_at": "2026-10-18",
+            "merge_commit_sha": applied,
+            "head_ref": "codex/release-fixture-fix",
+        }
+        with patch.object(inclusion, "pull_request_inventory", return_value=[merged]):
+            self.assertEqual(
+                inclusion.verify(root, manifest)["merged_pull_requests"],
+                [{"number": 7, "merge_commit": applied}],
+            )
+            merged["merged_at"] = None
+            with self.assertRaisesRegex(ValueError, "PR #7: not merged"):
+                inclusion.verify(root, manifest)
+            merged["merged_at"] = "2026-10-18"
+            merged["merge_commit_sha"] = original
+            with self.assertRaisesRegex(
+                ValueError, "merged commit absent from candidate"
+            ):
+                inclusion.verify(root, manifest)
+        merged["merge_commit_sha"] = applied
+        pending = {
+            "number": 8,
+            "state": "open",
+            "merged_at": None,
+            "merge_commit_sha": None,
+            "head_ref": "codex/release-fixture-missed",
+        }
+        with patch.object(
+            inclusion, "pull_request_inventory", return_value=[merged, pending]
+        ):
+            with self.assertRaisesRegex(ValueError, "PR #8: release branch still open"):
+                inclusion.verify(root, manifest)
+        pending["head_sha"] = candidate.git(root, "rev-parse", "HEAD")
+        with patch.object(
+            inclusion, "pull_request_inventory", return_value=[merged, pending]
+        ):
             inclusion.verify(root, manifest)
 
     def test_each_gate_failure_prevents_all_expensive_lanes(self):
@@ -347,6 +467,44 @@ class LocalCandidateTests(unittest.TestCase):
         receipt = self.receipt()
         path = self.directory / "receipt.json"
         path.write_text(json.dumps(receipt))
+        linux_manifest = {
+            "schema": 1,
+            "commit": self.commit,
+            "producer": "linux-local",
+            "status": "success",
+            "checks": [
+                {"name": "local-acceptance", "exit_code": 0, "log_sha256": "b" * 64}
+            ],
+            "artifacts": [
+                {
+                    "name": "linux.tar.gz",
+                    "url": "https://github.com/holyglory/codex/releases/download/t/linux.tar.gz",
+                    "sha256": "c" * 64,
+                    "size_bytes": 1,
+                    "targets": ["x86_64-unknown-linux-musl"],
+                }
+            ],
+        }
+        windows_manifest = {
+            **linux_manifest,
+            "producer": "windows-private-controller",
+            "artifacts": [
+                {
+                    "name": "windows.tar.gz",
+                    "url": "https://github.com/holyglory/codex/releases/download/t/windows.tar.gz",
+                    "sha256": "d" * 64,
+                    "size_bytes": 1,
+                    "targets": [
+                        "x86_64-pc-windows-msvc",
+                        "aarch64-pc-windows-msvc",
+                    ],
+                }
+            ],
+        }
+        linux_path = self.directory / "linux.json"
+        windows_path = self.directory / "windows.json"
+        linux_path.write_text(json.dumps(linux_manifest))
+        windows_path.write_text(json.dumps(windows_manifest))
         for remote, runs, accepted in (
             ("b" * 40, [], False),
             (self.commit, [{"status": "queued"}], False),
@@ -364,12 +522,30 @@ class LocalCandidateTests(unittest.TestCase):
                 patch.object(candidate.subprocess, "run") as dispatch,
             ):
                 if accepted:
-                    candidate.dispatch(self.directory, path, "codex/fixture")
+                    candidate.dispatch(
+                        self.directory,
+                        path,
+                        "codex/fixture",
+                        linux_path,
+                        windows_path,
+                    )
                     payload = json.loads(dispatch.call_args.kwargs["input"])
                     self.assertEqual(json.loads(payload["local_acceptance"]), receipt)
+                    self.assertEqual(
+                        json.loads(payload["linux_handoff"]), linux_manifest
+                    )
+                    self.assertEqual(
+                        json.loads(payload["windows_handoff"]), windows_manifest
+                    )
                 else:
                     with self.assertRaises(ValueError):
-                        candidate.dispatch(self.directory, path, "codex/fixture")
+                        candidate.dispatch(
+                            self.directory,
+                            path,
+                            "codex/fixture",
+                            linux_path,
+                            windows_path,
+                        )
                     dispatch.assert_not_called()
         log = self.directory / "helpers.log"
         for missing in (False, True):
@@ -382,7 +558,13 @@ class LocalCandidateTests(unittest.TestCase):
                 patch.object(candidate.subprocess, "check_output") as remote,
                 self.assertRaises((ValueError, OSError)),
             ):
-                candidate.dispatch(self.directory, path, "codex/fixture")
+                candidate.dispatch(
+                    self.directory,
+                    path,
+                    "codex/fixture",
+                    linux_path,
+                    windows_path,
+                )
             remote.assert_not_called()
 
     def test_real_checkout_rejects_dirty_and_untracked_source(self):
@@ -440,11 +622,126 @@ class LocalCandidateTests(unittest.TestCase):
         )
 
     def test_preserve_generated_test_artifacts_rejects_unexpected_source_change(self):
-        with patch.object(candidate, "git", return_value="?? unexpected.txt\0"):
-            with self.assertRaisesRegex(ValueError, "unexpected source path"):
+        prerequisite = self.directory / "v8"
+        prerequisite.touch()
+        storage = self.directory.parent / f"candidate-storage-{self.directory.name}"
+        state = storage / "state"
+        cargo_target = storage / "cargo"
+        release_target = storage / "release"
+        state.mkdir(parents=True)
+        cargo_target.mkdir()
+        release_target.mkdir()
+        self.addCleanup(shutil.rmtree, storage)
+        with (
+            patch.object(candidate, "git", return_value="?? unexpected.txt\0"),
+            patch.object(candidate, "frozen_commit", return_value=self.commit),
+            patch.object(candidate, "verify_candidate_environment"),
+            patch.object(candidate.shutil, "which", return_value=sys.executable),
+            patch.object(
+                candidate, "candidate_environment", return_value=dict(os.environ)
+            ),
+            patch.object(candidate, "commands", return_value=self.plan),
+            patch.dict(
+                os.environ,
+                {
+                    "RUSTY_V8_ARCHIVE": str(prerequisite),
+                    "RUSTY_V8_SRC_BINDING_PATH": str(prerequisite),
+                },
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "unexpected source path"),
+        ):
+            candidate.check(self.directory, state, cargo_target, release_target)
+        (acceptance,) = state.glob("accept-*")
+        (completed,) = (
+            json.loads(line)
+            for line in (acceptance / "completed-checks.jsonl").read_text().splitlines()
+        )
+        self.assertEqual(completed["name"], candidate.GATES[0])
+        self.assertEqual(completed["exit_code"], 0)
+        self.assertEqual(
+            completed["log_sha256"], candidate.digest(acceptance / "toolchain.log")
+        )
+        self.assertEqual(
+            json.loads((acceptance / "artifact-preservation-failure.json").read_text()),
+            {
+                "check": "toolchain",
+                "error_type": "ValueError",
+                "message": "Acceptance run modified an unexpected source path: unexpected.txt",
+            },
+        )
+        self.assertFalse((acceptance / "receipt.json").exists())
+
+    def test_preserve_generated_test_artifacts_keeps_known_outputs_before_failure(self):
+        generated = self.directory / "codex-rs/core/tests/suite/example.snap.new"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("snapshot candidate")
+        with patch.object(
+            candidate,
+            "git",
+            return_value=(
+                "?? unexpected.txt\0?? codex-rs/core/tests/suite/example.snap.new\0"
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "unexpected.txt"):
                 candidate.preserve_generated_test_artifacts(
                     self.directory, self.directory
                 )
+        self.assertFalse(generated.exists())
+        self.assertEqual(
+            (
+                self.directory / "generated/codex-rs/core/tests/suite/example.snap.new"
+            ).read_text(),
+            "snapshot candidate",
+        )
+
+    def test_final_artifact_preservation_failure_is_recorded(self):
+        prerequisite = self.directory / "v8"
+        prerequisite.touch()
+        storage = (
+            self.directory.parent / f"candidate-final-storage-{self.directory.name}"
+        )
+        state = storage / "state"
+        cargo_target = storage / "cargo"
+        release_target = storage / "release"
+        state.mkdir(parents=True)
+        cargo_target.mkdir()
+        release_target.mkdir()
+        self.addCleanup(shutil.rmtree, storage)
+        with (
+            patch.object(candidate, "frozen_commit", return_value=self.commit),
+            patch.object(candidate, "verify_candidate_environment"),
+            patch.object(candidate.shutil, "which", return_value=sys.executable),
+            patch.object(
+                candidate, "candidate_environment", return_value=dict(os.environ)
+            ),
+            patch.object(candidate, "commands", return_value=self.plan),
+            patch.object(candidate, "execute", return_value=[]),
+            patch.object(
+                candidate,
+                "preserve_generated_test_artifacts",
+                side_effect=ValueError("unexpected source path: late.txt"),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "RUSTY_V8_ARCHIVE": str(prerequisite),
+                    "RUSTY_V8_SRC_BINDING_PATH": str(prerequisite),
+                },
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "late.txt"),
+        ):
+            candidate.check(self.directory, state, cargo_target, release_target)
+        (acceptance,) = state.glob("accept-*")
+        self.assertEqual(
+            json.loads((acceptance / "artifact-preservation-failure.json").read_text()),
+            {
+                "check": "final",
+                "error_type": "ValueError",
+                "message": "unexpected source path: late.txt",
+            },
+        )
 
     def test_package_smokes_require_both_formats_and_real_linux_coverage(self):
         (self.directory / "source-commit.txt").write_text(self.commit)

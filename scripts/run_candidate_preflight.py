@@ -102,13 +102,59 @@ def run_preflight(root: Path) -> None:
         "suite::models_cache_ttl::",
         "suite::search_tool::",
     ):
+        family_command = command
+        if family == "suite::v2::thread_reconnect::":
+            # These restart tests own an app-server mock and are sensitive to
+            # unrelated package binaries being scheduled in the same nextest
+            # invocation. Keep their package boundary identical to the
+            # standalone app-server acceptance while retaining the broad
+            # package union for the other producer/consumer families.
+            family_command = [
+                "just",
+                "test",
+                "--locked",
+                "-p",
+                "codex-app-server",
+                "--no-tests=fail",
+            ]
         subprocess.run(
-            [*command, "-E", f"test({family})"],
+            [*family_command, "-E", f"test({family})"],
             cwd=root / "codex-rs",
             check=True,
         )
     for capability in manifest["capabilities"]:
         for selection in capability["filters"]:
+            if selection == "test(daemon_update_recovery::maintenance_tests::)":
+                # Maintenance recovery cases share a daemon checkpoint and
+                # can contend when nextest schedules the family together.
+                # Run each named case in its own app-server invocation so the
+                # retry budget applies to the case that actually flakes.
+                maintenance_tests = (
+                    "daemon_update_recovery::maintenance_tests::maintenance_corrupt_checkpoint_is_retained_without_claiming_restoration",
+                    "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::owner_exits_before_ready",
+                    "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::legacy_child_keeps_its_model",
+                    "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::continue_both",
+                    "daemon_update_recovery::maintenance_tests::managed_maintenance_cancel_reopens_admission_and_commit_restores_threads",
+                    "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::stop_child_after_ready",
+                    "daemon_update_recovery::maintenance_tests::maintenance_restores_active_parent_and_child_without_replaying_tools::stop_while_restoration_waits",
+                    "daemon_update_recovery::maintenance_tests::maintenance_blocked_snapshot_reopens_server_without_killing_work",
+                )
+                for test_name in maintenance_tests:
+                    subprocess.run(
+                        [
+                            "just",
+                            "test",
+                            "--locked",
+                            "-p",
+                            "codex-app-server",
+                            "--no-tests=fail",
+                            "-E",
+                            f"test({test_name})",
+                        ],
+                        cwd=root / "codex-rs",
+                        check=True,
+                    )
+                continue
             print(
                 json.dumps({"capability": capability["id"], "selection": selection}),
                 flush=True,

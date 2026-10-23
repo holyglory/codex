@@ -17,7 +17,10 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+use super::policy::GitAttributionPolicy;
+use super::policy::cached_attribution_policy;
 use super::policy::resolve_attribution_policy;
+use codex_extension_api::ExtensionData;
 
 fn enterprise_auth_manager() -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing(enterprise_auth("workspace-123"))
@@ -25,6 +28,37 @@ fn enterprise_auth_manager() -> Arc<AuthManager> {
 
 fn http_client_factory() -> HttpClientFactory {
     HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+}
+
+#[test]
+fn cached_policy_is_scoped_to_the_selected_profile() {
+    let thread_store = ExtensionData::new("thread");
+    let turn_store = ExtensionData::new("turn");
+    turn_store.insert(GitAttributionPolicy {
+        auth_generation: 1,
+        profile_account_id: Some("account-a".to_string()),
+        enabled: true,
+    });
+
+    assert_eq!(
+        cached_attribution_policy(
+            &thread_store,
+            &turn_store,
+            /*auth_generation*/ 1,
+            Some("account-a"),
+        )
+        .map(|policy| policy.enabled),
+        Some(true)
+    );
+    assert!(
+        cached_attribution_policy(
+            &thread_store,
+            &turn_store,
+            /*auth_generation*/ 1,
+            Some("account-b"),
+        )
+        .is_none()
+    );
 }
 
 fn enterprise_auth(account_id: &str) -> CodexAuth {

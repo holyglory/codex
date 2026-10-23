@@ -1,15 +1,15 @@
 {
-  "schema": 1,
+  "schema": 2,
   "upstream": {
     "tag": "rust-v0.162.1",
     "commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d"
   },
   "rollback": {
-    "tag": "npm-v0.159.1-multi.3",
-    "commit": "3a6c22204cae02e2f37e32a77c331cb5a0c56113"
+    "tag": "npm-v0.162.1-multi.1",
+    "commit": "10da2ab565b9c322ef12b852eef1ad2041f47d4e"
   },
-  "rust_version": "0.162.1+multi.1",
-  "npm_version": "0.162.1-multi.1",
+  "rust_version": "0.162.1+multi.2",
+  "npm_version": "0.162.1-multi.2",
   "capabilities": [
     {
       "id": "root-owned-data",
@@ -73,6 +73,14 @@
       "filters": [
         "test(handover_tests::)",
         "test(daemon_update_recovery::maintenance_tests::)"
+      ],
+      "included_patches": [
+        {
+          "source_commit": "cace2fcab6e5f2a337ce492e543793f0bea0fe90",
+          "applied_commit": "cace2fcab6e5f2a337ce492e543793f0bea0fe90",
+          "source_patch_id": "3ee4e28e8d6ff060e20772c004a42ab4445554ef",
+          "applied_patch_id": "3ee4e28e8d6ff060e20772c004a42ab4445554ef"
+        }
       ]
     },
     {
@@ -93,6 +101,14 @@
         "test(credits::)",
         "test(desktop_credit_fallback_obeys_priority_permission_and_probe_evidence)",
         "test(suite::account_management::)"
+      ],
+      "included_patches": [
+        {
+          "source_commit": "bde99beca1d89538f70167968efc091f987c03e6",
+          "applied_commit": "bde99beca1d89538f70167968efc091f987c03e6",
+          "source_patch_id": "50b5ab0f8d21d4847f903fb5841b0b65cdd55b9f",
+          "applied_patch_id": "50b5ab0f8d21d4847f903fb5841b0b65cdd55b9f"
+        }
       ]
     },
     {
@@ -134,7 +150,10 @@
         "codex-rs/usage/src/report_global_worker_tests.rs",
         "codex-rs/usage/src/report_sql.rs",
         "codex-rs/usage/src/report_scale_tests.rs",
-        "scripts/check_usage_history.py"
+        "scripts/check_usage_history.py",
+        "codex-rs/usage/src/task_tree_summary.rs",
+        "codex-rs/usage/src/task_tree_summary_tests.rs",
+        "codex-rs/usage/src/task_tree_scale_tests.rs"
       ],
       "packages": [
         "codex-core",
@@ -146,7 +165,8 @@
         "test(suite::v2::local_usage::)",
         "test(report::tests::backfill_tests::)",
         "test(report::tests::global_tests::)",
-        "test(report_global::worker_tests::)"
+        "test(report_global::worker_tests::)",
+        "test(task_tree_summary::)"
       ]
     },
     {
@@ -161,6 +181,39 @@
       ],
       "filters": [
         "test(origin_and_common_dir_normalization_are_stable_across_worktrees)"
+      ],
+      "included_patches": [
+        {
+          "source_commit": "16e6dfea7bc95624cc12dc566a1734ddd646a4dc",
+          "applied_commit": "0171bfd6e7a020e60efa3c7202790a2691bd390e",
+          "source_patch_id": "4e8a3dc947a0026e30e95d12c888a9a88f3a4b4c",
+          "applied_patch_id": "140c965f98a8ced5b6320704a4ba826a5c32e0d2",
+          "reviewed_adaptation": "Replayed onto rust-v0.162.1 with downstream API and test adaptation; retain both patch identities and require the worktree attribution regression filters."
+        },
+        {
+          "source_commit": "2492502b44404f0f75348ae8c9376c2246a64eef",
+          "applied_commit": "212ea94a492f902d0d7712505a1af71c7b2a3384",
+          "source_patch_id": "878a1f36bc3613409d6379d055e35773aa213c9f",
+          "applied_patch_id": "878a1f36bc3613409d6379d055e35773aa213c9f"
+        },
+        {
+          "source_commit": "efc4d9ec0e13d5c3b74916a3d642bcf16362bcd9",
+          "applied_commit": "2c9b6bd984a237ff17ea6194691d36bd000cfebb",
+          "source_patch_id": "7cee409d3e59874124878621d097394a240e5abd",
+          "applied_patch_id": "7cee409d3e59874124878621d097394a240e5abd"
+        },
+        {
+          "source_commit": "afc7d7170541542a1e7e95825d2bd7dd1905545a",
+          "applied_commit": "4e33a3ae186f77f37ec51118c68cedcd568be913",
+          "source_patch_id": "967046f21f0f4c30cb4c1457389d06907f388aaa",
+          "applied_patch_id": "967046f21f0f4c30cb4c1457389d06907f388aaa"
+        },
+        {
+          "source_commit": "c69cf263f3edc1264882c1a85e360c77625c86f2",
+          "applied_commit": "9f2b6f17b4be215b77aa9d99fac98bb6fdf9f9f6",
+          "source_patch_id": "3143a3e990df05d2f79456f10210acc2c7970254",
+          "applied_patch_id": "3143a3e990df05d2f79456f10210acc2c7970254"
+        }
       ]
     },
     {
@@ -240,5 +293,44 @@
   ],
   "migrations": {
     "codex-rs/usage/migrations/0009_worktree_attribution.sql": "28f7550d252df9bbbd295350b5e0f9946b89d26085fbba172e9478a43d0e0e03"
-  }
+  },
+  "github_repository": "holyglory/codex",
+  "required_pull_requests": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "release_branch_prefixes": [
+    "codex/release1621-"
+  ],
+  "retained_stacks": [
+    {
+      "branch": "codex/usage-worktree-attribution",
+      "tag": "archive-usage-worktree-attribution-pre-1621",
+      "base_commit": "59ba1bd25839a71727d3f142054dfd9dbe68fa37",
+      "tip_commit": "c69cf263f3edc1264882c1a85e360c77625c86f2",
+      "source_commits": [
+        "16e6dfea7bc95624cc12dc566a1734ddd646a4dc",
+        "2492502b44404f0f75348ae8c9376c2246a64eef",
+        "efc4d9ec0e13d5c3b74916a3d642bcf16362bcd9",
+        "afc7d7170541542a1e7e95825d2bd7dd1905545a",
+        "c69cf263f3edc1264882c1a85e360c77625c86f2"
+      ]
+    }
+  ]
 }
