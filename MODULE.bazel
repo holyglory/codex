@@ -373,6 +373,11 @@ crate.annotation(
     rustc_flags = ["-Copt-level=3"],
 )
 crate.annotation(
+    # Full-size image fixtures must resize within the same deadlines in fastbuild.
+    crate = "image",
+    rustc_flags = ["-Copt-level=3"],
+)
+crate.annotation(
     crate = "zstd-sys",
     gen_build_script = "on",
     patch_args = ["-p1"],
