@@ -200,6 +200,17 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
     path.exists()
 }
 
+fn publish_descendant_pid(marker: &Path) -> String {
+    let pending = marker.with_extension("pending");
+    // Existence signals readiness, so publish only after Set-Content closes the file.
+    format!(
+        "Set-Content -LiteralPath '{}' -Value $PID -ErrorAction Stop; Move-Item -LiteralPath '{}' -Destination '{}' -ErrorAction Stop",
+        powershell_literal(&pending),
+        powershell_literal(&pending),
+        powershell_literal(marker),
+    )
+}
+
 fn open_process_for_wait(pid: u32) -> std::io::Result<OwnedHandle> {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
@@ -752,8 +763,8 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
     let release_marker = workspace.path().join("release-descendant");
     let survival_marker = workspace.path().join("descendant-survived");
     let descendant_command = format!(
-        "$deadline=(Get-Date).AddSeconds(30); Set-Content -LiteralPath '{}' -Value $PID; while (-not (Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 3 }}; Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath '{}' -Value survived",
-        powershell_literal(&ready_marker),
+        "$deadline=(Get-Date).AddSeconds(30); {}; while (-not (Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 3 }}; Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath '{}' -Value survived",
+        publish_descendant_pid(&ready_marker),
         powershell_literal(&release_marker),
         powershell_literal(&survival_marker),
     );
@@ -789,7 +800,12 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
     let stderr = String::from_utf8_lossy(&result.stderr);
     println!("capture pwsh stderr={stderr:?}");
     let descendant_pid = fs::read_to_string(&ready_marker)
-        .expect("read descendant pid")
+        .unwrap_or_else(|error| {
+            panic!(
+                "read descendant pid: {error}; descendant stderr={:?}",
+                fs::read_to_string(workspace.path().join("descendant.stderr"))
+            )
+        })
         .trim()
         .parse()
         .expect("parse descendant pid");
@@ -937,8 +953,8 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
     let descendant_marker = workspace.path().join("descendant-survived");
     let ready_marker = workspace.path().join("descendant-started");
     let descendant_command = format!(
-        "Set-Content -LiteralPath '{}' -Value $PID; Start-Sleep -Seconds 1; Set-Content -LiteralPath '{}' -Value survived",
-        powershell_literal(&ready_marker),
+        "{}; Start-Sleep -Seconds 1; Set-Content -LiteralPath '{}' -Value survived",
+        publish_descendant_pid(&ready_marker),
         powershell_literal(&descendant_marker),
     );
     let parent_command = start_powershell_child(
@@ -987,7 +1003,11 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
 
     assert!(
         started_at.elapsed() < Duration::from_secs(10),
-        "cancellation should end capture before the timeout"
+        "cancellation should end capture before the timeout: elapsed={:?}, timed_out={}, exit_code={}, descendant stderr={:?}",
+        started_at.elapsed(),
+        result.timed_out,
+        result.exit_code,
+        fs::read_to_string(workspace.path().join("descendant.stderr")),
     );
     assert!(
         !result.timed_out,
@@ -1034,10 +1054,7 @@ async fn assert_legacy_tty_descendant_lifecycle(
             powershell_literal(&survival_marker),
         ),
     };
-    let child_command = format!(
-        "Set-Content -LiteralPath '{}' -Value $PID; {child_tail}",
-        powershell_literal(&ready_marker),
-    );
+    let child_command = format!("{}; {child_tail}", publish_descendant_pid(&ready_marker));
     let parent_tail = match lifecycle {
         LegacyTtyDescendantLifecycle::Terminate => "Start-Sleep -Seconds 30".to_string(),
         LegacyTtyDescendantLifecycle::Preserve => format!(
