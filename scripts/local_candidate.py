@@ -298,6 +298,7 @@ def run_step(name, command, cwd, environ, directory):
 def preserve_generated_test_artifacts(root, directory):
     """Move known test-only outputs out of the frozen source checkout."""
     status = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    unexpected = []
     for entry in status.split("\0"):
         if not entry:
             continue
@@ -307,12 +308,16 @@ def preserve_generated_test_artifacts(root, directory):
             path.endswith(".snap.new")
             or path == "codex-rs/non-existent/.auth-credential-lock-v1"
         ):
-            raise ValueError(
-                f"Acceptance run modified an unexpected source path: {path}"
-            )
+            unexpected.append(path)
+            continue
         target = directory / "generated" / path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(root / path), target)
+    if unexpected:
+        paths = ", ".join(unexpected[:8])
+        if len(unexpected) > 8:
+            paths += ", ..."
+        raise ValueError(f"Acceptance run modified an unexpected source path: {paths}")
 
 
 def execute(plan, environ, directory, unchanged, runner=run_step):
@@ -467,6 +472,23 @@ def check(root, state, cargo_target, release_target):
             lock = stack.enter_context(path.open("a"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+        def preserve_after(name, destination):
+            try:
+                preserve_generated_test_artifacts(root, destination)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                message = " ".join(str(error).split())[:512]
+                (directory / "artifact-preservation-failure.json").write_text(
+                    json.dumps(
+                        {
+                            "check": name,
+                            "error_type": type(error).__name__,
+                            "message": message,
+                        }
+                    )
+                    + "\n"
+                )
+                raise
+
         def record_step(name, command, cwd, environ, directory):
             result = run_step(name, command, cwd, environ, directory)
             with (directory / "completed-checks.jsonl").open("a") as journal:
@@ -475,14 +497,7 @@ def check(root, state, cargo_target, release_target):
                 os.fsync(journal.fileno())
             # Retain the completed check even if an unexpected source change
             # prevents cleanup and invalidates the acceptance run.
-            try:
-                preserve_generated_test_artifacts(root, directory / "after" / name)
-            except (OSError, ValueError) as error:
-                (directory / "artifact-preservation-failure.json").write_text(
-                    json.dumps({"check": name, "error_type": type(error).__name__})
-                    + "\n"
-                )
-                raise
+            preserve_after(name, directory / "after" / name)
             return result
 
         results = execute(
@@ -492,7 +507,7 @@ def check(root, state, cargo_target, release_target):
             unchanged,
             runner=record_step,
         )
-        preserve_generated_test_artifacts(root, directory)
+        preserve_after("final", directory)
         receipt = {
             "schema": 1,
             "commit": commit,

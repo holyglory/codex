@@ -127,9 +127,9 @@ the authority for release outcomes and verification receipts.
   in the brokered snapshot fixture.
 - **Journal a check before cleanup.** A check result and its log digest must be
   written and fsynced before moving generated test artifacts. If cleanup finds
-  an unexpected source change, retain a bounded failure record and fail the
-  acceptance; never lose evidence of the completed check or synthesize a
-  partial success receipt.
+  an unexpected source change, move all known generated outputs first, retain a
+  bounded failure record, and fail the acceptance; never lose evidence of the
+  completed check or synthesize a partial success receipt.
 - **Do not restore downstream behavior by replaying broad WIP checkpoints.**
   The 0.162.1 forward-port checkpoints carried downstream account, usage, event,
   and plugin code but also reverted or omitted newer stable interfaces. Replaying
