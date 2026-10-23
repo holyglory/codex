@@ -714,7 +714,10 @@ async fn maintenance_restores_active_parent_and_child_without_replaying_tools(
                     .find(|turn| turn["id"] == child_turn)
                     .context("original child turn")?;
                 if turn["status"] != "inProgress" {
-                    assert_eq!(turn["status"], "completed");
+                    assert_eq!(
+                        turn["status"], "completed",
+                        "restored child history after releasing completion: {read}"
+                    );
                     assert!(turn["items"].as_array().is_some_and(|items| {
                         items.iter().any(|item| {
                             item["type"] == "agentMessage" && item["text"] == expected_output

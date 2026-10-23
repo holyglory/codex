@@ -2862,6 +2862,15 @@ impl ThreadRequestProcessor {
             })?
             .and_then(|metadata| metadata.daybreak_enabled);
         let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
+        // Completion is persisted before the agent status changes. Remember a
+        // running turn before loading history so a completion during that read
+        // cannot make its earlier in-progress snapshot look interrupted.
+        let was_running_before_read =
+            if include_turns && let Some(loaded_thread) = loaded_thread.as_ref() {
+                matches!(loaded_thread.agent_status().await, AgentStatus::Running)
+            } else {
+                false
+            };
         let mut thread = if include_turns {
             if let Some(loaded_thread) = loaded_thread.as_ref() {
                 // Loaded thread with turns: use persisted metadata when it exists,
@@ -2916,7 +2925,7 @@ impl ThreadRequestProcessor {
 
         thread.daybreak_enabled = thread.daybreak_enabled.or(pending_daybreak_enabled);
 
-        let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
+        let is_running_after_read = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
         } else {
             false
@@ -2927,10 +2936,11 @@ impl ThreadRequestProcessor {
             .loaded_status_for_thread(&thread.id)
             .await;
 
-        set_thread_status_and_interrupt_stale_turns(
+        set_thread_read_status(
             &mut thread,
             thread_status,
-            has_live_in_progress_turn,
+            was_running_before_read,
+            is_running_after_read,
         );
         Ok(thread)
     }
@@ -3227,6 +3237,16 @@ impl ThreadRequestProcessor {
         sort_direction: Option<SortDirection>,
         items_view: Option<TurnItemsView>,
     ) -> Result<ThreadTurnsListResponse, JSONRPCErrorError> {
+        // Reading turn shells and hydrating their items is not atomic with turn
+        // completion. Retain the live state that preceded this page snapshot.
+        // Full thread reads reuse this helper, so normalizing a stale page here
+        // would otherwise turn its in-progress turn into an interruption before
+        // the outer read can reconcile its own live snapshot.
+        let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
+        let was_running_before_read = match loaded_thread.as_ref() {
+            Some(thread) => matches!(thread.agent_status().await, AgentStatus::Running),
+            None => false,
+        };
         let items_view = items_view.unwrap_or(TurnItemsView::Summary);
         let page_size = thread_turns_page_size(limit);
         let sort_direction = match sort_direction.unwrap_or(SortDirection::Desc) {
@@ -3271,8 +3291,7 @@ impl ThreadRequestProcessor {
             }
             turns.push(turn);
         }
-        let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
-        let has_live_running_thread = match loaded_thread.as_ref() {
+        let is_running_after_read = match loaded_thread.as_ref() {
             Some(thread) => matches!(thread.agent_status().await, AgentStatus::Running),
             None => false,
         };
@@ -3281,7 +3300,7 @@ impl ThreadRequestProcessor {
             self.thread_watch_manager
                 .loaded_status_for_thread(&thread_id.to_string())
                 .await,
-            has_live_running_thread,
+            was_running_before_read || is_running_after_read,
         );
         Ok(ThreadTurnsListResponse {
             data: turns,
@@ -5824,6 +5843,24 @@ fn reconstruct_thread_turns_for_turns_list(
         merge_turn_history_with_active_turn(&mut turns, active_turn);
     }
     turns
+}
+
+fn set_thread_read_status(
+    thread: &mut Thread,
+    loaded_status: ThreadStatus,
+    was_running_before_read: bool,
+    is_running_after_read: bool,
+) {
+    // Full history is chronological. Preserve an earlier live snapshot only
+    // while its latest turn is still in progress; completed history must not
+    // become active solely because the turn was running before the read.
+    let has_live_in_progress_turn = is_running_after_read
+        || (was_running_before_read
+            && thread
+                .turns
+                .last()
+                .is_some_and(|turn| matches!(turn.status, TurnStatus::InProgress)));
+    set_thread_status_and_interrupt_stale_turns(thread, loaded_status, has_live_in_progress_turn);
 }
 
 pub(super) fn normalize_thread_turns_status(
