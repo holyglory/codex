@@ -56,14 +56,25 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     mount_observed_probe(&backend, &alpha, /*used_percent*/ 100, 1..).await;
     mount_observed_probe(&backend, &beta, /*used_percent*/ 10, 1..).await;
 
+    let mut app = fresh_desktop_server(home.path()).await?;
     let png_bytes = base64::engine::general_purpose::STANDARD.decode(PNG)?;
     let mut arguments = json!({"prompt": "paint a blue whale"});
     let image_path = match operation {
         ImageOperation::Generate => "/api/codex/images/generations",
         ImageOperation::Edit => {
-            let reference = home.path().join("reference.png");
-            std::fs::write(&reference, &png_bytes)?;
-            arguments["referenced_image_paths"] = json!([reference]);
+            let environment = app.auto_env()?;
+            let reference = environment.selection().cwd.join("reference.png")?;
+            environment
+                .environment()
+                .get_filesystem()
+                .write_file(
+                    &reference,
+                    png_bytes.clone(),
+                    Default::default(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+            arguments["referenced_image_paths"] = json!([reference.inferred_native_path_string()]);
             "/api/codex/images/edits"
         }
     };
@@ -109,7 +120,6 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
         ],
     )
     .await;
-    let mut app = fresh_desktop_server(home.path()).await?;
     let completed = start_turn(&mut app, "generate the image").await?;
     assert_eq!(completed.turn.status, TurnStatus::Completed);
     let requests = mocked.requests();
@@ -122,6 +132,21 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
         assert_eq!(
             request.header("chatgpt-account-id"),
             Some(beta.workspace_id.clone())
+        );
+    }
+    if matches!(operation, ImageOperation::Edit) {
+        let requests = backend
+            .received_requests()
+            .await
+            .expect("recorded requests");
+        let image_request = requests
+            .iter()
+            .find(|request| request.url.path() == image_path)
+            .expect("image edit request");
+        let body: serde_json::Value = serde_json::from_slice(&image_request.body)?;
+        assert_eq!(
+            body["images"],
+            json!([{ "image_url": format!("data:image/png;base64,{PNG}") }])
         );
     }
     let saved = std::fs::read_dir(
