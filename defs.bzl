@@ -23,6 +23,16 @@ WINDOWS_RUSTC_LINK_FLAGS = select({
     "//conditions:default": [],
 })
 
+# Keep full DWARF while bounding native Linux binary sizes on local CI workers.
+# Resolve this per target so Windows binaries used by Wine keep their own flags.
+PLATFORM_RUSTC_LINK_FLAGS = WINDOWS_RUSTC_LINK_FLAGS + select({
+    "@platforms//os:linux": [
+        "-C",
+        "link-arg=-Wl,--compress-debug-sections=zlib",
+    ],
+    "//conditions:default": [],
+})
+
 WINDOWS_GNULLVM_INCOMPATIBLE = select({
     "@llvm//constraints/windows/abi:gnullvm": ["@platforms//:incompatible"],
     "//conditions:default": [],
@@ -381,7 +391,7 @@ def codex_rust_crate(
             # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
             # prefix so the workspace-root launcher sees Cargo-like metadata
             # such as `tui/src/...`.
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
@@ -433,7 +443,7 @@ def codex_rust_crate(
             # Keep per-binary Cargo link behavior scoped to the matching
             # generated rust_binary instead of leaking it to sibling binaries.
             compile_data = binary_compile_data_extra.get(binary, []),
-            rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + WINDOWS_RUSTC_LINK_FLAGS,
+            rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + PLATFORM_RUSTC_LINK_FLAGS,
             # Keep stamp = 0: rules_rust otherwise makes stable-status.txt and
             # volatile-status.txt compiler inputs, even though we only consume
             # STABLE_GIT_COMMIT. BUILD_USER and BUILD_HOST vary across developers
@@ -459,7 +469,7 @@ def codex_rust_crate(
             crate = ":" + binary,
             crate_features = crate_features,
             deps = all_crate_deps(normal_dev = True),
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
@@ -593,7 +603,7 @@ def codex_rust_crate(
                 # Bazel has emitted both `codex-rs/<crate>/...` and
                 # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
                 # prefix so Insta records Cargo-like metadata such as `core/tests/...`.
-                rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+                rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                     "--remap-path-prefix=../codex-rs=",
                     "--remap-path-prefix=codex-rs=",
                 ],
@@ -636,7 +646,7 @@ def codex_rust_crate(
                 # Bazel has emitted both `codex-rs/<crate>/...` and
                 # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
                 # prefix so Insta records Cargo-like metadata such as `core/tests/...`.
-                rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+                rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                     "--remap-path-prefix=../codex-rs=",
                     "--remap-path-prefix=codex-rs=",
                 ],
@@ -709,7 +719,7 @@ def codex_rust_crate(
             data = integration_test_files + integration_test_binaries + integration_test_data_extra,
             compile_data = integration_test_files + integration_compile_data_extra,
             deps = all_crate_deps(normal = True, normal_dev = True) + maybe_deps + deps_extra,
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 
 import { ThreadEvent } from "../src/index";
 
@@ -10,6 +10,9 @@ import {
   startResponsesTestProxy,
 } from "./responsesProxy";
 import { createMockClient } from "./testCodex";
+
+// These integration tests start real CLI processes, including sequential resume turns.
+jest.setTimeout(15_000);
 
 describe("Codex", () => {
   it("returns thread events", async () => {

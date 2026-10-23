@@ -37,7 +37,7 @@ const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
 #[test]
 fn testing_auth_managers_own_isolated_homes_until_the_last_reference_drops() {
     let first = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("first"));
-    let second = AuthManager::from_optional_auth_for_testing(None);
+    let second = AuthManager::from_optional_auth_for_testing(/*auth*/ None);
     let overridden = AuthManager::from_auth_for_testing_with_agent_identity_authapi_base_url(
         CodexAuth::from_api_key("overridden"),
         "http://localhost".to_string(),

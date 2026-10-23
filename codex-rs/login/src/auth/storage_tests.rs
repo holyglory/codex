@@ -97,20 +97,14 @@ fn file_storage_save_atomically_replaces_existing_auth() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 #[test]
 fn file_storage_save_sets_private_file_permissions() -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let codex_home = tempdir()?;
     let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
-    storage.save(&auth_with_prefix("private"))?;
-
-    let mode = std::fs::metadata(get_auth_file(codex_home.path()))?
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
+    for marker in ["private", "replacement"] {
+        storage.save(&auth_with_prefix(marker))?;
+        codex_private_storage::verify_private_file(&get_auth_file(codex_home.path()))?;
+    }
     Ok(())
 }
 

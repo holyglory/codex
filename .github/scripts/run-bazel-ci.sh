@@ -268,6 +268,13 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUI
 fi
 
 post_config_bazel_args=()
+if [[ "${RUNNER_OS:-}" == "Linux" && "${RUNNER_ENVIRONMENT:-}" == "github-hosted" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  # Local CI omits the remote configs, including ci's disk-cache override.
+  # The workspace default would retain a second copy of the build outputs on
+  # this disposable runner and exhaust its disk during the complete test suite.
+  post_config_bazel_args+=(--disk_cache=)
+fi
+
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do

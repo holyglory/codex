@@ -824,6 +824,24 @@ async fn maintenance_blocked_snapshot_reopens_server_without_killing_work() -> R
     // Remove the fixture path before releasing its current reader. Otherwise
     // the recorder's immediate retry can reopen the FIFO and block again.
     std::fs::remove_file(compressed)?;
+    // Both materialization and a background rollout scan can read this FIFO.
+    // On macOS, closing an empty FIFO can leave one of those readers blocked.
+    // Feed invalid zstd bytes until every reader has returned its error and
+    // closed; unlinking above prevents another scan from reopening the fixture.
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            match writer.try_write(&[0; 32]) {
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .context("blocked rollout readers did not release the fixture")??;
     drop(writer);
     request_shutdown(&server, &socket_path).await?;
     wait_success(&mut server)
