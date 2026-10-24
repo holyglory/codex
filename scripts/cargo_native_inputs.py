@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +189,13 @@ def run(state, arguments):
         prepare(state)
         environment = json.loads((state / "cargo-native-env.json").read_text())
         runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
+        required_plugin = runtime / "lib/gstreamer-1.0/libgstapp.so"
+    for _ in range(60):
+        if required_plugin.is_file():
+            break
+        time.sleep(0.5)
+    if not required_plugin.is_file():
+        raise ValueError(f"native voice runtime did not materialize: {required_plugin}")
     stable_runtime = state / "native-voice-runtime"
     stable_plugin = stable_runtime / "lib/gstreamer-1.0/libgstapp.so"
     if not stable_plugin.is_file():
