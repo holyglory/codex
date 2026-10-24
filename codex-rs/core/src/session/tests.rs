@@ -11202,6 +11202,10 @@ async fn turn_context_item_keeps_foreign_roots_in_authoritative_permissions() {
     };
     environment.config_mut().permission_profile = PermissionProfileSnapshot::legacy(profile);
     let expected_profile = turn_context.permission_profile();
+    let expected_split_policy = expected_profile
+        .file_system_sandbox_policy()
+        .try_into()
+        .expect("split policy preserves foreign path strings");
     let mut expected_roots = roots
         .iter()
         .filter_map(|root| root.to_abs_path().ok())
@@ -11212,7 +11216,7 @@ async fn turn_context_item_keeps_foreign_roots_in_authoritative_permissions() {
     let item = turn_context.to_turn_context_item();
 
     assert_eq!(item.permission_profile, Some(expected_profile));
-    assert_eq!(item.file_system_sandbox_policy, None);
+    assert_eq!(item.file_system_sandbox_policy, Some(expected_split_policy));
     assert_eq!(
         item.sandbox_policy,
         SandboxPolicy::WorkspaceWrite {

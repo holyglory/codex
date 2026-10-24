@@ -608,6 +608,20 @@ impl PathUri {
             ));
         }
 
+        // The URL crate treats a bare drive segment as drive-relative and
+        // panics when converting it on Windows. PathUri uses that spelling for
+        // a lexical drive root (including parent() results), never for CWD.
+        #[cfg(windows)]
+        if self.0.host_str().is_none()
+            && self
+                .0
+                .path()
+                .strip_prefix('/')
+                .is_some_and(is_windows_drive_uri_segment)
+        {
+            return AbsolutePathBuf::from_absolute_path_checked(self.inferred_native_path_string());
+        }
+
         let path = self.0.to_file_path().map_err(|()| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

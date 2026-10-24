@@ -1020,16 +1020,24 @@ impl TurnContext {
 
     fn non_legacy_file_system_sandbox_policy(&self) -> Option<RawFileSystemSandboxPolicy> {
         let file_system_sandbox_policy = self.file_system_sandbox_policy();
-        // If foreign roots cannot be represented in this host-only compatibility
-        // field, keep them in permission_profile without probing legacy roots.
         let raw_policy = file_system_sandbox_policy.clone().try_into().ok()?;
+        // The split policy preserves executor paths as strings. If the legacy
+        // host-path policy cannot represent them, retain that split policy
+        // directly instead of probing metadata for a partial legacy projection.
+        let Ok(sandbox_policy) = file_system_sandbox_policy.to_legacy_sandbox_policy(
+            self.network_sandbox_policy(),
+            #[allow(deprecated)]
+            &self.cwd,
+        ) else {
+            return Some(raw_policy);
+        };
         // Omit the derived split filesystem policy when it is equivalent to
         // the legacy sandbox policy. This keeps turn-context payloads stable
         // while both fields exist; once callers consume only the split policy,
         // this comparison and the legacy projection should go away.
         let legacy_file_system_sandbox_policy =
             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-                &self.sandbox_policy(),
+                &sandbox_policy,
                 #[allow(deprecated)]
                 &self.cwd,
             );

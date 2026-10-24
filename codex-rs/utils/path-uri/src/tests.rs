@@ -35,6 +35,43 @@ fn native_byte_joins_preserve_foreign_posix_filenames() {
 }
 
 #[test]
+fn windows_drive_root_native_conversion_is_absolute_or_foreign() {
+    for root in ["file:///C:", "file:///C:/", "file:///c%3A", "file:///C%3a/"] {
+        let root = PathUri::parse(root).expect("valid Windows drive root URI");
+        let from_parent = root
+            .join("child")
+            .expect("child")
+            .parent()
+            .expect("drive root");
+        for uri in [root, from_parent] {
+            #[cfg(windows)]
+            {
+                let converted = uri.to_abs_path().expect("absolute drive root");
+                assert!(converted.as_path().is_absolute());
+                assert_eq!(
+                    converted,
+                    AbsolutePathBuf::from_absolute_path_checked(uri.inferred_native_path_string())
+                        .expect("rendered drive root is absolute")
+                );
+                assert_eq!(
+                    PathUri::from_abs_path(&converted)
+                        .to_abs_path()
+                        .expect("native root round trip"),
+                    converted
+                );
+            }
+            #[cfg(unix)]
+            assert_eq!(
+                uri.to_abs_path()
+                    .expect_err("Windows root is foreign")
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+}
+
+#[test]
 fn file_uri_round_trips_an_absolute_path() {
     let path = AbsolutePathBuf::current_dir()
         .expect("current directory")
