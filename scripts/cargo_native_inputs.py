@@ -105,7 +105,13 @@ def prepare(state):
         raise ValueError("pkg-config is required for native Cargo inputs")
     state.mkdir(parents=True, exist_ok=True)
     platform_environment = alsa_inputs(state, system_pkg_config)
-    command = ["bash", ".github/scripts/run-bazel-ci.sh", "--", "build"]
+    command = [
+        "bash",
+        ".github/scripts/run-bazel-ci.sh",
+        "--remote-download-toplevel",
+        "--",
+        "build",
+    ]
     if cache := os.environ.get("LOCAL_BAZEL_CACHE"):
         command.append(f"--disk_cache={cache}")
     subprocess.run(
@@ -176,6 +182,11 @@ def run(state, arguments):
     environment = json.loads((state / "cargo-native-env.json").read_text())
     if environment["STABLE_GIT_COMMIT"] != commit():
         raise ValueError("Native Cargo inputs belong to another candidate")
+    runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
+    required_plugin = runtime / "lib/gstreamer-1.0/libgstapp.so"
+    if not required_plugin.is_file():
+        prepare(state)
+        environment = json.loads((state / "cargo-native-env.json").read_text())
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]
     if not arguments:
