@@ -297,11 +297,35 @@ async fn request_user_input_interrupt_emits_deferred_token_count() -> anyhow::Re
         )
         .await?;
 
-    let request = wait_for_event_match(&codex, |event| match event {
-        EventMsg::RequestUserInput(request) => Some(request.clone()),
-        _ => None,
+    // The prompt can arrive before response.completed is consumed. This test exercises
+    // cancellation after completion, when the usage must be deferred until the tool resolves.
+    // Observe both events in either order before interrupting, without relying on a sleep.
+    let mut request = None;
+    let mut response_completed = false;
+    wait_for_event(&codex, |event| {
+        match event {
+            EventMsg::RequestUserInput(input) => request = Some(input.clone()),
+            EventMsg::RawResponseCompleted(completed)
+                if completed.response_id == "resp-interrupt" =>
+            {
+                assert_eq!(
+                    completed
+                        .token_usage
+                        .as_ref()
+                        .map(|usage| usage.total_tokens),
+                    Some(77)
+                );
+                response_completed = true;
+            }
+            EventMsg::TokenCount(_) => {
+                panic!("TokenCount should wait until request_user_input resolves");
+            }
+            _ => {}
+        }
+        request.is_some() && response_completed
     })
     .await;
+    let request = request.expect("request_user_input should precede interruption");
 
     codex.submit(Op::Interrupt).await?;
 
