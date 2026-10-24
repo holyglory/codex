@@ -447,3 +447,43 @@ fn materializing_legacy_home_relative_workspace_denials_removes_all_grants() {
         }
     }
 }
+
+#[test]
+fn materialized_windows_roots_preserve_spellings_without_changing_access() {
+    let cwd = uri("file:///C:/workspace");
+    let roots = [
+        uri("file:///C:/Work/Profile"),
+        uri("file:///C:/work/profile"),
+        uri("file:///C:/Work/Profile"),
+    ];
+    let policy = FileSystemSandboxPolicy::workspace_write_with_path_uris(
+        &roots, /*exclude_tmpdir_env_var*/ true, /*exclude_slash_tmp*/ true,
+    );
+    let spellings = policy
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.path {
+            FileSystemPath::Path { path } if entry.access.can_write() => Some(path.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(spellings, vec![roots[0].as_str(), roots[1].as_str()]);
+    let context = FileSystemSandboxPolicyContext {
+        cwd: &cwd,
+        workspace_roots: std::slice::from_ref(&cwd),
+        user_home_dir: None,
+        temporary_directories: Some(&[]),
+    };
+    // Path identity and protected metadata still use Windows matching rules.
+    assert_eq!(roots[0], roots[1]);
+    for root in &roots {
+        assert!(policy.can_write_path(&root.join("file").unwrap(), &context));
+        for name in PROTECTED_METADATA_PATH_NAMES {
+            let metadata = root.join(name).unwrap().join("file").unwrap();
+            assert!(policy.can_read_path(&metadata, &context));
+            assert!(!policy.can_write_path(&metadata, &context));
+        }
+        assert!(!policy.can_write_path(&root.join(".GIT/config").unwrap(), &context));
+    }
+    assert!(!policy.can_write_path(&uri("file:///C:/outside/file"), &context));
+}

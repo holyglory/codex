@@ -774,3 +774,39 @@ fn bounds_permission_paths_at_whole_entry_boundaries() {
     let expected = render(&[writable], &[denied], &["/short/**".into()]);
     assert_eq!(text, format!("{expected}{OMITTED_PERMISSION_PATHS}\n"));
 }
+
+#[test]
+fn preserves_configured_windows_root_spellings_in_executor_instructions() {
+    let cwd = "file:///C:/workspace".parse().unwrap();
+    let roots = [
+        "file:///C:/Work/Profile".parse().unwrap(),
+        "file:///C:/work/profile".parse().unwrap(),
+        "file:///C:/Work/Profile".parse().unwrap(),
+    ];
+    let profile = PermissionProfile::workspace_write_with_path_uris(
+        &roots,
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    let paths = FileSystemSandboxPolicyContext {
+        cwd: &cwd,
+        workspace_roots: std::slice::from_ref(&cwd),
+        user_home_dir: None,
+        temporary_directories: Some(&[]),
+    };
+    let instructions = PermissionsInstructions::from_permission_profile(
+        &profile,
+        AskForApproval::OnRequest,
+        user_approval_context(),
+        &Policy::empty(),
+        &test_path_buf("/unused-local-cwd"),
+        Some(&paths),
+        /*exec_permission_approvals_enabled*/ false,
+        /*request_permissions_tool_enabled*/ false,
+    );
+    let text = instructions.body();
+    for root in &roots[..2] {
+        assert_eq!(text.matches(&root.inferred_native_path_string()).count(), 1);
+    }
+}
