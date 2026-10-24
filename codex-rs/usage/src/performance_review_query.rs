@@ -236,14 +236,21 @@ pub(super) const OPERATION_COVERAGE: &str = "SELECT
     COALESCE(SUM(retry_of_operation_id IS NOT NULL), 0) retry_operations,
     COALESCE(SUM(rework_of_operation_id IS NOT NULL), 0) rework_operations,
     COALESCE(SUM(retry_of_operation_id IS NOT NULL OR rework_of_operation_id IS NOT NULL), 0) linked_operations,
-    (SELECT COALESCE(SUM(raw_count), 0) FROM token_facts) raw_token_observations,
-    (SELECT COUNT(*) FROM token_facts) deduplicated_token_observations,
-    (SELECT COALESCE(SUM(unknown_count), 0) FROM token_facts) unknown_token_observations,
-    (SELECT COALESCE(SUM(incomplete), 0) FROM token_facts) incomplete_token_observations,
-    (SELECT COALESCE(SUM(conflict), 0) FROM token_facts) conflicting_token_observations,
+    token_totals.raw_token_observations,
+    token_totals.deduplicated_token_observations,
+    token_totals.unknown_token_observations,
+    token_totals.incomplete_token_observations,
+    token_totals.conflicting_token_observations,
     (SELECT COUNT(*) FROM coverage_events coverage CROSS JOIN bounds WHERE coverage.operation_id IS NULL
       AND coverage.occurred_at_ms >= lower_ms AND coverage.occurred_at_ms < upper_ms) unattributed_coverage_events_in_window
-    FROM effective";
+    FROM effective
+    CROSS JOIN (SELECT
+        COALESCE(SUM(raw_count), 0) raw_token_observations,
+        COUNT(*) deduplicated_token_observations,
+        COALESCE(SUM(unknown_count), 0) unknown_token_observations,
+        COALESCE(SUM(incomplete), 0) incomplete_token_observations,
+        COALESCE(SUM(conflict), 0) conflicting_token_observations
+        FROM token_facts) token_totals";
 
 pub(super) const WAIT_CATEGORIES: &str = ", waits AS (
     SELECT effective_state category, interval_ms FROM effective
