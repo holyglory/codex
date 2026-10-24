@@ -1219,13 +1219,13 @@ async fn sandboxed_discovery_batches_roots_without_combining_different_permissio
         vec![
             CapabilityRootDiscoverRequest {
                 id: "first-isolated".to_string(),
-                path: first_uri,
-                sandbox: Some(first_only_sandbox),
+                path: first_uri.clone(),
+                sandbox: Some(first_only_sandbox.clone()),
             },
             CapabilityRootDiscoverRequest {
                 id: "second-isolated".to_string(),
-                path: second_uri,
-                sandbox: Some(second_only_sandbox),
+                path: second_uri.clone(),
+                sandbox: Some(second_only_sandbox.clone()),
             },
         ],
     )
@@ -1239,6 +1239,52 @@ async fn sandboxed_discovery_batches_roots_without_combining_different_permissio
         vec![
             ("first-isolated".to_string(), 1, None),
             ("second-isolated".to_string(), 1, None),
+        ]
+    );
+
+    let denied = discover_roots(
+        &mut server,
+        vec![
+            CapabilityRootDiscoverRequest {
+                id: "first-cannot-read-second".to_string(),
+                path: second_uri,
+                sandbox: Some(first_only_sandbox),
+            },
+            CapabilityRootDiscoverRequest {
+                id: "second-cannot-read-first".to_string(),
+                path: first_uri,
+                sandbox: Some(second_only_sandbox),
+            },
+        ],
+    )
+    .await?;
+    assert_eq!(
+        denied
+            .roots
+            .into_iter()
+            .map(|root| (
+                root.id,
+                root.skills.is_empty(),
+                root.namespace_manifests.is_empty(),
+                root.plugin.is_none(),
+                root.error.is_some(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "first-cannot-read-second".to_string(),
+                true,
+                true,
+                true,
+                true
+            ),
+            (
+                "second-cannot-read-first".to_string(),
+                true,
+                true,
+                true,
+                true
+            ),
         ]
     );
 

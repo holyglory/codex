@@ -2,8 +2,12 @@ use std::io;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use codex_exec_server_protocol::CapabilityRootDiscoverRequest;
+use codex_exec_server_protocol::CapabilityRootDiscovery;
 use codex_exec_server_protocol::JSONRPCErrorError;
+use futures::StreamExt;
 
+use crate::CapabilityDiscoveryError;
 use crate::CapabilityRootsDiscoverParams;
 use crate::CapabilityRootsDiscoverResponse;
 use crate::CopyOptions;
@@ -14,6 +18,8 @@ use crate::GetMetadataOptions;
 use crate::ReadFileOptions;
 use crate::RemoveOptions;
 use crate::WriteFileOptions;
+use crate::capability_discovery::MAX_CONCURRENT_ROOTS;
+use crate::capability_discovery::MAX_ROOTS_PER_REQUEST;
 use crate::file_handle::FileHandleManager;
 use crate::local_file_system::LocalFileSystem;
 use crate::protocol::FS_READ_DIRECTORY_METHOD;
@@ -76,6 +82,11 @@ impl FileSystemHandler {
         &self,
         params: CapabilityRootsDiscoverParams,
     ) -> Result<CapabilityRootsDiscoverResponse, JSONRPCErrorError> {
+        if params.roots.len() > MAX_ROOTS_PER_REQUEST {
+            return Err(invalid_request(
+                CapabilityDiscoveryError::TooManyRoots.to_string(),
+            ));
+        }
         let sandbox = params
             .roots
             .first()
@@ -114,9 +125,54 @@ impl FileSystemHandler {
             }
         }
 
-        crate::discover_capability_roots(&self.file_system, params)
-            .await
-            .map_err(|error| invalid_request(error.to_string()))
+        // Different policies cannot share one helper. Keep each root inside
+        // its own sandbox instead of relaunching a sandbox for every metadata,
+        // traversal and file-read operation. Buffered execution preserves order
+        // and the existing bound on concurrent root discovery.
+        let roots = futures::stream::iter(params.roots)
+            .map(|root| self.discover_capability_root(root))
+            .buffered(MAX_CONCURRENT_ROOTS)
+            .collect()
+            .await;
+        Ok(CapabilityRootsDiscoverResponse { roots })
+    }
+
+    async fn discover_capability_root(
+        &self,
+        root: CapabilityRootDiscoverRequest,
+    ) -> CapabilityRootDiscovery {
+        if let Some(sandbox) = root.sandbox.as_ref()
+            && sandbox
+                .validate_file_system_paths_for_current_host()
+                .is_ok()
+            && sandbox.should_read_from_sandbox()
+            && (!cfg!(target_os = "windows") || sandbox.windows_sandbox_is_requested())
+            && let Ok(file_system) = self.file_system.sandboxed()
+        {
+            let mut sandboxed_root = root.clone();
+            sandboxed_root.sandbox = None;
+            let params = CapabilityRootsDiscoverParams {
+                roots: vec![sandboxed_root],
+            };
+            match file_system.discover_capability_roots(params, sandbox).await {
+                Ok(response) => {
+                    let mut roots = response.roots.into_iter();
+                    if let Some(discovery) = roots.next()
+                        && roots.next().is_none()
+                        && discovery.id == root.id
+                        && discovery.path == root.path
+                    {
+                        return discovery;
+                    }
+                    tracing::warn!("single-root capability helper returned an unexpected root");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "single-root capability helper failed; retrying filesystem operations");
+                }
+            }
+        }
+        // Retain per-root error reporting and the same policy on fallback.
+        crate::capability_discovery::discover_root(&self.file_system, root).await
     }
 
     pub(crate) async fn open(
@@ -378,6 +434,33 @@ mod tests {
     use crate::FileSystemSandboxContext;
     use crate::protocol::FsReadFileParams;
     use crate::protocol::FsWriteFileParams;
+
+    #[tokio::test]
+    async fn capability_discovery_retains_limit_before_partitioning() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = ExecServerRuntimeOptions::new(
+            std::env::current_exe().expect("current exe"),
+            /*codex_linux_sandbox_exe*/ None,
+        )
+        .expect("runtime paths");
+        let handler = FileSystemHandler::new(runtime);
+        let path = PathUri::from_host_native_path(temp.path()).expect("root URI");
+        let roots = (0..129)
+            .map(|index| CapabilityRootDiscoverRequest {
+                id: index.to_string(),
+                path: path.clone(),
+                sandbox: None,
+            })
+            .collect();
+        let error = handler
+            .discover_capability_roots(CapabilityRootsDiscoverParams { roots })
+            .await
+            .expect_err("reject the complete request before creating helper batches");
+        assert_eq!(
+            error.message,
+            "capability root discovery accepts at most 128 roots"
+        );
+    }
 
     #[tokio::test]
     async fn no_platform_sandbox_policies_do_not_require_configured_sandbox_helper() {
