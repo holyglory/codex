@@ -2101,9 +2101,12 @@ impl TestAppServerBuilder {
         {
             // Bazel keeps binary targets in separate package directories.
             // Recreate the installed sibling layout without a path override.
-            // Prefer Bazel's TEST_TMPDIR so staging can share a filesystem with
-            // the binaries and avoid expensive cross-filesystem copies.
-            let install_dir = match std::env::var_os("TEST_TMPDIR") {
+            // CI may keep executable fixtures on the build volume while ordinary
+            // test scratch uses another disk. Keeping these files beside the build
+            // volume avoids copying both large executables for every test.
+            let install_root = std::env::var_os("CODEX_TEST_INSTALL_TMPDIR")
+                .or_else(|| std::env::var_os("TEST_TMPDIR"));
+            let install_dir = match install_root {
                 Some(test_tmpdir) => TempDir::new_in(test_tmpdir)?,
                 None => TempDir::new()?,
             };
