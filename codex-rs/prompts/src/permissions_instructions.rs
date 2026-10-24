@@ -181,10 +181,10 @@ impl PermissionsInstructions {
                         && access.can_write()
                         && file_system_policy.can_write_path(path, paths)
                 })
-                .map(|(path, _)| path)
+                // Deduplicate displayed spellings, not case-insensitive Windows identities.
+                .map(|(path, _)| path.inferred_native_path_string())
                 .collect::<HashSet<_>>()
                 .into_iter()
-                .map(|path| path.inferred_native_path_string())
                 .collect::<Vec<_>>();
             writable_roots.sort();
             let mut denied_read_paths = Vec::new();

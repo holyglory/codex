@@ -127,7 +127,19 @@ impl FileSystemSandboxPolicy {
             return Self::restricted(Vec::new());
         };
         for entry in materialized.entries {
-            if !self.entries.contains(&entry) {
+            // Windows path identity ignores case, but the configured spellings
+            // must survive materialization for profile metadata and instructions.
+            let already_configured = self.entries.iter().any(|existing| {
+                existing == &entry
+                    && match (&existing.path, &entry.path) {
+                        (
+                            FileSystemPath::Path { path: left },
+                            FileSystemPath::Path { path: right },
+                        ) => left.as_str() == right.as_str(),
+                        _ => true,
+                    }
+            });
+            if !already_configured {
                 self.entries.push(entry);
             }
         }
