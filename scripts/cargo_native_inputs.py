@@ -187,6 +187,17 @@ def run(state, arguments):
     if not required_plugin.is_file():
         prepare(state)
         environment = json.loads((state / "cargo-native-env.json").read_text())
+        runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
+    stable_runtime = state / "native-voice-runtime"
+    stable_plugin = stable_runtime / "lib/gstreamer-1.0/libgstapp.so"
+    if not stable_plugin.is_file():
+        shutil.copytree(runtime, stable_runtime, dirs_exist_ok=True)
+    runtime_text = str(runtime)
+    stable_runtime_text = str(stable_runtime)
+    for key, value in list(environment.items()):
+        if isinstance(value, str) and runtime_text in value:
+            environment[key] = value.replace(runtime_text, stable_runtime_text)
+    environment["CODEX_TEST_VOICE_RUNTIME"] = stable_runtime_text
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]
     if not arguments:
