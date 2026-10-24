@@ -190,7 +190,10 @@ def run(state, arguments):
         environment = json.loads((state / "cargo-native-env.json").read_text())
         runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
         required_plugin = runtime / "lib/gstreamer-1.0/libgstapp.so"
-    for _ in range(60):
+    # Remote tree-artifact downloads can finish after Bazel reports the build
+    # complete. Keep the Cargo handoff bounded, but allow the downloader time
+    # to materialize nested plugins such as libgstapp.so.
+    for _ in range(600):
         if required_plugin.is_file():
             break
         time.sleep(0.5)
