@@ -41,9 +41,19 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::System::Console::AttachConsole;
+use windows_sys::Win32::System::Console::FreeConsole;
+use windows_sys::Win32::System::Console::GetConsoleWindow;
+use windows_sys::Win32::System::Console::GetStdHandle;
+use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
+use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+use windows_sys::Win32::System::Console::SetStdHandle;
 use windows_sys::Win32::System::Threading::OpenProcess;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -51,7 +61,52 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-const ASSERT_NO_CONSOLE: &str = r#"Add-Type -ErrorAction Stop 'using System; using System.Runtime.InteropServices; public class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; if ([ConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero) { throw 'piped sandbox process unexpectedly has a console' };"#;
+fn assert_no_console_command() -> String {
+    // Constrained PowerShell cannot compile an Add-Type probe. A native child
+    // inspects the PowerShell parent's console instead, and a failed assertion
+    // stops the script before it can emit the readiness marker.
+    let executable = std::env::current_exe().expect("console probe executable");
+    format!(
+        "$env:CODEX_TEST_PIPED_PARENT_PID=$PID; & '{}' --exact unified_exec::tests::piped_parent_console_probe --nocapture; if ($LASTEXITCODE -ne 0) {{ throw 'piped sandbox console probe failed' }}; Remove-Item Env:CODEX_TEST_PIPED_PARENT_PID;",
+        powershell_literal(&executable),
+    )
+}
+
+#[test]
+fn piped_parent_console_probe() {
+    let Ok(parent_pid) = std::env::var("CODEX_TEST_PIPED_PARENT_PID") else {
+        // This helper is exercised by the capture and interrupt tests below.
+        return;
+    };
+    let parent_pid = parent_pid.parse().expect("PowerShell parent process ID");
+    let handles = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+        .map(|kind| (kind, unsafe { GetStdHandle(kind) }));
+    assert_ne!(unsafe { FreeConsole() }, 0);
+    let attached = unsafe { AttachConsole(parent_pid) };
+    let error = if attached == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    let window = unsafe { GetConsoleWindow() };
+    if attached != 0 {
+        assert_ne!(unsafe { FreeConsole() }, 0);
+    }
+    // Attaching can replace the child's standard handles. Restore the inherited
+    // pipes before libtest reports its result to the waiting PowerShell parent.
+    for (kind, handle) in handles {
+        assert_ne!(unsafe { SetStdHandle(kind, handle) }, 0);
+    }
+    assert!(
+        attached != 0 || error == ERROR_INVALID_HANDLE,
+        "could not inspect the live PowerShell parent's console: {error}",
+    );
+    assert!(
+        window.is_null(),
+        "piped PowerShell parent has a console window"
+    );
+    println!("PIPE-PARENT-NO-CONSOLE");
+}
 
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
@@ -101,6 +156,15 @@ fn workspace_roots_for(root: &Path) -> Vec<AbsolutePathBuf> {
     vec![AbsolutePathBuf::from_absolute_path(root).expect("absolute workspace root")]
 }
 
+fn windows_process_env() -> HashMap<String, String> {
+    // These APIs pass the supplied environment directly to Windows. Without SystemRoot,
+    // AppLocker cannot load its policy provider for PowerShell modules and batch files.
+    HashMap::from([(
+        "SystemRoot".to_string(),
+        std::env::var("SystemRoot").expect("Windows process environment has SystemRoot"),
+    )])
+}
+
 fn powershell_literal(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }
@@ -134,6 +198,17 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(25));
     }
     path.exists()
+}
+
+fn publish_descendant_pid(marker: &Path) -> String {
+    let pending = marker.with_extension("pending");
+    // Existence signals readiness, so publish only after Set-Content closes the file.
+    format!(
+        "Set-Content -LiteralPath '{}' -Value $PID -ErrorAction Stop; Move-Item -LiteralPath '{}' -Destination '{}' -ErrorAction Stop",
+        powershell_literal(&pending),
+        powershell_literal(&pending),
+        powershell_literal(marker),
+    )
 }
 
 fn open_process_for_wait(pid: u32) -> std::io::Result<OwnedHandle> {
@@ -282,7 +357,7 @@ fn legacy_non_tty_cmd_emits_output() {
                 "echo LEGACY-NONTTY-CMD".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(5_000),
             &[],
             &[],
@@ -311,10 +386,11 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
         let cwd = sandbox_cwd();
         let codex_home = sandbox_home("elevated-non-tty-cmd");
         let permission_profile = PermissionProfile::workspace_write();
-        let env_map = HashMap::from([(
+        let mut env_map = HashMap::from([(
             "CODEX_ELEVATED_TEST".to_string(),
             "ELEVATED-ENV-OK".to_string(),
         )]);
+        env_map.extend(windows_process_env());
         let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
             &permission_profile,
             workspace_roots_for(cwd.as_path()).as_slice(),
@@ -428,7 +504,7 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
                 "echo deny-read".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(5_000),
             std::slice::from_ref(&secret_path),
             &[],
@@ -465,16 +541,19 @@ fn legacy_non_tty_powershell_interrupt_terminates_process() {
                 pwsh.display().to_string(),
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
-                format!("{ASSERT_NO_CONSOLE} Write-Output LEGACY-NONTTY-DIRECT; [System.Threading.ManualResetEvent]::new($false).WaitOne()"),
+                format!(
+                    "{} Write-Output LEGACY-NONTTY-DIRECT; Start-Sleep -Seconds 30",
+                    assert_no_console_command()
+                ),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             /*timeout_ms*/ None,
             &[],
             &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            )
+        )
         .await
         .expect("spawn legacy non-tty powershell session");
         println!("pwsh spawn returned");
@@ -489,6 +568,7 @@ fn legacy_non_tty_powershell_interrupt_terminates_process() {
             while let Some(chunk) = stdout_rx.recv().await {
                 stdout.extend(chunk);
                 if String::from_utf8_lossy(&stdout).contains("LEGACY-NONTTY-DIRECT") {
+                    assert!(String::from_utf8_lossy(&stdout).contains("PIPE-PARENT-NO-CONSOLE"));
                     return;
                 }
             }
@@ -510,7 +590,12 @@ fn legacy_non_tty_powershell_interrupt_terminates_process() {
             .expect("interrupt should terminate the restricted-token process job");
         let exit_code = timeout(Duration::from_secs(5), exit_rx)
             .await
-            .unwrap_or_else(|_| panic!("timed out waiting for exit\n{}", sandbox_log(codex_home.path())))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for exit\n{}",
+                    sandbox_log(codex_home.path())
+                )
+            })
             .expect("interrupted process should report an exit code");
         assert_eq!(exit_code, 1);
     });
@@ -669,15 +754,17 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
         return;
     };
     let _guard = legacy_process_test_guard();
-    let cwd = sandbox_cwd();
+    let workspace = tempfile::tempdir().expect("create writable test workspace");
+    let cwd = workspace.path().to_path_buf();
     let codex_home = sandbox_home("legacy-capture-pwsh");
     println!("capture pwsh codex_home={}", codex_home.path().display());
-    let ready_marker = codex_home.path().join("descendant-started");
-    let release_marker = codex_home.path().join("release-descendant");
-    let survival_marker = codex_home.path().join("descendant-survived");
+    // Child output and markers must be inside the workspace granted to the command.
+    let ready_marker = workspace.path().join("descendant-started");
+    let release_marker = workspace.path().join("release-descendant");
+    let survival_marker = workspace.path().join("descendant-survived");
     let descendant_command = format!(
-        "$deadline=(Get-Date).AddSeconds(30); Set-Content -LiteralPath '{}' -Value $PID; while (-not (Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 3 }}; Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath '{}' -Value survived",
-        powershell_literal(&ready_marker),
+        "$deadline=(Get-Date).AddSeconds(30); {}; while (-not (Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 3 }}; Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath '{}' -Value survived",
+        publish_descendant_pid(&ready_marker),
         powershell_literal(&release_marker),
         powershell_literal(&survival_marker),
     );
@@ -686,8 +773,9 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
         powershell_literal(&ready_marker),
     );
     let parent_command = format!(
-        "{ASSERT_NO_CONSOLE} Write-Output LEGACY-CAPTURE-DIRECT; {}",
-        start_powershell_child(&pwsh, codex_home.path(), &descendant_command, &parent_tail,),
+        "{} Write-Output LEGACY-CAPTURE-DIRECT; {}",
+        assert_no_console_command(),
+        start_powershell_child(&pwsh, workspace.path(), &descendant_command, &parent_tail,),
     );
     let permission_profile = PermissionProfile::workspace_write();
     let result = run_windows_sandbox_capture(
@@ -701,13 +789,23 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(10_000),
         /*cancellation*/ None,
     )
     .expect("run legacy capture powershell");
+    println!("capture pwsh exit_code={}", result.exit_code);
+    println!("capture pwsh timed_out={}", result.timed_out);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    println!("capture pwsh stderr={stderr:?}");
     let descendant_pid = fs::read_to_string(&ready_marker)
-        .expect("read descendant pid")
+        .unwrap_or_else(|error| {
+            panic!(
+                "read descendant pid: {error}; descendant stderr={:?}",
+                fs::read_to_string(workspace.path().join("descendant.stderr"))
+            )
+        })
         .trim()
         .parse()
         .expect("parse descendant pid");
@@ -715,12 +813,11 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
     fs::write(&release_marker, "release").expect("release descendant after root exit");
     let descendant_process = descendant_process.expect("open descendant after normal capture exit");
 
-    println!("capture pwsh exit_code={}", result.exit_code);
-    println!("capture pwsh timed_out={}", result.timed_out);
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    println!("capture pwsh stderr={stderr:?}");
     assert_eq!(result.exit_code, 0, "stdout={stdout:?} stderr={stderr:?}");
+    assert!(
+        stdout.contains("PIPE-PARENT-NO-CONSOLE"),
+        "stdout={stdout:?}"
+    );
     assert!(
         stdout.contains("LEGACY-CAPTURE-DIRECT"),
         "stdout={stdout:?}"
@@ -775,7 +872,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         )
         .expect("write delete script");
 
-        let env_map = HashMap::from([
+        let mut env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
             ("TMP".to_string(), tmp_root.to_string_lossy().into_owned()),
             (
@@ -800,6 +897,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             ),
         ]);
 
+        env_map.extend(windows_process_env());
         let permission_profile = PermissionProfile::workspace_write();
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
@@ -849,18 +947,19 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
         return;
     };
     let _guard = legacy_process_test_guard();
-    let cwd = sandbox_cwd();
+    let workspace = tempfile::tempdir().expect("create writable test workspace");
+    let cwd = workspace.path().to_path_buf();
     let codex_home = sandbox_home("legacy-capture-cancel");
-    let descendant_marker = codex_home.path().join("descendant-survived");
-    let ready_marker = codex_home.path().join("descendant-started");
+    let descendant_marker = workspace.path().join("descendant-survived");
+    let ready_marker = workspace.path().join("descendant-started");
     let descendant_command = format!(
-        "Set-Content -LiteralPath '{}' -Value $PID; Start-Sleep -Seconds 1; Set-Content -LiteralPath '{}' -Value survived",
-        powershell_literal(&ready_marker),
+        "{}; Start-Sleep -Seconds 1; Set-Content -LiteralPath '{}' -Value survived",
+        publish_descendant_pid(&ready_marker),
         powershell_literal(&descendant_marker),
     );
     let parent_command = start_powershell_child(
         &pwsh,
-        codex_home.path(),
+        workspace.path(),
         &descendant_command,
         "Start-Sleep -Seconds 30",
     );
@@ -896,7 +995,7 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(30_000),
         /*cancellation*/ Some(cancellation),
     )
@@ -904,7 +1003,11 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
 
     assert!(
         started_at.elapsed() < Duration::from_secs(10),
-        "cancellation should end capture before the timeout"
+        "cancellation should end capture before the timeout: elapsed={:?}, timed_out={}, exit_code={}, descendant stderr={:?}",
+        started_at.elapsed(),
+        result.timed_out,
+        result.exit_code,
+        fs::read_to_string(workspace.path().join("descendant.stderr")),
     );
     assert!(
         !result.timed_out,
@@ -934,14 +1037,15 @@ async fn assert_legacy_tty_descendant_lifecycle(
     pwsh: &Path,
     lifecycle: LegacyTtyDescendantLifecycle,
 ) {
-    let cwd = sandbox_cwd();
+    let workspace = tempfile::tempdir().expect("create writable test workspace");
+    let cwd = workspace.path().to_path_buf();
     let codex_home = sandbox_home(match lifecycle {
         LegacyTtyDescendantLifecycle::Terminate => "legacy-tty-descendant-terminate",
         LegacyTtyDescendantLifecycle::Preserve => "legacy-tty-descendant-preserve",
     });
-    let ready_marker = codex_home.path().join("descendant-started");
-    let release_marker = codex_home.path().join("release-descendant");
-    let survival_marker = codex_home.path().join("descendant-survived");
+    let ready_marker = workspace.path().join("descendant-started");
+    let release_marker = workspace.path().join("release-descendant");
+    let survival_marker = workspace.path().join("descendant-survived");
     let child_tail = match lifecycle {
         LegacyTtyDescendantLifecycle::Terminate => "Start-Sleep -Seconds 30".to_string(),
         LegacyTtyDescendantLifecycle::Preserve => format!(
@@ -950,10 +1054,7 @@ async fn assert_legacy_tty_descendant_lifecycle(
             powershell_literal(&survival_marker),
         ),
     };
-    let child_command = format!(
-        "Set-Content -LiteralPath '{}' -Value $PID; {child_tail}",
-        powershell_literal(&ready_marker),
-    );
+    let child_command = format!("{}; {child_tail}", publish_descendant_pid(&ready_marker));
     let parent_tail = match lifecycle {
         LegacyTtyDescendantLifecycle::Terminate => "Start-Sleep -Seconds 30".to_string(),
         LegacyTtyDescendantLifecycle::Preserve => format!(
@@ -962,7 +1063,7 @@ async fn assert_legacy_tty_descendant_lifecycle(
         ),
     };
     let parent_command =
-        start_powershell_child(pwsh, codex_home.path(), &child_command, &parent_tail);
+        start_powershell_child(pwsh, workspace.path(), &child_command, &parent_tail);
     let permission_profile = PermissionProfile::workspace_write();
     let spawned = spawn_windows_sandbox_session_legacy(
         &permission_profile,
@@ -975,7 +1076,7 @@ async fn assert_legacy_tty_descendant_lifecycle(
             parent_command,
         ],
         cwd.as_path(),
-        HashMap::new(),
+        windows_process_env(),
         Some(30_000),
         &[],
         &[],
@@ -1058,7 +1159,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
                 "$PID; Write-Output ready".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(10_000),
             &[],
             &[],
@@ -1107,7 +1208,7 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
                 "echo ready".to_string(),
             ],
             cwd.as_path(),
-            HashMap::new(),
+            windows_process_env(),
             Some(10_000),
             &[],
             &[],

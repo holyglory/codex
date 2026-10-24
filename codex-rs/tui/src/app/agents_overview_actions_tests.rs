@@ -975,12 +975,16 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             .find(|event| matches!(event, AppEvent::ConfirmAgentsOverviewAction { .. }))
             .expect("shortcut requests confirmation");
         Box::pin(app.handle_event(&mut tui, &mut app_server, confirmation)).await?;
+        // Lifecycle actions perform real I/O; the fixture can cross a minute
+        // boundary before this snapshot. Age formatting is covered separately.
+        let confirmation = normalize_agent_center_snapshot(render_bottom_popup(
+            &app.chat_widget,
+            /*width*/ 80,
+        ));
+        let age = regex_lite::Regex::new(r"\b[0-9]+[smhd] ago\b").unwrap();
         insta::assert_snapshot!(
             format!("{snapshot}_confirmation"),
-            normalize_agent_center_snapshot(render_bottom_popup(
-                &app.chat_widget,
-                /*width*/ 80
-            ))
+            age.replace_all(&confirmation, "[age]")
         );
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         assert!(

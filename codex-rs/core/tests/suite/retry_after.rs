@@ -12,6 +12,7 @@ use codex_models_manager::bundled_models_response;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
@@ -1314,6 +1315,8 @@ async fn sse_overload_retries_with_dedicated_budget(code: &str) -> Result<()> {
     )
     .await;
     let test = test_codex()
+        // This proof exercises tool replay, not PowerShell startup or profiles.
+        .with_windows_cmd_shell()
         .with_model("gpt-5.4")
         .with_config(|config| {
             config.model_provider.request_max_retries = Some(0);
@@ -1325,8 +1328,28 @@ async fn sse_overload_retries_with_dedicated_budget(code: &str) -> Result<()> {
 
     let mut retry_messages = Vec::new();
     let mut tool_executions = 0;
+    let mut tool_approvals = 0;
     loop {
         match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ExecApprovalRequest(event) => {
+                // Windows can require approval when its sandbox backend is disabled.
+                // Approve only this fixture's proof command, once before retrying.
+                assert_eq!(event.call_id, "capacity-tool");
+                assert_eq!(
+                    event.command.last().map(String::as_str),
+                    Some("echo capacity-proof")
+                );
+                assert!(retry_messages.is_empty());
+                tool_approvals += 1;
+                assert_eq!(tool_approvals, 1);
+                test.codex
+                    .submit(Op::ExecApproval {
+                        id: event.effective_approval_id(),
+                        turn_id: Some(event.turn_id),
+                        decision: ReviewDecision::Approved,
+                    })
+                    .await?;
+            }
             EventMsg::ExecCommandEnd(event) => {
                 tool_executions += 1;
                 assert_eq!(event.exit_code, 0);
@@ -1344,13 +1367,15 @@ async fn sse_overload_retries_with_dedicated_budget(code: &str) -> Result<()> {
         }
     }
 
-    insta::assert_snapshot!(retry_messages.join("\n"), @"
-    Reconnecting... 1/5
-    Reconnecting... 2/5
-    Reconnecting... 3/5
-    Reconnecting... 4/5
-    Reconnecting... 5/5
-    ");
+    insta::allow_duplicates! {
+        insta::assert_snapshot!(retry_messages.join("\n"), @"
+        Reconnecting... 1/5
+        Reconnecting... 2/5
+        Reconnecting... 3/5
+        Reconnecting... 4/5
+        Reconnecting... 5/5
+        ");
+    }
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 7);
     assert_eq!(

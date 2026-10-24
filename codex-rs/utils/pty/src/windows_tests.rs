@@ -18,6 +18,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
+use winapi::um::consoleapi::SetConsoleCtrlHandler;
 use winapi::um::jobapi::IsProcessInJob;
 use winapi::um::processthreadsapi::OpenProcess;
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
@@ -443,6 +444,37 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Result<()> {
+    // Service and test launchers may pass down the inheritable Ctrl-C ignore
+    // flag. Reset it in a dedicated child so other parallel tests keep their
+    // signal handling and this test exercises ConPTY's Ctrl-C delivery.
+    if std::env::var_os("CODEX_PTY_CTRL_C_PROBE").is_none() {
+        let output = tokio::time::timeout(
+            Duration::from_secs(45),
+            Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child",
+                    "--nocapture",
+                ])
+                .env("CODEX_PTY_CTRL_C_PROBE", "1")
+                .creation_flags(winapi::um::winbase::DETACHED_PROCESS)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await??;
+        anyhow::ensure!(
+            output.status.success(),
+            "Ctrl-C probe failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return Ok(());
+    }
+    // SAFETY: a null handler changes only this isolated process's inherited
+    // ignore flag. FALSE re-enables Ctrl-C for the children it will create.
+    if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     let Some(program) = find_powershell() else {
         return Ok(());
     };

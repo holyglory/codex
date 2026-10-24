@@ -41,7 +41,8 @@ fn stdout_json(assertion: assert_cmd::assert::Assert) -> Result<Value> {
     Ok(serde_json::from_slice(&assertion.get_output().stdout)?)
 }
 
-#[tokio::test]
+// Keep the store's background refresh running while assert_cmd waits for child processes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn usage_details_and_current_repository_run_through_the_codex_binary() -> Result<()> {
     const OS_PID_SENTINEL: u32 = 4_294_000_001;
     let home = TempDir::new()?;
@@ -160,15 +161,22 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
     assert!(!encoded.contains("osPid"));
     assert!(!encoded.contains(&OS_PID_SENTINEL.to_string()));
 
-    let mut report_ready = false;
-    for _ in 0..100 {
-        if store.report_cache_status().await?.ready {
-            report_ready = true;
-            break;
+    // Reopen after fixture and subprocess writes to schedule a fresh refresh.
+    // Status reads do not schedule work, and the initial worker can finish
+    // before these writes dirty the projections again.
+    let store = UsageStore::open(home.path()).await?;
+    // Refresh yields between pages and backs off on contention, so wait for
+    // readiness within a bounded budget rather than counting short polls.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if store.report_cache_status().await?.ready {
+                return Ok::<(), codex_usage::UsageStoreError>(());
+            }
+            sleep(Duration::from_millis(10)).await;
         }
-        sleep(Duration::from_millis(10)).await;
-    }
-    assert!(report_ready, "usage report cache did not become ready");
+    })
+    .await
+    .expect("usage report cache did not become ready")?;
 
     let repository_summary = stdout_json(
         codex_command(home.path())?

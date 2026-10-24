@@ -13,7 +13,6 @@ use crate::types::TerminalOperation;
 use crate::types::TerminalStatus;
 use codex_private_storage::ensure_private_directory;
 use codex_private_storage::ensure_private_file;
-use codex_private_storage::verify_private_file;
 use codex_state::SqlitePoolProfile;
 use codex_state::open_sqlite_pool;
 use sqlx::Row;
@@ -363,7 +362,7 @@ impl UsageStore {
             stage = "verify_usage_storage",
             "usage storage initialization"
         );
-        verify_sqlite_files(&database_path)?;
+        protect_sqlite_files(&database_path)?;
         let report_refresh = crate::report_refresh::ReportRefresh::for_source(&database_path)
             .map_err(UsageStoreError::Filesystem)?;
         if refresh_pending {
@@ -751,8 +750,8 @@ fn private_storage_error(error: codex_private_storage::PrivateStorageError) -> U
     UsageStoreError::Filesystem(std::io::Error::other(error))
 }
 
-fn verify_sqlite_files(database_path: &Path) -> Result<(), UsageStoreError> {
-    verify_private_file(database_path).map_err(private_storage_error)?;
+fn protect_sqlite_files(database_path: &Path) -> Result<(), UsageStoreError> {
+    ensure_private_file(database_path).map_err(private_storage_error)?;
     let Some(file_name) = database_path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return Err(UsageStoreError::Filesystem(std::io::Error::other(
             "usage database filename is invalid",
@@ -761,7 +760,9 @@ fn verify_sqlite_files(database_path: &Path) -> Result<(), UsageStoreError> {
     for suffix in ["-wal", "-shm"] {
         let sidecar = database_path.with_file_name(format!("{file_name}{suffix}"));
         if sidecar.exists() {
-            verify_private_file(&sidecar).map_err(private_storage_error)?;
+            // SQLite-created sidecars inherit the private directory ACE, but
+            // Windows also requires an explicitly protected file DACL.
+            ensure_private_file(&sidecar).map_err(private_storage_error)?;
         }
     }
     Ok(())

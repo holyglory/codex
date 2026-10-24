@@ -18,6 +18,33 @@ use crate::RouteAwareClientPool;
 
 #[tokio::test]
 async fn route_aware_pool_re_resolves_redirects_and_logs_only_final_outcome() {
+    const SUBPROCESS_ENV_VAR: &str = "CODEX_HTTP_CLIENT_REDIRECT_SUCCESS_LOG_TEST";
+    if std::env::var_os(SUBPROCESS_ENV_VAR).is_none() {
+        // Other tests install tracing subscribers while this request is in flight.
+        // Keep the subscriber and callsite cache isolated, as in the failure-log test.
+        let test_module = module_path!()
+            .split_once("::")
+            .expect("test module should include the crate name")
+            .1;
+        let test_name = format!(
+            "{test_module}::route_aware_pool_re_resolves_redirects_and_logs_only_final_outcome"
+        );
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("test executable should be available"),
+        )
+        .args(["--exact", &test_name, "--nocapture"])
+        .env(SUBPROCESS_ENV_VAR, "1")
+        .output()
+        .expect("logging test subprocess should finish");
+        assert!(
+            output.status.success(),
+            "logging test subprocess failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
+
     let (proxy_addr, proxy_thread) =
         spawn_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
     let (redirect_addr, redirect_thread) = spawn_response(

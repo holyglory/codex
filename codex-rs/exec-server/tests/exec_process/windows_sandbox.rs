@@ -176,6 +176,12 @@ async fn tmpdir_uses_command_environment_over_rpc(
             "TMP".to_owned(),
             command_temp.to_string_lossy().into_owned(),
         );
+        // MXC requires LOCALAPPDATA in a caller-owned environment block.
+        // Keep it inside the fixture without inheriting the server profile.
+        configured_temp.insert(
+            "LOCALAPPDATA".to_owned(),
+            command_temp.to_string_lossy().into_owned(),
+        );
     }
     let started = environment
         .get_exec_backend()
@@ -215,14 +221,35 @@ async fn tmpdir_uses_command_environment_over_rpc(
     )
     .await?;
     assert_eq!(
-        (stdout.trim(), code, exited),
-        (
-            format!("CHILD-TEMP:{}", command_temp.display()).as_str(),
-            Some(0),
-            true
-        ),
+        (code, exited),
+        (Some(0), true),
         "unexpected launch result, stderr: {stderr}"
     );
+    let child_temp = std::path::PathBuf::from(
+        stdout
+            .trim()
+            .strip_prefix("CHILD-TEMP:")
+            .context("child should report its temporary directory")?,
+    );
+    if selection == WindowsSandboxSelection::Mxc {
+        // Windows redirects AppContainer TEMP to LOCALAPPDATA/Packages/<profile>/AC/Temp.
+        // Its private directory must stay inside the command-owned fixture.
+        let relative = child_temp
+            .strip_prefix(&command_temp)
+            .context("MXC temporary directory escaped the command-owned root")?;
+        let components = relative.components().collect::<Vec<_>>();
+        assert_eq!(
+            components.len(),
+            4,
+            "unexpected MXC temp path: {child_temp:?}"
+        );
+        assert_eq!(components[0].as_os_str(), "Packages");
+        assert!(matches!(components[1], std::path::Component::Normal(_)));
+        assert_eq!(components[2].as_os_str(), "AC");
+        assert_eq!(components[3].as_os_str(), "Temp");
+    } else {
+        assert_eq!(child_temp, command_temp);
+    }
     assert_eq!(
         (
             std::fs::read_to_string(command_temp.join("allowed.txt"))?

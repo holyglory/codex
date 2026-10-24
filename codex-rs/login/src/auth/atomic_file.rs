@@ -68,6 +68,17 @@ pub(super) fn replace_atomically(path: &Path, contents: &[u8]) -> io::Result<()>
 
     let mut temporary = TemporaryFile::create(parent)?;
     let update_result = (|| -> io::Result<()> {
+        #[cfg(windows)]
+        match WindowsDacl::read(path)? {
+            Some(dacl) => dacl.apply_to(&temporary.path)?,
+            None => {
+                // Protect a new credential file before writing secrets. Inherited
+                // access alone does not establish the private-file policy.
+                codex_private_storage::ensure_private_file(&temporary.path)
+                    .map_err(io::Error::other)?;
+            }
+        }
+
         let file = temporary
             .file
             .as_mut()
@@ -77,11 +88,6 @@ pub(super) fn replace_atomically(path: &Path, contents: &[u8]) -> io::Result<()>
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.sync_all()?;
         drop(temporary.file.take());
-
-        #[cfg(windows)]
-        if let Some(dacl) = WindowsDacl::read(path)? {
-            dacl.apply_to(&temporary.path)?;
-        }
 
         replace_file(&temporary.path, path)
     })();
@@ -296,21 +302,29 @@ fn wide_path(path: &Path) -> Vec<u16> {
 
 #[cfg(windows)]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
-    let source = wide_path(source);
-    let destination = wide_path(destination);
+    let source_wide = wide_path(source);
+    let destination_wide = wide_path(destination);
     let result = unsafe {
         MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
     if result == 0 {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            // Rust's Windows rename retries with FileRenameInfoEx and POSIX
+            // semantics, so an existing reader keeps the old complete record.
+            // MoveFileExW alone rejects that replacement even with share-delete.
+            return std::fs::rename(source, destination);
+        }
+        return Err(error);
     }
     Ok(())
 }

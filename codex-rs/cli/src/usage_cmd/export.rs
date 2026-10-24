@@ -123,6 +123,8 @@ fn csv_field(value: &str) -> String {
 }
 
 fn sync_parent(parent: &Path) -> Result<(), UsageCommandError> {
+    #[cfg(not(unix))]
+    let _ = parent;
     #[cfg(unix)]
     {
         std::fs::File::open(parent)

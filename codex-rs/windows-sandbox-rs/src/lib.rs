@@ -567,9 +567,14 @@ mod windows_impl {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use std::collections::HashMap;
     use std::io;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
     use std::path::Path;
     use std::ptr;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use std::time::Instant;
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -578,21 +583,133 @@ mod windows_impl {
     use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
     use windows_sys::Win32::Foundation::SetHandleInformation;
     use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::GetExitCodeProcess;
     use windows_sys::Win32::System::Threading::INFINITE;
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
     type PipeHandles = ((HANDLE, HANDLE), (HANDLE, HANDLE), (HANDLE, HANDLE));
 
-    struct NonOwningPipeHandle(HANDLE);
+    fn read_capture_output(pipe: OwnedHandle, finished: &AtomicBool) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let mut drain_remaining = None;
+        loop {
+            // This is the only reader of this pipe. Read only bytes already
+            // available, so an inherited write handle cannot block completion.
+            let finishing = finished.load(Ordering::Acquire);
+            let mut available = 0_u32;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    &mut available,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                break;
+            }
+            if finishing {
+                // Snapshot the remaining bytes once. A descendant may keep
+                // writing after the root exits, but cannot extend this drain.
+                drain_remaining.get_or_insert(available);
+            }
+            let count = available
+                .min(buffer.len() as u32)
+                .min(drain_remaining.unwrap_or(u32::MAX));
+            if count == 0 {
+                if drain_remaining.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            let mut read = 0_u32;
+            let ok = unsafe {
+                windows_sys::Win32::Storage::FileSystem::ReadFile(
+                    pipe.as_raw_handle(),
+                    buffer.as_mut_ptr(),
+                    count,
+                    &mut read,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 || read == 0 {
+                break;
+            }
+            output.extend_from_slice(&buffer[..read as usize]);
+            if let Some(remaining) = &mut drain_remaining {
+                *remaining -= read;
+                if *remaining == 0 {
+                    break;
+                }
+            }
+        }
+        output
+    }
 
-    // SAFETY: Pipe handles are opaque process-wide tokens that may be used from
-    // any thread. This wrapper does not own the handle or extend its lifetime.
-    unsafe impl Send for NonOwningPipeHandle {}
+    #[cfg(test)]
+    mod capture_tests {
+        use super::*;
+        use std::fs::File;
+        use std::io::Write;
 
-    impl NonOwningPipeHandle {
-        fn raw(&self) -> HANDLE {
-            self.0
+        fn pipe() -> (OwnedHandle, File) {
+            let mut read = ptr::null_mut();
+            let mut write = ptr::null_mut();
+            assert_ne!(
+                unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) },
+                0
+            );
+            // SAFETY: CreatePipe returned two owned handles above.
+            unsafe {
+                (
+                    OwnedHandle::from_raw_handle(read),
+                    File::from_raw_handle(write),
+                )
+            }
+        }
+
+        #[test]
+        fn drains_buffered_output_while_a_writer_remains_open() {
+            let (read, mut write) = pipe();
+            write.write_all(b"buffered root output").unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let output = read_capture_output(read, &AtomicBool::new(true));
+                let _ = sender.send(output);
+            });
+            let output = receiver.recv_timeout(Duration::from_secs(5));
+            // Release the writer even on failure, so the test cannot leak a reader.
+            drop(write);
+            reader.join().unwrap();
+            assert_eq!(output.unwrap(), b"buffered root output");
+        }
+
+        #[test]
+        fn captures_output_larger_than_the_pipe_buffer() {
+            let (read, mut write) = pipe();
+            let expected: Vec<u8> = (0..256 * 1024).map(|index| (index % 251) as u8).collect();
+            let finished = Arc::new(AtomicBool::new(false));
+            let reader_finished = Arc::clone(&finished);
+            let reader = std::thread::spawn(move || read_capture_output(read, &reader_finished));
+            write.write_all(&expected).unwrap();
+            finished.store(true, Ordering::Release);
+            assert_eq!(reader.join().unwrap(), expected);
+        }
+
+        #[test]
+        fn finishes_at_eof_before_the_process_exits() {
+            let (read, mut write) = pipe();
+            write.write_all(b"closed stream").unwrap();
+            drop(write);
+            assert_eq!(
+                read_capture_output(read, &AtomicBool::new(false)),
+                b"closed stream"
+            );
         }
     }
 
@@ -818,52 +935,15 @@ mod windows_impl {
             CloseHandle(err_w);
         }
 
-        let (tx_out, rx_out) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (tx_err, rx_err) = std::sync::mpsc::channel::<Vec<u8>>();
-        let out_r = NonOwningPipeHandle(out_r);
-        let err_r = NonOwningPipeHandle(err_r);
-        let t_out = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 8192];
-            loop {
-                let mut read_bytes: u32 = 0;
-                let ok = unsafe {
-                    windows_sys::Win32::Storage::FileSystem::ReadFile(
-                        out_r.raw(),
-                        tmp.as_mut_ptr(),
-                        tmp.len() as u32,
-                        &mut read_bytes,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok == 0 || read_bytes == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&tmp[..read_bytes as usize]);
-            }
-            let _ = tx_out.send(buf);
-        });
-        let t_err = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 8192];
-            loop {
-                let mut read_bytes: u32 = 0;
-                let ok = unsafe {
-                    windows_sys::Win32::Storage::FileSystem::ReadFile(
-                        err_r.raw(),
-                        tmp.as_mut_ptr(),
-                        tmp.len() as u32,
-                        &mut read_bytes,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok == 0 || read_bytes == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&tmp[..read_bytes as usize]);
-            }
-            let _ = tx_err.send(buf);
-        });
+        // SAFETY: Successful process creation leaves these pipe ends owned by
+        // the parent; each is transferred to exactly one reader thread.
+        let out_r = unsafe { OwnedHandle::from_raw_handle(out_r) };
+        let err_r = unsafe { OwnedHandle::from_raw_handle(err_r) };
+        let finished = Arc::new(AtomicBool::new(false));
+        let stdout_finished = Arc::clone(&finished);
+        let stderr_finished = Arc::clone(&finished);
+        let t_out = std::thread::spawn(move || read_capture_output(out_r, &stdout_finished));
+        let t_err = std::thread::spawn(move || read_capture_output(err_r, &stderr_finished));
 
         let wait_outcome = wait_for_process(pi.hProcess, timeout_ms, cancellation.as_ref());
         let timed_out = matches!(wait_outcome, WaitOutcome::TimedOut);
@@ -908,10 +988,9 @@ mod windows_impl {
             }
             CloseHandle(security.h_token);
         }
-        let _ = t_out.join();
-        let _ = t_err.join();
-        let stdout = rx_out.recv().unwrap_or_default();
-        let stderr = rx_err.recv().unwrap_or_default();
+        finished.store(true, Ordering::Release);
+        let stdout = t_out.join().unwrap_or_default();
+        let stderr = t_err.join().unwrap_or_default();
         let exit_code = if timed_out {
             128 + 64
         } else {

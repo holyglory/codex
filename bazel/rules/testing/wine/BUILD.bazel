@@ -42,7 +42,8 @@ rust_binary(
 
 wine_rust_test(
     name = "wine-test-support-unit-tests",
-    timeout = "short",
+    # Repeated isolated Wine startup can exceed the one-minute suite budget.
+    timeout = "moderate",
     crate = ":wine_test_support",
     windows_binaries = {
         "wine-smoke": ":windows-smoke",

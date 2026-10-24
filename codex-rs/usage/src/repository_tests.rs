@@ -1,6 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
 fn material(value: &str) -> RepositoryIdentityMaterial {
     RepositoryIdentityMaterial::new(value).expect("valid identity material")
 }
@@ -9,6 +10,7 @@ fn canonical(value: &str) -> CanonicalRepositoryPath {
     CanonicalRepositoryPath::new(value).expect("canonical repository path")
 }
 
+#[cfg(unix)]
 fn label(value: &str) -> SafeRepositoryLabel {
     SafeRepositoryLabel::new(value).expect("valid repository label")
 }

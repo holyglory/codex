@@ -316,7 +316,10 @@ async fn waits_for_rollout_maintenance_before_migrating() {
         "migration should wait for rollout maintenance"
     );
     drop(maintenance_guard);
-    tokio::time::timeout(Duration::from_secs(2), migration)
+    // The retry intentionally sleeps for one second, then performs SQLite and
+    // filesystem work. This checks eventual migration after releasing the lock,
+    // rather than requiring all of that I/O to fit in the next second under CI load.
+    tokio::time::timeout(Duration::from_secs(10), migration)
         .await
         .expect("migration should retry rollout maintenance")
         .expect("join startup migration");

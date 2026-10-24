@@ -87,11 +87,13 @@ async fn socket_validation_rejects_broad_acl_without_repairing_it() {
     let before = inspect(
         r#"
 $ErrorActionPreference = 'Stop'
-$acl = Get-Acl -LiteralPath $env:CODEX_TEST_DIRECTORY
+# Read and persist only the DACL; Set-Acl also attempts owner/group updates
+# that a non-admin service token need not be allowed to perform.
+$acl = [IO.Directory]::GetAccessControl($env:CODEX_TEST_DIRECTORY, [Security.AccessControl.AccessControlSections]::Access)
 $everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($everyone, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $env:CODEX_TEST_DIRECTORY -AclObject $acl
+[IO.Directory]::SetAccessControl($env:CODEX_TEST_DIRECTORY, $acl)
 (Get-Acl -LiteralPath $env:CODEX_TEST_DIRECTORY).Sddl
 "#,
     );
@@ -290,15 +292,45 @@ async fn implicit_peer_validation_rejects_elevated_listener() {
     let mut listener = UnixListener::bind(&path).await.unwrap();
     let client = UnixStream::connect(&path).await.unwrap();
     let _server = listener.accept().await.unwrap();
-    // PowerShell inherits our token and supplies an independent elevation oracle.
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
-        .output().unwrap();
-    assert!(output.status.success());
-    let expected = match String::from_utf8(output.stdout).unwrap().trim() {
-        "True" => Err(ErrorKind::PermissionDenied),
-        "False" => Ok(()),
-        other => panic!("unexpected elevation result: {other}"),
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+    use windows_sys::Win32::Security::GetTokenInformation;
+    use windows_sys::Win32::Security::TOKEN_ELEVATION;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::Security::TokenElevation;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+
+    // The listener is in this process. Query its actual elevation flag rather
+    // than administrator membership: non-admin service tokens can be elevated.
+    let mut token = std::ptr::null_mut();
+    assert_ne!(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+        0,
+        "{}",
+        std::io::Error::last_os_error(),
+    );
+    let _token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned = 0;
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token,
+                TokenElevation,
+                std::ptr::addr_of_mut!(elevation).cast(),
+                std::mem::size_of_val(&elevation) as u32,
+                &mut returned,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error(),
+    );
+    let expected = if elevation.TokenIsElevated != 0 {
+        Err(ErrorKind::PermissionDenied)
+    } else {
+        Ok(())
     };
     assert_eq!(
         client.ensure_non_elevated_peer().map_err(|err| err.kind()),

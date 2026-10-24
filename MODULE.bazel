@@ -212,6 +212,7 @@ rules_rust.patch(
         "//patches:rules_rust_windows_process_wrapper_response_file.patch",
         # Group build-script argument files to avoid Windows command-line limits.
         "//patches:rules_rust_group_build_script_arg_files.patch",
+        "//patches:rules_rust_windows_wrapper_arguments.patch",
         "//patches:rules_rust_windows_execroot_separators.patch",
         "//patches:rules_rust_compiler_thp.patch",
     ],
@@ -369,6 +370,11 @@ crate.annotation(
     crate_features_select = {
         "x86_64-pc-windows-gnullvm": ["pure"],
     },
+    rustc_flags = ["-Copt-level=3"],
+)
+crate.annotation(
+    # Full-size image fixtures must resize within the same deadlines in fastbuild.
+    crate = "image",
     rustc_flags = ["-Copt-level=3"],
 )
 crate.annotation(

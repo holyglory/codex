@@ -64,6 +64,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     mount_observed_probe(&backend, &alpha, /*used_percent*/ 100, 1..).await;
     mount_observed_probe(&backend, &beta, /*used_percent*/ 10, 1..).await;
 
+    let mut app = fresh_desktop_server(home.path()).await?;
     let png_bytes = base64::engine::general_purpose::STANDARD.decode(PNG)?;
     let mut arguments = json!({"prompt": "paint a blue whale"});
     let mut input = vec![V2UserInput::Text {
@@ -73,9 +74,19 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     let image_path = match operation {
         ImageOperation::Generate => "/api/codex/images/generations",
         ImageOperation::Edit => {
-            let reference = home.path().join("reference.png");
-            std::fs::write(&reference, &png_bytes)?;
-            arguments["referenced_image_paths"] = json!([reference]);
+            let environment = app.auto_env()?;
+            let reference = environment.selection().cwd.join("reference.png")?;
+            environment
+                .environment()
+                .get_filesystem()
+                .write_file(
+                    &reference,
+                    png_bytes.clone(),
+                    Default::default(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+            arguments["referenced_image_paths"] = json!([reference.inferred_native_path_string()]);
             "/api/codex/images/edits"
         }
         ImageOperation::EditRecent => {
@@ -199,6 +210,21 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
         let saved = std::fs::read_dir(output_dir)?.collect::<std::io::Result<Vec<_>>>()?;
         assert_eq!(saved.len(), 1);
         assert_eq!(std::fs::read(saved[0].path())?, png_bytes);
+    }
+    if matches!(operation, ImageOperation::Edit) && !remote_path_edit {
+        let requests = backend
+            .received_requests()
+            .await
+            .expect("recorded requests");
+        let image_request = requests
+            .iter()
+            .find(|request| request.url.path() == image_path)
+            .expect("image edit request");
+        let body: serde_json::Value = serde_json::from_slice(&image_request.body)?;
+        assert_eq!(
+            body["images"],
+            json!([{ "image_url": format!("data:image/png;base64,{PNG}") }])
+        );
     }
     assert!(!home.path().join("auth.json").exists());
     backend.verify().await;

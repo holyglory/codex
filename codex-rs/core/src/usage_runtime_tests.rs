@@ -1,16 +1,27 @@
 use super::*;
+#[cfg(unix)]
 use codex_protocol::provider_usage::ProviderSourceEventKey;
+#[cfg(unix)]
 use codex_usage::CanonicalRepositoryPath;
+#[cfg(unix)]
 use codex_usage::RepositoryIdentityInput;
+#[cfg(unix)]
 use codex_usage::RepositoryIdentityMaterial;
+#[cfg(unix)]
 use codex_usage::UsageEventKind;
+#[cfg(unix)]
 use codex_usage::UsageEventListQuery;
+#[cfg(unix)]
 use codex_usage::UsageEventProvenance;
+#[cfg(unix)]
 use codex_usage::UsagePageRequest;
+#[cfg(unix)]
 use codex_usage::UsageSummaryScope;
 use pretty_assertions::assert_eq;
+#[cfg(unix)]
 use std::sync::Mutex as StdMutex;
 
+#[cfg(unix)]
 fn context<'a>(
     thread_id: &'a str,
     parent_thread_id: Option<&'a str>,
@@ -40,6 +51,7 @@ fn context<'a>(
     }
 }
 
+#[cfg(unix)]
 fn tool_context<'a>(
     thread_id: &'a str,
     turn_id: &'a str,
@@ -1085,6 +1097,7 @@ async fn hosted_tool_observation_is_linked_once_without_fake_prestart() {
     assert_eq!(summary.coverage.overall_state, "unknown");
 }
 
+#[cfg(unix)]
 fn function_call(name: &str, call_id: &str) -> ResponseItem {
     ResponseItem::FunctionCall {
         id: None,

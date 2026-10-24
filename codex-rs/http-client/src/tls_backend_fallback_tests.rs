@@ -48,6 +48,11 @@ fn recognizes_platform_specific_tls_protocol_negotiation_failures() {
         ("connection reset", false),
         ("dns lookup failed", false),
         ("tls handshake failed", false),
+        (
+            "The message received was unexpected or badly formatted. (os error -2146893018)",
+            false,
+        ),
+        ("Schannel error 0x80090326", false),
         ("unsupported protocol", false),
         ("wrong version number", false),
         ("The function requested is not supported.", false),
@@ -77,6 +82,14 @@ fn recognizes_schannel_protocol_version_error_codes() {
         ),
         (true, false)
     );
+}
+
+#[test]
+fn ambiguous_schannel_alert_does_not_enable_fallback() {
+    // TLS 1.3 protocol-version alerts and unrelated handshake failures can share
+    // this status. An OS code alone must not broaden the retry policy.
+    let error = io::Error::from_raw_os_error(/*SEC_E_ILLEGAL_MESSAGE*/ -2_146_893_018);
+    assert!(!has_retryable_tls_error(&error));
 }
 
 #[test]

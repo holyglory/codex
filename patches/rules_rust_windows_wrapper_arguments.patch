@@ -1,0 +1,96 @@
+diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -1100,6 +1100,11 @@
+ 
+     # Wrapper args first
+     process_wrapper_flags = ctx.actions.args()
++    # Build-script paths can overflow CreateProcessW before the wrapper gets
++    # a chance to move rustc's own arguments into a response file.
++    if ctx.configuration.host_path_separator == ";" and toolchain.target_os == "windows" and toolchain.target_abi == "msvc" and not toolchain._bootstrapping:
++        process_wrapper_flags.set_param_file_format("multiline")
++        process_wrapper_flags.use_param_file("--wrapper-args-file=%s", use_always = True)
+ 
+     for build_env_file in build_env_files:
+         process_wrapper_flags.add("--env-file", build_env_file)
+diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
+--- a/util/process_wrapper/options.rs
++++ b/util/process_wrapper/options.rs
+@@ -51,6 +51,29 @@
+     pub(crate) rustc_output_format: Option<rustc::ErrorFormat>,
+ }
+ 
++// Only the wrapper prefix uses this response-file protocol. In particular,
++// do not consume rustc's @files or anything after its -- separator.
++fn expand_wrapper_args(
++    args: Vec<String>,
++    read: &mut impl FnMut(&str) -> Result<String, OptionError>,
++) -> Result<Vec<String>, OptionError> {
++    let mut expanded = Vec::new();
++    let mut child = false;
++    for (index, argument) in args.into_iter().enumerate() {
++        if index != 0 && !child {
++            if let Some(path) = argument.strip_prefix("--wrapper-args-file=") {
++                // Bazel's multiline format has one literal argument per line.
++                // Preserve spaces, empty arguments and trailing backslashes.
++                expanded.extend(read(path)?.lines().map(str::to_owned));
++                continue;
++            }
++            child = argument == "--";
++        }
++        expanded.push(argument);
++    }
++    Ok(expanded)
++}
++
+ pub(crate) fn options() -> Result<Options, OptionError> {
+     // Process argument list until -- is encountered.
+     // Everything after is sent to the child process.
+@@ -131,7 +154,11 @@
+     );
+ 
+     let mut child_args = match flags
+-        .parse(env::args().collect())
++        .parse(expand_wrapper_args(env::args().collect(), &mut |path| {
++            std::fs::read_to_string(path).map_err(|error| {
++                OptionError::Generic(format!("reading wrapper response file {path:?}: {error}"))
++            })
++        })?)
+         .map_err(OptionError::FlagError)?
+     {
+         ParseOutcome::Help(help) => {
+@@ -547,3 +574,34 @@
+         );
+     }
+ }
++
++
++#[cfg(test)]
++mod wrapper_response_tests {
++    use super::{expand_wrapper_args, OptionError};
++
++    #[test]
++    fn expands_only_wrapper_arguments_without_shell_unescaping() {
++        let args = ["wrapper", "--wrapper-args-file=wrapper params", "--", "rustc", "@rustc.params", "--wrapper-args-file=literal"]
++            .map(str::to_owned).to_vec();
++        let actual = expand_wrapper_args(args, &mut |path| {
++            assert_eq!(path, "wrapper params");
++            Ok("--arg-file\r\nC:\\build dir\\flags\r\n--subst\r\nroot=C:\\build dir\\\r\n\r\n".to_owned())
++        }).unwrap();
++        assert_eq!(actual, ["wrapper", "--arg-file", "C:\\build dir\\flags", "--subst", "root=C:\\build dir\\", "", "--", "rustc", "@rustc.params", "--wrapper-args-file=literal"]);
++    }
++
++    #[test]
++    fn preserves_existing_invocations() {
++        let args = ["wrapper", "--arg-file", "flags", "--", "rustc", "@args"].map(str::to_owned).to_vec();
++        let expected = args.clone();
++        let actual = expand_wrapper_args(args, &mut |_| panic!("no response file expected")).unwrap();
++        assert_eq!(actual, expected);
++    }
++
++    #[test]
++    fn fails_when_wrapper_response_file_is_unreadable() {
++        let args = ["wrapper", "--wrapper-args-file=missing", "--", "rustc"].map(str::to_owned).to_vec();
++        assert!(expand_wrapper_args(args, &mut |_| Err(OptionError::Generic("missing".to_owned()))).is_err());
++    }
++}

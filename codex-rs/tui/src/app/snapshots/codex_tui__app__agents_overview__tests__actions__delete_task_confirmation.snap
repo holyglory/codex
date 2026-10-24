@@ -7,7 +7,7 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   ────────────────────────────────────────────────────────────────────────────
       Tasks                                            Status         Updated
   /tmp/project  1
-  › ○ Current task                                     Ready           2m ago
+  › ○ Current task                                     Ready           [age]
 
 
       Permanently delete “Current task”?

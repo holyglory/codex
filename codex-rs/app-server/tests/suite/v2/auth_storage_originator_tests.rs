@@ -64,10 +64,14 @@ pub(super) async fn assert_saved_originators(
         .iter()
         .map(|value| (value.to_string(), 1_u64))
         .collect();
-    let actual = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), async {
+    let mut received_count = 0;
+    let mut actual = BTreeMap::<String, u64>::new();
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 60), async {
         loop {
-            let mut actual = BTreeMap::<String, u64>::new();
-            for request in collector.received_requests().await.unwrap_or_default() {
+            actual.clear();
+            let requests = collector.received_requests().await.unwrap_or_default();
+            received_count = requests.len();
+            for request in requests {
                 let body: Value = serde_json::from_slice(&request.body)?;
                 for resource in body["resourceMetrics"].as_array().into_iter().flatten() {
                     for scope in resource["scopeMetrics"].as_array().into_iter().flatten() {
@@ -110,12 +114,18 @@ pub(super) async fn assert_saved_originators(
                 }
             }
             if actual.values().sum::<u64>() >= expected.len() as u64 {
-                break Ok::<_, anyhow::Error>(actual);
+                break Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(/*millis*/ 25)).await;
         }
     })
-    .await??;
+    .await
+    .with_context(|| {
+        format!(
+            "storage metrics deadline: received {received_count} collector requests; \
+             save originators {actual:?}; expected {expected:?}"
+        )
+    })??;
     assert_eq!(actual, expected);
     Ok(())
 }

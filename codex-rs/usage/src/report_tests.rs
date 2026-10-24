@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "Fixture setup failures must fail the test immediately."
+)]
+
 #[cfg(target_os = "linux")]
 #[path = "report_scale_tests.rs"]
 mod scale_tests;

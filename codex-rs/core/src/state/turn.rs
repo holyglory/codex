@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -86,6 +88,7 @@ pub(crate) struct RunningTask {
 #[derive(Default)]
 pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
+    pending_exec_approval_declines: HashMap<String, Arc<AtomicBool>>,
     pending_request_permissions: HashMap<String, PendingRequestPermissions>,
     pending_user_input: HashMap<String, oneshot::Sender<AcceptedUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
@@ -117,6 +120,26 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 impl TurnState {
+    #[cfg(unix)]
+    pub(crate) fn insert_exec_approval_decline_flag(&mut self, id: String, flag: Arc<AtomicBool>) {
+        self.pending_exec_approval_declines.insert(id, flag);
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remove_exec_approval_decline_flag(&mut self, id: &str) {
+        self.pending_exec_approval_declines.remove(id);
+    }
+
+    pub(crate) fn mark_pending_exec_approval_declined(&self, id: &str) {
+        if self.pending_approvals.contains_key(id)
+            && let Some(flag) = self.pending_exec_approval_declines.get(id)
+        {
+            // Publish the explicit decision before interruption can kill the
+            // shell or drop its asynchronously polled approval receiver.
+            flag.store(true, Ordering::Release);
+        }
+    }
+
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,
@@ -134,6 +157,7 @@ impl TurnState {
 
     pub(crate) fn clear_pending_waiters(&mut self) {
         self.pending_approvals.clear();
+        self.pending_exec_approval_declines.clear();
         self.pending_request_permissions.clear();
         self.pending_user_input.clear();
         self.pending_elicitations.clear();

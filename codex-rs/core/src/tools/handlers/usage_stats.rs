@@ -13,7 +13,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_usage::ThreadId;
 use codex_usage::UsageDetailKind;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use codex_usage::UsageStore;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;

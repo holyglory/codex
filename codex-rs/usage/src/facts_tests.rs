@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "Fixture setup failures must fail the test immediately."
+)]
+
 use super::*;
 use crate::AccountAttributionSnapshot;
 use crate::AccountAuthMode;
