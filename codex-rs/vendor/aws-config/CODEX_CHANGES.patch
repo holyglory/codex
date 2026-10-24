@@ -1,0 +1,29 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -170 +170 @@
+-version = "0.13.2"
++version = "0.14"
+@@ -174 +174 @@
+-version = "0.8.5"
++version = "0.10"
+@@ -177,0 +178 @@
++    "sys_rng",
+@@ -263,0 +265,2 @@
++
++[workspace]
+--- a/src/login/dpop.rs
++++ b/src/login/dpop.rs
+@@ -23 +23 @@
+-use p256::elliptic_curve::sec1::ToEncodedPoint;
++use p256::elliptic_curve::sec1::ToSec1Point;
+@@ -72 +72 @@
+-    let point = public_key.to_encoded_point(false);
++    let point = public_key.to_sec1_point(false);
+@@ -106 +106,6 @@
+-    let mut rng = rand::rngs::StdRng::from_entropy();
++    let mut rng = rand::rngs::StdRng::try_from_rng(&mut rand::rngs::SysRng).map_err(|error| {
++        LoginTokenError::other(
++            "failed to initialize DPoP signing randomness",
++            Some(error.into()),
++        )
++    })?;

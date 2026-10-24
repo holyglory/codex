@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["vendor/aws-config"]
 members = [
     "account-registry",
     "account-selection",
@@ -334,7 +335,8 @@ core_test_support = { path = "core/tests/common" }
 # External
 learning_mode_windows = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
 wxc_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
-age = "0.12.1"
+# Use the merged upstream crypto migration until age publishes it.
+age = { git = "https://github.com/str4d/rage", rev = "b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f" }
 ansi-to-tui = "8.0.1"
 anyhow = "1"
 appcontainer_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
@@ -362,7 +364,7 @@ chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
 clap_complete = "4"
-clatter = { version = "2.2.0", default-features = false, features = [
+clatter = { git = "https://github.com/jmlepisto/clatter", rev = "9a8d15c4f80d5911ca0403aa22e0de99ea59df08", default-features = false, features = [
     "alloc",
     "getrandom",
     "use-25519",
@@ -652,6 +654,7 @@ inherits = "test"
 opt-level = 0
 
 [patch.crates-io]
+aws-config = { path = "vendor/aws-config" }
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
