@@ -1,5 +1,4 @@
 [workspace]
-exclude = ["vendor/aws-config"]
 members = [
     "account-registry",
     "account-selection",
@@ -654,7 +653,7 @@ inherits = "test"
 opt-level = 0
 
 [patch.crates-io]
-aws-config = { path = "vendor/aws-config" }
+aws-config = { path = "../third_party/aws-config" }
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }

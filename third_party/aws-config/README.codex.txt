@@ -13,7 +13,7 @@ The crate has a separate workspace so its upstream development dependencies do
 not enter Codex's production graph. Its Cargo.lock preserves reproducible local
 tests. The restored test-data files are upstream synthetic fixtures, not machine
 credentials. Run the upstream suite with:
-  cargo +1.95.0 test --locked --manifest-path codex-rs/vendor/aws-config/Cargo.toml --lib
+  cargo +1.95.0 test --locked --manifest-path third_party/aws-config/Cargo.toml --lib
 
 Remove this local patch when an upstream aws-config release provides the updated
 cryptographic dependencies, after retaining the login and compatibility checks.
