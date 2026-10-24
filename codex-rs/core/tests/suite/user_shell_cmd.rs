@@ -287,14 +287,19 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
     let fixture = builder.build(&server).await?;
 
     let call_id = "active-turn-shell-call";
+    let model_can_finish = fixture.config.cwd.join("user-shell-complete");
+    // Keep the model's command active until the test observes the user-shell
+    // completion. A fixed sleep races with process startup on a busy machine.
     let args = if cfg!(windows) {
         serde_json::json!({
-            "cmd": "Start-Sleep -Seconds 2; Write-Output model-shell",
+            "cmd": "while (-not (Test-Path -LiteralPath user-shell-complete)) { Start-Sleep -Milliseconds 10 }; Write-Output model-shell",
+            "workdir": fixture.config.cwd,
             "yield_time_ms": 10_000,
         })
     } else {
         serde_json::json!({
-            "cmd": "sleep 2; echo model-shell",
+            "cmd": "while [ ! -f user-shell-complete ]; do sleep 0.01; done; echo model-shell",
+            "workdir": fixture.config.cwd,
             "yield_time_ms": 10_000,
         })
     };
@@ -374,6 +379,7 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
             }
             EventMsg::ExecCommandEnd(ev) if ev.source == ExecCommandSource::UserShell => {
                 saw_user_shell_end = true;
+                tokio::fs::write(&model_can_finish, b"complete").await?;
             }
             EventMsg::TurnComplete(_) => {
                 saw_turn_complete = true;

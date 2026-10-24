@@ -794,11 +794,18 @@ async fn executor_profile_roots_survive_settings_restore_and_turn_recording() ->
         .into_iter()
         .find(|text| text.contains("<permissions instructions>"))
         .context("permission instructions")?;
+    let executor_convention = test
+        .executor_environment()
+        .selection()
+        .cwd
+        .infer_path_convention();
     for root in &roots {
-        assert!(
-            permissions.contains(&root.inferred_native_path_string()),
-            "permission instructions must preserve configured executor root {root}"
-        );
+        if root.infer_path_convention() == executor_convention {
+            assert!(
+                permissions.contains(&root.inferred_native_path_string()),
+                "permission instructions must preserve configured executor root {root}"
+            );
+        }
     }
     test.codex.flush_rollout().await?;
     let context = test

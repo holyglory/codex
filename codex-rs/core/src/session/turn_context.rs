@@ -828,12 +828,58 @@ impl TurnContext {
         self.permission_profile().network_sandbox_policy()
     }
 
+    /// Best-effort legacy view for rollout metadata and feedback tags only.
+    /// The full permission profile remains authoritative for enforcement.
     pub(crate) fn sandbox_policy(&self) -> SandboxPolicy {
+        let permissions = self.permission_profile();
         #[allow(deprecated)]
-        codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
-            &self.permission_profile(),
-            &self.cwd,
-        )
+        if let Ok(policy) = permissions.to_legacy_sandbox_policy(&self.cwd) {
+            return policy;
+        }
+
+        // Foreign roots cannot all fit the legacy host-path representation.
+        // Record the representable configured roots without resolving aliases or
+        // probing their metadata: a UNC lookup here can block turn startup.
+        let (file_system_policy, network_policy) = permissions.to_runtime_permissions();
+        #[allow(deprecated)]
+        let cwd = PathUri::from(self.cwd.clone());
+        let temporary_directories = std::env::var_os("TMPDIR")
+            .filter(|path| !path.is_empty())
+            .and_then(|path| AbsolutePathBuf::from_absolute_path(PathBuf::from(path)).ok())
+            .map(PathUri::from)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let context = FileSystemSandboxPolicyContext {
+            cwd: &cwd,
+            workspace_roots: std::slice::from_ref(&cwd),
+            user_home_dir: None,
+            temporary_directories: Some(&temporary_directories),
+        };
+        let mut writable_roots = file_system_policy
+            .resolved_entries(&context)
+            .into_iter()
+            .filter(|(path, access)| {
+                access.can_write()
+                    && path != &cwd
+                    && file_system_policy.can_write_path(path, &context)
+            })
+            .filter_map(|(path, _)| path.to_abs_path().ok())
+            .collect::<Vec<_>>();
+        writable_roots.sort();
+        writable_roots.dedup();
+        let tmpdir_writable = temporary_directories
+            .iter()
+            .any(|path| file_system_policy.can_write_path(path, &context));
+        let slash_tmp_writable = cfg!(unix)
+            && PathUri::parse("file:///tmp")
+                .is_ok_and(|path| file_system_policy.can_write_path(&path, &context));
+
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access: network_policy.is_enabled(),
+            exclude_tmpdir_env_var: !tmpdir_writable,
+            exclude_slash_tmp: !slash_tmp_writable,
+        }
     }
 
     /// Legacy: returns the frozen initial-turn reasoning effort, including the initial model default.
@@ -973,6 +1019,10 @@ impl TurnContext {
     }
 
     fn non_legacy_file_system_sandbox_policy(&self) -> Option<RawFileSystemSandboxPolicy> {
+        let file_system_sandbox_policy = self.file_system_sandbox_policy();
+        // If foreign roots cannot be represented in this host-only compatibility
+        // field, keep them in permission_profile without probing legacy roots.
+        let raw_policy = file_system_sandbox_policy.clone().try_into().ok()?;
         // Omit the derived split filesystem policy when it is equivalent to
         // the legacy sandbox policy. This keeps turn-context payloads stable
         // while both fields exist; once callers consume only the split policy,
@@ -983,12 +1033,7 @@ impl TurnContext {
                 #[allow(deprecated)]
                 &self.cwd,
             );
-        let file_system_sandbox_policy = self.file_system_sandbox_policy();
-        // `permission_profile` below is authoritative and serializes the same
-        // runtime entries, so this compatibility field may omit an unrenderable policy.
-        (file_system_sandbox_policy != legacy_file_system_sandbox_policy)
-            .then(|| file_system_sandbox_policy.try_into().ok())
-            .flatten()
+        (file_system_sandbox_policy != legacy_file_system_sandbox_policy).then_some(raw_policy)
     }
 
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {

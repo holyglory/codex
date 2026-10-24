@@ -11180,6 +11180,51 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
 }
 
 #[tokio::test]
+async fn turn_context_item_keeps_foreign_roots_in_authoritative_permissions() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    let roots = [
+        "file:///workspace/profile",
+        "file:///C:/Work/Profile",
+        "file:///C:/work/profile",
+        "file://server/share/profile",
+    ]
+    .map(|root| PathUri::parse(root).expect("valid root URI"));
+    let profile = PermissionProfile::workspace_write_with_path_uris(
+        &roots,
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    let TurnEnvironmentState::Ready(environment) =
+        &mut turn_context.initial_environments.environments[0]
+    else {
+        panic!("turn environment should be ready");
+    };
+    environment.config_mut().permission_profile = PermissionProfileSnapshot::legacy(profile);
+    let expected_profile = turn_context.permission_profile();
+    let mut expected_roots = roots
+        .iter()
+        .filter_map(|root| root.to_abs_path().ok())
+        .collect::<Vec<_>>();
+    expected_roots.sort();
+    expected_roots.dedup();
+
+    let item = turn_context.to_turn_context_item();
+
+    assert_eq!(item.permission_profile, Some(expected_profile));
+    assert_eq!(item.file_system_sandbox_policy, None);
+    assert_eq!(
+        item.sandbox_policy,
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: expected_roots,
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        }
+    );
+}
+
+#[tokio::test]
 async fn turn_context_item_stores_active_permission_profile() {
     let (_session, mut turn_context) = make_session_and_context().await;
     let active_permission_profile = ActivePermissionProfile::read_only();
