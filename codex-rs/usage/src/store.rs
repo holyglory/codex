@@ -318,7 +318,16 @@ impl UsageStore {
             .execute(&pool)
             .await
             .map_err(UsageStoreError::Database)?;
-        let refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
+        let core_refresh_pending = crate::report_cache::prepare(&pool).await.unwrap_or(false);
+        // A compatible core cache can already be marked ready while the
+        // all-scope projections still have queued seed, dirty-operation, or
+        // dirty-hour work. Reopening the store must resume that global worker;
+        // otherwise a daemon restart leaves unbounded reports permanently
+        // warming until a later write happens to kick refresh.
+        let global_refresh_pending = !crate::report_cache::is_global_ready(&pool)
+            .await
+            .unwrap_or(false);
+        let refresh_pending = core_refresh_pending || global_refresh_pending;
         // Derived lookup indexes do not change canonical facts or migration checksums.
         // Keep the schema-compatible rollback able to read every collected record.
         for index in [

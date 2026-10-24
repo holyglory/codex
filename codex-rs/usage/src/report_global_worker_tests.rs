@@ -525,3 +525,68 @@ async fn missing_global_component_seeds_history_after_open() {
             .expect("seeded global cache")
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reopened_store_resumes_dirty_global_projection() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = crate::UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial cache");
+    store.report_refresh.cancel();
+
+    let process_id = crate::ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 48, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    sqlx::query(
+        "INSERT INTO threads(id,parent_thread_id,source_kind,created_at_ms) VALUES ('reopen-dirty-thread',NULL,'cli',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("thread");
+    store
+        .begin_operation(&crate::NewOperation {
+            work_context: None,
+            id: crate::OperationId::new(),
+            process_id,
+            thread_id: Some(crate::ThreadId::new("reopen-dirty-thread").expect("thread id")),
+            turn_id: None,
+            agent_id: None,
+            parent_operation_id: None,
+            retry_of_operation_id: None,
+            rework_of_operation_id: None,
+            kind: crate::OperationKind::LocalTool,
+            started_at_ms: 1_000,
+            phase: crate::Phase::Implementation,
+            activity: crate::Activity::Coding,
+            activity_state: crate::ActivityState::ToolActive,
+            attribution_provenance: crate::AttributionProvenance::AgentDeclared,
+        })
+        .await
+        .expect("operation");
+    assert!(
+        !crate::report_cache::is_global_ready(&store.pool)
+            .await
+            .expect("dirty cache")
+    );
+    store.close().await;
+
+    let reopened = crate::UsageStore::open(temp.path()).await.expect("reopen");
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if crate::report_cache::is_global_ready(&reopened.pool)
+                .await
+                .expect("global readiness")
+            {
+                break true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("reopened refresh timeout");
+    assert!(ready);
+}
