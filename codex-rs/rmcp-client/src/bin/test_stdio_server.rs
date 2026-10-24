@@ -990,6 +990,21 @@ fn parse_data_url(url: &str) -> Option<(String, String)> {
     Some((mime.to_string(), data.to_string()))
 }
 
+// Readers poll this marker while another server replaces it. Publish a complete
+// value in one rename so a read cannot combine bytes from different process IDs.
+fn write_pid_file(path: &std::path::Path, pid: u32) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    write!(temporary, "{pid}")?;
+    temporary.persist(path)?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
@@ -1000,7 +1015,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("starting rmcp test server");
     if let Ok(pid_file) = std::env::var("MCP_TEST_PID_FILE") {
-        std::fs::write(pid_file, std::process::id().to_string())?;
+        write_pid_file(std::path::Path::new(&pid_file), std::process::id())?;
     }
     #[cfg(windows)]
     if let Ok(console_state_file) = std::env::var("MCP_TEST_CONSOLE_STATE_FILE") {
@@ -1045,7 +1060,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
-        std::fs::write(pid_file, child.id().to_string())?;
+        write_pid_file(std::path::Path::new(&pid_file), child.id())?;
     }
     // Run the server with STDIO transport. If the client disconnects we simply
     // bubble up the error so the process exits.

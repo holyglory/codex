@@ -683,6 +683,8 @@ async fn subagent_start_replaces_session_start_and_injects_context(
     .await;
 
     let test = test_codex()
+        // These hooks invoke Python directly and do not exercise PowerShell behavior.
+        .with_windows_cmd_shell()
         .with_pre_build_hook(|home| {
             write_subagent_lifecycle_hooks(home, /*stop_prompts*/ &[], "worker")
                 .expect("failed to write subagent hook fixture");
@@ -834,6 +836,8 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     .await;
 
     let test = test_codex()
+        // These hooks invoke Python directly and do not exercise PowerShell behavior.
+        .with_windows_cmd_shell()
         .with_pre_build_hook(|home| {
             write_subagent_lifecycle_hooks(
                 home,

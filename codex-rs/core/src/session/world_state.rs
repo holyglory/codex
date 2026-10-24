@@ -208,11 +208,12 @@ impl Session {
             .current_for_prefix_rules(turn_context.allow_prefix_rules());
         if turn_context.config.include_permissions_instructions {
             let environment = step_context.environments.primary();
-            let sandbox = environment
-                .filter(|environment| environment.environment.is_remote())
-                .map(|environment| {
-                    environment.sandbox_context(/*additional_permissions*/ None)
-                });
+            // Prompt rendering uses executor-owned path facts even for local environments.
+            // Resolving enforcement roots here would probe configured network paths and
+            // discard paths using a convention different from the host's.
+            let sandbox = environment.map(|environment| {
+                environment.sandbox_context(/*additional_permissions*/ None)
+            });
             let paths = sandbox
                 .as_ref()
                 .map(FileSystemSandboxContext::policy_context);

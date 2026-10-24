@@ -745,7 +745,7 @@ async fn executor_profile_roots_survive_settings_restore_and_turn_recording() ->
     let expected_profile = profile.clone().materialize_project_roots_with_path_uris(
         &test.executor_environment().selection().workspace_roots,
     );
-    let profile_roots = roots.into_iter().map(Into::into).collect::<Vec<_>>();
+    let profile_roots = roots.iter().cloned().map(Into::into).collect::<Vec<_>>();
     let active_profile = ActivePermissionProfile::new("executor");
     submit_thread_settings(
         &test.codex,
@@ -788,7 +788,18 @@ async fn executor_profile_roots_survive_settings_restore_and_turn_recording() ->
     )
     .await;
     test.submit_text_turn("record the executor profile").await?;
-    response_mock.single_request();
+    let request = response_mock.single_request();
+    let permissions = request
+        .message_input_texts("developer")
+        .into_iter()
+        .find(|text| text.contains("<permissions instructions>"))
+        .context("permission instructions")?;
+    for root in &roots {
+        assert!(
+            permissions.contains(&root.inferred_native_path_string()),
+            "permission instructions must preserve configured executor root {root}"
+        );
+    }
     test.codex.flush_rollout().await?;
     let context = test
         .codex
