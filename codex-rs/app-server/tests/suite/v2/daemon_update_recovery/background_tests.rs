@@ -22,8 +22,11 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
     let entered = home.path().join("background-entered");
     let release = home.path().join("release-background");
     let effect = home.path().join("background-survived");
+    // Existence is the handshake: publish only after the contents are complete.
     let command = format!(
-        "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; echo survived > '{}'",
+        "echo ready > '{0}.pending' && mv '{0}.pending' '{0}' && \
+         while [ ! -f '{1}' ]; do sleep 0.01; done && \
+         echo survived > '{2}.pending' && mv '{2}.pending' '{2}'",
         entered.display(),
         release.display(),
         effect.display()

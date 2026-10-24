@@ -1330,9 +1330,9 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
     let codex_home = TempDir::new()?;
     // Keep host keyring startup outside this inventory latency regression.
     mock_responses_config(&server.uri())
+        .with_root_config("mcp_oauth_credentials_store = \"file\"")
         .with_extra_config(&format!(
-            "mcp_oauth_credentials_store = \"file\"\n\
-             [mcp_servers.some-server]\nurl = \"{mcp_server_url}/mcp\""
+            "[mcp_servers.some-server]\nurl = \"{mcp_server_url}/mcp\""
         ))
         .write(codex_home.path())?;
 

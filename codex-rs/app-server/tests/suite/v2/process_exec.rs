@@ -29,8 +29,9 @@ async fn process_spawn_returns_before_exit_and_emits_exit_notification() -> Resu
     let probe_file = codex_home.path().join("process-created");
     let release_file = codex_home.path().join("process-release");
     // Use a probe/release handshake instead of asserting on wall-clock timing:
-    // the child proves it started by writing the probe file, then waits for the
-    // test to create the release file before it can emit output and exit.
+    // Publish the complete probe with a rename so the test cannot observe an
+    // empty file between its creation and write. The child then waits for the
+    // release file before it can emit output and exit.
     let command = if cfg!(windows) {
         vec![
             "powershell.exe".to_string(),
@@ -38,7 +39,9 @@ async fn process_spawn_returns_before_exit_and_emits_exit_notification() -> Resu
             "-NonInteractive".to_string(),
             "-Command".to_string(),
             concat!(
-                "[IO.File]::WriteAllText($env:CODEX_PROCESS_EXEC_PROBE_FILE, 'process'); ",
+                "$pending = $env:CODEX_PROCESS_EXEC_PROBE_FILE + '.pending'; ",
+                "[IO.File]::WriteAllText($pending, 'process'); ",
+                "[IO.File]::Move($pending, $env:CODEX_PROCESS_EXEC_PROBE_FILE); ",
                 "while (!(Test-Path -LiteralPath $env:CODEX_PROCESS_EXEC_RELEASE_FILE)) { ",
                 "Start-Sleep -Milliseconds 20 ",
                 "}; ",
@@ -52,7 +55,8 @@ async fn process_spawn_returns_before_exit_and_emits_exit_notification() -> Resu
             "sh".to_string(),
             "-c".to_string(),
             concat!(
-                "printf process > \"$CODEX_PROCESS_EXEC_PROBE_FILE\"; ",
+                "printf process > \"$CODEX_PROCESS_EXEC_PROBE_FILE.pending\" && ",
+                "mv \"$CODEX_PROCESS_EXEC_PROBE_FILE.pending\" \"$CODEX_PROCESS_EXEC_PROBE_FILE\"; ",
                 "while [ ! -e \"$CODEX_PROCESS_EXEC_RELEASE_FILE\" ]; do sleep 0.05; done; ",
                 "printf 'process-out|%s|%s' \"$OpenAI_Federation_Rule_Id\" \"$OPENAI_IDENTITY_TOKEN_FILE\"; ",
                 "printf process-err >&2",
