@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   metadata:
+    # The fork uses pinned release inputs and its exact-source candidate gate;
+    # public PRs must not start another hosted platform matrix.
+    if: ${{ github.repository != 'holyglory/codex' }}
     runs-on: ubuntu-latest
     outputs:
       # Older revisions can contain a detector that does not emit this output.

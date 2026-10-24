@@ -97,8 +97,15 @@ class LocalCandidateTests(unittest.TestCase):
             "home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir); "
             "socket = pathlib.Path('/tmp') / f'codex-daemon-{os.getuid()}'; "
             "assert os.getuid() != 0; "
-            "assert pathlib.Path(os.environ['HOME']) == home; "
-            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN')); "
+            "assert pathlib.Path(os.environ['HOME']) != home; "
+            "assert pathlib.Path(os.environ['HOME']).is_dir(); "
+            "assert pathlib.Path(os.environ['CODEX_HOME']).is_dir(); "
+            "assert pathlib.Path(os.environ['RUSTUP_HOME']) == home / '.rustup'; "
+            "assert pathlib.Path(os.environ['CARGO_HOME']) == home / '.cargo'; "
+            "assert pathlib.Path(os.environ['GH_CONFIG_DIR']) == home / '.config' / 'gh'; "
+            "assert os.environ['CODEX_BAZEL_REMOTE_CACHE_URL'] == 'http://127.0.0.1:9095'; "
+            "assert os.umask(0o022) == 0o022; "
+            "assert all(name not in os.environ for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'NO_COLOR', 'CODEX_THREAD_ID', 'DEVCOORDINATOR_WORK_CONTEXT')); "
             "assert not pathlib.Path('/etc/codex/config.toml').exists(); "
             "assert socket.stat().st_mode & 0o777 == 0o700; "
             "(socket / 'probe').write_text('namespace-only'); "
@@ -110,6 +117,10 @@ class LocalCandidateTests(unittest.TestCase):
                 OPENAI_API_KEY="fixture-secret",
                 CODEX_API_KEY="fixture-secret",
                 CODEX_ACCESS_TOKEN="fixture-secret",
+                CODEX_THREAD_ID="fixture-thread",
+                DEVCOORDINATOR_WORK_CONTEXT="fixture-context",
+                NO_COLOR="1",
+                CODEX_BAZEL_REMOTE_CACHE_URL="http://127.0.0.1:9095",
             )
             result = subprocess.run(
                 [
@@ -611,11 +622,126 @@ class LocalCandidateTests(unittest.TestCase):
         )
 
     def test_preserve_generated_test_artifacts_rejects_unexpected_source_change(self):
-        with patch.object(candidate, "git", return_value="?? unexpected.txt\0"):
-            with self.assertRaisesRegex(ValueError, "unexpected source path"):
+        prerequisite = self.directory / "v8"
+        prerequisite.touch()
+        storage = self.directory.parent / f"candidate-storage-{self.directory.name}"
+        state = storage / "state"
+        cargo_target = storage / "cargo"
+        release_target = storage / "release"
+        state.mkdir(parents=True)
+        cargo_target.mkdir()
+        release_target.mkdir()
+        self.addCleanup(shutil.rmtree, storage)
+        with (
+            patch.object(candidate, "git", return_value="?? unexpected.txt\0"),
+            patch.object(candidate, "frozen_commit", return_value=self.commit),
+            patch.object(candidate, "verify_candidate_environment"),
+            patch.object(candidate.shutil, "which", return_value=sys.executable),
+            patch.object(
+                candidate, "candidate_environment", return_value=dict(os.environ)
+            ),
+            patch.object(candidate, "commands", return_value=self.plan),
+            patch.dict(
+                os.environ,
+                {
+                    "RUSTY_V8_ARCHIVE": str(prerequisite),
+                    "RUSTY_V8_SRC_BINDING_PATH": str(prerequisite),
+                },
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "unexpected source path"),
+        ):
+            candidate.check(self.directory, state, cargo_target, release_target)
+        (acceptance,) = state.glob("accept-*")
+        (completed,) = (
+            json.loads(line)
+            for line in (acceptance / "completed-checks.jsonl").read_text().splitlines()
+        )
+        self.assertEqual(completed["name"], candidate.GATES[0])
+        self.assertEqual(completed["exit_code"], 0)
+        self.assertEqual(
+            completed["log_sha256"], candidate.digest(acceptance / "toolchain.log")
+        )
+        self.assertEqual(
+            json.loads((acceptance / "artifact-preservation-failure.json").read_text()),
+            {
+                "check": "toolchain",
+                "error_type": "ValueError",
+                "message": "Acceptance run modified an unexpected source path: unexpected.txt",
+            },
+        )
+        self.assertFalse((acceptance / "receipt.json").exists())
+
+    def test_preserve_generated_test_artifacts_keeps_known_outputs_before_failure(self):
+        generated = self.directory / "codex-rs/core/tests/suite/example.snap.new"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("snapshot candidate")
+        with patch.object(
+            candidate,
+            "git",
+            return_value=(
+                "?? unexpected.txt\0?? codex-rs/core/tests/suite/example.snap.new\0"
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "unexpected.txt"):
                 candidate.preserve_generated_test_artifacts(
                     self.directory, self.directory
                 )
+        self.assertFalse(generated.exists())
+        self.assertEqual(
+            (
+                self.directory / "generated/codex-rs/core/tests/suite/example.snap.new"
+            ).read_text(),
+            "snapshot candidate",
+        )
+
+    def test_final_artifact_preservation_failure_is_recorded(self):
+        prerequisite = self.directory / "v8"
+        prerequisite.touch()
+        storage = (
+            self.directory.parent / f"candidate-final-storage-{self.directory.name}"
+        )
+        state = storage / "state"
+        cargo_target = storage / "cargo"
+        release_target = storage / "release"
+        state.mkdir(parents=True)
+        cargo_target.mkdir()
+        release_target.mkdir()
+        self.addCleanup(shutil.rmtree, storage)
+        with (
+            patch.object(candidate, "frozen_commit", return_value=self.commit),
+            patch.object(candidate, "verify_candidate_environment"),
+            patch.object(candidate.shutil, "which", return_value=sys.executable),
+            patch.object(
+                candidate, "candidate_environment", return_value=dict(os.environ)
+            ),
+            patch.object(candidate, "commands", return_value=self.plan),
+            patch.object(candidate, "execute", return_value=[]),
+            patch.object(
+                candidate,
+                "preserve_generated_test_artifacts",
+                side_effect=ValueError("unexpected source path: late.txt"),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "RUSTY_V8_ARCHIVE": str(prerequisite),
+                    "RUSTY_V8_SRC_BINDING_PATH": str(prerequisite),
+                },
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "late.txt"),
+        ):
+            candidate.check(self.directory, state, cargo_target, release_target)
+        (acceptance,) = state.glob("accept-*")
+        self.assertEqual(
+            json.loads((acceptance / "artifact-preservation-failure.json").read_text()),
+            {
+                "check": "final",
+                "error_type": "ValueError",
+                "message": "unexpected source path: late.txt",
+            },
+        )
 
     def test_package_smokes_require_both_formats_and_real_linux_coverage(self):
         (self.directory / "source-commit.txt").write_text(self.commit)

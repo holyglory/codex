@@ -148,6 +148,9 @@ async fn picker_side_worktree_fork_and_cd_run_on_the_production_stack() -> Resul
             .to_string_lossy()
     ))?;
     terminal.ensure_running()?;
+    // The managed attach is deliberately deferred to the next TUI iteration; let its
+    // completion clear the old task-running state before issuing /cd on the new checkout.
+    std::thread::sleep(Duration::from_secs(/*secs*/ 2));
 
     submit(&mut terminal, &format!("/cd {}", root.display()))?;
     terminal.wait_for_screen(&format!("Working directory changed to: {}", root.display()))?;

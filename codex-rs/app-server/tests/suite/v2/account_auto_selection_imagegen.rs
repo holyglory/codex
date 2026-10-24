@@ -1,5 +1,7 @@
 use super::*;
 use base64::Engine as _;
+use codex_app_server_protocol::ImageReference as V2ImageReference;
+#[cfg(not(windows))]
 use codex_features::Feature;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -9,6 +11,7 @@ const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z
 #[derive(Clone, Copy)]
 enum Invocation {
     Direct,
+    #[cfg(not(windows))]
     CodeMode,
 }
 
@@ -16,13 +19,15 @@ enum Invocation {
 enum ImageOperation {
     Generate,
     Edit,
+    EditRecent,
 }
 
-#[cfg(not(windows))]
 #[test_case(Invocation::Direct, ImageOperation::Generate; "direct_generation")]
 #[test_case(Invocation::Direct, ImageOperation::Edit; "direct_edit")]
-#[test_case(Invocation::CodeMode, ImageOperation::Generate; "code_mode_generation")]
-#[test_case(Invocation::CodeMode, ImageOperation::Edit; "code_mode_edit")]
+#[test_case(Invocation::Direct, ImageOperation::EditRecent; "direct_recent_image_edit")]
+#[cfg_attr(not(windows), test_case(Invocation::CodeMode, ImageOperation::Generate; "code_mode_generation"))]
+#[cfg_attr(not(windows), test_case(Invocation::CodeMode, ImageOperation::Edit; "code_mode_edit"))]
+#[cfg_attr(not(windows), test_case(Invocation::CodeMode, ImageOperation::EditRecent; "code_mode_recent_image_edit"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn imagegen_uses_selected_profile_without_legacy_auth(
     invocation: Invocation,
@@ -30,7 +35,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
 ) -> Result<()> {
     let home = TempDir::new()?;
     let backend = MockServer::start().await;
-    let mut config = MockResponsesConfig::new(&backend.uri())
+    let config = MockResponsesConfig::new(&backend.uri())
         .with_model("mock-model")
         .with_provider_name("OpenAI")
         .with_provider_base_url(&format!("{}/api/codex", backend.uri()))
@@ -39,9 +44,11 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             backend.uri()
         ))
         .with_provider_config("requires_openai_auth = true\nsupports_websockets = false");
-    if matches!(invocation, Invocation::CodeMode) {
-        config = config.enable_feature(Feature::CodeModeOnly);
-    }
+    #[cfg(not(windows))]
+    let config = match invocation {
+        Invocation::Direct => config,
+        Invocation::CodeMode => config.enable_feature(Feature::CodeModeOnly),
+    };
     config.write(home.path())?;
     let alpha = persist_managed_chatgpt_profile(home.path(), "alpha", /*priority*/ 10)?;
     let beta = persist_managed_chatgpt_profile(home.path(), "beta", /*priority*/ 1)?;
@@ -59,6 +66,10 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     let mut app = fresh_desktop_server(home.path()).await?;
     let png_bytes = base64::engine::general_purpose::STANDARD.decode(PNG)?;
     let mut arguments = json!({"prompt": "paint a blue whale"});
+    let mut input = vec![V2UserInput::Text {
+        text: "generate the image".to_string(),
+        text_elements: Vec::new(),
+    }];
     let image_path = match operation {
         ImageOperation::Generate => "/api/codex/images/generations",
         ImageOperation::Edit => {
@@ -75,6 +86,16 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
                 )
                 .await?;
             arguments["referenced_image_paths"] = json!([reference.inferred_native_path_string()]);
+            "/api/codex/images/edits"
+        }
+        ImageOperation::EditRecent => {
+            arguments["num_last_images_to_include"] = json!(1);
+            input.push(V2UserInput::Image {
+                image: V2ImageReference::Inline {
+                    url: format!("data:image/png;base64,{PNG}"),
+                },
+                detail: None,
+            });
             "/api/codex/images/edits"
         }
     };
@@ -100,6 +121,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             "imagegen",
             &arguments.to_string(),
         ),
+        #[cfg(not(windows))]
         Invocation::CodeMode => responses::ev_custom_tool_call(
             "image-call",
             "exec",
@@ -120,7 +142,22 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
         ],
     )
     .await;
-    let completed = start_turn(&mut app, "generate the image").await?;
+    let thread = app
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+    let completed = timeout(
+        EVENT_TIMEOUT,
+        app.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id,
+            input,
+            ..Default::default()
+        }),
+    )
+    .await??;
     assert_eq!(completed.turn.status, TurnStatus::Completed);
     let requests = mocked.requests();
     assert_eq!(requests.len(), 2);
@@ -134,7 +171,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             Some(beta.workspace_id.clone())
         );
     }
-    if matches!(operation, ImageOperation::Edit) {
+    if matches!(operation, ImageOperation::Edit | ImageOperation::EditRecent) {
         let requests = backend
             .received_requests()
             .await
