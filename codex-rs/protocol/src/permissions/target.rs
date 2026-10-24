@@ -135,7 +135,7 @@ impl FileSystemSandboxPolicy {
                         (
                             FileSystemPath::Path { path: left },
                             FileSystemPath::Path { path: right },
-                        ) => left.as_str() == right.as_str(),
+                        ) => left.encoded_path() == right.encoded_path(),
                         _ => true,
                     }
             });
