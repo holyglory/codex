@@ -3,7 +3,6 @@ use base64::Engine as _;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 #[cfg(not(windows))]
 use codex_features::Feature;
-use core_test_support::is_remote_test_environment;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
@@ -100,10 +99,6 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             "/api/codex/images/edits"
         }
     };
-    // Image path arguments are host paths; remote threads must use attached images instead.
-    let remote_path_edit =
-        matches!(operation, ImageOperation::Edit) && is_remote_test_environment();
-    let expected_image_requests = if remote_path_edit { 0 } else { 1 };
     Mock::given(method("POST"))
         .and(path(image_path))
         .and(header(
@@ -116,7 +111,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             "background": "opaque",
             "data": [{"b64_json": PNG}]
         })))
-        .expect(expected_image_requests)
+        .expect(1)
         .mount(&backend)
         .await;
     let tool_call = match invocation {
@@ -143,15 +138,10 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
                 tool_call,
                 responses::ev_completed("image-response"),
             ]),
-            create_final_assistant_message_sse_response(if remote_path_edit {
-                "attach the image instead of using a host path"
-            } else {
-                "image saved"
-            })?,
+            create_final_assistant_message_sse_response("image saved")?,
         ],
     )
     .await;
-    let mut app = fresh_desktop_server(home.path()).await?;
     let thread = app
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
@@ -185,33 +175,10 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
         .path()
         .join("generated_images")
         .join(&completed.thread_id);
-    if remote_path_edit {
-        let output = match invocation {
-            Invocation::Direct => requests[1].function_call_output("image-call"),
-            #[cfg(not(windows))]
-            Invocation::CodeMode => requests[1].custom_tool_call_output("image-call"),
-        };
-        assert!(
-            output
-                .to_string()
-                .contains("referenced image paths are unavailable in this session"),
-            "the model should receive the remote path error: {output}"
-        );
-        assert!(!output_dir.exists());
-        assert!(
-            backend
-                .received_requests()
-                .await
-                .context("failed to fetch received requests")?
-                .iter()
-                .all(|request| !request.url.path().starts_with("/api/codex/images/"))
-        );
-    } else {
-        let saved = std::fs::read_dir(output_dir)?.collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(saved.len(), 1);
-        assert_eq!(std::fs::read(saved[0].path())?, png_bytes);
-    }
-    if matches!(operation, ImageOperation::Edit) && !remote_path_edit {
+    let saved = std::fs::read_dir(output_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(std::fs::read(saved[0].path())?, png_bytes);
+    if matches!(operation, ImageOperation::Edit) {
         let requests = backend
             .received_requests()
             .await
