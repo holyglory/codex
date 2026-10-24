@@ -2364,10 +2364,28 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn future_pending_environment_can_finish_without_retargeting_the_active_turn() -> Result<()> {
+    #[derive(Default)]
+    struct ActiveEnvironmentWaitStarted(tokio::sync::Notify);
+
+    impl codex_extension_api::ToolLifecycleContributor for ActiveEnvironmentWaitStarted {
+        fn on_tool_start<'a>(
+            &'a self,
+            input: codex_extension_api::ToolStartInput<'a>,
+        ) -> codex_extension_api::ToolLifecycleFuture<'a> {
+            Box::pin(async move {
+                if input.call_id == "wait-for-active-environment" {
+                    self.0.notify_one();
+                }
+            })
+        }
+    }
+
     let server = start_mock_server().await;
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(WaitForEnvironmentTestExtension));
     extensions.prompt_contributor(Arc::new(ReadyCapabilityRootsTestExtension::default()));
+    let wait_started = Arc::new(ActiveEnvironmentWaitStarted::default());
+    extensions.tool_lifecycle_contributor(wait_started.clone());
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
@@ -2445,7 +2463,12 @@ async fn future_pending_environment_can_finish_without_retargeting_the_active_tu
         }])
     };
     thread.start_or_steer_turn(request("wait")).await?;
-    wait_for_response_request_count(&response_mock, /*expected_count*/ 1).await;
+    // Receiving the HTTP request does not mean the streamed tool call has started.
+    // Steering before dispatch can replace that response instead of exercising an
+    // already active environment wait.
+    timeout(Duration::from_secs(5), wait_started.0.notified())
+        .await
+        .context("active environment wait should start before steering")?;
     assert!(matches!(
         thread
             .start_or_steer_turn(

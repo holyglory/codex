@@ -1,44 +1,68 @@
 use super::*;
+#[cfg(unix)]
 use crate::AccountAttributionSnapshot;
 use crate::Activity;
 use crate::ActivityState;
 use crate::AgentId;
 use crate::AgentRoleKind;
 use crate::AttributionProvenance;
+#[cfg(unix)]
 use crate::ClientOrigin;
+#[cfg(unix)]
 use crate::CoverageState;
 use crate::ErrorCategory;
+#[cfg(unix)]
 use crate::FactEventId;
+#[cfg(unix)]
 use crate::MeasurementProvenance;
+#[cfg(unix)]
 use crate::ModelName;
+#[cfg(unix)]
 use crate::ModelRequestId;
 use crate::NewAgent;
+#[cfg(unix)]
 use crate::NewModelRequest;
+#[cfg(unix)]
 use crate::NewModelRequestContext;
 use crate::NewOperation;
 use crate::NewThread;
+#[cfg(unix)]
 use crate::NewTokenObservation;
+#[cfg(unix)]
 use crate::NewToolInvocation;
+#[cfg(unix)]
 use crate::ObservationTiming;
+#[cfg(unix)]
 use crate::OperationFamily;
 use crate::OperationId;
 use crate::OperationKind;
 use crate::Phase;
 use crate::ProcessId;
+#[cfg(unix)]
 use crate::ProviderKind;
+#[cfg(unix)]
 use crate::RepositoryBucket;
 use crate::TerminalOperation;
 use crate::TerminalStatus;
 use crate::ThreadId;
 use crate::ThreadSourceKind;
+#[cfg(unix)]
 use crate::TokenCategoryPath;
+#[cfg(unix)]
 use crate::TokenObservationSource;
+#[cfg(unix)]
 use crate::TokenUnit;
+#[cfg(unix)]
 use crate::ToolExecutionGroupId;
+#[cfg(unix)]
 use crate::ToolExecutionRole;
+#[cfg(unix)]
 use crate::ToolInvocationId;
+#[cfg(unix)]
 use crate::ToolKind;
+#[cfg(unix)]
 use crate::ToolName;
+#[cfg(unix)]
 use crate::TransportKind;
 use pretty_assertions::assert_eq;
 
@@ -93,6 +117,7 @@ async fn finish(
         .expect("finish operation");
 }
 
+#[cfg(unix)]
 async fn record_model_request(
     store: &UsageStore,
     operation: &NewOperation,
@@ -132,6 +157,7 @@ async fn record_model_request(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
 async fn record_tool(
     store: &UsageStore,
     operation: &NewOperation,
@@ -164,6 +190,7 @@ async fn record_tool(
     id
 }
 
+#[cfg(unix)]
 async fn record_total_tokens(
     store: &UsageStore,
     source: TokenObservationSource,
@@ -253,6 +280,7 @@ fn duration(measured_ns: u64) -> TaskTreeDuration {
     }
 }
 
+#[cfg(unix)]
 fn tokens(measured_tokens: i64) -> TaskTreeTokenAggregate {
     TaskTreeTokenAggregate {
         measured_tokens,
@@ -261,6 +289,7 @@ fn tokens(measured_tokens: i64) -> TaskTreeTokenAggregate {
     }
 }
 
+#[cfg(unix)]
 fn outcome(count: u64, measured_ns: u64) -> TaskTreeOutcomeAggregate {
     TaskTreeOutcomeAggregate {
         count,

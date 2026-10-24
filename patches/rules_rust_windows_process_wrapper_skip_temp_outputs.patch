@@ -1,15 +1,145 @@
 --- a/util/process_wrapper/main.rs
 +++ b/util/process_wrapper/main.rs
-@@ -213,6 +213,12 @@ fn consolidate_dependency_search_paths(
-             let file_name_lower = file_name
-                 .to_string_lossy()
-                 .to_ascii_lowercase();
-+            if file_name_lower.contains(".tmp") || file_name_lower.ends_with(".rcgu.o") {
-+                // Native Windows Rust link actions can leave transient `*.exe.tmp*` and
-+                // per-codegen-unit `*.rcgu.o` outputs next to the final binary.
-+                // Those are not stable linker search-path inputs.
+@@ -149,6 +149,18 @@
+ }
+
+ #[cfg(windows)]
++fn is_dependency_library(name: &str) -> bool {
++    // -Ldependency contains Rust libraries and metadata, not neighboring test
++    // executables, PDBs, response files, or outputs another action is replacing.
++    // Keep native/import libraries alongside Rust dynamic libraries as well.
++    !name.contains(".tmp")
++        && !name.contains(".temp-archive-")
++        && [".rlib", ".rmeta", ".dll", ".lib", ".a", ".so", ".dylib"]
++            .iter()
++            .any(|extension| name.ends_with(extension))
++}
++
++#[cfg(windows)]
+ fn consolidate_dependency_search_paths(
+     args: &[String],
+ ) -> Result<(Vec<String>, Option<PathBuf>), ProcessWrapperError> {
+@@ -180,8 +192,13 @@
+         ))
+     })?;
+
++    let mut cleanup = TemporaryDirectoryGuard::new(Some(unified_dir.clone()));
+     let mut seen = HashSet::new();
++    let mut seen_paths = HashSet::new();
+     for path in dependency_paths {
++        if !seen_paths.insert(path.clone()) {
++            continue;
++        }
+         let entries = fs::read_dir(&path).map_err(|e| {
+             ProcessWrapperError(format!(
+                 "unable to read dependency search path {}: {}",
+@@ -198,6 +215,11 @@
+                     e
+                 ))
+             })?;
++            let file_name = entry.file_name();
++            let file_name_lower = file_name.to_string_lossy().to_ascii_lowercase();
++            if !is_dependency_library(&file_name_lower) {
 +                continue;
 +            }
+             let file_type = entry.file_type().map_err(|e| {
+                 ProcessWrapperError(format!(
+                     "unable to inspect dependency search path {}: {}",
+@@ -209,10 +231,6 @@
+                 continue;
+             }
+
+-            let file_name = entry.file_name();
+-            let file_name_lower = file_name
+-                .to_string_lossy()
+-                .to_ascii_lowercase();
              if !seen.insert(file_name_lower) {
                  continue;
              }
+@@ -244,7 +262,7 @@
+
+     filtered_args.push(format!("-Ldependency={}", unified_dir.display()));
+
+-    Ok((filtered_args, Some(unified_dir)))
++    Ok((filtered_args, cleanup.take()))
+ }
+
+ #[cfg(not(windows))]
+@@ -501,3 +519,77 @@
+     }
+
+ }
++
++#[cfg(all(test, windows))]
++mod dependency_consolidation_tests {
++    use super::*;
++    use std::os::windows::fs::OpenOptionsExt;
++
++    #[test]
++    fn library_search_excludes_outputs_and_preserves_dependencies() {
++        let root = std::env::temp_dir().join(format!(
++            "rules-rust-dependency-test-{}-{}",
++            std::process::id(),
++            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
++        ));
++        fs::create_dir(&root).unwrap();
++        let _root_cleanup = TemporaryDirectoryGuard::new(Some(root.clone()));
++        let first = root.join("first");
++        let second = root.join("second");
++        fs::create_dir(&first).unwrap();
++        fs::create_dir(&second).unwrap();
++        let libraries = ["libdep.rlib", "libdep.rmeta", "macro.dll", "macro.dll.lib", "native.LIB", "libnative.a"];
++        for name in libraries {
++            fs::write(first.join(name), name).unwrap();
++        }
++        fs::write(second.join("libdep.rlib"), "later duplicate must not replace first").unwrap();
++        for name in ["test.exe", "test.exe.tmp1", "test.rcgu.o", "test.params", "test.d", "scratch.tmp.rlib"] {
++            fs::write(first.join(name), "not a dependency").unwrap();
++        }
++        // A sibling link action may hold its PDB exclusively while this action
++        // starts. Dependency setup must not attempt to link/copy that file.
++        let pdb = OpenOptions::new().write(true).create_new(true).share_mode(0)
++            .open(first.join("other-test.pdb")).unwrap();
++        // rustc writes its archive beside the final library under this name.
++        // A concurrent consumer must ignore it even though it ends in `.a`.
++        let archive = OpenOptions::new().write(true).create_new(true).share_mode(0)
++            .open(first.join("core-unit-tests-bin.lib.temp-archive-b55baa9.a")).unwrap();
++        for i in 0..200 {
++            fs::write(first.join(format!("other-{i}.pdb")), "unrelated symbols").unwrap();
++        }
++        let args = vec![
++            "--crate-name=consumer".to_owned(),
++            format!("-Ldependency={}", first.display()),
++            "-L".to_owned(), format!("dependency={}", second.display()),
++            format!("-Ldependency={}", first.display()),
++            "-Lnative=preserved-native-path".to_owned(),
++        ];
++        let (actual, directory) = consolidate_dependency_search_paths(&args).unwrap();
++        let directory = directory.unwrap();
++        let cleanup = TemporaryDirectoryGuard::new(Some(directory.clone()));
++        assert_eq!(&actual[..2], ["--crate-name=consumer", "-Lnative=preserved-native-path"]);
++        assert_eq!(actual.len(), 3);
++        let found: HashSet<_> = fs::read_dir(&directory).unwrap()
++            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
++        assert_eq!(found, libraries.iter().map(|name| (*name).to_owned()).collect());
++        assert_eq!(fs::read_to_string(directory.join("libdep.rlib")).unwrap(), "libdep.rlib");
++        drop(cleanup);
++        assert!(!directory.exists());
++        drop(pdb);
++        drop(archive);
++
++        let temporary_dirs = || -> HashSet<PathBuf> {
++            let prefix = format!("rules_rust_process_wrapper_deps_{}_", std::process::id());
++            fs::read_dir(std::env::current_dir().unwrap()).unwrap()
++                .filter_map(Result::ok)
++                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
++                .map(|entry| entry.path()).collect()
++        };
++        let before = temporary_dirs();
++        assert!(consolidate_dependency_search_paths(&[
++            format!("-Ldependency={}", first.display()),
++            format!("-Ldependency={}", root.join("missing-required-directory").display()),
++        ]).is_err());
++        assert_eq!(temporary_dirs(), before, "failed setup leaked its temporary directory");
++    }
++}

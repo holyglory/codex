@@ -11,10 +11,33 @@ use tokio::time::Instant;
 
 const SLOW_SQL: &str = "WITH RECURSIVE counter(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM counter WHERE n<1000000000) SELECT SUM(n) FROM counter";
 
+async fn assert_snapshot_released(pool: &sqlx::SqlitePool) {
+    // A concurrent checkpoint returns SQLITE_BUSY immediately, even with a
+    // busy timeout. Pool cleanup and background refresh can still be finishing;
+    // require a successful checkpoint within the original one-second budget.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+                .fetch_one(pool)
+                .await
+                .expect("checkpoint");
+            if busy == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("snapshot released promptly");
+}
+
 #[tokio::test]
 async fn report_deadline_interrupts_sql_and_releases_the_snapshot() {
     let fixture = Fixture::new().await;
-    let deadline = Instant::now() + Duration::from_millis(100);
+    // Acquiring a connection and configuring its worker share this deadline.
+    // Leave time for setup under parallel CI load so the slow SQL reaches the
+    // cancellation path; snapshot release still has a separate one-second bound.
+    let deadline = Instant::now() + Duration::from_secs(1);
     let mut read = ReportRead::acquire(
         &fixture.store.pool,
         &fixture.store.report_refresh.reader,
@@ -42,14 +65,7 @@ async fn report_deadline_interrupts_sql_and_releases_the_snapshot() {
         Err(UsageStoreError::ReportTimedOut)
     ));
     drop(read);
-    let (busy, _, _): (i64, i64, i64) = tokio::time::timeout(
-        Duration::from_secs(1),
-        sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)").fetch_one(&fixture.store.pool),
-    )
-    .await
-    .expect("snapshot released promptly")
-    .expect("checkpoint");
-    assert_eq!(busy, 0);
+    assert_snapshot_released(&fixture.store.pool).await;
     assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
     assert_eq!(
         fixture
@@ -91,14 +107,7 @@ async fn dropped_report_stops_sql_without_waiting_for_the_deadline() {
         .expect("capture alongside report");
     task.abort();
     assert!(task.await.expect_err("cancelled report").is_cancelled());
-    let (busy, _, _): (i64, i64, i64) = tokio::time::timeout(
-        Duration::from_secs(1),
-        sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)").fetch_one(&fixture.store.pool),
-    )
-    .await
-    .expect("snapshot released promptly")
-    .expect("checkpoint");
-    assert_eq!(busy, 0);
+    assert_snapshot_released(&fixture.store.pool).await;
     assert_eq!(fixture.packet().await.coverage.raw_operations, 1);
     assert_eq!(
         fixture

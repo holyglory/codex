@@ -16,8 +16,6 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 pub const BUILD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 pub const WAIT: Duration = Duration::from_secs(/*secs*/ 10);
@@ -49,13 +47,6 @@ pub fn wait_for_helper_reaped(root: &std::path::Path) -> Result<()> {
     })
 }
 
-struct Package(PathBuf);
-impl Drop for Package {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 // The child discovers its installation through current_exe, exactly as the public facade does.
 pub fn package(test: &str) -> Result<Option<PathBuf>> {
     let source = std::env::current_exe()?;
@@ -70,10 +61,9 @@ pub fn package(test: &str) -> Result<Option<PathBuf>> {
                 .to_owned(),
         ));
     }
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let package =
-        Package(std::env::temp_dir().join(format!("voice-actor-{}-{nonce}", std::process::id())));
-    let root = &package.0;
+    // Atomically reserve a directory: parallel tests can observe the same wall-clock timestamp.
+    let package = tempfile::Builder::new().prefix("voice-actor-").tempdir()?;
+    let root = package.path();
     fs::create_dir_all(root.join("bin"))?;
     fs::create_dir_all(root.join("codex-resources/voice/bin"))?;
     fs::write(root.join("codex-package.json"), "{}")?;

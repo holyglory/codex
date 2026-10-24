@@ -16,6 +16,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::LegacyAppPathString;
 use pretty_assertions::assert_eq;
 
 use super::GeneratedImageOutput;
@@ -273,11 +274,7 @@ async fn conflicting_image_selectors_return_tool_error() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
-            referenced_image_paths: Some(vec![
-                "/tmp/image.png"
-                    .try_into()
-                    .expect("test path should be absolute"),
-            ]),
+            referenced_image_paths: Some(vec![LegacyAppPathString::from_string("/tmp/image.png")]),
             num_last_images_to_include: Some(1),
         },
         &[],
@@ -301,9 +298,7 @@ async fn too_many_referenced_image_paths_return_tool_error() {
             referenced_image_paths: Some(
                 (0..6)
                     .map(|index| {
-                        format!("/tmp/image-{index}.png")
-                            .try_into()
-                            .expect("test path should be absolute")
+                        LegacyAppPathString::from_string(format!("/tmp/image-{index}.png"))
                     })
                     .collect(),
             ),

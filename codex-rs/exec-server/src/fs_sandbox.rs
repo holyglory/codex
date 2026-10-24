@@ -370,10 +370,10 @@ fn helper_env_key_is_allowed(key: &str) -> bool {
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
-        // MXC needs SystemDrive to resolve platform directories and LOCALAPPDATA
-        // to create the sandboxed helper process.
+        // MXC needs SystemDrive to resolve platform directories, LOCALAPPDATA
+        // to create the helper, and SystemRoot for child DLL initialization.
         || (cfg!(windows)
-            && ["PATH", "SystemDrive", "LOCALAPPDATA"]
+            && ["PATH", "SystemDrive", "LOCALAPPDATA", "SystemRoot"]
                 .iter()
                 .any(|allowed| key.eq_ignore_ascii_case(allowed)))
 }
@@ -712,6 +712,7 @@ mod tests {
                 ("Path", r"C:\Windows\System32"),
                 ("LocalAppData", r"C:\Users\test\AppData\Local"),
                 ("SystemDrive", "C:"),
+                ("SYSTEMROOT", r"C:\Windows"),
                 ("PATH_INJECTION", "bad"),
                 ("OPENAI_API_KEY", "secret"),
             ]
@@ -727,6 +728,7 @@ mod tests {
                     r"C:\Users\test\AppData\Local".to_string()
                 ),
                 ("SystemDrive".to_string(), "C:".to_string()),
+                ("SYSTEMROOT".to_string(), r"C:\Windows".to_string()),
             ])
         );
     }

@@ -1317,6 +1317,49 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn exec_approval_cancel_marks_nested_decline_before_waiter_resumes() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let active = ActiveTurn::default();
+    let turn_state = Arc::clone(&active.turn_state);
+    let declined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let unrelated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
+    let (unrelated_tx, _unrelated_rx) = tokio::sync::oneshot::channel();
+    {
+        let mut state = turn_state.lock().await;
+        state.insert_pending_approval("nested".to_string(), approval_tx);
+        state.insert_exec_approval_decline_flag("nested".to_string(), Arc::clone(&declined));
+        state.insert_pending_approval("unrelated".to_string(), unrelated_tx);
+        state.insert_exec_approval_decline_flag("unrelated".to_string(), Arc::clone(&unrelated));
+    }
+    *session.active_turn.lock().await = Some(active);
+
+    // Keep the receiver unpolled: a shell-exit watcher must see the explicit
+    // cancellation even if the nested approval future has not resumed yet.
+    handlers::exec_approval(
+        &session,
+        "nested".to_string(),
+        Some(turn_context.sub_id),
+        ReviewDecision::Abort,
+    )
+    .await;
+    assert!(declined.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!unrelated.load(std::sync::atomic::Ordering::Acquire));
+    assert!(matches!(
+        approval_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(session.active_turn.lock().await.is_none());
+    turn_state.lock().await.clear_pending_waiters();
+    assert!(matches!(
+        approval_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
 #[tokio::test]
 async fn new_turn_refreshes_managed_network_proxy_for_sandbox_change() -> anyhow::Result<()> {
     let (session, _turn_context) = make_session_and_context().await;

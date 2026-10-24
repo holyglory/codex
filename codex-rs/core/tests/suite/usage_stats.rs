@@ -476,6 +476,9 @@ async fn declared_activity_crosses_turns_without_auxiliary_root_becoming_multi_r
         .with_home(Arc::clone(&home))
         .with_config(|config| config.local_control_tools_enabled = true)
         .with_workspace_setup(|cwd, fs| async move {
+            // Resolve macOS's temp-root aliases before no-follow creation;
+            // this fixture exercises repository attribution, not symlink traversal.
+            let cwd = cwd.canonicalize()?;
             let auxiliary_output = cwd.join("auxiliary-output");
             for root in [&cwd, &auxiliary_output] {
                 fs.create_directory(

@@ -1328,7 +1328,9 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     let (mcp_server_url, mcp_server_handle) = start_slow_inventory_mcp_server("lookup").await?;
     let codex_home = TempDir::new()?;
+    // Keep host keyring startup outside this inventory latency regression.
     mock_responses_config(&server.uri())
+        .with_root_config("mcp_oauth_credentials_store = \"file\"")
         .with_extra_config(&format!(
             "[mcp_servers.some-server]\nurl = \"{mcp_server_url}/mcp\""
         ))

@@ -42,6 +42,7 @@ use codex_tools::default_namespace_description;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_image::PromptImageMode;
 use codex_utils_image::load_for_prompt_bytes;
+use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
@@ -92,7 +93,7 @@ struct ImagegenArgs {
     #[serde(default)]
     transparent_background: bool,
     #[schemars(length(max = 5))]
-    referenced_image_paths: Option<Vec<AbsolutePathBuf>>,
+    referenced_image_paths: Option<Vec<LegacyAppPathString>>,
     #[schemars(range(min = 1, max = 5))]
     num_last_images_to_include: Option<usize>,
 }
@@ -220,8 +221,8 @@ impl ImageGenerationTool {
                 return Err(FunctionCallError::RespondToModel(message));
             }
         };
-        // TODO(anp): Migrate image tool path arguments and saved-path events to PathUri so image
-        // operations can use the primary environment even when its paths are foreign to the host.
+        // TODO(anp): Migrate saved-path events to PathUri so generated images can be saved in
+        // the primary environment even when its paths are foreign to the host.
         let saved_path = save_image_generation_result(
             self.save_root.as_ref(),
             call.environments
@@ -439,10 +440,7 @@ async fn request_for_call_args(
             }));
         }
         (false, None) => {
-            let Some(environment) = environments
-                .iter()
-                .find(|environment| environment.cwd.to_abs_path().is_ok())
-            else {
+            let Some(environment) = environments.first() else {
                 return Err(FunctionCallError::RespondToModel(
                     "referenced image paths are unavailable in this session".to_string(),
                 ));
@@ -557,10 +555,20 @@ fn output_images(output: &FunctionCallOutputPayload) -> impl Iterator<Item = &Im
 }
 
 async fn image_url(
-    path: &AbsolutePathBuf,
+    path: &LegacyAppPathString,
     environment: &ToolEnvironment<'_>,
 ) -> Result<ImageReference, FunctionCallError> {
-    let path_uri = PathUri::from_abs_path(path);
+    let convention = environment.cwd.infer_path_convention().ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "the selected environment has no native path convention".to_string(),
+        )
+    })?;
+    let path_uri = path.to_path_uri(convention).map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "invalid referenced image path `{}`: {error}",
+            path.as_str()
+        ))
+    })?;
     let bytes = environment
         .fs()
         .read_file(&path_uri, Default::default())
@@ -568,17 +576,17 @@ async fn image_url(
         .map_err(|error| {
             FunctionCallError::RespondToModel(format!(
                 "unable to read referenced image at `{}`: {error}",
-                path.display()
+                path.as_str()
             ))
         })?;
-    let image = load_for_prompt_bytes(path.as_path(), bytes, PromptImageMode::Original).map_err(
-        |error| {
+    // The image decoder consumes bytes; this path is only used in diagnostics.
+    let image = load_for_prompt_bytes(&path_uri.to_path_buf(), bytes, PromptImageMode::Original)
+        .map_err(|error| {
             FunctionCallError::RespondToModel(format!(
                 "unable to process referenced image at `{}`: {error}",
-                path.display()
+                path.as_str()
             ))
-        },
-    )?;
+        })?;
     Ok(ImageReference::Inline {
         image_url: image.into_data_url(),
     })

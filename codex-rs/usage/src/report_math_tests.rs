@@ -1,14 +1,24 @@
 use super::*;
+#[cfg(unix)]
 use crate::ActivitySpanEventKind;
+#[cfg(unix)]
 use crate::ActivitySpanId;
+#[cfg(unix)]
 use crate::NewActivitySpan;
+#[cfg(unix)]
 use crate::NewActivitySpanEvent;
+#[cfg(unix)]
 use crate::UsageStore;
+#[cfg(unix)]
 use crate::UsageSummaryScope;
+#[cfg(unix)]
 use crate::facts::*;
+#[cfg(unix)]
 use crate::types::*;
+#[cfg(unix)]
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
 fn operation(
     process_id: ProcessId,
     agent_id: &str,
@@ -37,6 +47,7 @@ fn operation(
     }
 }
 
+#[cfg(unix)]
 async fn insert_thread_and_agents(store: &UsageStore) {
     sqlx::query(
         "INSERT INTO threads(id, parent_thread_id, source_kind, created_at_ms) VALUES ('timing-thread', NULL, 'cli', 0)",
@@ -55,6 +66,7 @@ async fn insert_thread_and_agents(store: &UsageStore) {
     }
 }
 
+#[cfg(unix)]
 async fn model_request(store: &UsageStore, operation: &NewOperation) -> ModelRequestId {
     store.begin_operation(operation).await.expect("operation");
     let id = ModelRequestId::new();
@@ -74,6 +86,7 @@ async fn model_request(store: &UsageStore, operation: &NewOperation) -> ModelReq
     id
 }
 
+#[cfg(unix)]
 async fn finish(
     store: &UsageStore,
     operation_id: OperationId,
@@ -92,6 +105,7 @@ async fn finish(
         .expect("terminal");
 }
 
+#[cfg(unix)]
 async fn provider_tokens(
     store: &UsageStore,
     request_id: ModelRequestId,
@@ -124,6 +138,7 @@ async fn provider_tokens(
     }
 }
 
+#[cfg(unix)]
 fn named<'a>(durations: &'a [NamedDuration], name: &str) -> &'a DurationAggregate {
     &durations
         .iter()

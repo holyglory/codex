@@ -82,6 +82,25 @@ const WORKSPACE_ID_INITIAL: &str = "123e4567-e89b-42d3-a456-426614174011";
 const WORKSPACE_ID_DEVICE: &str = "123e4567-e89b-42d3-a456-426614174013";
 const WORKSPACE_ID_STALE: &str = "123e4567-e89b-42d3-a456-426614174014";
 
+pub(super) async fn lock_login_port() -> Result<std::fs::File> {
+    // serial_test guards only one test process. Bazel shards and the Wine
+    // executor can otherwise cancel each other's fixed-port login servers.
+    tokio::task::spawn_blocking(|| {
+        let lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(std::env::temp_dir().join("codex-app-server-login-port.lock"))?;
+        lock.lock()?;
+        // Keep the shared file in place; unlinking it would let another process
+        // lock a different file while an existing waiter still holds this one.
+        std::io::Result::Ok(lock)
+    })
+    .await?
+    .map_err(Into::into)
+}
+
 fn expected_workspace_routing(
     account_id: &str,
 ) -> Option<codex_app_server_protocol::WorkspaceRouting> {
@@ -2186,6 +2205,10 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
         .with_env_overrides(&[
             ("OPENAI_API_KEY", None),
             ("OTEL_METRIC_EXPORT_INTERVAL", Some("200")),
+            (
+                "RUST_LOG",
+                Some("warn,opentelemetry_sdk=debug,codex_app_server::otel_reloader=info"),
+            ),
             (LOGIN_ISSUER_ENV_VAR, Some(issuer.as_str())),
         ])
         .build()
@@ -2588,6 +2611,7 @@ async fn login_account_chatgpt_device_code_can_be_cancelled() -> Result<()> {
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn login_account_chatgpt_start_can_be_cancelled() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
 
@@ -2649,6 +2673,7 @@ async fn login_account_chatgpt_start_can_be_cancelled() -> Result<()> {
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn login_account_chatgpt_uses_oauth_overrides() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
     let mock_server = MockServer::start().await;
@@ -2759,6 +2784,7 @@ async fn login_account_chatgpt_uses_oauth_overrides() -> Result<()> {
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn login_account_chatgpt_redirects_to_hosted_success_page() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
     let mock_server = MockServer::start().await;
@@ -2860,6 +2886,7 @@ async fn login_account_chatgpt_redirects_to_hosted_success_page() -> Result<()> 
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn set_auth_token_cancels_active_chatgpt_login() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
 
@@ -2920,6 +2947,7 @@ async fn set_auth_token_cancels_active_chatgpt_login() -> Result<()> {
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn login_account_chatgpt_includes_forced_workspace_query_param() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(
         codex_home.path(),
@@ -2953,6 +2981,7 @@ async fn login_account_chatgpt_includes_forced_workspace_query_param() -> Result
 // Serialize tests that launch the login server since it binds to a fixed port.
 #[serial(login_port)]
 async fn login_account_chatgpt_includes_forced_workspace_allowlist_query_param() -> Result<()> {
+    let _login_port = lock_login_port().await?;
     let codex_home = TempDir::new()?;
     create_config_toml(
         codex_home.path(),

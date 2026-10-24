@@ -1,0 +1,8 @@
+name: Set up pinned Bazelisk
+description: Install checksum-verified Bazelisk without querying the release catalog.
+runs:
+  using: composite
+  steps:
+    - name: Install Bazelisk 1.28.1
+      shell: pwsh
+      run: '& "$env:GITHUB_ACTION_PATH/setup.ps1"'

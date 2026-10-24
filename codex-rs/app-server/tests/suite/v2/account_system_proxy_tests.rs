@@ -59,6 +59,9 @@ async fn browser_login_bootstraps_through_system_proxy() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let Ok(mode) = std::env::var(TEST_MODE) else {
+        // Hold the cross-process port lock in the parent while both isolated
+        // children run. Children must not reacquire their parent's lock.
+        let _login_port = super::account::lock_login_port().await?;
         // The in-process server shares the proxy cache. Isolate environment-derived
         // routing and the login issuer from the other integration tests.
         for mode in ["bootstrap-only", "cloud-enables-proxy"] {

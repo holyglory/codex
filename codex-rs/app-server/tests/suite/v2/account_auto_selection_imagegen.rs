@@ -3,7 +3,6 @@ use base64::Engine as _;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 #[cfg(not(windows))]
 use codex_features::Feature;
-use core_test_support::is_remote_test_environment;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
@@ -64,6 +63,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     mount_observed_probe(&backend, &alpha, /*used_percent*/ 100, 1..).await;
     mount_observed_probe(&backend, &beta, /*used_percent*/ 10, 1..).await;
 
+    let mut app = fresh_desktop_server(home.path()).await?;
     let png_bytes = base64::engine::general_purpose::STANDARD.decode(PNG)?;
     let mut arguments = json!({"prompt": "paint a blue whale"});
     let mut input = vec![V2UserInput::Text {
@@ -73,9 +73,19 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
     let image_path = match operation {
         ImageOperation::Generate => "/api/codex/images/generations",
         ImageOperation::Edit => {
-            let reference = home.path().join("reference.png");
-            std::fs::write(&reference, &png_bytes)?;
-            arguments["referenced_image_paths"] = json!([reference]);
+            let environment = app.auto_env()?;
+            let reference = environment.selection().cwd.join("reference.png")?;
+            environment
+                .environment()
+                .get_filesystem()
+                .write_file(
+                    &reference,
+                    png_bytes.clone(),
+                    Default::default(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+            arguments["referenced_image_paths"] = json!([reference.inferred_native_path_string()]);
             "/api/codex/images/edits"
         }
         ImageOperation::EditRecent => {
@@ -89,10 +99,6 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             "/api/codex/images/edits"
         }
     };
-    // Image path arguments are host paths; remote threads must use attached images instead.
-    let remote_path_edit =
-        matches!(operation, ImageOperation::Edit) && is_remote_test_environment();
-    let expected_image_requests = if remote_path_edit { 0 } else { 1 };
     Mock::given(method("POST"))
         .and(path(image_path))
         .and(header(
@@ -105,7 +111,7 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             "background": "opaque",
             "data": [{"b64_json": PNG}]
         })))
-        .expect(expected_image_requests)
+        .expect(1)
         .mount(&backend)
         .await;
     let tool_call = match invocation {
@@ -132,15 +138,10 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
                 tool_call,
                 responses::ev_completed("image-response"),
             ]),
-            create_final_assistant_message_sse_response(if remote_path_edit {
-                "attach the image instead of using a host path"
-            } else {
-                "image saved"
-            })?,
+            create_final_assistant_message_sse_response("image saved")?,
         ],
     )
     .await;
-    let mut app = fresh_desktop_server(home.path()).await?;
     let thread = app
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
@@ -170,36 +171,29 @@ async fn imagegen_uses_selected_profile_without_legacy_auth(
             Some(beta.workspace_id.clone())
         );
     }
-    let output_dir = home
-        .path()
-        .join("generated_images")
-        .join(&completed.thread_id);
-    if remote_path_edit {
-        let output = match invocation {
-            Invocation::Direct => requests[1].function_call_output("image-call"),
-            #[cfg(not(windows))]
-            Invocation::CodeMode => requests[1].custom_tool_call_output("image-call"),
-        };
-        assert!(
-            output
-                .to_string()
-                .contains("referenced image paths are unavailable in this session"),
-            "the model should receive the remote path error: {output}"
+    if matches!(operation, ImageOperation::Edit | ImageOperation::EditRecent) {
+        let requests = backend
+            .received_requests()
+            .await
+            .expect("recorded requests");
+        let image_request = requests
+            .iter()
+            .find(|request| request.url.path() == image_path)
+            .expect("image edit request");
+        let body: serde_json::Value = serde_json::from_slice(&image_request.body)?;
+        assert_eq!(
+            body["images"],
+            json!([{ "image_url": format!("data:image/png;base64,{PNG}") }])
         );
-        assert!(!output_dir.exists());
-        assert!(
-            backend
-                .received_requests()
-                .await
-                .context("failed to fetch received requests")?
-                .iter()
-                .all(|request| !request.url.path().starts_with("/api/codex/images/"))
-        );
-    } else {
-        let saved = std::fs::read_dir(output_dir)?.collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(saved.len(), 1);
-        assert_eq!(std::fs::read(saved[0].path())?, png_bytes);
     }
+    let saved = std::fs::read_dir(
+        home.path()
+            .join("generated_images")
+            .join(&completed.thread_id),
+    )?
+    .collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(std::fs::read(saved[0].path())?, png_bytes);
     assert!(!home.path().join("auth.json").exists());
     backend.verify().await;
     Ok(())

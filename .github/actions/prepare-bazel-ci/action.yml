@@ -27,6 +27,23 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Make room for local Linux compilation
+      if: runner.os == 'Linux' && runner.environment == 'github-hosted' && github.repository_owner != 'openai'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${RUNNER_ENVIRONMENT:-}" != github-hosted || "${RUNNER_OS:-}" != Linux ]]; then
+          echo 'This cleanup is only for disposable GitHub-hosted Linux runners.' >&2
+          exit 1
+        fi
+        df -h /
+        # Community jobs compile locally without the upstream RBE cache. The
+        # installed Android, .NET, Haskell and CodeQL SDKs are unused by these
+        # Bazel jobs and otherwise leave too little room for all test binaries.
+        sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+          /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h /
+
     - name: Set up Bazel CI
       id: setup_bazel
       uses: ./.github/actions/setup-bazel-ci

@@ -42,7 +42,12 @@ async fn build_commit() -> Result<String> {
             .output(),
     )
     .await??;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "voice helper build identity failed: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
@@ -119,7 +124,15 @@ async fn installed_client_rejects_mixed_builds_and_missing_helper() -> Result<()
         .close()
         .await?;
     assert!(VoiceHost::connect(&package, "wrong-build").await.is_err());
-    // Startup libraries permit handshakes; the missing runtime receipt prevents readiness.
+    // Windows colocates plugins with startup DLLs, so the fixture copied them
+    // too. Remove a required plugin to keep this package deliberately incomplete.
+    #[cfg(all(windows, target_env = "msvc"))]
+    fs::remove_file(
+        directory
+            .path()
+            .join("codex-resources/voice/bin/gstcoreelements.dll"),
+    )?;
+    // Startup libraries permit handshakes; missing plugins prevent readiness.
     let host = VoiceHost::connect(&package, &build_commit().await?).await?;
     assert!(host.initialize_runtime().await.is_err());
     // The same executable elsewhere in the package must not become a fallback.

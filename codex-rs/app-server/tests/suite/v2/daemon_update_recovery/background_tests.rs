@@ -22,8 +22,11 @@ async fn maintenance_rejects_process_local_background_work(kind: BackgroundKind)
     let entered = home.path().join("background-entered");
     let release = home.path().join("release-background");
     let effect = home.path().join("background-survived");
+    // Existence is the handshake: publish only after the contents are complete.
     let command = format!(
-        "echo ready > '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; echo survived > '{}'",
+        "echo ready > '{0}.pending' && mv '{0}.pending' '{0}' && \
+         while [ ! -f '{1}' ]; do sleep 0.01; done && \
+         echo survived > '{2}.pending' && mv '{2}.pending' '{2}'",
         entered.display(),
         release.display(),
         effect.display()
@@ -350,17 +353,24 @@ pub(super) async fn trust_fixture_hooks(
     client: &mut WebSocketStream<UnixStream>,
     home: &Path,
 ) -> Result<()> {
+    // The server canonicalizes CODEX_HOME before deriving hook keys. Match
+    // that exact fixture file even when macOS spells the temp root via /var.
+    let hook_source = home.join("hooks.json").canonicalize()?;
+    let hook_prefix = format!("{}:", hook_source.display());
     let listed = request(client, /*id*/ 90, "hooks/list", json!({"cwds":[home]})).await?;
     let mut trusted = serde_json::Map::new();
     for entry in listed["data"].as_array().context("hook entries")? {
         for hook in entry["hooks"].as_array().context("configured hooks")? {
             let key = hook["key"].as_str().context("hook key")?;
-            if key.starts_with(home.to_str().context("fixture path")?) {
+            if key.starts_with(&hook_prefix) {
                 trusted.insert(key.to_string(), json!({"trusted_hash":hook["currentHash"]}));
             }
         }
     }
-    anyhow::ensure!(!trusted.is_empty(), "fixture hook was not discovered");
+    anyhow::ensure!(
+        !trusted.is_empty(),
+        "fixture hook was not discovered for {hook_prefix}"
+    );
     request(client, /*id*/ 91, "config/batchWrite", json!({"edits":[{"keyPath":"hooks.state","value":trusted,"mergeStrategy":"upsert"}],"reloadUserConfig":true})).await?;
     Ok(())
 }

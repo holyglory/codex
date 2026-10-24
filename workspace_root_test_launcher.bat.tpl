@@ -58,6 +58,18 @@ if defined HAS_SHARDS if not defined SHARD_INDEX (
   exit /b 1
 )
 
+rem Unsharded suites can apply the same substring exclusions in libtest itself.
+rem Avoid enumerating every test and serializing the suite into command-line
+rem batches just because the global exclusions are present.
+if not defined HAS_SHARDS (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ErrorActionPreference = 'Stop';" ^
+    "$skipArgs = @();" ^
+    "foreach ($filter in @($env:CODEX_BAZEL_TEST_SKIP_FILTERS -split ',')) { if ($filter -ne '') { $skipArgs += '--skip'; $skipArgs += $filter } };" ^
+    "& $env:test_bin @skipArgs; exit $LASTEXITCODE"
+  exit /b !ERRORLEVEL!
+)
+
 set "TEMP_ROOT=%TEST_TMPDIR%"
 if not defined TEMP_ROOT set "TEMP_ROOT=%TEMP%"
 if not defined TEMP_ROOT set "TEMP_ROOT=."

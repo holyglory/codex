@@ -2303,6 +2303,8 @@ pub struct AuthManager {
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
+    // Test constructors retain their isolated home until the final Arc drops.
+    _test_home: Option<tempfile::TempDir>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2476,6 +2478,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
+            _test_home: None,
         }
     }
 
@@ -2507,7 +2510,12 @@ impl AuthManager {
     }
 
     /// Create an AuthManager with an optional CodexAuth, for testing only.
+    #[expect(
+        clippy::expect_used,
+        reason = "Test setup must fail if its isolated home cannot be created."
+    )]
     pub(crate) fn from_optional_auth_for_testing(auth: Option<CodexAuth>) -> Arc<Self> {
+        let test_home = tempfile::tempdir().expect("create isolated auth test home");
         let cached = CachedAuth {
             auth,
             permanent_refresh_failure: None,
@@ -2515,7 +2523,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
 
         Arc::new(Self {
-            codex_home: PathBuf::from("non-existent"),
+            codex_home: test_home.path().to_path_buf(),
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
@@ -2535,6 +2543,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            _test_home: Some(test_home),
         })
     }
 
@@ -2566,22 +2575,28 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            _test_home: None,
         })
     }
 
     /// Create an AuthManager with a specific CodexAuth and Agent Identity AuthAPI base URL, for testing only.
     #[doc(hidden)]
+    #[expect(
+        clippy::expect_used,
+        reason = "Test setup must fail if its isolated home cannot be created."
+    )]
     pub fn from_auth_for_testing_with_agent_identity_authapi_base_url(
         auth: CodexAuth,
         agent_identity_authapi_base_url: String,
     ) -> Arc<Self> {
+        let test_home = tempfile::tempdir().expect("create isolated auth test home");
         let cached = CachedAuth {
             auth: Some(auth),
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
-            codex_home: PathBuf::from("non-existent"),
+            codex_home: test_home.path().to_path_buf(),
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
@@ -2605,6 +2620,7 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            _test_home: Some(test_home),
         })
     }
 
@@ -2638,6 +2654,7 @@ impl AuthManager {
             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
                 OutboundProxyPolicy::ReqwestDefault,
             )),
+            _test_home: None,
         })
     }
 

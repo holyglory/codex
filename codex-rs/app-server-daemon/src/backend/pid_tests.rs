@@ -22,23 +22,9 @@ use super::try_lock_file;
 
 #[cfg(windows)]
 fn is_elevated_test_process() -> anyhow::Result<bool> {
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-        ])
-        .output()?;
-    anyhow::ensure!(
-        output.status.success(),
-        "administrator membership query failed"
-    );
-    match String::from_utf8(output.stdout)?.trim() {
-        "True" => Ok(true),
-        "False" => Ok(false),
-        other => anyhow::bail!("unexpected administrator membership: {other}"),
-    }
+    // These tests exercise the launcher's elevation guard. Service tokens can
+    // report elevation even when their account is not an administrator.
+    crate::backend::windows::is_elevated()
 }
 
 #[tokio::test]
@@ -140,7 +126,7 @@ async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
 
     let err = backend.start().await.expect_err("start");
     #[cfg(windows)]
-    if is_elevated_test_process().expect("query administrator membership") {
+    if is_elevated_test_process().expect("query token elevation") {
         assert!(err.to_string().contains("non-elevated terminal"));
         assert_eq!(
             tokio::fs::read(&backend.pid_file).await.unwrap(),
@@ -389,21 +375,32 @@ async fn shutdown_grace_handles_process_exit() {
         ("finite_force", 1, false),
     ] {
         let ready = temp.path().join(format!("{name}.ready"));
+        let stderr = temp.path().join(format!("{name}.stderr"));
         let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", "backend::pid::tests::shutdown_grace_child"])
             .env("CODEX_TEST_SHUTDOWN_GRACE_READY", &ready)
             .envs(exits.then_some(("CODEX_TEST_SHUTDOWN_GRACE_EXIT", "1")))
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&stderr).expect("create shim stderr"))
             .spawn()
             .expect("spawn daemon shim");
         let pid = child.id();
         let wait_until = tokio::time::Instant::now() + Duration::from_secs(3);
         while !ready.exists() {
-            assert!(
-                tokio::time::Instant::now() < wait_until,
-                "shim did not start"
-            );
+            if let Some(status) = child.try_wait().expect("inspect daemon shim") {
+                panic!(
+                    "{name} shim exited before readiness: {status}\n{}",
+                    std::fs::read_to_string(&stderr).unwrap_or_default(),
+                );
+            }
+            if tokio::time::Instant::now() >= wait_until {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "{name} shim did not start\n{}",
+                    std::fs::read_to_string(&stderr).unwrap_or_default(),
+                );
+            }
             sleep(Duration::from_millis(10)).await;
         }
         let pid_file = temp.path().join(format!("{name}.pid"));
@@ -702,9 +699,72 @@ async fn stale_creation_time_never_stops_reused_pid() {
 #[cfg(windows)]
 #[tokio::test]
 async fn managed_children_launch_in_workdir_without_changing_private_state_directory() {
-    if is_elevated_test_process().expect("query administrator membership") {
+    if is_elevated_test_process().expect("query token elevation") {
         return;
     }
+    const CHILD: &str = "CODEX_TEST_MANAGED_CHILD_WORKDIR";
+    if std::env::var_os(CHILD).is_none() {
+        // Job membership is process-wide. Isolate this fixture so its inner
+        // breakaway job cannot affect other tests running in parallel.
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "backend::pid::tests::managed_children_launch_in_workdir_without_changing_private_state_directory",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+            .await
+            .expect("isolated workdir fixture timed out")
+            .expect("isolated workdir fixture");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+    use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+    use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
+    use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    // Detached children leave this inner job while retaining the test harness's
+    // outer job, including its cleanup limits. Production launch flags stay intact.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    assert!(!job.is_null(), "{}", std::io::Error::last_os_error());
+    let job = unsafe { OwnedHandle::from_raw_handle(job) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    assert_ne!(
+        unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    assert_ne!(
+        unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
     let temp = TempDir::new().expect("temp dir");
     let state_dir = temp.path().join("state");
     let codex_bin = temp.path().join("codex.cmd");
@@ -757,7 +817,7 @@ async fn managed_children_launch_in_workdir_without_changing_private_state_direc
 #[cfg(windows)]
 #[tokio::test]
 async fn failed_updater_handoff_preserves_predecessor_record() {
-    let elevated = is_elevated_test_process().expect("query administrator membership");
+    let elevated = is_elevated_test_process().expect("query token elevation");
     let temp = TempDir::new().expect("temp");
     let state_dir = temp.path().join("state");
     codex_uds::prepare_private_socket_directory(&state_dir)
@@ -828,12 +888,14 @@ async fn updater_readiness_and_post_publication_failure_preserve_ownership() {
     predecessor_stderr.flush().await.unwrap();
     let successor_stderr = backend.open_stderr_log().await.expect("successor log");
     let ready = backend.pid_file.with_extension("ready");
+    // PowerShell's WriteAllText denies deletion while its handle is open.
+    // Publish the closed marker so the readiness consumer cannot race it.
     let mut child = tokio::process::Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "[Console]::Error.WriteLine('successor startup'); [IO.File]::WriteAllText($env:CODEX_TEST_UPDATER_READY, ''); Start-Sleep 60",
+            "[Console]::Error.WriteLine('successor startup'); $pending = $env:CODEX_TEST_UPDATER_READY + '.tmp'; [IO.File]::WriteAllText($pending, ''); [IO.File]::Move($pending, $env:CODEX_TEST_UPDATER_READY); Start-Sleep 60",
         ])
         .env("CODEX_TEST_UPDATER_READY", &ready)
         .stderr(Stdio::from(successor_stderr.into_std().await))
