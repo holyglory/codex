@@ -491,6 +491,56 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn matched_response_mock_records_only_selected_requests() -> Result<()> {
+        assert_response_mock_records_only_selected_requests(true).await
+    }
+
+    #[tokio::test]
+    async fn matched_response_template_mock_records_only_selected_requests() -> Result<()> {
+        assert_response_mock_records_only_selected_requests(false).await
+    }
+
+    async fn assert_response_mock_records_only_selected_requests(
+        use_sse_helper: bool,
+    ) -> Result<()> {
+        let server = MockServer::start().await;
+        let matcher =
+            wiremock::matchers::body_partial_json(serde_json::json!({ "model": "selected" }));
+        let body = sse(vec![ev_completed("selected-response")]);
+        let response_mock = if use_sse_helper {
+            mount_sse_once_match(&server, matcher, body).await
+        } else {
+            mount_response_once_match(&server, matcher, sse_response(body)).await
+        };
+        let client = codex_http_client::HttpClientBuilder::new().build_direct()?;
+        let url = format!("{}/v1/responses", server.uri());
+        let rejected = serde_json::json!({ "model": "unrelated", "input": [] });
+        assert_eq!(
+            client.post(&url).json(&rejected).send().await?.status(),
+            404
+        );
+        assert!(
+            response_mock.requests().is_empty(),
+            "unmatched traffic must not satisfy a wait for the selected response"
+        );
+
+        let selected = serde_json::json!({ "model": "selected", "input": [] });
+        assert_eq!(
+            client.post(&url).json(&selected).send().await?.status(),
+            200
+        );
+        assert_eq!(response_mock.single_request().body_json(), selected);
+
+        // The one-shot response must not capture a second matching request.
+        assert_eq!(
+            client.post(&url).json(&selected).send().await?.status(),
+            404
+        );
+        assert_eq!(response_mock.requests().len(), 1);
+        Ok(())
+    }
+
     #[test]
     fn call_output_content_and_success_returns_only_single_text_content_item() {
         let single_text = request_with_input(serde_json::json!([
@@ -1103,8 +1153,13 @@ pub async fn mount_response_once_match<M>(
 where
     M: wiremock::Match + Send + Sync + 'static,
 {
-    let (mock, response_mock) = base_mock();
-    mock.and(matcher)
+    let response_mock = ResponseMock::new();
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(matcher)
+        // Capture only after the selection matches. Earlier capture can release
+        // a caller waiting for this response when unrelated traffic arrives.
+        .and(response_mock.clone())
         .respond_with(response)
         .up_to_n_times(1)
         .mount(server)
@@ -1132,13 +1187,7 @@ pub async fn mount_sse_once_match<M>(server: &MockServer, matcher: M, body: Stri
 where
     M: wiremock::Match + Send + Sync + 'static,
 {
-    let (mock, response_mock) = base_mock();
-    mock.and(matcher)
-        .respond_with(sse_response(body))
-        .up_to_n_times(1)
-        .mount(server)
-        .await;
-    response_mock
+    mount_response_once_match(server, matcher, sse_response(body)).await
 }
 
 pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {

@@ -1,6 +1,6 @@
 --- a/util/process_wrapper/main.rs
 +++ b/util/process_wrapper/main.rs
-@@ -149,6 +149,17 @@
+@@ -149,6 +149,18 @@
  }
 
  #[cfg(windows)]
@@ -9,6 +9,7 @@
 +    // executables, PDBs, response files, or outputs another action is replacing.
 +    // Keep native/import libraries alongside Rust dynamic libraries as well.
 +    !name.contains(".tmp")
++        && !name.contains(".temp-archive-")
 +        && [".rlib", ".rmeta", ".dll", ".lib", ".a", ".so", ".dylib"]
 +            .iter()
 +            .any(|extension| name.ends_with(extension))
@@ -18,7 +19,7 @@
  fn consolidate_dependency_search_paths(
      args: &[String],
  ) -> Result<(Vec<String>, Option<PathBuf>), ProcessWrapperError> {
-@@ -180,8 +191,13 @@
+@@ -180,8 +192,13 @@
          ))
      })?;
 
@@ -32,7 +33,7 @@
          let entries = fs::read_dir(&path).map_err(|e| {
              ProcessWrapperError(format!(
                  "unable to read dependency search path {}: {}",
-@@ -198,6 +214,11 @@
+@@ -198,6 +215,11 @@
                      e
                  ))
              })?;
@@ -44,7 +45,7 @@
              let file_type = entry.file_type().map_err(|e| {
                  ProcessWrapperError(format!(
                      "unable to inspect dependency search path {}: {}",
-@@ -209,10 +230,6 @@
+@@ -209,10 +231,6 @@
                  continue;
              }
 
@@ -55,7 +56,7 @@
              if !seen.insert(file_name_lower) {
                  continue;
              }
-@@ -244,7 +261,7 @@
+@@ -244,7 +262,7 @@
 
      filtered_args.push(format!("-Ldependency={}", unified_dir.display()));
 
@@ -64,7 +65,7 @@
  }
 
  #[cfg(not(windows))]
-@@ -501,3 +518,72 @@
+@@ -501,3 +519,77 @@
      }
 
  }
@@ -99,6 +100,10 @@
 +        // starts. Dependency setup must not attempt to link/copy that file.
 +        let pdb = OpenOptions::new().write(true).create_new(true).share_mode(0)
 +            .open(first.join("other-test.pdb")).unwrap();
++        // rustc writes its archive beside the final library under this name.
++        // A concurrent consumer must ignore it even though it ends in `.a`.
++        let archive = OpenOptions::new().write(true).create_new(true).share_mode(0)
++            .open(first.join("core-unit-tests-bin.lib.temp-archive-b55baa9.a")).unwrap();
 +        for i in 0..200 {
 +            fs::write(first.join(format!("other-{i}.pdb")), "unrelated symbols").unwrap();
 +        }
@@ -121,6 +126,7 @@
 +        drop(cleanup);
 +        assert!(!directory.exists());
 +        drop(pdb);
++        drop(archive);
 +
 +        let temporary_dirs = || -> HashSet<PathBuf> {
 +            let prefix = format!("rules_rust_process_wrapper_deps_{}_", std::process::id());
