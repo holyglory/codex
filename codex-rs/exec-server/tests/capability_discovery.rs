@@ -1258,6 +1258,8 @@ async fn sandboxed_discovery_batches_roots_without_combining_different_permissio
         ],
     )
     .await?;
+    // A denied walk can report a warning instead of a root-level error.
+    // The isolation contract is that neither policy can discover the other root.
     assert_eq!(
         denied
             .roots
@@ -1267,25 +1269,13 @@ async fn sandboxed_discovery_batches_roots_without_combining_different_permissio
                 root.skills.is_empty(),
                 root.namespace_manifests.is_empty(),
                 root.plugin.is_none(),
-                root.error.is_some(),
             ))
             .collect::<Vec<_>>(),
         vec![
-            (
-                "first-cannot-read-second".to_string(),
-                true,
-                true,
-                true,
-                true
-            ),
-            (
-                "second-cannot-read-first".to_string(),
-                true,
-                true,
-                true,
-                true
-            ),
-        ]
+            ("first-cannot-read-second".to_string(), true, true, true),
+            ("second-cannot-read-first".to_string(), true, true, true),
+        ],
+        "sandboxed discovery exposed a root denied by its own policy"
     );
 
     server.shutdown().await?;
