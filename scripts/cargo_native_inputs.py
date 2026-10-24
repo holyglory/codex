@@ -109,7 +109,7 @@ def prepare(state):
     command = [
         "bash",
         ".github/scripts/run-bazel-ci.sh",
-        "--remote-download-toplevel",
+        "--remote-download-all",
         "--",
         "build",
     ]

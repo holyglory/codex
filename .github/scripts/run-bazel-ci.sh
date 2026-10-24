@@ -5,6 +5,7 @@ set -euo pipefail
 print_failed_bazel_test_logs=0
 print_failed_bazel_action_summary=0
 remote_download_toplevel=0
+remote_download_all=0
 windows_msvc_host_platform=0
 windows_cross_compile=0
 
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --remote-download-toplevel)
       remote_download_toplevel=1
+      shift
+      ;;
+    --remote-download-all)
+      remote_download_all=1
       shift
       ;;
     --windows-msvc-host-platform)
@@ -42,7 +47,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: $0 [--print-failed-test-logs] [--print-failed-action-summary] [--remote-download-toplevel] [--windows-msvc-host-platform] [--windows-cross-compile] -- <bazel args> -- <targets>" >&2
+  echo "Usage: $0 [--print-failed-test-logs] [--print-failed-action-summary] [--remote-download-toplevel|--remote-download-all] [--windows-msvc-host-platform] [--windows-cross-compile] -- <bazel args> -- <targets>" >&2
   exit 1
 fi
 
@@ -293,7 +298,12 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; the
   fi
 fi
 
-if [[ $remote_download_toplevel -eq 1 ]]; then
+if [[ $remote_download_all -eq 1 ]]; then
+  # Tree artifacts such as the voice runtime contain files below the declared
+  # top-level output. Download all outputs when a caller needs those files on
+  # disk for a subsequent Cargo invocation.
+  post_config_bazel_args+=(--remote_download_outputs=all)
+elif [[ $remote_download_toplevel -eq 1 ]]; then
   # Override the CI config's remote_download_minimal setting when callers need
   # the built artifact to exist on disk after the command completes.
   post_config_bazel_args+=(--remote_download_toplevel)
