@@ -2120,10 +2120,25 @@ impl TestAppServerBuilder {
                     .file_name()
                     .context("code-mode host executable should have a filename")?,
             );
+            // CI can supply verified private seed copies once per run. This
+            // keeps per-test hard links independent of Bazel's read-only outputs.
+            let install_sources =
+                std::env::var_os("CODEX_TEST_INSTALL_SOURCE_DIR").map(std::path::PathBuf::from);
             for (source, destination) in [
                 (&program, &staged_program),
                 (&code_mode_host_program, &staged_host),
             ] {
+                let seeded_source = match &install_sources {
+                    Some(directory) => Some(
+                        directory.join(
+                            source
+                                .file_name()
+                                .context("staged executable should have a filename")?,
+                        ),
+                    ),
+                    None => None,
+                };
+                let source = seeded_source.as_ref().unwrap_or(source);
                 std::fs::hard_link(source, destination)
                     .or_else(|_| codex_utils_cargo_bin::copy_executable(source, destination))
                     .with_context(|| format!("stage executable {}", source.display()))?;
