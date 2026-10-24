@@ -463,11 +463,11 @@ fn materialized_windows_roots_preserve_spellings_without_changing_access() {
         .entries
         .iter()
         .filter_map(|entry| match &entry.path {
-            FileSystemPath::Path { path } if entry.access.can_write() => Some(path.as_str()),
+            FileSystemPath::Path { path } if entry.access.can_write() => Some(path.to_string()),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(spellings, vec![roots[0].as_str(), roots[1].as_str()]);
+    assert_eq!(spellings, vec![roots[0].to_string(), roots[1].to_string()]);
     let context = FileSystemSandboxPolicyContext {
         cwd: &cwd,
         workspace_roots: std::slice::from_ref(&cwd),
