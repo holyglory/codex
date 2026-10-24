@@ -2101,9 +2101,12 @@ impl TestAppServerBuilder {
         {
             // Bazel keeps binary targets in separate package directories.
             // Recreate the installed sibling layout without a path override.
-            // Prefer Bazel's TEST_TMPDIR so staging can share a filesystem with
-            // the binaries and avoid expensive cross-filesystem copies.
-            let install_dir = match std::env::var_os("TEST_TMPDIR") {
+            // CI may keep executable fixtures on the build volume while ordinary
+            // test scratch uses another disk. Keeping these files beside the build
+            // volume avoids copying both large executables for every test.
+            let install_root = std::env::var_os("CODEX_TEST_INSTALL_TMPDIR")
+                .or_else(|| std::env::var_os("TEST_TMPDIR"));
+            let install_dir = match install_root {
                 Some(test_tmpdir) => TempDir::new_in(test_tmpdir)?,
                 None => TempDir::new()?,
             };
@@ -2117,10 +2120,25 @@ impl TestAppServerBuilder {
                     .file_name()
                     .context("code-mode host executable should have a filename")?,
             );
+            // CI can supply verified private seed copies once per run. This
+            // keeps per-test hard links independent of Bazel's read-only outputs.
+            let install_sources =
+                std::env::var_os("CODEX_TEST_INSTALL_SOURCE_DIR").map(std::path::PathBuf::from);
             for (source, destination) in [
                 (&program, &staged_program),
                 (&code_mode_host_program, &staged_host),
             ] {
+                let seeded_source = match &install_sources {
+                    Some(directory) => Some(
+                        directory.join(
+                            source
+                                .file_name()
+                                .context("staged executable should have a filename")?,
+                        ),
+                    ),
+                    None => None,
+                };
+                let source = seeded_source.as_ref().unwrap_or(source);
                 std::fs::hard_link(source, destination)
                     .or_else(|_| codex_utils_cargo_bin::copy_executable(source, destination))
                     .with_context(|| format!("stage executable {}", source.display()))?;
