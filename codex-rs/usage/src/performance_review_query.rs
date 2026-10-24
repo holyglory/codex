@@ -221,6 +221,8 @@ pub(crate) const TOKEN_FACTS: &str = ", owned_tokens AS (
     GROUP BY token.operation_id, token.source_event_id, token.category_path, token.measurement_provenance
 )";
 
+// Keep the token summary as one aggregate scan. Separate scalar subqueries for
+// each token field repeatedly walk the materialized facts on large windows.
 pub(super) const OPERATION_COVERAGE: &str = "SELECT
     (SELECT COUNT(*) FROM selected) raw_operations,
     COUNT(*) deduplicated_operations,
