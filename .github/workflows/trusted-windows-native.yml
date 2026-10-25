@@ -978,8 +978,12 @@ jobs:
         \ -//codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/general.log\"\
         \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/general-exit-code.txt\"\
         \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
         \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
@@ -988,7 +992,7 @@ jobs:
         \ { throw 'Executable fixture helper differs.' }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path\
         \ $root 'binary-fixture-phase.py') 'prepare'\nif ($LASTEXITCODE -ne 0) { throw 'Executable fixture preparation\
         \ failed.' }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'capture-native-test.py')).Hash.ToLowerInvariant()\
-        \ -cne '240e28d0c75137c76d288c2143af71f8b20cdbab6e417de8fd78e597446cd869') { throw 'Capture helper differs.'\
+        \ -cne '42dae3d8175bf803aba6d9fbe4fe30bc83a8836b92a67d76b4e48fb107bf1a7c') { throw 'Capture helper differs.'\
         \ }\n$null = New-Item -ItemType Directory -Path (Join-Path $root 'captures-general') -ErrorAction Stop\n\
         & 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py')\
         \ 'general' $script\nexit $LASTEXITCODE\n"
@@ -1063,13 +1067,17 @@ jobs:
         \ -- //codex-rs/core:core-all-test \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/core.log\"\nstatus=${PIPESTATUS[0]}\n\
         set -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/core-exit-code.txt\"\nexit \"\
         $status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
         \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
         \ 'core'\nif ($LASTEXITCODE -ne 0) { throw 'D scratch preparation failed.' }\nif ((Get-FileHash -LiteralPath\
-        \ (Join-Path $root 'capture-native-test.py')).Hash.ToLowerInvariant() -cne '240e28d0c75137c76d288c2143af71f8b20cdbab6e417de8fd78e597446cd869')\
+        \ (Join-Path $root 'capture-native-test.py')).Hash.ToLowerInvariant() -cne '42dae3d8175bf803aba6d9fbe4fe30bc83a8836b92a67d76b4e48fb107bf1a7c')\
         \ { throw 'Capture helper differs.' }\n$null = New-Item -ItemType Directory -Path (Join-Path $root 'captures-core')\
         \ -ErrorAction Stop\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py')\
         \ 'core' $script\nexit $LASTEXITCODE\n"
@@ -1129,13 +1137,17 @@ jobs:
         \ -- //codex-rs/exec-server:exec-server-exec_process-test \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/exec.log\"\
         \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/exec-exit-code.txt\"\
         \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
         \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
         \ 'exec'\nif ($LASTEXITCODE -ne 0) { throw 'D scratch preparation failed.' }\nif ((Get-FileHash -LiteralPath\
-        \ (Join-Path $root 'capture-native-test.py')).Hash.ToLowerInvariant() -cne '240e28d0c75137c76d288c2143af71f8b20cdbab6e417de8fd78e597446cd869')\
+        \ (Join-Path $root 'capture-native-test.py')).Hash.ToLowerInvariant() -cne '42dae3d8175bf803aba6d9fbe4fe30bc83a8836b92a67d76b4e48fb107bf1a7c')\
         \ { throw 'Capture helper differs.' }\n$null = New-Item -ItemType Directory -Path (Join-Path $root 'captures-exec')\
         \ -ErrorAction Stop\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py')\
         \ 'exec' $script\nexit $LASTEXITCODE\n"
