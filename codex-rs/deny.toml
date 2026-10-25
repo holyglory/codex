@@ -88,6 +88,7 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "Owner-approved on 2026-10-18: retain upstream rust-v0.162.1 zbus_names 3.0.0 through zbus 4.4.0; maintenance advisory with no specific vulnerability; revisit with the upstream D-Bus stack migration" },
     { id = "RUSTSEC-2026-0372", reason = "Owner-approved on 2026-10-18: retain upstream rust-v0.162.1 zvariant_derive 4.2.0 through zvariant; maintenance advisory with no specific vulnerability; revisit with the upstream D-Bus stack migration" },
     { id = "RUSTSEC-2026-0374", reason = "Owner-approved on 2026-10-20: retain upstream rust-v0.162.1 basic-toml 0.1.10 through i18n-config/i18n-embed-fl/age; maintenance advisory with no specific vulnerability and no safe upgrade; revisit when the upstream secrets dependency stack changes" },
+    { id = "RUSTSEC-2026-0387", reason = "Owner-approved on 2026-10-25: retain upstream rust-v0.162.1 crypto-bigint 0.5.5 through age 0.12.1/p256 0.13; timing side-channel advisory; fixed crypto-bigint 0.7.6 requires a coordinated age/elliptic-curve migration; revisit before the next upstream refresh" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
