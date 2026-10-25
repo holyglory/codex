@@ -1,8 +1,1247 @@
-# Called only by the owner-approved private controller, pinned to an exact commit.
-# The job excludes public events; runner access belongs to the private caller.
 name: Trusted native Windows MSVC
+permissions:
+  contents: read
+jobs:
+  native-msvc:
+    if:
+      github.repository == 'holyglory/codex-win-msvc-ci' && github.event.repository.private == true && github.event_name
+      == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'holyglory' && github.triggering_actor
+      == 'holyglory'
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - codex-win-msvc
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CODEX_WINDOWS_BUILD_ROOT: H:/codex-ci
+      EXPECTED_BOOT_AFTER_UTC: ${{ inputs.boot_after_utc }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CARGO_BUILD_JOBS: "56"
+    steps:
+      - name: Verify source identity input
+        run:
+          "$ErrorActionPreference = 'Stop'\nif ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {\n  throw 'source_sha\
+          \ must be a full 40-character commit ID.'\n}\n"
+      - name: Checkout exact public candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: holyglory/codex
+          ref: ${{ inputs.source_sha }}
+          token: ${{ github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify runner identity, reboot boundary, and checkout
+        run:
+          "$ErrorActionPreference = 'Stop'\n$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\nif\
+          \ ($identity.Name -notmatch '\\\\svc_codex_runner$') { throw 'Unexpected runner identity.' }\nif (([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))\
+          \ {\n  throw 'The runner must not be an administrator.'\n}\n$workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)\n\
+          if (-not $workspace.StartsWith('H:\\codex-ci\\_work\\', [StringComparison]::OrdinalIgnoreCase)) {\n  throw\
+          \ 'The workspace must be beneath H:\\codex-ci\\_work.'\n}\n$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()\n\
+          if ($env:EXPECTED_BOOT_AFTER_UTC) {\n  $minimumBoot = [DateTimeOffset]::Parse($env:EXPECTED_BOOT_AFTER_UTC,\
+          \ [Globalization.CultureInfo]::InvariantCulture)\n  if ($boot -le $minimumBoot.UtcDateTime) { throw 'Windows\
+          \ has not rebooted since the requested checkpoint.' }\n}\n$actual = (git rev-parse HEAD).Trim()\nif ($actual\
+          \ -cne $env:SOURCE_SHA) { throw \"Checked out $actual instead of $env:SOURCE_SHA.\" }\n[ordered]@{\n  machine\
+          \ = $env:COMPUTERNAME\n  identity = $identity.Name\n  runner = $env:RUNNER_NAME\n  workspace = $workspace\n\
+          \  sourceSha = $actual\n  lastBootUtc = $boot\n} | ConvertTo-Json\n"
+      - name: Configure preinstalled native build tools
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n& 'C:\\ProgramData\\CodexRunner\\volume\\Assert-CodexBuildVolume.ps1'\n\
+          $mounted = [Text.StringBuilder]::new(128)\n$drive = [Text.StringBuilder]::new(128)\nif (-not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('H:\\\
+          codex-ci\\',$mounted,$mounted.Capacity) -or\n    -not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('R:\\\
+          ',$drive,$drive.Capacity) -or\n    $mounted.ToString() -ne $drive.ToString()) { throw 'R: is not the bounded\
+          \ build volume on H:.' }\n$root = 'R:'\n$repoRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).Replace('H:\\\
+          codex-ci\\','R:\\')\nif (-not $repoRoot.StartsWith('R:\\_work\\',[StringComparison]::OrdinalIgnoreCase))\
+          \ { throw 'Unexpected canonical repository path.' }\nforeach ($name in @('CARGO_HOME','RUSTUP_HOME','BAZELISK_HOME','HOME','USERPROFILE','APPDATA','LOCALAPPDATA','RUNNER_TOOL_CACHE','PATH'))\
+          \ {\n  $value = [Environment]::GetEnvironmentVariable($name)\n  if ($value) { \"$name=$($value.Replace('H:\\\
+          codex-ci','R:').Replace('H:/codex-ci','R:'))\" | Add-Content -Path $env:GITHUB_ENV }\n}\n$dirs = @(\n  \"\
+          $root/o\",\n  \"$root/b\",\n  \"$root/bazel-repository-cache\",\n  \"$root/bazel-repo-contents-cache\",\n\
+          \  \"$root/cargo-target\",\n  \"$root/tmp\",\n  \"$env:RUNNER_TEMP/native-codex-evidence\"\n)\n$dirs | ForEach-Object\
+          \ { New-Item -ItemType Directory -Force -Path $_ | Out-Null }\n@(\n  \"SYSTEMROOT=$([Environment]::GetFolderPath('Windows'))\"\
+          ,\n  \"windir=$([Environment]::GetFolderPath('Windows'))\",\n  \"SystemDrive=C:\",\n  \"ComSpec=C:\\Windows\\\
+          System32\\cmd.exe\",\n  \"CI_BUILD_ROOT=$root\",\n  \"BAZEL_OUTPUT_BASE=$root/o\",\n  \"BAZEL_OUTPUT_USER_ROOT=$root/b\"\
+          ,\n  \"BAZEL_REPOSITORY_CACHE=$root/bazel-repository-cache\",\n  \"BAZEL_REPO_CONTENTS_CACHE=$root/bazel-repo-contents-cache\"\
+          ,\n  \"CARGO_TARGET_DIR=$root/cargo-target\",\n  \"TEMP=$root/tmp\",\n  \"TMP=$root/tmp\",\n  \"CODEX_REPO_ROOT=$repoRoot\"\
+          ,\n  \"CODEX_BAZEL_WORKSPACE=$repoRoot\",\n  \"BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1\"\n) | Add-Content\
+          \ -Path $env:GITHUB_ENV\n"
+      - name: Import and verify the native x64 MSVC SDK environment
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n# The service account cannot enumerate the installer catalog through\
+          \ vswhere.\n# This runner has a dedicated fixed installation, verified by compilation below.\n$installPath\
+          \ = 'C:\\BuildTools'\n$vsDevCmd = Join-Path $installPath 'Common7/Tools/VsDevCmd.bat'\nif (-not (Test-Path\
+          \ -LiteralPath $vsDevCmd -PathType Leaf)) { throw 'The dedicated MSVC Build Tools installation is missing.'\
+          \ }\n$envLines = & $env:ComSpec /d /c ('\"{0}\" -no_logo -arch=x64 -host_arch=x64 >nul && set' -f $vsDevCmd)\n\
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }\n$exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')\n\
+          foreach ($line in $envLines) {\n  if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1])\
+          \ {\n    [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')\n    \"$($matches[1])=$($matches[2])\"\
+          \ | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n  }\n}\nforeach ($name in @('INCLUDE','LIB','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion'))\
+          \ {\n  if (-not [Environment]::GetEnvironmentVariable($name)) { throw \"Missing MSVC environment: $name\"\
+          \ }\n}\nif ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { throw 'Expected\
+          \ x64 MSVC host and target.' }\n@(\n  \"BAZEL_VC=$env:VCINSTALLDIR\",\n  \"BAZEL_VC_FULL_VERSION=$((Split-Path\
+          \ $env:VCToolsInstallDir.TrimEnd('\\') -Leaf))\",\n  \"BAZEL_WINSDK_FULL_VERSION=$($env:WindowsSDKVersion.TrimEnd('\\\
+          '))\"\n) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n$probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/msvc-probe'\n\
+          New-Item -ItemType Directory -Force $probe | Out-Null\n'#include <windows.h>', '#include <stdio.h>', 'int\
+          \ main(void) { printf(\"MSVC x64 SDK compile passed\\n\"); return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content\
+          \ (Join-Path $probe 'probe.c')\n& cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') \"/Fo$probe/probe.obj\"\
+          \ \"/Fe$probe/probe.exe\"\nif ($LASTEXITCODE -ne 0) { throw 'Native MSVC compilation failed.' }\n& (Join-Path\
+          \ $probe 'probe.exe')\nif ($LASTEXITCODE -ne 0) { throw 'Native MSVC probe failed.' }\n$rust = & rustc --version\n\
+          if ($LASTEXITCODE -ne 0 -or $rust -notmatch '^rustc 1\\.95\\.0 ') { throw \"Expected Rust 1.95.0; got $rust\"\
+          \ }\nWrite-Host $rust\nWrite-Host \"MSVC: $((Get-Command cl.exe).Source)\"\nWrite-Host \"Windows SDK: $env:WindowsSdkDir$env:WindowsSDKVersion\"\
+          \n"
+      - name: Prepare pinned Windows voice inputs
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n# Bazel's injected repository must use the normal drive path too.\n\
+          $env:RUNNER_TEMP = [IO.Path]::GetFullPath($env:RUNNER_TEMP).Replace('H:\\codex-ci\\','R:\\')\nif (-not $env:RUNNER_TEMP.StartsWith('R:\\\
+          ',[StringComparison]::OrdinalIgnoreCase)) { throw 'Voice tools must use the bounded build volume.' }\n$manifest\
+          \ = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json\nif (-not $env:SystemRoot\
+          \ -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Expected the native x64 Windows OS environment.'\
+          \ }\n\"VOICE_WINDOWS_SYSTEM_ROOT=$env:SystemRoot\" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n\"\
+          VOICE_WINDOWS_HOST_ARCH=$env:PROCESSOR_ARCHITECTURE\" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n\
+          $pin = $manifest.archive\n$source = $manifest.sourceArchive\n$directory = Join-Path $env:RUNNER_TEMP 'voice-cygwin-snapshot'\n\
+          New-Item -ItemType Directory -Force -Path $directory | Out-Null\nforeach ($asset in @($pin, $source)) {\n\
+          \  $uri = \"https://github.com/openai/codex/releases/download/$($pin.tag)/$($asset.name)\"\n  Invoke-WebRequest\
+          \ -Uri $uri -OutFile (Join-Path $directory $asset.name)\n}\n$sourceFile = Join-Path $directory $source.name\n\
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or\n    (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -ne $source.sha256) {\n  throw 'Public Cygwin source archive mismatch.'\n}\n$archiveFile = Join-Path $directory\
+          \ $pin.name\nif ((Get-Item $archiveFile).Length -ne $pin.bytes -or\n    (Get-FileHash $archiveFile -Algorithm\
+          \ SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {\n  throw 'Pinned Cygwin archive mismatch.'\n}\n\"VOICE_WINDOWS_TARGET=x86_64-pc-windows-msvc\"\
+          \ | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n\"VOICE_CYGWIN_ARCHIVE=$archiveFile\" | Out-File $env:GITHUB_ENV\
+          \ -Encoding utf8 -Append\n# Use the normal drive path so the pinned-image helper can reject reparse points.\n\
+          & ./.github/scripts/setup-voice-windows.ps1 -Target x86_64-pc-windows-msvc -SnapshotArchive $archiveFile\
+          \ -PkgconfImage 'R:\\provisioned\\pkgconf\\3.0.6-x64\\native'\n"
+      - name: Provide a working python3 launcher for native actions
+        shell: pwsh
+        run: '$ErrorActionPreference = ''Stop''
 
-on:
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+
+          $venv = Join-Path $env:CI_BUILD_ROOT ''tools/python-native''
+
+          # Use Python''s venv launcher, which retains the base interpreter and DLL paths.
+
+          # A renamed copy of the base python.exe outside its installation is insufficient.
+
+          & $python -m venv --without-pip --system-site-packages $venv
+
+          if ($LASTEXITCODE -ne 0) { throw ''Could not prepare the Python launcher environment.'' }
+
+          $shim = Join-Path $venv ''Scripts''
+
+          Copy-Item -LiteralPath (Join-Path $shim ''python.exe'') -Destination (Join-Path $shim ''python3.exe'') -Force
+
+          & (Join-Path $shim ''python3.exe'') -c ''import sys, ssl; print(sys.executable); print(sys.version)''
+
+          if ($LASTEXITCODE -ne 0) { throw ''The python3 launcher failed.'' }
+
+          "PATH=$shim;$env:PATH" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "CODEX_PYTHON_BIN=$shim" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          '
+      - name: Prepare checksum-pinned zstd for local package archives
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n$code = @'\nimport json, os, sys\nfrom pathlib import Path\nsys.path.insert(0,\
+          \ 'scripts')\nfrom codex_package.dotslash import fetch_dotslash_executable\nfrom codex_package.targets import\
+          \ TARGET_SPECS\n# The zstd DotSlash manifest has leading comments; the shared fetcher's\n# JSON reader only\
+          \ strips its shebang. Normalize a separate evidence copy.\nlines = Path('.github/workflows/zstd').read_text(encoding='utf-8').splitlines()\n\
+          while lines and (not lines[0].strip() or lines[0].lstrip().startswith(('#!', '//'))):\n    lines.pop(0)\n\
+          manifest = Path(os.environ['RUNNER_TEMP']) / 'native-codex-evidence' / 'zstd-manifest.json'\nmanifest.write_text(json.dumps(json.loads('\\\
+          n'.join(lines))), encoding='utf-8')\npath = fetch_dotslash_executable(TARGET_SPECS['x86_64-pc-windows-msvc'],\
+          \ manifest_path=manifest, artifact_label='zstd', cache_key='zstd-windows-x64', dest_name='zstd.exe')\nprint(path)\n\
+          '@\n$zstd = & python3.exe -c $code\nif ($LASTEXITCODE -ne 0 -or -not $zstd) { throw 'Could not prepare checksum-pinned\
+          \ zstd.' }\n$zstd = $zstd.Trim()\nif (-not ([IO.Path]::GetFullPath($zstd)).StartsWith('R:\\', [StringComparison]::OrdinalIgnoreCase))\
+          \ { throw 'zstd must be cached on the bounded build volume.' }\n& $zstd --version\nif ($LASTEXITCODE -ne\
+          \ 0) { throw 'zstd failed to execute.' }\nSplit-Path -Parent $zstd | Out-File $env:GITHUB_PATH -Encoding\
+          \ utf8 -Append\n"
+      - name: Compute and verify the native Windows Bazel path
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n& ./.github/scripts/compute-bazel-windows-path.ps1\n# The upstream\
+          \ filter recognizes hosted Visual Studio paths but misses C:\\BuildTools.\n$derived = Get-Content $env:GITHUB_ENV\
+          \ | Where-Object { $_.StartsWith('CODEX_BAZEL_WINDOWS_PATH=') } | Select-Object -Last 1\nif (-not $derived)\
+          \ { throw 'Stable Windows Bazel PATH was not generated.' }\n$entries = @(\n  (Join-Path $env:VCToolsInstallDir\
+          \ 'bin/HostX64/x64'),\n  (Join-Path $env:WindowsSdkBinPath \"$($env:WindowsSDKVersion.TrimEnd('\\'))/x64\"\
+          ),\n  $env:CODEX_PYTHON_BIN\n) + ($derived.Substring('CODEX_BAZEL_WINDOWS_PATH='.Length) -split ';')\n$stablePath\
+          \ = ($entries | Where-Object { $_ } | Select-Object -Unique) -join ';'\n$env:PATH = $stablePath\nforeach\
+          \ ($command in @('cl.exe','link.exe','rc.exe','python3.exe','git.exe','node.exe','pwsh.exe')) {\n  Write-Host\
+          \ \"$command -> $((Get-Command $command -ErrorAction Stop).Source)\"\n}\n& python3.exe -c 'import ssl, sys;\
+          \ print(sys.version)'\nif ($LASTEXITCODE -ne 0) { throw 'Python failed under the Bazel action PATH.' }\n\
+          \"CODEX_BAZEL_WINDOWS_PATH=$stablePath\" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\nWrite-Host 'Bazel\
+          \ target: //:windows_x86_64_msvc; host: //:local_windows_msvc'\n"
+      - name: Require verified isolated-VM coverage for this exact source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run:
+          "$ErrorActionPreference = 'Stop'\n$root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'native-codex-evidence')).Replace('H:\\\
+          codex-ci\\','R:\\')\nif ([IO.Path]::GetPathRoot($root) -ine 'R:\\') { throw 'Coverage evidence must remain\
+          \ on the H-backed volume.' }\n$null = New-Item -ItemType Directory -Path $root -Force\n$helper = @'\n\"\"\
+          \"Validate the exact-source VM result and account for the host/guest test split.\"\"\"\nimport argparse\n\
+          from collections import Counter\nimport hashlib\nimport json\nimport os\nfrom pathlib import Path\nimport\
+          \ re\nimport subprocess\nfrom urllib.parse import unquote, urlparse\n\nSOURCE_REPOSITORY = \"holyglory/codex\"\
+          \nCONTROLLER_REPOSITORY = \"holyglory/codex-win-msvc-ci\"\nVM_ID = \"23b78cc8-71f0-45c1-ad87-f763fd2c1165\"\
+          \nCOUNTS = {\n    \"//codex-rs/core:core-all-test\": (9, 0),\n    \"//codex-rs/exec-server:exec-server-exec_process-test\"\
+          : (1, 0),\n    \"//codex-rs/exec-server:exec-server-file_system_windows-test\": (65, 2),\n    \"//codex-rs/windows-sandbox-rs:windows-sandbox-rs-helper_manifest-test\"\
+          : (1, 0),\n    \"//codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests\": (277, 5),\n}\nMIXED_FILTERS\
+          \ = {\n    \"//codex-rs/core:core-all-test\": \"suite::windows_sandbox::\",\n    \"//codex-rs/exec-server:exec-server-exec_process-test\"\
+          :\n        \"windows_sandbox::tmpdir_uses_command_environment_over_rpc::elevated\",\n}\nBASE_FILTERS = [\n\
+          \    \"suite::code_mode::code_mode_can_call_hidden_dynamic_tools\",\n    \"tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child\"\
+          ,\n]\nLINUX_ONLY_TESTS = {\n    \"//bazel/rules/testing/wine:wine-test-support-unit-tests\",\n    \"//codex-rs/app-server:app-server-all-wine-exec-test\"\
+          ,\n    \"//codex-rs/core/tests/remote_env_windows:smoke-test\",\n    \"//codex-rs/core:core-all-wine-exec-test\"\
+          ,\n    \"//codex-rs/core:core-mcp_trace_propagation-wine-exec-test\",\n    \"//codex-rs/core:core-responses_headers-wine-exec-test\"\
+          ,\n    \"//codex-rs/exec-server:exec-server-current-version-test\",\n    \"//codex-rs/exec-server:exec-server-minimum-release-test\"\
+          ,\n    \"//codex-rs/exec-server:exec-server-stable-release-test\",\n}\n\n\ndef require(condition, message):\n\
+          \    if not condition:\n        raise ValueError(message)\n\n\ndef digest(value, length=64):\n    return\
+          \ isinstance(value, str) and re.fullmatch(\"[0-9a-f]{\" + str(length) + \"}\", value)\n\n\ndef inventory_counts(values):\n\
+          \    require(isinstance(values, list) and 0 < len(values) < 100000, \"Invalid test inventory\")\n    require(all(isinstance(n,\
+          \ str) and re.fullmatch(r\"\\S{1,500}\", n) for n in values), \"Invalid test name\")\n    return Counter(values)\n\
+          \n\ndef names(values):\n    # Privileged result names remain unique under the current five-target schema.\n\
+          \    counts = inventory_counts(values)\n    require(len(values) == len(counts), \"Duplicate test name\"\
+          )\n    return set(counts)\n\n\ndef check_host_case_coverage(executed, expected):\n    require(inventory_counts(executed)\
+          \ == inventory_counts(expected),\n            \"Host and VM case coverage has a gap, overlap, or wrong multiplicity\"\
+          )\n\n\ndef validate_report(report, source_tree):\n    require(digest(source_tree, 40), \"Invalid source\
+          \ tree\")\n    require(report.get(\"schema\") == 1 and report.get(\"status\") == \"passed\", \"VM result\
+          \ has not passed\")\n    require(report.get(\"sourceRepository\") == SOURCE_REPOSITORY, \"Wrong source repository\"\
+          )\n    require(report.get(\"sourceTree\") == source_tree, \"VM result is for different source bytes\")\n\
+          \    require(report.get(\"controllerRepository\") == CONTROLLER_REPOSITORY, \"Wrong controller repository\"\
+          )\n    require(report.get(\"vmId\") == VM_ID, \"Wrong isolated VM\")\n    require(type(report.get(\"networkAdapters\"\
+          )) is int and report[\"networkAdapters\"] == 0,\n            \"Guest network isolation is not verified\"\
+          )\n    context = report.get(\"context\", {})\n    require(context == dict(machine=\"CODEX-VM-01\", identity=r\"\
+          CODEX-VM-01\\CodexVmAdmin\",\n                            administrator=True, sessionId=1, windowStation=\"\
+          WinSta0\", desktop=\"Default\"),\n            \"Wrong privileged execution context\")\n    for field in\
+          \ (\"archiveSha256\", \"manifestSha256\", \"bodySha256\", \"verificationSha256\"):\n        require(digest(report.get(field)),\
+          \ \"Missing verified evidence digest: \" + field)\n    for field in (\"bundleControllerSha\", \"validationCommit\"\
+          ):\n        require(digest(report.get(field), 40), \"Missing immutable source identity: \" + field)\n  \
+          \  require(isinstance(report.get(\"bundleRunId\"), int) and report[\"bundleRunId\"] > 0, \"Invalid bundle\
+          \ run\")\n    require(digest(report.get(\"planId\"), 32), \"Missing guest plan identity\")\n    results\
+          \ = report.get(\"results\", [])\n    require(len(results) == len(COUNTS) and {x.get(\"label\") for x in\
+          \ results} == set(COUNTS),\n            \"The VM must cover all five target selections exactly once\")\n\
+          \    for result in results:\n        label = result[\"label\"]\n        passed, ignored = COUNTS[label]\n\
+          \        require(result.get(\"successful\") is True and result.get(\"failed\") == 0, \"A guest target failed\"\
+          )\n        require(result.get(\"passed\") == passed and result.get(\"ignored\") == ignored,\n          \
+          \      \"Guest result counts differ\")\n        selected = names(result.get(\"selectedNames\"))\n      \
+          \  require(len(selected) == result.get(\"selected\") == passed + ignored, \"Incomplete guest coverage\"\
+          )\n        require(result.get(\"selection\") == MIXED_FILTERS.get(label), \"Unexpected guest filter\")\n\
+          \        require(digest(result.get(\"logSha256\")), \"Missing guest log digest\")\n        if label in MIXED_FILTERS:\n\
+          \            require(all(MIXED_FILTERS[label] in n for n in selected), \"Guest filter does not match inventory\"\
+          )\n        if label.endswith(\":exec-server-exec_process-test\"):\n            require(selected == {MIXED_FILTERS[label]},\
+          \ \"Elevated exec case must be exact\")\n    require(sum(x[\"passed\"] for x in results) == 353 and sum(x[\"\
+          ignored\"] for x in results) == 7,\n            \"Incomplete privileged result\")\n    return {x[\"label\"\
+          ]: x for x in results}\n\n\ndef partition_inventory(label, inventory, report):\n    require(label in MIXED_FILTERS,\
+          \ \"Only mixed targets can be partitioned\")\n    guest_results = validate_report(report, report[\"sourceTree\"\
+          ])\n    complete = inventory_counts(inventory)\n    moved = Counter({n:count for n,count in complete.items()\
+          \ if MIXED_FILTERS[label] in n})\n    require(moved == Counter(guest_results[label][\"selectedNames\"]),\n\
+          \            \"VM and host inventories do not cover the same privileged cases\")\n    upstream = Counter({n:count\
+          \ for n,count in complete.items() if any(f in n for f in BASE_FILTERS)})\n    require(not moved & upstream,\
+          \ \"Privileged coverage overlaps an upstream exclusion\")\n    host = complete - moved - upstream\n    require(host\
+          \ and not host & moved and host + moved + upstream == complete, \"Invalid coverage partition\")\n    return\
+          \ dict(label=label, fullNames=sorted(complete.elements()), hostNames=sorted(host.elements()),\n        \
+          \        guestNames=sorted(moved.elements()), upstreamExcludedNames=sorted(upstream.elements()))\n\n\ndef\
+          \ bounded_build_path(value):\n    path = Path(value).resolve(strict=True)\n    require(path.drive.upper()\
+          \ == \"R:\", \"Evidence must remain on the H-backed build volume\")\n    return path\n\n\ndef inventory_command(label,\
+          \ executable):\n    expected = {\"//codex-rs/core:core-all-test\": \".bat\",\n                \"//codex-rs/exec-server:exec-server-exec_process-test\"\
+          : \".exe\"}\n    require(label in expected and executable.suffix.lower() == expected[label],\n         \
+          \   \"Unexpected native mixed-target executable type\")\n    command = [str(executable), \"--list\", \"\
+          --format\", \"terse\"]\n    return [r\"C:\\Windows\\System32\\cmd.exe\", \"/d\", \"/c\", *command] if executable.suffix.lower()\
+          \ == \".bat\" else command\n\n\ndef inventory_environment(row, manifest):\n    env = dict(os.environ)\n\
+          \    for key in (\"TEST_TOTAL_SHARDS\", \"TEST_SHARD_INDEX\", \"RUNFILES_DIR\", \"TEST_SRCDIR\", \"RULES_RUST_TEST_TOTAL_SHARDS\"\
+          ,\n                \"RULES_RUST_TEST_SHARD_INDEX\", \"TESTBRIDGE_TEST_ONLY\", \"CODEX_BAZEL_TEST_SKIP_FILTERS\"\
+          ):\n        env.pop(key, None)\n    env.update(row.get(\"environment\", {}))\n    # Direct execution bypasses\
+          \ Bazel's test setup, which normally supplies the\n    # workspace prefix used by the Windows wrapper's\
+          \ manifest lookup.\n    env.update(TEST_WORKSPACE=\"_main\", RUNFILES_MANIFEST_FILE=str(manifest), RUNFILES_MANIFEST_ONLY=\"\
+          1\")\n    return env\n\n\ndef collect_inventories(metadata, execroot_file, report, output):\n    validate_report(report,\
+          \ report[\"sourceTree\"])\n    rows = [json.loads(l) for l in Path(metadata).read_text().splitlines() if\
+          \ l.startswith(\"{\")]\n    for row in rows:\n        row[\"label\"] = row[\"label\"].removeprefix(\"@@\"\
+          )\n    require(len(rows) == 2 and {r[\"label\"] for r in rows} == set(MIXED_FILTERS), \"Expected the two\
+          \ mixed targets\")\n    roots = [l.strip() for l in Path(execroot_file).read_text().splitlines()\n     \
+          \        if re.fullmatch(r\"[Rr]:[/\\\\]b[/\\\\][^\\r\\n]+[/\\\\]execroot[/\\\\]_main\", l.strip())]\n \
+          \   require(len(roots) == 1, \"Expected one dedicated Bazel execroot\")\n    root = bounded_build_path(roots[0])\n\
+          \    partitions = []\n    for row in rows:\n        executable = bounded_build_path(root / row[\"executable\"\
+          ])\n        manifest = bounded_build_path(root / row[\"manifest\"])\n        require(executable.is_relative_to(root)\
+          \ and manifest.is_relative_to(root), \"Runfiles escaped the execroot\")\n        if executable.suffix.lower()\
+          \ == \".bat\":\n            resolved_names = re.findall(r'call :resolve_runfile \"([^\"]+)\"', executable.read_text())\n\
+          \            require(len(resolved_names) >= 2, \"Unexpected Windows workspace launcher\")\n            mappings\
+          \ = dict(line.split(\" \", 1) for line in manifest.read_text().splitlines() if \" \" in line)\n        \
+          \    binary_key = resolved_names[1]\n            mapped = mappings.get(binary_key, mappings.get(\"_main/\"\
+          \ + binary_key))\n            require(mapped, \"Test binary missing from runfiles manifest\")\n        \
+          \    binary = bounded_build_path(mapped)\n            require(binary.is_relative_to(root) and binary.is_file()\
+          \ and binary.stat().st_size > 0,\n                    \"Test binary must be materialized before direct enumeration\"\
+          )\n        env = inventory_environment(row, manifest)\n        result = subprocess.run(inventory_command(row[\"\
+          label\"], executable), cwd=root, env=env,\n                                capture_output=True, timeout=120)\n\
+          \        require(result.returncode == 0, \"Native test inventory failed\")\n        text = result.stdout.decode(\"\
+          utf-8\", errors=\"strict\")\n        inventory = re.findall(r\"^(.+): test\\r?$\", text, re.M)\n       \
+          \ partitions.append(partition_inventory(row[\"label\"], inventory, report))\n    Path(output).write_text(json.dumps(dict(sourceTree=report[\"\
+          sourceTree\"], partitions=partitions), indent=2) + \"\\n\")\n\n\ndef events(path):\n    return [json.loads(l)\
+          \ for l in Path(path).read_text().splitlines() if l]\n\n\ndef native_test_selection(data):\n    configured\
+          \ = {e[\"id\"][\"targetConfigured\"][\"label\"] for e in data\n                  if e.get(\"configured\"\
+          , {}).get(\"testSize\")}\n    # defs.bzl assigns WINDOWS_GNULLVM_ONLY to the cross wrappers. The Wine\n\
+          \    # rules and exec-server compatibility rules explicitly require Linux.\n    incompatible = {n for n\
+          \ in configured if n.endswith(\"-windows-cross\")} | (configured & LINUX_ONLY_TESTS)\n    skipped = {e[\"\
+          id\"].get(\"targetCompleted\", {}).get(\"label\") for e in data\n               if e.get(\"aborted\", {}).get(\"\
+          reason\") == \"SKIPPED\"} & configured\n    require(skipped == incompatible, \"Unexpected native target\
+          \ skip or platform-selection change\")\n    return configured, configured - incompatible, incompatible\n\
+          \n\ndef check_events(data, expected_labels):\n    summaries = {e[\"id\"][\"testSummary\"][\"label\"]: e[\"\
+          testSummary\"] for e in data if \"testSummary\" in e}\n    results = [{\"id\": e[\"id\"][\"testResult\"\
+          ], **e[\"testResult\"]} for e in data if \"testResult\" in e]\n    require(set(summaries) == expected_labels,\
+          \ \"Missing or unexpected host test targets\")\n    require(all(s.get(\"overallStatus\") == \"PASSED\" for\
+          \ s in summaries.values()), \"A host target failed\")\n    require(all(r[\"status\"] == \"PASSED\" and r[\"\
+          id\"][\"run\"] == r[\"id\"][\"attempt\"] == 1\n                and not r.get(\"cachedLocally\") and not\
+          \ r.get(\"cachedRemotely\") for r in results),\n            \"Host coverage requires passing, uncached,\
+          \ first-attempt results\")\n    identities = [json.dumps(r[\"id\"], sort_keys=True) for r in results]\n\
+          \    require(len(identities) == len(set(identities)), \"Duplicate host shard result\")\n    for label, summary\
+          \ in summaries.items():\n        require(sum(r[\"id\"][\"label\"] == label for r in results) == summary[\"\
+          totalRunCount\"] > 0,\n                \"Host shard coverage is incomplete\")\n    finished = [e[\"finished\"\
+          ] for e in data if \"finished\" in e]\n    require(len(finished) == 1 and finished[0].get(\"overallSuccess\"\
+          ) is True\n            and finished[0][\"exitCode\"][\"name\"] == \"SUCCESS\", \"Host test command did not\
+          \ succeed\")\n    return results\n\n\ndef finish(report, inventory, build_path, general_path, core_path,\
+          \ exec_path, output):\n    guest = validate_report(report, inventory[\"sourceTree\"])\n    build = events(build_path)\n\
+          \    configured, targets, incompatible = native_test_selection(build)\n    require(len(configured) == 477\
+          \ and len(targets) == 331 and set(guest) <= targets,\n            \"Full native build selection differs\"\
+          )\n    finish_events = [e[\"finished\"] for e in build if \"finished\" in e]\n    require(len(finish_events)\
+          \ == 1 and finish_events[0].get(\"overallSuccess\") is True\n            and finish_events[0][\"exitCode\"\
+          ][\"name\"] == \"SUCCESS\", \"Full native build did not pass\")\n    all_results = check_events(events(general_path),\
+          \ targets - set(guest))\n    partitions = {p[\"label\"]: p for p in inventory[\"partitions\"]}\n    require(len(inventory[\"\
+          partitions\"]) == 2 and set(partitions) == set(MIXED_FILTERS), \"Missing mixed inventory\")\n    for label,\
+          \ path in zip(MIXED_FILTERS, (core_path, exec_path), strict=True):\n        expected = partition_inventory(label,\
+          \ partitions[label][\"fullNames\"], report)\n        require(partitions[label] == expected, \"Changed coverage\
+          \ partition\")\n        results = check_events(events(path), {label})\n        executed = []\n        for\
+          \ result in results:\n            logs = [x[\"uri\"] for x in result.get(\"testActionOutput\", []) if x[\"\
+          name\"] == \"test.log\"]\n            require(len(logs) == 1, \"Missing mixed-target test log\")\n     \
+          \       uri = urlparse(logs[0])\n            require(uri.scheme == \"file\" and not uri.netloc, \"Unexpected\
+          \ test-log location\")\n            log_path = bounded_build_path(unquote(uri.path).removeprefix(\"/\"))\n\
+          \            text = re.sub(r\"\\x1b\\[[0-?]*[ -/]*[@-~]\", \"\", log_path.read_text(encoding=\"utf-8\",\
+          \ errors=\"replace\"))\n            executed.extend(re.findall(r\"^test (\\S+) \\.\\.\\.\", text, re.M))\n\
+          \        check_host_case_coverage(executed, expected[\"hostNames\"])\n        all_results.extend(results)\n\
+          \    host_labels = {r[\"id\"][\"label\"] for r in all_results}\n    guest_only = set(guest) - set(MIXED_FILTERS)\n\
+          \    require(not host_labels & guest_only and host_labels | guest_only == targets, \"Incomplete combined\
+          \ target coverage\")\n    record = dict(schema=1, status=\"passed\", sourceTree=report[\"sourceTree\"],\
+          \ configuredTargets=len(configured),\n                  compatibleNativeTargets=len(targets), incompatibleTargets=sorted(incompatible),\n\
+          \                  hostTargets=len(host_labels), guestOnlyTargets=sorted(guest_only),\n                \
+          \  guestSelected=360, guestPassed=353, guestIgnored=7,\n                  hostResultStatuses=dict(Counter(r[\"\
+          status\"] for r in all_results)),\n                  mixedTargetCoverage=inventory[\"partitions\"], guestPlanId=report[\"\
+          planId\"],\n                  guestBundleRunId=report[\"bundleRunId\"], assertionsChanged=False)\n    Path(output).write_text(json.dumps(record,\
+          \ indent=2) + \"\\n\")\n    return record\n\n\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser()\n\
+          \    parser.add_argument(\"operation\", choices=(\"verify-report\", \"inventory\", \"finish\"))\n    parser.add_argument(\"\
+          --report\", type=Path, required=True)\n    parser.add_argument(\"--source-tree\")\n    parser.add_argument(\"\
+          --metadata\", type=Path)\n    parser.add_argument(\"--execroot\", type=Path)\n    parser.add_argument(\"\
+          --inventory\", type=Path)\n    parser.add_argument(\"--build\", type=Path)\n    parser.add_argument(\"--general\"\
+          , type=Path)\n    parser.add_argument(\"--core\", type=Path)\n    parser.add_argument(\"--exec\", dest=\"\
+          exec_events\", type=Path)\n    parser.add_argument(\"--output\", type=Path)\n    args = parser.parse_args()\n\
+          \    report = json.loads(args.report.read_text(encoding=\"utf-8-sig\"))\n    if args.operation == \"verify-report\"\
+          :\n        validate_report(report, args.source_tree)\n        print(json.dumps(dict(status=\"passed\", sourceTree=args.source_tree,\
+          \ guestSelected=360)))\n    elif args.operation == \"inventory\":\n        collect_inventories(args.metadata,\
+          \ args.execroot, report, args.output)\n    else:\n        result = finish(report, json.loads(args.inventory.read_text()),\
+          \ args.build, args.general,\n                        args.core, args.exec_events, args.output)\n       \
+          \ print(json.dumps({k: v for k, v in result.items() if k != \"mixedTargetCoverage\"}))\n'@\n[IO.File]::WriteAllText((Join-Path\
+          \ $root 'native-guest-coverage.py'), $helper.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          $query = @'\ndef format(target):\n    p = providers(target)\n    files = p[\"DefaultInfo\"].files_to_run\n\
+          \    env = p.get(\"RunEnvironmentInfo\")\n    return json.encode({\n        \"label\": str(target.label),\n\
+          \        \"executable\": files.executable.path,\n        \"manifest\": files.runfiles_manifest.path if files.runfiles_manifest\
+          \ else None,\n        \"environment\": env.environment if env else {},\n        \"inheritedEnvironmentNames\"\
+          : env.inherited_environment if env else [],\n    })\n'@\n[IO.File]::WriteAllText((Join-Path $root 'mixed-targets.cquery'),\
+          \ $query.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n$tree = (git.exe -C $env:CODEX_BAZEL_WORKSPACE\
+          \ rev-parse 'HEAD^{tree}').Trim()\nif ($LASTEXITCODE -ne 0 -or $tree -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA\
+          \ -cnotmatch '^[0-9a-f]{40}$') {\n  throw 'Source and controller must use immutable Git identities.'\n}\n\
+          $path = \"acceptance/windows-privileged/$tree.json\"\n$uri = \"https://api.github.com/repos/holyglory/codex-win-msvc-ci/contents/$($path)?ref=$($env:GITHUB_SHA)\"\
+          \ntry {\n  $response = Invoke-RestMethod -Uri $uri -Headers @{\n    Authorization = \"Bearer $env:GH_TOKEN\"\
+          \n    Accept = 'application/vnd.github+json'\n    'X-GitHub-Api-Version' = '2022-11-28'\n  } -TimeoutSec\
+          \ 45\n} catch {\n  throw 'A passing isolated-VM result for this source tree must exist in the pinned private\
+          \ controller commit.'\n}\nif ($response.type -cne 'file' -or $response.path -cne $path -or $response.encoding\
+          \ -cne 'base64' -or\n    $response.size -gt 1048576 -or $response.sha -cnotmatch '^[0-9a-f]{40}$') {\n \
+          \ throw 'Unexpected private VM evidence response.'\n}\n$bytes = [Convert]::FromBase64String($response.content)\n\
+          $prefix = [Text.Encoding]::UTF8.GetBytes(\"blob $($bytes.Length)`0\")\n$blob = [Security.Cryptography.SHA1]::Create()\n\
+          try { $actualBlob = [Convert]::ToHexString($blob.ComputeHash([byte[]]($prefix + $bytes))).ToLowerInvariant()\
+          \ }\nfinally { $blob.Dispose() }\nif ($actualBlob -cne $response.sha -or $bytes.Length -ne $response.size)\
+          \ { throw 'Private evidence blob differs.' }\n$report = Join-Path $root 'privileged-guest-result.json'\n\
+          [IO.File]::WriteAllBytes($report, $bytes)\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path\
+          \ $root 'native-guest-coverage.py') verify-report --report $report --source-tree $tree\nif ($LASTEXITCODE\
+          \ -ne 0) { throw 'Privileged guest coverage is incomplete or belongs to another source tree.' }\n[ordered]@{\
+          \ controllerSha=$env:GITHUB_SHA; sourceTree=$tree; path=$path; blobSha=$response.sha;\n  reportSha256=(Get-FileHash\
+          \ -LiteralPath $report -Algorithm SHA256).Hash.ToLowerInvariant() } |\n  ConvertTo-Json | Set-Content (Join-Path\
+          \ $root 'privileged-evidence-origin.json')\n\"NATIVE_SOURCE_TREE=$tree\" | Out-File -FilePath $env:GITHUB_ENV\
+          \ -Encoding utf8 -Append\n\"SCRATCH_SOURCE_TREE=$tree\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8\
+          \ -Append\n"
+      - name: Build the complete native MSVC target selection
+        shell: bash
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        run:
+          "set -euo pipefail\ncd \"$(cygpath -u \"$CODEX_BAZEL_WORKSPACE\")\"\nargs=(\n --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp\
+          \ --config=ci-windows --platforms=//:windows_x86_64_msvc --keep_going\n \"--action_env=SystemRoot=${SYSTEMROOT}\"\
+          \ \"--host_action_env=SystemRoot=${SYSTEMROOT}\"\n \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \ \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\n --remote_download_outputs=all\
+          \ --disk_cache=R:/bazel-disk-cache --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d\n\
+          \ --jobs=56 --local_resources=cpu=56\n\n)\ntargets=(\n //...\n -//third_party/v8:all\n -//codex-rs/v8-poc:v8-poc-unit-tests\n\
+          )\nset +e\n./.github/scripts/run-bazel-ci.sh --print-failed-action-summary --print-failed-test-logs --windows-msvc-host-platform\
+          \ -- \\\n build \"${args[@]}\"  \\\n --profile=\"$RUNNER_TEMP/native-codex-evidence/build-profile.json.gz\"\
+          \ \\\n --build_event_json_file=\"$RUNNER_TEMP/native-codex-evidence/build-events.json\" \\\n -- \"${targets[@]}\"\
+          \ \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/build.log\"\nstatus=${PIPESTATUS[0]}\nset -e\nprintf\
+          \ '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/build-exit-code.txt\"\nexit \"$status\"\n"
+        id: build
+      - name: Prepare private desktop and D scratch helpers
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n$root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'native-codex-evidence')).Replace('H:\\\
+          codex-ci\\','R:\\')\nif ([IO.Path]::GetPathRoot($root) -ine 'R:\\') { throw 'Test evidence must remain on\
+          \ the H-backed build volume.' }\nif ($env:SystemDrive -ine 'C:') { throw 'Unexpected Windows system drive.'\
+          \ }\n$local = [IO.Path]::GetFullPath($env:LOCALAPPDATA)\nif (-not $local.StartsWith('R:\\',[StringComparison]::OrdinalIgnoreCase)\
+          \ -or -not (Test-Path -LiteralPath $local -PathType Container)) {\n  throw 'LOCALAPPDATA must be the dedicated\
+          \ existing runner profile on R:.'\n}\n$null = New-Item -ItemType Directory -Path $root -Force\n$tool = @'\n\
+          from contextlib import nullcontext\n\"\"\"Keep positive identity rules and bounded context for every observer\
+          \ OS error.\"\"\"\nfrom contextlib import contextmanager\nfrom pathlib import Path\nimport json,os,stat,threading,time\n\
+          \ndef classify_fixture_identity(device,inode,expected):\n    if device==0 or inode==0:return 'unavailable'\n\
+          \    return 'hard_link' if (device,inode)==expected else 'copy'\n\n@contextmanager\ndef observe_binary_fixtures(folder,prepared,record):\n\
+          \    folder=Path(folder).resolve(strict=True)\n    assert folder.drive.upper()=='R:' and folder==Path(prepared['root'])\n\
+          \    expected={p['name']:(p['device'],p['inode']) for p in prepared['probes']}\n    assert set(expected)=={'codex-app-server.exe','codex-code-mode-host.exe'}\n\
+          \    assert all(d>0 and i>0 for d,i in expected.values())\n    stop=threading.Event();linked=set();copied=set();unavailable=set();directories=set()\n\
+          \    record.update(root=str(folder),samples=0,observedDirectories=0,hardLinkedExecutables=0,\n        hardLinksByExecutable={name:0\
+          \ for name in expected},copiedExecutables=0,errors=0,observerStopped=False,\n        identityMethod='positive-volume-and-file-id-v1',unavailableIdentitySamples=0,unavailableOnlyExecutables=0,\n\
+          \        unavailableIdentityExamples=[],copyIdentityExamples=[],errorExamples=[],errorExamplesTruncated=0)\n\
+          \    def sample():\n        while not stop.is_set():\n            operation='enumerate_root';directory_name=None;executable_name=None\n\
+          \            try:\n                for directory in folder.iterdir():\n                    if directory.name\
+          \ in ('.fixture-owner.json','.seed'):continue\n                    try:\n                        directory_name=directory.name;executable_name=None;operation='directory_lstat'\n\
+          \                        info=directory.lstat()\n                        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:continue\n\
+          \                        operation='directory_is_dir'\n                        if not directory.is_dir():continue\n\
+          \                        directories.add(directory.name)\n                        for name,identity in expected.items():\n\
+          \                            executable_name=name;operation='executable_lstat'\n                       \
+          \     try:file_info=(directory/name).lstat()\n                            except FileNotFoundError:continue\n\
+          \                            if file_info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:continue\n\
+          \                            key=(directory.name,name)\n                            kind=classify_fixture_identity(file_info.st_dev,file_info.st_ino,identity)\n\
+          \                            if kind=='hard_link':linked.add(key)\n                            else:\n \
+          \                               target=unavailable if kind=='unavailable' else copied\n                \
+          \                examples=record['unavailableIdentityExamples' if kind=='unavailable' else 'copyIdentityExamples']\n\
+          \                                if key not in target and len(examples)<32:\n                          \
+          \          examples.append(dict(directory=directory.name,name=name,device=file_info.st_dev,inode=file_info.st_ino,\n\
+          \                                        bytes=file_info.st_size,attributes=file_info.st_file_attributes,previouslyLinked=key\
+          \ in linked))\n                                target.add(key)\n                                if kind=='unavailable':record['unavailableIdentitySamples']+=1\n\
+          \                    except FileNotFoundError:continue\n                record.update(samples=record['samples']+1,observedDirectories=len(directories),\n\
+          \                    hardLinkedExecutables=len(linked),copiedExecutables=len(copied),\n                \
+          \    unavailableOnlyExecutables=len(unavailable-linked-copied),\n                    hardLinksByExecutable={name:sum(n==name\
+          \ for _,n in linked) for name in expected})\n                if linked and 'firstObservationUnixSeconds'\
+          \ not in record:record['firstObservationUnixSeconds']=time.time()\n            except OSError as error:\n\
+          \                record['errors']+=1\n                if len(record['errorExamples'])<32:\n            \
+          \        record['errorExamples'].append(dict(operation=operation,directory=directory_name,\n           \
+          \             name=executable_name,type=type(error).__name__,errno=error.errno,\n                      \
+          \  winerror=getattr(error,'winerror',None)))\n                else:record['errorExamplesTruncated']+=1\n\
+          \            stop.wait(0.25)\n    thread=threading.Thread(target=sample,daemon=True);thread.start()\n  \
+          \  try:yield\n    finally:\n        stop.set();thread.join(timeout=5);record['observerStopped']=not thread.is_alive()\n\
+          \n\n\"\"\"Count temporary entries during a test phase without reading their contents.\"\"\"\nfrom contextlib\
+          \ import contextmanager\nfrom pathlib import Path\nimport threading\nimport time\n\n\n@contextmanager\n\
+          def observe_scratch(folder, record):\n    folder = Path(folder).resolve(strict=True)\n    assert folder.drive.upper()\
+          \ == 'D:' and folder.name == 't'\n    stop = threading.Event()\n    seen = set()\n    record.update(root=str(folder),\
+          \ samples=0, maximumEntries=0, observedEntries=0, errors=0)\n\n    def sample():\n        while not stop.is_set():\n\
+          \            try:\n                names = {p.name for p in folder.iterdir()}\n                seen.update(names)\n\
+          \                record['samples'] += 1\n                record['maximumEntries'] = max(record['maximumEntries'],\
+          \ len(names))\n                record['observedEntries'] = len(seen)\n                if names and 'firstObservationUnixSeconds'\
+          \ not in record:\n                    record['firstObservationUnixSeconds'] = time.time()\n            except\
+          \ OSError:\n                record['errors'] += 1\n            stop.wait(0.25)\n\n    thread = threading.Thread(target=sample,\
+          \ daemon=True)\n    thread.start()\n    try:\n        yield\n    finally:\n        stop.set()\n        thread.join(timeout=5)\n\
+          \        record['observerStopped'] = not thread.is_alive()\n\nLAUNCHER = r'''#define UNICODE\n#define _UNICODE\n\
+          #include <windows.h>\n#include <sddl.h>\n#include <stdio.h>\n#include <wchar.h>\n\nint wmain(int argc, wchar_t\
+          \ **argv) {\n    if (argc != 4) return 2;\n    BOOL own_station = FALSE;\n    if (wcscmp(argv[1], L\"desktop\"\
+          ) != 0) return 2;\n    DWORD result = 1, bytes = 0, error = 0;\n    HANDLE token = NULL;\n    PTOKEN_USER\
+          \ user = NULL;\n    LPWSTR sid = NULL;\n    PSECURITY_DESCRIPTOR sd = NULL;\n    HWINSTA original = GetProcessWindowStation(),\
+          \ station = NULL;\n    HDESK desktop = NULL;\n    PROCESS_INFORMATION pi = {0};\n    HANDLE job = NULL;\n\
+          \    wchar_t name[128], desktop_name[128], full_name[512], sddl[1024], command[32768];\n    if (!original\
+          \ || !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) goto cleanup;\n    GetTokenInformation(token,\
+          \ TokenUser, NULL, 0, &bytes);\n    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || !bytes) goto cleanup;\n\
+          \    user = (PTOKEN_USER)LocalAlloc(LPTR, bytes);\n    if (!user || !GetTokenInformation(token, TokenUser,\
+          \ user, bytes, &bytes)) goto cleanup;\n    if (!ConvertSidToStringSidW(user->User.Sid, &sid)) goto cleanup;\n\
+          \    if (swprintf_s(sddl, 1024, L\"D:P(A;;GA;;;SY)(A;;GA;;;%s)(A;;0x000201ff;;;AC)S:(ML;;NW;;;LW)\", sid)\
+          \ < 0) goto cleanup;\n    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1,\
+          \ &sd, NULL)) goto cleanup;\n    SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};\n    if (swprintf_s(name,\
+          \ 128, L\"CodexProbeStation-%lu-%llu\", GetCurrentProcessId(), GetTickCount64()) < 0) goto cleanup;\n  \
+          \  if (swprintf_s(desktop_name, 128, L\"CodexProbeDesktop-%lu-%llu\", GetCurrentProcessId(), GetTickCount64())\
+          \ < 0) goto cleanup;\n    if (own_station) {\n        station = CreateWindowStationW(name, 0, WINSTA_ALL_ACCESS,\
+          \ &sa);\n        if (!station || !SetProcessWindowStation(station)) goto cleanup;\n    } else {\n      \
+          \  DWORD needed = 0;\n        if (!GetUserObjectInformationW(original, UOI_NAME, name, sizeof(name), &needed))\
+          \ goto cleanup;\n    }\n    desktop = CreateDesktopW(desktop_name, NULL, NULL, 0, GENERIC_ALL, &sa);\n \
+          \   error = desktop ? 0 : GetLastError();\n    if (!SetProcessWindowStation(original)) goto cleanup;\n \
+          \   if (!desktop) { SetLastError(error); goto cleanup; }\n    if (swprintf_s(full_name, 512, L\"%s\\\\%s\"\
+          , name, desktop_name) < 0) goto cleanup;\n    if (wcslen(argv[3]) >= 32768) { SetLastError(ERROR_BUFFER_OVERFLOW);\
+          \ goto cleanup; }\n    if (wcscpy_s(command, 32768, argv[3]) != 0) { SetLastError(ERROR_INVALID_PARAMETER);\
+          \ goto cleanup; }\n    STARTUPINFOW si = {0};\n    si.cb = sizeof(si);\n    si.lpDesktop = full_name;\n\
+          \    si.dwFlags = STARTF_USESTDHANDLES;\n    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);\n    si.hStdOutput\
+          \ = GetStdHandle(STD_OUTPUT_HANDLE);\n    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);\n    job = CreateJobObjectW(NULL,\
+          \ NULL);\n    if (!job) goto cleanup;\n    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};\n    limits.BasicLimitInformation.LimitFlags\
+          \ = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;\n    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,\
+          \ &limits, sizeof(limits))) goto cleanup;\n    if (!CreateProcessW(argv[2], command, NULL, NULL, TRUE, CREATE_NO_WINDOW\
+          \ | CREATE_SUSPENDED, NULL, NULL, &si, &pi)) goto cleanup;\n    if (!AssignProcessToJobObject(job, pi.hProcess)\
+          \ || ResumeThread(pi.hThread) == (DWORD)-1) {\n        DWORD launch_error = GetLastError();\n        TerminateProcess(pi.hProcess,\
+          \ launch_error);\n        WaitForSingleObject(pi.hProcess, 5000);\n        SetLastError(launch_error); goto\
+          \ cleanup;\n    }\n    DWORD wait = WaitForSingleObject(pi.hProcess, INFINITE);\n    if (wait == WAIT_TIMEOUT)\
+          \ {\n        TerminateProcess(pi.hProcess, 124);\n        WaitForSingleObject(pi.hProcess, 5000);\n    \
+          \    result = 124;\n    } else if (wait == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &result)) {\n\
+          \        /* Keep the exact child status. */\n    } else goto cleanup;\n    error = 0;\ncleanup:\n    if\
+          \ (result == 1) error = GetLastError();\n    if (job) CloseHandle(job);\n    if (pi.hThread) CloseHandle(pi.hThread);\n\
+          \    if (pi.hProcess) CloseHandle(pi.hProcess);\n    if (original) SetProcessWindowStation(original);\n\
+          \    if (desktop) CloseDesktop(desktop);\n    if (station) CloseWindowStation(station);\n    if (sd) LocalFree(sd);\n\
+          \    if (sid) LocalFree(sid);\n    if (user) LocalFree(user);\n    if (token) CloseHandle(token);\n    fprintf(stderr,\
+          \ \"desktop-launch: {\\\"setupError\\\":%lu,\\\"childExitCode\\\":%lu}\\n\", error, result);\n    return\
+          \ (int)result;\n}\n'''\nDLL = r'''#define UNICODE\n#define _UNICODE\n#include <windows.h>\n#include <aclapi.h>\n\
+          #include <sddl.h>\n#include <wchar.h>\n\nstatic HANDLE objects[2];\nstatic PSECURITY_DESCRIPTOR original[2];\n\
+          static LPWSTR original_text[2];\nstatic BOOL changed[2];\nstatic const SECURITY_INFORMATION query_info =\
+          \ OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;\n\n__declspec(dllexport)\
+          \ DWORD probe_snapshot(void) {\n    if (original[0] || original[1]) return ERROR_ALREADY_INITIALIZED;\n\
+          \    objects[0] = GetProcessWindowStation();\n    objects[1] = GetThreadDesktop(GetCurrentThreadId());\n\
+          \    wchar_t name[256] = {0}; DWORD needed = 0;\n    USEROBJECTFLAGS flags = {0};\n    if (!GetUserObjectInformationW(objects[0],\
+          \ UOI_NAME, name, sizeof(name), &needed)) return GetLastError();\n    if (wcsncmp(name, L\"Service-0x\"\
+          , 10) != 0) return ERROR_ACCESS_DENIED;\n    if (!GetUserObjectInformationW(objects[0], UOI_FLAGS, &flags,\
+          \ sizeof(flags), &needed)) return GetLastError();\n    if (flags.dwFlags & WSF_VISIBLE) return ERROR_ACCESS_DENIED;\n\
+          \    if (!GetUserObjectInformationW(objects[1], UOI_NAME, name, sizeof(name), &needed)) return GetLastError();\n\
+          \    if (wcscmp(name, L\"Default\") != 0) return ERROR_ACCESS_DENIED;\n    HANDLE token = NULL;\n    if\
+          \ (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return GetLastError();\n    GetTokenInformation(token,\
+          \ TokenUser, NULL, 0, &needed);\n    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || !needed) { CloseHandle(token);\
+          \ return ERROR_INVALID_DATA; }\n    PTOKEN_USER user = LocalAlloc(LPTR, needed);\n    if (!user) { CloseHandle(token);\
+          \ return ERROR_OUTOFMEMORY; }\n    DWORD result = 0;\n    if (!GetTokenInformation(token, TokenUser, user,\
+          \ needed, &needed)) result = GetLastError();\n    for (int i = 0; i < 2 && result == 0; ++i) {\n       \
+          \ result = GetSecurityInfo(objects[i], SE_WINDOW_OBJECT, query_info, NULL, NULL, NULL, NULL, &original[i]);\n\
+          \        if (result) break;\n        PSID owner = NULL; BOOL defaulted = FALSE;\n        if (!GetSecurityDescriptorOwner(original[i],\
+          \ &owner, &defaulted)) { result = GetLastError(); break; }\n        if (!owner || !EqualSid(owner, user->User.Sid))\
+          \ { result = ERROR_ACCESS_DENIED; break; }\n        if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(original[i],\
+          \ SDDL_REVISION_1, query_info, &original_text[i], NULL)) result = GetLastError();\n    }\n    LocalFree(user);\
+          \ CloseHandle(token);\n    return result;\n}\n\n__declspec(dllexport) const wchar_t *probe_original(int\
+          \ index) {\n    return index >= 0 && index < 2 ? original_text[index] : NULL;\n}\n\n__declspec(dllexport)\
+          \ DWORD probe_restore(void) {\n    DWORD first = 0;\n    for (int i = 1; i >= 0; --i) {\n        if (!changed[i])\
+          \ continue;\n        PACL dacl = NULL; BOOL present = FALSE, defaulted = FALSE;\n        if (!GetSecurityDescriptorDacl(original[i],\
+          \ &present, &dacl, &defaulted)) {\n            if (!first) first = GetLastError();\n            continue;\n\
+          \        }\n        DWORD error = SetSecurityInfo(objects[i], SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,\
+          \ NULL, NULL, dacl, NULL);\n        if (error) { if (!first) first = error; } else changed[i] = FALSE;\n\
+          \    }\n    return first;\n}\n\n__declspec(dllexport) DWORD probe_unchanged(void) {\n    for (int i = 0;\
+          \ i < 2; ++i) {\n        if (!original_text[i]) return ERROR_INVALID_STATE;\n        PSECURITY_DESCRIPTOR\
+          \ sd = NULL; LPWSTR text = NULL;\n        DWORD error = GetSecurityInfo(objects[i], SE_WINDOW_OBJECT, query_info,\
+          \ NULL, NULL, NULL, NULL, &sd);\n        if (error) return error;\n        if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(sd,\
+          \ SDDL_REVISION_1, query_info, &text, NULL)) { error = GetLastError(); LocalFree(sd); return error; }\n\
+          \        BOOL equal = wcscmp(text, original_text[i]) == 0;\n        LocalFree(text); LocalFree(sd);\n  \
+          \      if (!equal) return ERROR_INVALID_SECURITY_DESCR;\n    }\n    return 0;\n}\n\n__declspec(dllexport)\
+          \ DWORD probe_grant(const wchar_t *sid_text, DWORD mask) {\n    DWORD error = probe_unchanged();\n    if\
+          \ (error) return error;\n    if (wcscmp(sid_text, L\"S-1-15-2-1\") != 0 || (mask & ~0x0002037f)) return\
+          \ ERROR_INVALID_PARAMETER;\n    PSID sid = NULL;\n    BOOL present = FALSE, defaulted = FALSE;\n    if (!ConvertStringSidToSidW(sid_text,\
+          \ &sid)) return GetLastError();\n    for (int i = 0; i < 1; ++i) {\n        PACL old_acl = NULL, new_acl\
+          \ = NULL;\n        if (!GetSecurityDescriptorDacl(original[i], &present, &old_acl, &defaulted)) { error\
+          \ = GetLastError(); break; }\n        EXPLICIT_ACCESS_W entry = {0};\n        /* Runtime UI rights only:\
+          \ never grant WRITE_DAC, WRITE_OWNER or DELETE. */\n        entry.grfAccessPermissions = mask;\n       \
+          \ entry.grfAccessMode = GRANT_ACCESS;\n        entry.grfInheritance = NO_INHERITANCE;\n        entry.Trustee.TrusteeForm\
+          \ = TRUSTEE_IS_SID;\n        entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;\n        entry.Trustee.ptstrName\
+          \ = (LPWSTR)sid;\n        error = SetEntriesInAclW(1, &entry, old_acl, &new_acl);\n        if (error) break;\n\
+          \        changed[i] = TRUE;\n        error = SetSecurityInfo(objects[i], SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,\
+          \ NULL, NULL, new_acl, NULL);\n        LocalFree(new_acl);\n        if (error) break;\n    }\n    LocalFree(sid);\n\
+          \    return error;\n}\n'''\n\"\"\"Run a fixed CI script on a private desktop, restoring the service station\
+          \ afterward.\"\"\"\nimport argparse\nimport ctypes\nimport hashlib\nimport json\nimport os\nfrom pathlib\
+          \ import Path\nimport subprocess\n\ndef run_with_bazel_batch_environment(command):\n    # Python's Windows\
+          \ os.environ mapping uppercases every key. Rebuilding an\n    # environment block from it loses mixed-case\
+          \ MSVC variables used by Bash.\n    # Inherit the original native block, changing only the required batch\
+          \ flag.\n    previous = os.environ.get('CODEX_BAZEL_BATCH')\n    os.environ['CODEX_BAZEL_BATCH'] = '1'\n\
+          \    try:\n        return subprocess.run(command)\n    finally:\n        if previous is None:\n        \
+          \    del os.environ['CODEX_BAZEL_BATCH']\n        else:\n            os.environ['CODEX_BAZEL_BATCH'] = previous\n\
+          \nparser = argparse.ArgumentParser()\nparser.add_argument('label', choices=['general','core','exec'])\n\
+          parser.add_argument('script')\nargs = parser.parse_args()\nassert os.name == 'nt' and os.environ['RUNNER_NAME']\
+          \ == 'codex-win-msvc-01'\nroot = (Path(os.environ['RUNNER_TEMP']) / 'native-codex-evidence').resolve(strict=True)\n\
+          script = Path(args.script).resolve(strict=True)\nassert root.drive.upper() == 'R:' and script.parent ==\
+          \ root and script.name == args.label + '.sh'\nfolder = root / ('desktop-' + args.label)\nfolder.mkdir(exist_ok=False)\n\
+          record = dict(label=args.label, scriptSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),\n\
+          \    runId=os.environ['GITHUB_RUN_ID'], controllerSha=os.environ['GITHUB_SHA'], sourceSha=os.environ['SOURCE_SHA'],\
+          \ sourcePatchSha256=os.environ.get('SOURCE_PATCH_SHA256'),\n    commandSha256=hashlib.sha256(script.read_bytes()).hexdigest(),\
+          \ stationMask=0x20022,\n    qualification='Non-admin runner-owned service window station only. New private\
+          \ desktop for this command. Default desktop ACL unchanged; station descriptor restored and verified. Bazel\
+          \ batch mode ensures the JVM and tests inherit this desktop. An owned nested job contains only the launched\
+          \ validation process tree.')\ndef save():\n    (root / ('desktop-' + args.label + '.json')).write_text(json.dumps(record,indent=2)+'\\\
+          n')\ndef build(name, source, dll=False):\n    path=folder/(name+'.c'); path.write_text(source)\n    output=folder/(name+('.dll'\
+          \ if dll else '.exe'))\n    argv=['cl.exe','/nologo','/W4','/WX','/MT',str(path),'/Fe:'+str(output),'/Fo:'+str(folder/(name+'.obj')),'advapi32.lib','user32.lib']\n\
+          \    if dll: argv += ['/LD','/link','/IMPLIB:'+str(folder/(name+'.lib'))]\n    p=subprocess.run(argv,cwd=folder,capture_output=True,timeout=60)\n\
+          \    (root/(args.label+'-'+name+'-build.log')).write_bytes(p.stdout+p.stderr)\n    assert p.returncode==0,\
+          \ name\n    return output\nlauncher=build('launch',LAUNCHER)\nlibrary=ctypes.CDLL(str(build('station',DLL,True)))\n\
+          for name in ('probe_snapshot','probe_restore','probe_unchanged'):\n    getattr(library,name).argtypes=[]\n\
+          \    getattr(library,name).restype=ctypes.c_ulong\nlibrary.probe_original.argtypes=[ctypes.c_int]\nlibrary.probe_original.restype=ctypes.c_wchar_p\n\
+          library.probe_grant.argtypes=[ctypes.c_wchar_p,ctypes.c_ulong]\nlibrary.probe_grant.restype=ctypes.c_ulong\n\
+          record['snapshotError']=library.probe_snapshot(); save()\nassert record['snapshotError']==0, 'Unexpected\
+          \ service station/desktop identity or owner.'\nrecord['originalDescriptors']=[library.probe_original(i)\
+          \ for i in range(2)]; save()\ncode=1\ntry:\n    record['grantError']=library.probe_grant('S-1-15-2-1',0x20022);\
+          \ save()\n    assert record['grantError']==0, 'Non-admin owner could not apply minimal station rights.'\n\
+          \    bash=Path(r'C:\\Program Files\\Git\\bin\\bash.exe').resolve(strict=True)\n    command=[str(bash),'--noprofile','--norc',script.as_posix()]\n\
+          \    scratch_folder = Path('D:/cxt') / (os.environ['GITHUB_RUN_ID'] + '_' + os.environ['GITHUB_RUN_ATTEMPT'])\
+          \ / args.label / 't'\n    record['scratchObservation'] = {}\n    fixture_context = nullcontext()\n    if\
+          \ args.label == 'general':\n        prepared = json.loads((root / 'general-binary-fixtures-prepare.json').read_text())\n\
+          \        record['binaryFixtureObservation'] = {}\n        fixture_context = observe_binary_fixtures(prepared['root'],\
+          \ prepared, record['binaryFixtureObservation'])\n    with observe_scratch(scratch_folder, record['scratchObservation']),\
+          \ fixture_context:\n        result=run_with_bazel_batch_environment([str(launcher),'desktop',str(bash),subprocess.list2cmdline(command)])\n\
+          \    code=record['childExitCode']=result.returncode\nfinally:\n    record['restoreError']=library.probe_restore()\n\
+          \    record['restoredVerificationError']=library.probe_unchanged()\n    save()\n    print(json.dumps({k:v\
+          \ for k,v in record.items() if k!='originalDescriptors'}),flush=True)\n    assert record['restoreError']==record['restoredVerificationError']==0,\
+          \ 'Service object restoration was not verified.'\nraise SystemExit(code)\n'@\n[IO.File]::WriteAllText((Join-Path\
+          \ $root 'run-private-desktop-command.py'), $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          $tool = @'\n\"\"\"Prepare and remove only a single run's explicitly authorized test scratch.\"\"\"\nfrom\
+          \ datetime import datetime, timezone\nimport argparse\nimport json\nimport os\nfrom pathlib import Path\n\
+          import shutil\nimport stat\nimport tempfile\n\nNAME = 'native-codex-evidence'\nPHASES = ('general', 'core',\
+          \ 'exec')\nSID = 'S-1-5-21-3998296994-10675985-2695611401-1025'\n\ndef checked_directory(path):\n    assert\
+          \ path.is_absolute()\n    for item in (*reversed(path.parents), path):\n        if item.exists():\n    \
+          \        assert not item.is_symlink() and not item.is_junction(), str(item)\n            assert not item.stat().st_file_attributes\
+          \ & stat.FILE_ATTRIBUTE_REPARSE_POINT, str(item)\n    assert path.resolve() == path\n    return path\n\n\
+          def remove_tree(path, permitted):\n    assert path.is_relative_to(permitted) and path != permitted.parent\n\
+          \    checked_directory(path)\n    count = size = 0\n    for child in path.iterdir():\n        if child.is_symlink():\n\
+          \            child.unlink()\n        elif child.is_junction():\n            os.rmdir(child)\n        elif\
+          \ child.is_dir():\n            n, b = remove_tree(child, permitted)\n            count += n; size += b\n\
+          \        else:\n            info = child.stat()\n            assert not info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT\n\
+          \            count += 1; size += info.st_size\n            if not info.st_mode & stat.S_IWRITE:\n      \
+          \          child.chmod(info.st_mode | stat.S_IWRITE)\n            child.unlink()\n    path.rmdir()\n   \
+          \ return count, size\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument('operation',\
+          \ choices=('prepare', 'finish'))\n    parser.add_argument('phase', choices=PHASES)\n    args = parser.parse_args()\n\
+          \    assert os.name == 'nt' and os.environ['RUNNER_NAME'] == 'codex-win-msvc-01'\n    assert os.environ['USERNAME'].lower()\
+          \ == 'svc_codex_runner'\n    run_id, attempt = os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT']\n\
+          \    assert run_id.isdecimal() and attempt.isdecimal()\n    drive = 'D:'\n    parent = checked_directory(Path(drive\
+          \ + '/cxt'))\n    if drive == 'D:':\n        root_marker = json.loads((parent / '.codex-scratch-root.json').read_text(encoding='utf-8-sig'))\n\
+          \        assert root_marker['schema'] == 1 and root_marker['runnerSid'] == SID\n        assert Path(root_marker['root'])\
+          \ == parent\n    parent.mkdir(exist_ok=True)\n    run_root = checked_directory(parent / (run_id + '_' +\
+          \ attempt))\n    phase_root = checked_directory(run_root / args.phase)\n    evidence = (Path(os.environ['RUNNER_TEMP'])\
+          \ / NAME).resolve(strict=True)\n    assert evidence.drive.upper() == 'R:'\n    identity = dict(runId=run_id,\
+          \ runAttempt=attempt, phase=args.phase,\n                    sourceTree=os.environ['SCRATCH_SOURCE_TREE'],\
+          \ controllerSha=os.environ['GITHUB_SHA'],\n                    root=str(phase_root), drive=drive)\n    marker\
+          \ = phase_root / '.phase.json'\n    report = dict(identity, checkedUtc=datetime.now(timezone.utc).isoformat(),\n\
+          \                  freeBytes=shutil.disk_usage(parent).free, operation=args.operation)\n    if args.operation\
+          \ == 'prepare':\n        assert report['freeBytes'] >= 50 * 1024**3, 'Insufficient test scratch capacity'\n\
+          \        run_root.mkdir(exist_ok=True)\n        phase_root.mkdir(exist_ok=False)\n        marker.write_text(json.dumps(identity))\n\
+          \        temporary = phase_root / 't'\n        temporary.mkdir()\n        with tempfile.TemporaryDirectory(dir=temporary)\
+          \ as probe:\n            file = Path(probe) / 'probe.txt'\n            file.write_text('codex scratch comparison')\n\
+          \            assert file.read_text() == 'codex scratch comparison'\n            assert file.resolve().drive.upper()\
+          \ == drive\n        report.update(writeReadProbePassed=True, testTmpdir=str(phase_root / 'bazel-temp'),\n\
+          \                      testEnvironment={key: str(temporary) for key in ('TEMP', 'TMP', 'TMPDIR')})\n   \
+          \ else:\n        assert json.loads(marker.read_text()) == identity\n        desktop = json.loads((evidence\
+          \ / ('desktop-' + args.phase + '.json')).read_text())\n        assert 'childExitCode' in desktop and desktop['restoreError']\
+          \ == desktop['restoredVerificationError'] == 0\n        assert (evidence / (args.phase + '-snapshot.json')).is_file()\n\
+          \        report['observedBazelScratchDirectories'] = sum(1 for p in (phase_root / 'bazel-temp').iterdir())\
+          \ if (phase_root / 'bazel-temp').is_dir() else 0\n        # Resolve the exact dedicated phase before recursive\
+          \ deletion; never follow reparse points.\n        assert phase_root.resolve() == parent / (run_id + '_'\
+          \ + attempt) / args.phase\n        count, size = remove_tree(phase_root, phase_root)\n        report.update(removedFiles=count,\
+          \ removedBytes=size, cleaned=not phase_root.exists())\n        if not any(run_root.iterdir()):\n       \
+          \     run_root.rmdir()\n    (evidence / (args.phase + '-scratch-' + args.operation + '.json')).write_text(json.dumps(report,\
+          \ indent=2) + '\\n')\n    print(json.dumps(report), flush=True)\n\nif __name__ == '__main__':\n    main()\n\
+          '@\n[IO.File]::WriteAllText((Join-Path $root 'test-scratch-phase.py'), $tool.Replace(\"`r`n\",\"`n\") +\
+          \ \"`n\", [Text.UTF8Encoding]::new($false))\n$tool = @'\n\"\"\"Validate only the whitelisted temporary-path\
+          \ evidence from native Bazel tests.\"\"\"\nfrom pathlib import PureWindowsPath\n\n\ndef validate(run_id,\
+          \ controller_sha, source_tree, phase, prepared, finished, options, desktop):\n    assert phase in ('general',\
+          \ 'core', 'exec')\n    attempt = prepared['runAttempt']\n    assert isinstance(attempt, str) and attempt.isdecimal()\n\
+          \    expected = PureWindowsPath('D:/cxt') / f'{run_id}_{attempt}' / phase\n    for document in (prepared,\
+          \ finished):\n        assert document['runId'] == str(run_id) and document['runAttempt'] == attempt\n  \
+          \      assert document['controllerSha'] == controller_sha and document['sourceTree'] == source_tree\n  \
+          \      assert document['phase'] == phase and document['drive'] == 'D:'\n        assert PureWindowsPath(document['root'])\
+          \ == expected\n    assert prepared['writeReadProbePassed'] and finished['cleaned']\n    for field in ('client_env',\
+          \ 'test_env'):\n        for key in ('TMP', 'TEMP', 'TMPDIR'):\n            value, = [v.split('=', 1)[1]\
+          \ for v in options[field] if v.startswith(key + '=')]\n            assert PureWindowsPath(value) == expected\
+          \ / 't', 'Effective temporary path is not the expected D phase'\n    assert [PureWindowsPath(v) for v in\
+          \ options['test_tmpdir']] == [expected / 'bazel-temp']\n    assert [PureWindowsPath(v) for v in options['disk_cache']]\
+          \ == [PureWindowsPath('R:/bazel-disk-cache')]\n    assert options['experimental_disk_cache_gc_max_size']\
+          \ == ['200G']\n    assert options['experimental_disk_cache_gc_max_age'] == ['14d']\n    observation = desktop['scratchObservation']\n\
+          \    assert PureWindowsPath(observation['root']) == expected / 't'\n    runtime_observed = observation['observedEntries']\
+          \ > 0 and observation['errors'] == 0 and observation['observerStopped']\n    return dict(root=str(expected),\
+          \ clientTemporaryPathsOnD=True, testTemporaryPathsOnD=True,\n                runtimeObserved=runtime_observed,\
+          \ cleaned=True, boundedCacheOnR=True,\n                observedEntries=observation['observedEntries'], observationErrors=observation['errors'])\n\
+          '@\n[IO.File]::WriteAllText((Join-Path $root 'native_d_scratch_evidence.py'), $tool.Replace(\"`r`n\",\"\
+          `n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n$tool = @'\n\"\"\"Snapshot a completed Bazel phase before\
+          \ a later invocation reuses its logs.\"\"\"\nimport hashlib\nimport json\nimport os\nfrom pathlib import\
+          \ Path\nimport sys\nfrom urllib.parse import unquote, urlparse\n\n\ndef collect(root, phase, identity):\n\
+          \    assert phase in ('general', 'core', 'exec')\n    root = root.resolve(strict=True)\n    raw_events =\
+          \ (root / (phase + '-events.json')).read_bytes()\n    events = [json.loads(line) for line in raw_events.splitlines()\
+          \ if line]\n    results = [{'id': event['id']['testResult'], **event['testResult']}\n               for\
+          \ event in events if 'testResult' in event]\n    logs = []\n    for result in results:\n        for output\
+          \ in result.get('testActionOutput', []):\n            if output.get('name') != 'test.log':\n           \
+          \     continue\n            uri = urlparse(output['uri'])\n            assert uri.scheme == 'file' and not\
+          \ uri.netloc\n            source = Path(unquote(uri.path).lstrip('/')).resolve(strict=True)\n          \
+          \  assert source.drive.upper() == root.drive.upper()\n            data = source.read_bytes()\n         \
+          \   assert len(data) < 50 * 1024**2\n            filename = phase + '-' + hashlib.sha256(\n            \
+          \    json.dumps(result['id'], sort_keys=True).encode()).hexdigest()[:20] + '.log'\n            with (root\
+          \ / filename).open('xb') as stream:\n                stream.write(data)\n            logs.append(dict(id=result['id'],\
+          \ path=filename,\n                             sha256=hashlib.sha256(data).hexdigest()))\n    snapshot =\
+          \ dict(identity, phase=phase,\n                    eventsSha256=hashlib.sha256(raw_events).hexdigest(),\n\
+          \                    exitCode=int((root / (phase + '-exit-code.txt')).read_text()),\n                  \
+          \  results=results, logs=logs)\n    with (root / (phase + '-snapshot.json')).open('x') as stream:\n    \
+          \    json.dump(snapshot, stream, indent=2)\n    return snapshot\n\n\nif __name__ == '__main__':\n    root\
+          \ = (Path(os.environ['RUNNER_TEMP']) / 'native-codex-evidence').resolve(strict=True)\n    assert root.drive.upper()\
+          \ == 'R:' and os.environ['RUNNER_NAME'] == 'codex-win-msvc-01'\n    collect(root, sys.argv[1], dict(runId=os.environ['GITHUB_RUN_ID'],\n\
+          \            controllerSha=os.environ['GITHUB_SHA'], sourceSha=os.environ['SOURCE_SHA'], sourceTree=os.environ['NATIVE_SOURCE_TREE']))\n\
+          '@\n[IO.File]::WriteAllText((Join-Path $root 'capture-phase.py'), $tool.Replace(\"`r`n\",\"`n\") + \"`n\"\
+          , [Text.UTF8Encoding]::new($false))\n$tool = @'\n\"\"\"Compare effective Windows action environments without\
+          \ emitting client secrets.\"\"\"\nimport re\n\ndef action_environment(events):\n    command, = [e['structuredCommandLine']\
+          \ for e in events\n                if e.get('id', {}).get('structuredCommandLine', {}).get('commandLineLabel')\
+          \ == 'canonical']\n    options = [option for section in command.get('sections', [])\n               for\
+          \ option in section.get('optionList', {}).get('option', [])]\n    kinds = ('action_env', 'host_action_env')\n\
+          \    raw = {kind: [o.get('optionValue', '') for o in options if o['optionName'] == kind] for kind in kinds}\n\
+          \    inherited = {value.casefold() for values in raw.values() for value in values if '=' not in value}\n\
+          \    client = {}\n    # Inspect only variables actually inherited by an action. Unrelated client\n    #\
+          \ values (including tokens) are never copied into the comparison result.\n    for option in options:\n \
+          \       if option['optionName'] != 'client_env':\n            continue\n        key, separator, value =\
+          \ option.get('optionValue', '').partition('=')\n        folded = key.casefold()\n        if separator and\
+          \ folded in inherited:\n            assert folded not in client or client[folded] == value, 'Conflicting\
+          \ inherited Windows environment entries'\n            client[folded] = value\n    result = {}\n    for kind,\
+          \ values in raw.items():\n        resolved = {}\n        for value in values:\n            key, separator,\
+          \ explicit = value.partition('=')\n            assert re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key), 'Invalid\
+          \ action environment variable name'\n            if separator:\n                resolved[key] = explicit\n\
+          \            else:\n                assert key.casefold() in client, 'Inherited action environment value\
+          \ is absent from canonical client evidence'\n                resolved[key] = client[key.casefold()]\n  \
+          \      # Retain the original canonical-list comparison as well as resolved\n        # values. The caller\
+          \ compares in memory and records only a boolean.\n        result[kind] = {'canonical': values, 'resolved':\
+          \ resolved}\n    return result\n\nimport json\nimport os\nfrom pathlib import Path\nfrom native_d_scratch_evidence\
+          \ import validate\nroot = Path(__file__).resolve().parent\nresults = {}\ndef read_events(phase):\n    return\
+          \ [json.loads(line) for line in (root / (phase + '-events.json')).read_text().splitlines() if line]\n\n\
+          def compiler_counts(events):\n    metrics, = [event['buildMetrics'] for event in events if 'buildMetrics'\
+          \ in event]\n    return {name: sum(int(item.get('actionsExecuted', 0))\n                     for item in\
+          \ metrics.get('actionSummary', {}).get('actionData', [])\n                     if item.get('mnemonic') ==\
+          \ name)\n            for name in ('Rustc', 'CppCompile', 'CargoBuildScriptRun')}\n\ndef verify_repository_temp(events):\n\
+          \    command, = [event['structuredCommandLine'] for event in events\n                if event.get('id',\
+          \ {}).get('structuredCommandLine', {}).get('commandLineLabel') == 'canonical']\n    values = {}\n    for\
+          \ section in command.get('sections', []):\n        for option in section.get('optionList', {}).get('option',\
+          \ []):\n            if option['optionName'] == 'repo_env':\n                name, separator, value = option.get('optionValue',\
+          \ '').partition('=')\n                if name.upper() in ('TMP', 'TEMP'):\n                    assert separator\
+          \ and value == 'R:/tmp', 'Compiler repository temp must stay on the bounded volume'\n                  \
+          \  values[name.upper()] = value\n    assert values == {'TMP': 'R:/tmp', 'TEMP': 'R:/tmp'}, 'Missing explicit\
+          \ stable compiler temp paths'\n\nbuild = read_events('build')\nbuild_environment = action_environment(build)\n\
+          verify_repository_temp(build)\nbuild_counts = compiler_counts(build)\nfor phase in ('general', 'core', 'exec'):\n\
+          \    events = [json.loads(line) for line in (root / (phase + '-events.json')).read_text().splitlines() if\
+          \ line]\n    command, = [event['structuredCommandLine'] for event in events if event.get('id', {}).get('structuredCommandLine',\
+          \ {}).get('commandLineLabel') == 'canonical']\n    allowed = {'client_env', 'test_env', 'test_tmpdir', 'disk_cache',\
+          \ 'experimental_disk_cache_gc_max_size', 'experimental_disk_cache_gc_max_age'}\n    options = {}\n    for\
+          \ section in command.get('sections', []):\n        for option in section.get('optionList', {}).get('option',\
+          \ []):\n            name, value = option['optionName'], option.get('optionValue', '')\n            if name\
+          \ in ('client_env', 'test_env') and value.split('=', 1)[0] not in ('TMP', 'TEMP', 'TMPDIR'):\n         \
+          \       continue\n            if name in allowed:\n                options.setdefault(name, []).append(value)\n\
+          \    def read(name):\n        return json.loads((root / name).read_text())\n    results[phase] = validate(os.environ['GITHUB_RUN_ID'],\
+          \ os.environ['GITHUB_SHA'], os.environ['NATIVE_SOURCE_TREE'], phase,\n        read(phase + '-scratch-prepare.json'),\
+          \ read(phase + '-scratch-finish.json'), options, read('desktop-' + phase + '.json'))\n    assert results[phase]['runtimeObserved'],\
+          \ 'No verified runtime activity on the D test volume'\n    verify_repository_temp(events)\n    assert action_environment(events)\
+          \ == build_environment, 'Effective MSVC environment changed after the build'\n    results[phase].update(repositoryTemporaryPathsVerified=True,\
+          \ effectiveActionEnvironmentMatchesBuild=True,\n                          buildCompilerActionCounts=build_counts,\
+          \ phaseCompilerActionCounts=compiler_counts(events))\n(root / 'test-storage-verification.json').write_text(json.dumps(results,\
+          \ indent=2) + '\\n')\nprint(json.dumps(results))\n\nfrom native_binary_fixture_evidence_v4 import validate\
+          \ as validate_fixtures\ngeneral_events = [json.loads(line) for line in (root/'general-events.json').read_text().splitlines()\
+          \ if line]\ncommand, = [e['structuredCommandLine'] for e in general_events if e.get('id',{}).get('structuredCommandLine',{}).get('commandLineLabel')\
+          \ == 'canonical']\npaths = [o['optionValue'].split('=',1)[1] for s in command.get('sections',[]) for o in\
+          \ s.get('optionList',{}).get('option',[]) if o['optionName']=='test_env' and o.get('optionValue','').startswith('CODEX_TEST_INSTALL_TMPDIR=')]\n\
+          sources = [o['optionValue'].split('=',1)[1] for s in command.get('sections',[]) for o in s.get('optionList',{}).get('option',[])\
+          \ if o['optionName']=='test_env' and o.get('optionValue','').startswith('CODEX_TEST_INSTALL_SOURCE_DIR=')]\n\
+          fixture_result = validate_fixtures(os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_SHA'],os.environ['NATIVE_SOURCE_TREE'],\n\
+          \    read('general-binary-fixtures-prepare.json'),read('general-binary-fixtures-finish.json'),read('desktop-general.json'),paths,sources)\n\
+          (root/'binary-fixture-verification.json').write_text(json.dumps(fixture_result,indent=2)+'\\n')\nprint(json.dumps(fixture_result))\n\
+          '@\n[IO.File]::WriteAllText((Join-Path $root 'verify-test-storage.py'), $tool.Replace(\"`r`n\",\"`n\") +\
+          \ \"`n\", [Text.UTF8Encoding]::new($false))\n\n$tool = @'\n\"\"\"Copy private seeds once, then verify test\
+          \ hard links without changing Bazel outputs.\"\"\"\nimport argparse,hashlib,json,os,stat\nfrom datetime\
+          \ import datetime,timezone\nfrom pathlib import Path\n\nNAME='native-codex-evidence'\nBASE=Path('R:/tmp/ci-test-installs')\n\
+          SOURCE_FILES={'codex-app-server.exe':'codex-rs/app-server/codex-app-server.exe',\n    'codex-code-mode-host.exe':'codex-rs/code-mode-host/codex-code-mode-host.exe'}\n\
+          \ndef checked_directory(path):\n    assert path.is_absolute() and path.drive.upper()=='R:'\n    for item\
+          \ in (*reversed(path.parents),path):\n        if item.exists():\n            info=item.lstat()\n       \
+          \     assert not item.is_symlink() and not item.is_junction()\n            assert not info.st_file_attributes\
+          \ & stat.FILE_ATTRIBUTE_REPARSE_POINT\n    assert path.resolve()==path\n    return path\n\ndef fingerprint(path):\n\
+          \    info=path.stat()\n    return dict(device=info.st_dev,inode=info.st_ino,bytes=info.st_size,mtimeNs=info.st_mtime_ns,attributes=info.st_file_attributes)\n\
+          \ndef digest(path):\n    with path.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()\n\
+          \ndef copy_private_seed(source,seed,root):\n    assert seed.parent==root/'.seed' and seed.name==source.name\
+          \ and not seed.exists()\n    checked_directory(seed.parent)\n    before=fingerprint(source)\n    assert\
+          \ not before['attributes'] & stat.FILE_ATTRIBUTE_REPARSE_POINT\n    assert 0<before['bytes']<2*1024**3 and\
+          \ before['device']==root.stat().st_dev\n    checksum=hashlib.sha256()\n    with source.open('rb') as src,seed.open('xb')\
+          \ as dst:\n        first=True\n        while chunk:=src.read(4*1024**2):\n            if first:assert chunk[:2]==b'MZ';first=False\n\
+          \            checksum.update(chunk);dst.write(chunk)\n    copied=fingerprint(seed)\n    assert seed.stat().st_nlink==1\
+          \ and not seed.is_symlink() and not seed.is_junction()\n    assert not copied['attributes'] & (stat.FILE_ATTRIBUTE_READONLY|stat.FILE_ATTRIBUTE_REPARSE_POINT)\n\
+          \    assert copied['bytes']==before['bytes'] and copied['device']==before['device'] and copied['inode']!=before['inode']\n\
+          \    assert not os.path.samefile(source,seed)\n    assert checksum.hexdigest()==digest(seed)\n    assert\
+          \ fingerprint(source)==before\n    return dict(name=seed.name,source=str(seed),compiledSource=str(source),compiledFingerprint=before,\n\
+          \        sha256=checksum.hexdigest(),**copied)\n\ndef remove_owned(path,root):\n    assert path.is_relative_to(root)\
+          \ and path.resolve()==path\n    checked_directory(path);count=0\n    for child in path.iterdir():\n    \
+          \    info=child.lstat()\n        if child.is_symlink():child.unlink()\n        elif child.is_junction():os.rmdir(child)\n\
+          \        elif info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:raise RuntimeError('Unexpected\
+          \ reparse point')\n        elif child.is_dir():count+=remove_owned(child,root)\n        else:child.unlink();count+=1\n\
+          \    path.rmdir();return count\n\ndef main():\n    parser=argparse.ArgumentParser();parser.add_argument('operation',choices=('prepare','finish'));args=parser.parse_args()\n\
+          \    assert os.name=='nt' and os.environ['RUNNER_NAME']=='codex-win-msvc-01'\n    assert os.environ['USERNAME'].lower()=='svc_codex_runner'\n\
+          \    run_id,attempt=os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_RUN_ATTEMPT']\n    assert run_id.isdecimal()\
+          \ and attempt.isdecimal()\n    root=checked_directory(BASE/(run_id+'_'+attempt)/'general')\n    evidence=(Path(os.environ['RUNNER_TEMP'])/NAME).resolve(strict=True)\n\
+          \    assert evidence==Path('R:/_work/_temp')/NAME and evidence.is_dir()\n    identity=dict(runId=run_id,runAttempt=attempt,sourceTree=os.environ['SCRATCH_SOURCE_TREE'],controllerSha=os.environ['GITHUB_SHA'],phase='general',root=str(root))\n\
+          \    marker=root/'.fixture-owner.json'\n    report=dict(identity,operation=args.operation,checkedUtc=datetime.now(timezone.utc).isoformat(),compiledSourceAttributesChanged=False)\n\
+          \    try:\n        if args.operation=='prepare':\n            scratch=json.loads((evidence/'general-scratch-prepare.json').read_text())\n\
+          \            assert all(scratch[k]==identity[k] for k in ('runId','runAttempt','sourceTree','controllerSha','phase'))\n\
+          \            assert scratch['writeReadProbePassed'] and scratch['drive']=='D:'\n            checked_directory(BASE);BASE.mkdir(exist_ok=True);root.parent.mkdir(exist_ok=True);root.mkdir(exist_ok=False)\n\
+          \            marker.write_text(json.dumps(identity)+'\\n');(root/'.seed').mkdir()\n            workspace=Path(os.environ['CODEX_BAZEL_WORKSPACE']);assert\
+          \ workspace.is_absolute() and workspace.drive.upper()=='R:'\n            probes=[]\n            for name,relative\
+          \ in SOURCE_FILES.items():\n                source=(workspace/'bazel-bin'/relative).resolve(strict=True)\n\
+          \                assert source.drive.upper()=='R:' and source.is_file() and source.name==name\n        \
+          \        seed=root/'.seed'/name\n                probe=copy_private_seed(source,seed,root)\n           \
+          \     link=root/('.probe-'+name)\n                try:\n                    os.link(seed,link);assert os.path.samefile(seed,link)\n\
+          \                    probe['hardLinkVerified']=True\n                finally:\n                    if link.exists():link.unlink()\n\
+          \                assert fingerprint(source)==probe['compiledFingerprint']\n                probes.append(probe)\n\
+          \            report.update(prepared=True,probes=probes,privateSeedCopies=len(probes),seedRoot=str(root/'.seed'))\n\
+          \        else:\n            assert json.loads(marker.read_text())==identity\n            prepared=json.loads((evidence/'general-binary-fixtures-prepare.json').read_text())\n\
+          \            assert prepared['prepared'] and len(prepared['probes'])==2\n            desktop=json.loads((evidence/'desktop-general.json').read_text())\n\
+          \            assert 'childExitCode' in desktop and desktop['restoreError']==desktop['restoredVerificationError']==0\n\
+          \            assert (evidence/'general-snapshot.json').is_file()\n            observed=desktop['binaryFixtureObservation'];assert\
+          \ observed['root']==str(root) and observed['observerStopped']\n            report['runtimeObservation']=observed\n\
+          \            originals=[]\n            for probe in prepared['probes']:\n                source=Path(probe['compiledSource']);current=fingerprint(source)\n\
+          \                assert current==probe['compiledFingerprint'] and digest(source)==probe['sha256']\n    \
+          \            originals.append(dict(name=probe['name'],fingerprint=current,sha256=probe['sha256']))\n   \
+          \         report.update(compiledSourcesVerifiedUnchanged=True,compiledSourcesAfter=originals)\n        \
+          \    assert root==BASE/(run_id+'_'+attempt)/'general'\n            report['removedFiles']=remove_owned(root,root);report['cleaned']=not\
+          \ root.exists()\n            if not any(root.parent.iterdir()):root.parent.rmdir()\n    except Exception\
+          \ as exc:\n        report['error']=type(exc).__name__+': '+str(exc);raise\n    finally:\n        (evidence/('general-binary-fixtures-'+args.operation+'.json')).write_text(json.dumps(report,indent=2)+'\\\
+          n')\n        print(json.dumps({k:v for k,v in report.items() if k not in ('probes','compiledSourcesAfter')}),flush=True)\n\
+          \nif __name__=='__main__':main()\n'@\n[IO.File]::WriteAllText((Join-Path $root 'binary-fixture-phase.py'),\
+          \ $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\n$tool = @'\n\"\"\"Reject\
+          \ stale, incomplete or copied executable-fixture evidence.\"\"\"\nfrom pathlib import PureWindowsPath\n\n\
+          def validate(run_id,controller,tree,prepare,finish,desktop,effective_paths):\n    expected=PureWindowsPath('R:/tmp/ci-test-installs')/(str(run_id)+'_1')/'general'\n\
+          \    for report in (prepare,finish):\n        assert report['runId']==str(run_id) and report['runAttempt']=='1'\n\
+          \        assert report['sourceTree']==tree and report['controllerSha']==controller and report['phase']=='general'\n\
+          \        assert PureWindowsPath(report['root'])==expected\n        assert report['compiledSourceAttributesChanged']\
+          \ is False and 'error' not in report\n    assert prepare['prepared'] and finish['cleaned']\n    assert [PureWindowsPath(p)\
+          \ for p in effective_paths]==[expected]\n    probes=prepare['probes']\n    names={'codex-app-server.exe','codex-code-mode-host.exe'}\n\
+          \    assert len(probes)==2 and {p['name'] for p in probes}==names\n    for probe in probes:\n        assert\
+          \ probe['hardLinkVerified'] and probe['bytes']>0\n        assert PureWindowsPath(probe['source']).drive.upper()=='R:'\n\
+          \        assert PureWindowsPath(probe['source']).name==probe['name']\n        assert not probe['attributes']\
+          \ & 1\n    observed=desktop['binaryFixtureObservation']\n    assert observed==finish['runtimeObservation']\
+          \ and PureWindowsPath(observed['root'])==expected\n    assert observed['observerStopped'] and observed['samples']>0\
+          \ and observed['errors']==0\n    assert observed['observedDirectories']>0 and observed['hardLinkedExecutables']>=2\n\
+          \    assert observed['copiedExecutables']==0 and set(observed['hardLinksByExecutable'])==names\n    assert\
+          \ all(value>0 for value in observed['hardLinksByExecutable'].values())\n    assert sum(observed['hardLinksByExecutable'].values())==observed['hardLinkedExecutables']\n\
+          \    return dict(root=str(expected),runtimeHardLinksVerified=True,cleaned=True,\n        hardLinkedExecutables=observed['hardLinkedExecutables'],observedDirectories=observed['observedDirectories'],\n\
+          \        hardLinksByExecutable=observed['hardLinksByExecutable'],copiedExecutables=0,compiledSourceAttributesChanged=False)\n\
+          '@\n[IO.File]::WriteAllText((Join-Path $root 'native_binary_fixture_evidence.py'), $tool.Replace(\"`r`n\"\
+          ,\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\n$tool = @'\n\"\"\"Require private seed identity,\
+          \ unchanged compiled sources and actual test links.\"\"\"\nfrom pathlib import PureWindowsPath\nfrom native_binary_fixture_evidence\
+          \ import validate as old_validate\n\ndef validate(run_id,controller,tree,prepare,finish,desktop,effective_paths,effective_sources):\n\
+          \    record=old_validate(run_id,controller,tree,prepare,finish,desktop,effective_paths)\n    expected=PureWindowsPath(record['root'])/'.seed'\n\
+          \    assert [PureWindowsPath(p) for p in effective_sources]==[expected]\n    assert PureWindowsPath(prepare['seedRoot'])==expected\
+          \ and prepare['privateSeedCopies']==2\n    assert finish['compiledSourcesVerifiedUnchanged']\n    after={p['name']:p\
+          \ for p in finish['compiledSourcesAfter']};assert len(after)==2\n    for p in prepare['probes']:\n     \
+          \   assert PureWindowsPath(p['source'])==expected/p['name']\n        compiled=PureWindowsPath(p['compiledSource']);assert\
+          \ compiled.drive.upper()=='R:' and compiled.name==p['name']\n        assert not compiled.is_relative_to(PureWindowsPath(record['root']))\n\
+          \        original=p['compiledFingerprint']\n        assert p['inode']!=original['inode'] and p['device']==original['device']\
+          \ and p['bytes']==original['bytes']\n        assert not original['attributes'] & 1024\n        assert len(p['sha256'])==64\
+          \ and all(c in '0123456789abcdef' for c in p['sha256'])\n        assert after[p['name']]==dict(name=p['name'],fingerprint=original,sha256=p['sha256'])\n\
+          \    record.update(privateSeedCopies=2,compiledSourcesVerifiedUnchanged=True)\n    return record\n'@\n[IO.File]::WriteAllText((Join-Path\
+          \ $root 'native_binary_fixture_evidence_v3.py'), $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          \n$tool = @'\n\"\"\"Accept only positively identified test links and no unresolved executable identities.\"\
+          \"\"\nfrom native_binary_fixture_evidence_v3 import validate as seed_validate\n\ndef validate(run_id,controller,tree,prepare,finish,desktop,effective_paths,effective_sources):\n\
+          \    record=seed_validate(run_id,controller,tree,prepare,finish,desktop,effective_paths,effective_sources)\n\
+          \    observed=desktop['binaryFixtureObservation']\n    assert observed['identityMethod']=='positive-volume-and-file-id-v1'\n\
+          \    assert observed['unavailableOnlyExecutables']==0\n    assert observed['unavailableIdentitySamples']>=0\n\
+          \    assert observed['copyIdentityExamples']==[]\n    assert len(observed['unavailableIdentityExamples'])<=32\n\
+          \    for item in observed['unavailableIdentityExamples']:\n        assert item['device']==0 or item['inode']==0\n\
+          \        assert item['name'] in ('codex-app-server.exe','codex-code-mode-host.exe')\n        assert item['directory']\
+          \ and '/' not in item['directory'] and '\\\\' not in item['directory']\n    record.update(identityMethod=observed['identityMethod'],unavailableIdentitySamples=observed['unavailableIdentitySamples'],\n\
+          \        unavailableOnlyExecutables=0,zeroIdentitiesNeverCountedAsLinks=True)\n    return record\n'@\n[IO.File]::WriteAllText((Join-Path\
+          \ $root 'native_binary_fixture_evidence_v4.py'), $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n"
+      - name: Enumerate exact host and VM case partitions
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        id: host_inventory
+        shell: bash
+        run:
+          "set -euo pipefail\ncd \"$(cygpath -u \"$CODEX_BAZEL_WORKSPACE\")\"\nroot=\"$RUNNER_TEMP/native-codex-evidence\"\
+          \nargs=(\n  --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp --config=ci-windows --platforms=//:windows_x86_64_msvc\
+          \ --keep_going\n  \"--action_env=SystemRoot=${SYSTEMROOT}\" \"--host_action_env=SystemRoot=${SYSTEMROOT}\"\
+          \n  \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\n  \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \n  --disk_cache=R:/bazel-disk-cache\n  --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d\n\
+          \  --jobs=56 --local_resources=cpu=56\n)\nmixed=(//codex-rs/core:core-all-test //codex-rs/exec-server:exec-server-exec_process-test)\n\
+          query=\"config(set(${mixed[*]}), target)\"\n./.github/scripts/run-bazel-ci.sh --windows-msvc-host-platform\
+          \ -- \\\n  cquery \"${args[@]}\" --output=starlark \"--starlark:file=$(cygpath -m \"$root/mixed-targets.cquery\"\
+          )\" \\\n  -- \"$query\" > \"$root/mixed-targets.jsonl\"\n./.github/scripts/run-bazel-ci.sh --windows-msvc-host-platform\
+          \ -- \\\n  info \"${args[@]}\" -- execution_root > \"$root/mixed-execroot.txt\"\n'/c/Program Files/Python313/python.exe'\
+          \ -X utf8 \"$root/native-guest-coverage.py\" inventory \\\n  --report \"$root/privileged-guest-result.json\"\
+          \ --metadata \"$root/mixed-targets.jsonl\" \\\n  --execroot \"$root/mixed-execroot.txt\" --output \"$root/mixed-inventory.json\"\
+          \n"
+      - name: Validate general tests with D scratch and native MSVC
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        id: general
+        shell: pwsh
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.host_inventory.outcome == 'success'"
+        run:
+          "$ErrorActionPreference = 'Stop'\n$root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'native-codex-evidence')).Replace('H:\\\
+          codex-ci\\','R:\\')\n$script = Join-Path $root 'general.sh'\n$test = @'\nset -euo pipefail\ncd \"$(cygpath\
+          \ -u \"$CODEX_BAZEL_WORKSPACE\")\"\nscratch=\"D:/cxt/${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}/general\"\n\
+          # Windows local actions derive temporary paths from the Bazel client environment.\nexport TMP=\"$scratch/t\"\
+          \ TEMP=\"$scratch/t\" TMPDIR=\"$scratch/t\"\ninstall_root=\"R:/tmp/ci-test-installs/${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}/general\"\
+          \nargs=(\n \"--test_env=CODEX_TEST_INSTALL_TMPDIR=$install_root\"\n \"--test_env=CODEX_TEST_INSTALL_SOURCE_DIR=$install_root/.seed\"\
+          \n \"--test_tmpdir=$scratch/bazel-temp\" \"--test_env=TEMP=$scratch/t\"\n \"--test_env=TMP=$scratch/t\"\
+          \ \"--test_env=TMPDIR=$scratch/t\"\n --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp --config=ci-windows --platforms=//:windows_x86_64_msvc\
+          \ --keep_going\n \"--action_env=SystemRoot=${SYSTEMROOT}\" \"--host_action_env=SystemRoot=${SYSTEMROOT}\"\
+          \n \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\" \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \n --disk_cache=R:/bazel-disk-cache --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d\n\
+          \n --jobs=8 --local_resources=cpu=8 --local_test_jobs=8 --test_env=RUST_TEST_THREADS=4\n --test_env=SystemDrive\
+          \ --test_env=LOCALAPPDATA \"--test_env=SystemRoot=${SYSTEMROOT}\"\n --nocache_test_results --flaky_test_attempts=1\
+          \ --test_tag_filters=-argument-comment-lint --test_verbose_timeout_warnings\n)\nset +e\n./.github/scripts/run-bazel-ci.sh\
+          \ --print-failed-action-summary --print-failed-test-logs --windows-msvc-host-platform -- \\\n test \"${args[@]}\"\
+          \  --profile=\"R:/_work/_temp/native-codex-evidence/general-profile.json.gz\" \\\n --build_event_json_file=R:/_work/_temp/native-codex-evidence/general-events.json\
+          \ -- //... -//third_party/v8:all -//codex-rs/v8-poc:v8-poc-unit-tests -//codex-rs/core:core-all-test -//codex-rs/exec-server:exec-server-exec_process-test\
+          \ -//codex-rs/exec-server:exec-server-file_system_windows-test -//codex-rs/windows-sandbox-rs:windows-sandbox-rs-helper_manifest-test\
+          \ -//codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/general.log\"\
+          \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/general-exit-code.txt\"\
+          \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+          \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
+          \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
+          \ 'general'\nif ($LASTEXITCODE -ne 0) { throw 'D scratch preparation failed.' }\nif ((Get-FileHash -LiteralPath\
+          \ (Join-Path $root 'binary-fixture-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'cf101c084a1e03744fe850b233acd6d64fbd1d7083e2a87dc1fcd95bd40c165a')\
+          \ { throw 'Executable fixture helper differs.' }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path\
+          \ $root 'binary-fixture-phase.py') 'prepare'\nif ($LASTEXITCODE -ne 0) { throw 'Executable fixture preparation\
+          \ failed.' }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py')\
+          \ 'general' $script\nexit $LASTEXITCODE\n"
+      - name: Capture general logs before the next Bazel invocation
+        shell: pwsh
+        if: "!cancelled() && steps.general.outcome != 'skipped'"
+        run: '$ErrorActionPreference = ''Stop''
+
+          $root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ''native-codex-evidence'')).Replace(''H:\codex-ci\'',''R:\'')
+
+          $script = Join-Path $root ''capture-phase.py''
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $script ''general''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Verify compiled binaries and clean owned executable fixtures
+        if: "!cancelled() && steps.general.outcome != 'skipped'"
+        run: '$ErrorActionPreference=''Stop''
+
+          $root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ''native-codex-evidence'')).Replace(''H:\codex-ci\'',''R:\'')
+
+          if ((Get-FileHash -LiteralPath (Join-Path $root ''binary-fixture-phase.py'') -Algorithm SHA256).Hash.ToLowerInvariant()
+          -cne ''cf101c084a1e03744fe850b233acd6d64fbd1d7083e2a87dc1fcd95bd40c165a'') { throw ''Executable fixture
+          helper differs.'' }
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 (Join-Path $root ''binary-fixture-phase.py'') ''finish''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Remove only completed general test scratch after recording evidence
+        shell: pwsh
+        if: "!cancelled() && steps.general.outcome != 'skipped'"
+        run: '$ErrorActionPreference=''Stop''
+
+          $helper=Join-Path $env:RUNNER_TEMP ''native-codex-evidence/test-scratch-phase.py''
+
+          if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ''b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e''){throw
+          ''Scratch helper differs.''}
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $helper ''finish'' ''general''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Validate core tests with D scratch and native MSVC
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        id: core
+        shell: pwsh
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.host_inventory.outcome == 'success'"
+        run:
+          "$ErrorActionPreference = 'Stop'\n$root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'native-codex-evidence')).Replace('H:\\\
+          codex-ci\\','R:\\')\n$script = Join-Path $root 'core.sh'\n$test = @'\nset -euo pipefail\ncd \"$(cygpath\
+          \ -u \"$CODEX_BAZEL_WORKSPACE\")\"\nscratch=\"D:/cxt/${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}/core\"\n# Windows\
+          \ local actions derive temporary paths from the Bazel client environment.\nexport TMP=\"$scratch/t\" TEMP=\"\
+          $scratch/t\" TMPDIR=\"$scratch/t\"\nargs=(\n \"--test_tmpdir=$scratch/bazel-temp\" \"--test_env=TEMP=$scratch/t\"\
+          \n \"--test_env=TMP=$scratch/t\" \"--test_env=TMPDIR=$scratch/t\"\n --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp\
+          \ --config=ci-windows --platforms=//:windows_x86_64_msvc --keep_going\n \"--action_env=SystemRoot=${SYSTEMROOT}\"\
+          \ \"--host_action_env=SystemRoot=${SYSTEMROOT}\"\n \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \ \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\n --disk_cache=R:/bazel-disk-cache\
+          \ --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d\n\n --jobs=8 --local_resources=cpu=8\
+          \ --local_test_jobs=8 --test_env=RUST_TEST_THREADS=4\n --test_env=SystemDrive --test_env=LOCALAPPDATA \"\
+          --test_env=SystemRoot=${SYSTEMROOT}\"\n --nocache_test_results --flaky_test_attempts=1 --test_tag_filters=-argument-comment-lint\
+          \ --test_verbose_timeout_warnings\n)\nset +e\n./.github/scripts/run-bazel-ci.sh --print-failed-action-summary\
+          \ --print-failed-test-logs --windows-msvc-host-platform -- \\\n test \"${args[@]}\" --test_env=CODEX_BAZEL_TEST_SKIP_FILTERS=suite::code_mode::code_mode_can_call_hidden_dynamic_tools,tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child,suite::windows_sandbox::\
+          \ --profile=\"R:/_work/_temp/native-codex-evidence/core-profile.json.gz\" \\\n --build_event_json_file=R:/_work/_temp/native-codex-evidence/core-events.json\
+          \ -- //codex-rs/core:core-all-test \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/core.log\"\nstatus=${PIPESTATUS[0]}\n\
+          set -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/core-exit-code.txt\"\nexit \"\
+          $status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+          \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
+          \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
+          \ 'core'\nif ($LASTEXITCODE -ne 0) { throw 'D scratch preparation failed.' }\n& 'C:\\Program Files\\Python313\\\
+          python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py') 'core' $script\nexit $LASTEXITCODE\n"
+      - name: Capture core logs before the next Bazel invocation
+        shell: pwsh
+        if: "!cancelled() && steps.core.outcome != 'skipped'"
+        run: '$ErrorActionPreference = ''Stop''
+
+          $root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ''native-codex-evidence'')).Replace(''H:\codex-ci\'',''R:\'')
+
+          $script = Join-Path $root ''capture-phase.py''
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $script ''core''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Remove only completed core test scratch after recording evidence
+        shell: pwsh
+        if: "!cancelled() && steps.core.outcome != 'skipped'"
+        run: '$ErrorActionPreference=''Stop''
+
+          $helper=Join-Path $env:RUNNER_TEMP ''native-codex-evidence/test-scratch-phase.py''
+
+          if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ''b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e''){throw
+          ''Scratch helper differs.''}
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $helper ''finish'' ''core''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Validate exec tests with D scratch and native MSVC
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        id: exec
+        shell: pwsh
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.host_inventory.outcome == 'success'"
+        run:
+          "$ErrorActionPreference = 'Stop'\n$root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'native-codex-evidence')).Replace('H:\\\
+          codex-ci\\','R:\\')\n$script = Join-Path $root 'exec.sh'\n$test = @'\nset -euo pipefail\ncd \"$(cygpath\
+          \ -u \"$CODEX_BAZEL_WORKSPACE\")\"\nscratch=\"D:/cxt/${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}/exec\"\n# Windows\
+          \ local actions derive temporary paths from the Bazel client environment.\nexport TMP=\"$scratch/t\" TEMP=\"\
+          $scratch/t\" TMPDIR=\"$scratch/t\"\nargs=(\n \"--test_tmpdir=$scratch/bazel-temp\" \"--test_env=TEMP=$scratch/t\"\
+          \n \"--test_env=TMP=$scratch/t\" \"--test_env=TMPDIR=$scratch/t\"\n --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp\
+          \ --config=ci-windows --platforms=//:windows_x86_64_msvc --keep_going\n \"--action_env=SystemRoot=${SYSTEMROOT}\"\
+          \ \"--host_action_env=SystemRoot=${SYSTEMROOT}\"\n \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \ \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\n --disk_cache=R:/bazel-disk-cache\
+          \ --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d\n\n --jobs=8 --local_resources=cpu=8\
+          \ --local_test_jobs=1 --test_env=RUST_TEST_THREADS=4\n --test_env=SystemDrive --test_env=LOCALAPPDATA \"\
+          --test_env=SystemRoot=${SYSTEMROOT}\"\n --nocache_test_results --flaky_test_attempts=1 --test_tag_filters=-argument-comment-lint\
+          \ --test_verbose_timeout_warnings\n)\nset +e\n./.github/scripts/run-bazel-ci.sh --print-failed-action-summary\
+          \ --print-failed-test-logs --windows-msvc-host-platform -- \\\n test \"${args[@]}\" --test_arg=--skip --test_arg=windows_sandbox::tmpdir_uses_command_environment_over_rpc::elevated\
+          \ --profile=\"R:/_work/_temp/native-codex-evidence/exec-profile.json.gz\" \\\n --build_event_json_file=R:/_work/_temp/native-codex-evidence/exec-events.json\
+          \ -- //codex-rs/exec-server:exec-server-exec_process-test \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/exec.log\"\
+          \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/exec-exit-code.txt\"\
+          \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
+          if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'f0146ccd7660ece1ae47fd683062cb27c6cf079de5adc986ebfab30428806a64') { throw 'Prepared helper differs.'\
+          \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.'\
+          \ }\n& 'C:\\Program Files\\Python313\\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare'\
+          \ 'exec'\nif ($LASTEXITCODE -ne 0) { throw 'D scratch preparation failed.' }\n& 'C:\\Program Files\\Python313\\\
+          python.exe' -X utf8 (Join-Path $root 'run-private-desktop-command.py') 'exec' $script\nexit $LASTEXITCODE\n"
+      - name: Capture exec logs before the next Bazel invocation
+        shell: pwsh
+        if: "!cancelled() && steps.exec.outcome != 'skipped'"
+        run: '$ErrorActionPreference = ''Stop''
+
+          $root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ''native-codex-evidence'')).Replace(''H:\codex-ci\'',''R:\'')
+
+          $script = Join-Path $root ''capture-phase.py''
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $script ''exec''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Remove only completed exec test scratch after recording evidence
+        shell: pwsh
+        if: "!cancelled() && steps.exec.outcome != 'skipped'"
+        run: '$ErrorActionPreference=''Stop''
+
+          $helper=Join-Path $env:RUNNER_TEMP ''native-codex-evidence/test-scratch-phase.py''
+
+          if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ''b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e''){throw
+          ''Scratch helper differs.''}
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 $helper ''finish'' ''exec''
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Require complete combined host and isolated VM coverage
+        shell: bash
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.host_inventory.outcome == 'success'"
+        run:
+          "set -euo pipefail\nroot=\"$RUNNER_TEMP/native-codex-evidence\"\n'/c/Program Files/Python313/python.exe'\
+          \ -X utf8 \"$root/native-guest-coverage.py\" finish \\\n  --report \"$root/privileged-guest-result.json\"\
+          \ --inventory \"$root/mixed-inventory.json\" \\\n  --build \"$root/build-events.json\" --general \"$root/general-events.json\"\
+          \ \\\n  --core \"$root/core-events.json\" --exec \"$root/exec-events.json\" --output \"$root/combined-native-coverage.json\"\
+          \n"
+      - name: Verify actual D temporary paths and bounded R caches
+        shell: pwsh
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.host_inventory.outcome == 'success'"
+        run: '$ErrorActionPreference = ''Stop''
+
+          $root = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ''native-codex-evidence'')).Replace(''H:\codex-ci\'',''R:\'')
+
+          & ''C:\Program Files\Python313\python.exe'' -X utf8 (Join-Path $root ''verify-test-storage.py'')
+
+          exit $LASTEXITCODE
+
+          '
+      - name: Strict Clippy for the full native target selection
+        shell: bash
+        env:
+          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
+        run:
+          "set -euo pipefail\ncd \"$(cygpath -u \"$CODEX_BAZEL_WORKSPACE\")\"\nset +e\n./.github/scripts/run-bazel-ci.sh\
+          \ --print-failed-action-summary --windows-msvc-host-platform -- build \\\n --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp\
+          \ --config=ci-windows --config=clippy --platforms=//:windows_x86_64_msvc --keep_going \\\n \"--action_env=SystemRoot=${SYSTEMROOT}\"\
+          \ \"--host_action_env=SystemRoot=${SYSTEMROOT}\" \\\n \"--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\"\
+          \ \"--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}\" \\\n --disk_cache=R:/bazel-disk-cache\
+          \ --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d \\\n --jobs=56 --local_resources=cpu=56\
+          \ \\\n --build_event_json_file=R:/_work/_temp/native-codex-evidence/clippy-events.json \\\n -- //... -//third_party/v8:all\
+          \ -//codex-rs/v8-poc:v8-poc-unit-tests \\\n 2>&1 | tee \"$RUNNER_TEMP/native-codex-evidence/clippy.log\"\
+          \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/clippy-exit-code.txt\"\
+          \nexit \"$status\"\n"
+      - name: Prepare V8 inputs for the x64 Windows package target
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Build the x64 Windows npm handoff package
+        shell: bash
+        env:
+          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+        run:
+          "set -euo pipefail\nversion=\"$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps\
+          \ --format-version 1 | python3 -c 'import json,sys; print(next(p[\"version\"] for p in json.load(sys.stdin)[\"\
+          packages\"] if p[\"name\"] == \"codex-cli\"))')\"\ntarget=x86_64-pc-windows-msvc\nhandoff=\"$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target\"\
+          \nmkdir -p \"$handoff\"\ncargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml\
+          \ --locked --release --timings --target \"$target\" \\\n  --bin codex --bin codex-app-server --bin codex-code-mode-host\
+          \ \\\n  --bin codex-command-runner --bin codex-windows-sandbox-setup \\\n  2>&1 | tee \"$handoff/build.log\"\
+          \ntest \"${PIPESTATUS[0]}\" -eq 0\ncp \"$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html\" \"$handoff/cargo-timing.html\"\
+          \nrelease=\"$CARGO_TARGET_DIR/$target/release\"\npython3 scripts/build_codex_package.py \\\n  --target \"\
+          $target\" --variant codex --package-version \"$version\" \\\n  --entrypoint-bin \"$release/codex.exe\" \\\
+          \n  --code-mode-host-bin \"$release/codex-code-mode-host.exe\" \\\n  --codex-command-runner-bin \"$release/codex-command-runner.exe\"\
+          \ \\\n  --codex-windows-sandbox-setup-bin \"$release/codex-windows-sandbox-setup.exe\" \\\n  --archive-output\
+          \ \"$handoff/codex-package-$target.tar.gz\" \\\n  --archive-output \"$handoff/codex-package-$target.tar.zst\"\
+          \ \\\n  2>&1 | tee \"$handoff/package.log\"\ntest \"${PIPESTATUS[0]}\" -eq 0\nsha256sum \"$handoff\"/* >\
+          \ \"$handoff/SHA256SUMS\"\n"
+      - name: Import and verify the ARM64 MSVC package environment
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n$vsDevCmd = 'C:\\BuildTools\\Common7\\Tools\\VsDevCmd.bat'\n$envLines\
+          \ = & $env:ComSpec /d /c ('\"{0}\" -no_logo -arch=arm64 -host_arch=x64 >nul && set' -f $vsDevCmd)\nif ($LASTEXITCODE\
+          \ -ne 0) { throw 'ARM64 VsDevCmd failed.' }\n$exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')\n\
+          foreach ($line in $envLines) {\n  if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1])\
+          \ {\n    [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')\n    \"$($matches[1])=$($matches[2])\"\
+          \ | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\n  }\n}\nif ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or\
+          \ $env:VSCMD_ARG_TGT_ARCH -ne 'arm64') { throw 'Expected x64 host / ARM64 target for the package build.'\
+          \ }\n$probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/arm64-probe'\nNew-Item -ItemType Directory\
+          \ -Force $probe | Out-Null\n'#include <windows.h>', 'int main(void) { return sizeof(void*) == 8 ? 0 : 1;\
+          \ }' | Set-Content (Join-Path $probe 'probe.c')\n& cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') \"\
+          /Fo$probe/probe.obj\" \"/Fe$probe/probe.exe\"\nif ($LASTEXITCODE -ne 0) { throw 'ARM64 MSVC SDK compilation\
+          \ failed.' }\n$bytes = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))\n$peOffset = [BitConverter]::ToInt32($bytes,\
+          \ 0x3c)\nif ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0xaa64) { throw 'Compiler did not produce\
+          \ an ARM64 PE executable.' }\n& rustup target add --toolchain 1.95.0-x86_64-pc-windows-msvc aarch64-pc-windows-msvc\n\
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 Rust standard library setup failed.' }\n\"CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$((Get-Command\
+          \ link.exe).Source)\" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append\nWrite-Host \"ARM64 compiler: $((Get-Command\
+          \ cl.exe).Source)\"\n$version = '21.1.8'\n$archiveHash = '749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47'\n\
+          $installation = 'R:\\tools\\llvm-21.1.8'\n$manifestPath = Join-Path $installation 'codex-installation.json'\n\
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json\nif ($manifest.version -cne $version\
+          \ -or $manifest.archiveSha256 -cne $archiveHash) { throw 'LLVM installation provenance mismatch.' }\n$bin\
+          \ = Join-Path $installation 'bin'\nif (@($manifest.binaries.PSObject.Properties).Count -ne 6) { throw 'Incomplete\
+          \ LLVM installation inventory.' }\nforeach ($entry in $manifest.binaries.PSObject.Properties) {\n    if\
+          \ ($entry.Name -notin @('clang.exe','clang-cl.exe','clang++.exe','llvm-lib.exe','llvm-ar.exe','lld-link.exe'))\
+          \ { throw 'Unexpected LLVM manifest entry.' }\n    $path = Join-Path $bin $entry.Name\n    if ((Get-FileHash\
+          \ -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value) { throw \"LLVM binary\
+          \ checksum mismatch: $($entry.Name)\" }\n}\n$env:PATH = \"$bin;$env:PATH\"\n$clang = Join-Path $bin 'clang.exe'\n\
+          $clangCl = Join-Path $bin 'clang-cl.exe'\n$llvmLib = Join-Path $bin 'llvm-lib.exe'\n& $clang --version\n\
+          if ($LASTEXITCODE -ne 0) { throw 'Clang could not start.' }\n$probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence\\\
+          arm64-clang-probe'\n$null = New-Item -ItemType Directory -Path $probe -Force\n'#include <windows.h>', 'int\
+          \ main(void) { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content -LiteralPath (Join-Path $probe 'probe.c')\
+          \ -Encoding ascii\n& $clangCl --target=aarch64-pc-windows-msvc /nologo /MT /W4 /WX (Join-Path $probe 'probe.c')\
+          \ \"/Fo$probe\\probe.obj\" \"/Fe$probe\\probe.exe\"\nif ($LASTEXITCODE -ne 0) { throw 'Clang ARM64 C/Windows\
+          \ SDK/MSVC link probe failed.' }\n$pe = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))\n$peOffset\
+          \ = [BitConverter]::ToInt32($pe, 0x3c)\nif ([BitConverter]::ToUInt16($pe, $peOffset + 4) -ne 0xaa64) { throw\
+          \ 'Clang did not produce an ARM64 PE executable.' }\n'.text', '.globl codex_arm64_probe', 'codex_arm64_probe:',\
+          \ '  ret' | Set-Content -LiteralPath (Join-Path $probe 'probe.S') -Encoding ascii\n& $clang --target=aarch64-pc-windows-msvc\
+          \ -c (Join-Path $probe 'probe.S') -o (Join-Path $probe 'assembly.obj')\nif ($LASTEXITCODE -ne 0) { throw\
+          \ 'Clang ARM64 assembler probe failed.' }\n$coff = [IO.File]::ReadAllBytes((Join-Path $probe 'assembly.obj'))\n\
+          if ([BitConverter]::ToUInt16($coff, 0) -ne 0xaa64) { throw 'Assembler did not produce ARM64 COFF.' }\n&\
+          \ $llvmLib \"/out:$probe\\probe.lib\" (Join-Path $probe 'assembly.obj')\nif ($LASTEXITCODE -ne 0) { throw\
+          \ 'LLVM MSVC librarian probe failed.' }\n@(\n    \"PATH=$env:PATH\",\n    \"CC_aarch64_pc_windows_msvc=$clangCl\"\
+          ,\n    \"CXX_aarch64_pc_windows_msvc=$clangCl\",\n    \"AR_aarch64_pc_windows_msvc=$llvmLib\"\n) | Out-File\
+          \ $env:GITHUB_ENV -Encoding utf8 -Append\n[ordered]@{version=$version;path=$installation;archiveSha256=$archiveHash;host='x86_64-pc-windows-msvc';target='aarch64-pc-windows-msvc';cAndSdkProbe='passed';assemblyProbe='passed';librarianProbe='passed'}\
+          \ |\n    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $probe 'verification.json') -Encoding utf8\n"
+      - name: Prepare V8 inputs for the ARM64 Windows package target
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-pc-windows-msvc
+      - name: Build the ARM64 Windows npm handoff package
+        shell: bash
+        env:
+          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+        run:
+          "set -euo pipefail\nversion=\"$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps\
+          \ --format-version 1 | python3 -c 'import json,sys; print(next(p[\"version\"] for p in json.load(sys.stdin)[\"\
+          packages\"] if p[\"name\"] == \"codex-cli\"))')\"\ntarget=aarch64-pc-windows-msvc\nhandoff=\"$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target\"\
+          \nmkdir -p \"$handoff\"\ncargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml\
+          \ --locked --release --timings --target \"$target\" \\\n  --bin codex --bin codex-app-server --bin codex-code-mode-host\
+          \ \\\n  --bin codex-command-runner --bin codex-windows-sandbox-setup \\\n  2>&1 | tee \"$handoff/build.log\"\
+          \ntest \"${PIPESTATUS[0]}\" -eq 0\ncp \"$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html\" \"$handoff/cargo-timing.html\"\
+          \nrelease=\"$CARGO_TARGET_DIR/$target/release\"\npython3 scripts/build_codex_package.py \\\n  --target \"\
+          $target\" --variant codex --package-version \"$version\" \\\n  --entrypoint-bin \"$release/codex.exe\" \\\
+          \n  --code-mode-host-bin \"$release/codex-code-mode-host.exe\" \\\n  --codex-command-runner-bin \"$release/codex-command-runner.exe\"\
+          \ \\\n  --codex-windows-sandbox-setup-bin \"$release/codex-windows-sandbox-setup.exe\" \\\n  --archive-output\
+          \ \"$handoff/codex-package-$target.tar.gz\" \\\n  --archive-output \"$handoff/codex-package-$target.tar.zst\"\
+          \ \\\n  2>&1 | tee \"$handoff/package.log\"\ntest \"${PIPESTATUS[0]}\" -eq 0\nsha256sum \"$handoff\"/* >\
+          \ \"$handoff/SHA256SUMS\"\n"
+      - name: Write Windows handoff manifest
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n$evidence = Join-Path $env:RUNNER_TEMP 'native-codex-evidence'\n$bazelLog\
+          \ = Join-Path $evidence 'build.log'\nif (-not (Test-Path -LiteralPath $bazelLog)) { throw 'Bazel evidence\
+          \ is missing.' }\n$digest = (Get-FileHash -LiteralPath $bazelLog -Algorithm SHA256).Hash.ToLowerInvariant()\n\
+          $coveragePath = Join-Path $evidence 'combined-native-coverage.json'\n$coverage = Get-Content -LiteralPath\
+          \ $coveragePath -Raw | ConvertFrom-Json\nif ($coverage.status -cne 'passed' -or $coverage.sourceTree -cne\
+          \ $env:NATIVE_SOURCE_TREE) {\n  throw 'Complete host and isolated-VM coverage is required before packaging\
+          \ success.'\n}\n$guestResult = Join-Path $evidence 'privileged-guest-result.json'\n$x64Build = Join-Path\
+          \ $evidence 'windows-handoff/x86_64-pc-windows-msvc/build.log'\n$x64Package = Join-Path $evidence 'windows-handoff/x86_64-pc-windows-msvc/package.log'\n\
+          $arm64Build = Join-Path $evidence 'windows-handoff/aarch64-pc-windows-msvc/build.log'\n$arm64Package = Join-Path\
+          \ $evidence 'windows-handoff/aarch64-pc-windows-msvc/package.log'\nforeach ($path in @($x64Build, $x64Package,\
+          \ $arm64Build, $arm64Package)) {\n  if (-not (Test-Path -LiteralPath $path)) { throw \"Windows package evidence\
+          \ is missing: $path\" }\n}\n[ordered]@{\n  schema = 1\n  commit = $env:SOURCE_SHA\n  producer = 'windows-private-controller'\n\
+          \  status = 'success'\n  checks = @(\n    [ordered]@{ name = 'windows-bazel'; exit_code = 0; log_sha256\
+          \ = $digest }\n    [ordered]@{ name = 'windows-native-combined-coverage'; exit_code = 0; log_sha256 = (Get-FileHash\
+          \ -LiteralPath $coveragePath -Algorithm SHA256).Hash.ToLowerInvariant() }\n    [ordered]@{ name = 'windows-privileged-vm';\
+          \ exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $guestResult -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ }\n    [ordered]@{ name = 'windows-package-x64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath\
+          \ $x64Build -Algorithm SHA256).Hash.ToLowerInvariant() }\n    [ordered]@{ name = 'windows-package-x64-stage';\
+          \ exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $x64Package -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ }\n    [ordered]@{ name = 'windows-package-arm64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath\
+          \ $arm64Build -Algorithm SHA256).Hash.ToLowerInvariant() }\n    [ordered]@{ name = 'windows-package-arm64-stage';\
+          \ exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $arm64Package -Algorithm SHA256).Hash.ToLowerInvariant()\
+          \ }\n  )\n} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'windows-manifest.json')\n"
+      - name: Record source and runner evidence
+        if: always()
+        shell: pwsh
+        run:
+          "$ErrorActionPreference = 'Stop'\n$buildVolume = [IO.DriveInfo]::new('R:\\')\n$scratchVolume = [IO.DriveInfo]::new('D:\\\
+          ')\nif (-not $buildVolume.IsReady -or -not $scratchVolume.IsReady) { throw 'Required build/scratch volume\
+          \ is not ready.' }\nNew-Item -ItemType Directory -Force -Path \"$env:RUNNER_TEMP\\native-codex-evidence\"\
+          \ | Out-Null\n[ordered]@{\n  sourceSha = $env:SOURCE_SHA\n  machine = $env:COMPUTERNAME\n  runner = $env:RUNNER_NAME\n\
+          \  target = 'x86_64-pc-windows-msvc'\n  host = 'local_windows_msvc'\n  workspaceRoot = 'H:/codex-ci'\n \
+          \ bazelBuildRoot = 'R:/'\n  backingImage = 'H:/CodexRunnerVolume/build-20tb.vhdx'\n  storageMeasurementUtc\
+          \ = [DateTime]::UtcNow.ToString('o')\n  buildVolume = [ordered]@{ drive = $buildVolume.Name; totalBytes\
+          \ = $buildVolume.TotalSize; availableBytes = $buildVolume.AvailableFreeSpace }\n  testScratchVolume = [ordered]@{\
+          \ drive = $scratchVolume.Name; totalBytes = $scratchVolume.TotalSize; availableBytes = $scratchVolume.AvailableFreeSpace\
+          \ }\n} | ConvertTo-Json | Set-Content \"$env:RUNNER_TEMP\\native-codex-evidence\\identity.json\"\n"
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: native-codex-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/native-codex-evidence
+          if-no-files-found: error
+      - name: Upload Windows package handoff
+        if: success()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: windows-handoff-${{ inputs.source_sha }}
+          path: "${{ runner.temp }}/native-codex-evidence/windows-handoff
+
+            ${{ runner.temp }}/native-codex-evidence/windows-manifest.json
+
+            "
+          if-no-files-found: error
+          retention-days: 14
+"on":
   workflow_call:
     inputs:
       source_sha:
@@ -13,505 +1252,3 @@ on:
         description: Optional UTC timestamp; require a reboot after it
         required: false
         type: string
-
-permissions:
-  contents: read
-
-jobs:
-  native-msvc:
-    if: >-
-      github.repository == 'holyglory/codex-win-msvc-ci' &&
-      github.event.repository.private == true &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main' &&
-      github.actor == 'holyglory' &&
-      github.triggering_actor == 'holyglory'
-    runs-on: [self-hosted, Windows, X64, codex-win-msvc]
-    timeout-minutes: 360
-    defaults:
-      run:
-        shell: pwsh
-    env:
-      CODEX_WINDOWS_BUILD_ROOT: H:/codex-ci
-      EXPECTED_BOOT_AFTER_UTC: ${{ inputs.boot_after_utc }}
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      # Leave eight logical cores for the runner service, antivirus, and the
-      # interactive Windows session while keeping native builds parallel.
-      CARGO_BUILD_JOBS: "56"
-    steps:
-      - name: Verify source identity input
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
-            throw 'source_sha must be a full 40-character commit ID.'
-          }
-
-      - name: Checkout exact public candidate
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: holyglory/codex
-          ref: ${{ inputs.source_sha }}
-          token: ${{ github.token }}
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Verify runner identity, reboot boundary, and checkout
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          if ($identity.Name -notmatch '\\svc_codex_runner$') { throw 'Unexpected runner identity.' }
-          if (([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            throw 'The runner must not be an administrator.'
-          }
-          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
-          if (-not $workspace.StartsWith('H:\codex-ci\_work\', [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'The workspace must be beneath H:\codex-ci\_work.'
-          }
-          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
-          if ($env:EXPECTED_BOOT_AFTER_UTC) {
-            $minimumBoot = [DateTimeOffset]::Parse($env:EXPECTED_BOOT_AFTER_UTC, [Globalization.CultureInfo]::InvariantCulture)
-            if ($boot -le $minimumBoot.UtcDateTime) { throw 'Windows has not rebooted since the requested checkpoint.' }
-          }
-          $actual = (git rev-parse HEAD).Trim()
-          if ($actual -cne $env:SOURCE_SHA) { throw "Checked out $actual instead of $env:SOURCE_SHA." }
-          [ordered]@{
-            machine = $env:COMPUTERNAME
-            identity = $identity.Name
-            runner = $env:RUNNER_NAME
-            workspace = $workspace
-            sourceSha = $actual
-            lastBootUtc = $boot
-          } | ConvertTo-Json
-
-      - name: Configure preinstalled native build tools
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'C:\ProgramData\CodexRunner\volume\Assert-CodexBuildVolume.ps1'
-          $mounted = [Text.StringBuilder]::new(128)
-          $drive = [Text.StringBuilder]::new(128)
-          if (-not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('H:\codex-ci\',$mounted,$mounted.Capacity) -or
-              -not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('R:\',$drive,$drive.Capacity) -or
-              $mounted.ToString() -ne $drive.ToString()) { throw 'R: is not the bounded build volume on H:.' }
-          $root = 'R:'
-          $repoRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).Replace('H:\codex-ci\','R:\')
-          if (-not $repoRoot.StartsWith('R:\_work\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected canonical repository path.' }
-          foreach ($name in @('CARGO_HOME','RUSTUP_HOME','BAZELISK_HOME','HOME','USERPROFILE','APPDATA','LOCALAPPDATA','RUNNER_TOOL_CACHE','PATH')) {
-            $value = [Environment]::GetEnvironmentVariable($name)
-            if ($value) { "$name=$($value.Replace('H:\codex-ci','R:').Replace('H:/codex-ci','R:'))" | Add-Content -Path $env:GITHUB_ENV }
-          }
-          $dirs = @(
-            "$root/o",
-            "$root/b",
-            "$root/bazel-repository-cache",
-            "$root/bazel-repo-contents-cache",
-            "$root/cargo-target",
-            "$root/tmp",
-            "$env:RUNNER_TEMP/native-codex-evidence"
-          )
-          $dirs | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
-          @(
-            "SYSTEMROOT=$([Environment]::GetFolderPath('Windows'))",
-            "windir=$([Environment]::GetFolderPath('Windows'))",
-            "SystemDrive=C:",
-            "ComSpec=C:\Windows\System32\cmd.exe",
-            "CI_BUILD_ROOT=$root",
-            "BAZEL_OUTPUT_BASE=$root/o",
-            "BAZEL_OUTPUT_USER_ROOT=$root/b",
-            "BAZEL_REPOSITORY_CACHE=$root/bazel-repository-cache",
-            "BAZEL_REPO_CONTENTS_CACHE=$root/bazel-repo-contents-cache",
-            "CARGO_TARGET_DIR=$root/cargo-target",
-            "TEMP=$root/tmp",
-            "TMP=$root/tmp",
-            "CODEX_REPO_ROOT=$repoRoot",
-            "CODEX_BAZEL_WORKSPACE=$repoRoot",
-            "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1"
-          ) | Add-Content -Path $env:GITHUB_ENV
-
-      - name: Import and verify the native x64 MSVC SDK environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # The service account cannot enumerate the installer catalog through vswhere.
-          # This runner has a dedicated fixed installation, verified by compilation below.
-          $installPath = 'C:\BuildTools'
-          $vsDevCmd = Join-Path $installPath 'Common7/Tools/VsDevCmd.bat'
-          if (-not (Test-Path -LiteralPath $vsDevCmd -PathType Leaf)) { throw 'The dedicated MSVC Build Tools installation is missing.' }
-          $envLines = & $env:ComSpec /d /c ('"{0}" -no_logo -arch=x64 -host_arch=x64 >nul && set' -f $vsDevCmd)
-          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }
-          $exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')
-          foreach ($line in $envLines) {
-            if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1]) {
-              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
-              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-            }
-          }
-          foreach ($name in @('INCLUDE','LIB','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion')) {
-            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing MSVC environment: $name" }
-          }
-          if ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { throw 'Expected x64 MSVC host and target.' }
-          @(
-            "BAZEL_VC=$env:VCINSTALLDIR",
-            "BAZEL_VC_FULL_VERSION=$((Split-Path $env:VCToolsInstallDir.TrimEnd('\') -Leaf))",
-            "BAZEL_WINSDK_FULL_VERSION=$($env:WindowsSDKVersion.TrimEnd('\'))"
-          ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/msvc-probe'
-          New-Item -ItemType Directory -Force $probe | Out-Null
-          '#include <windows.h>', '#include <stdio.h>', 'int main(void) { printf("MSVC x64 SDK compile passed\n"); return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content (Join-Path $probe 'probe.c')
-          & cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe/probe.obj" "/Fe$probe/probe.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'Native MSVC compilation failed.' }
-          & (Join-Path $probe 'probe.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'Native MSVC probe failed.' }
-          $rust = & rustc --version
-          if ($LASTEXITCODE -ne 0 -or $rust -notmatch '^rustc 1\.95\.0 ') { throw "Expected Rust 1.95.0; got $rust" }
-          Write-Host $rust
-          Write-Host "MSVC: $((Get-Command cl.exe).Source)"
-          Write-Host "Windows SDK: $env:WindowsSdkDir$env:WindowsSDKVersion"
-
-      - name: Prepare pinned Windows voice inputs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Bazel's injected repository must use the normal drive path too.
-          $env:RUNNER_TEMP = [IO.Path]::GetFullPath($env:RUNNER_TEMP).Replace('H:\codex-ci\','R:\')
-          if (-not $env:RUNNER_TEMP.StartsWith('R:\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Voice tools must use the bounded build volume.' }
-          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
-          if (-not $env:SystemRoot -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Expected the native x64 Windows OS environment.' }
-          "VOICE_WINDOWS_SYSTEM_ROOT=$env:SystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "VOICE_WINDOWS_HOST_ARCH=$env:PROCESSOR_ARCHITECTURE" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          $pin = $manifest.archive
-          $source = $manifest.sourceArchive
-          $directory = Join-Path $env:RUNNER_TEMP 'voice-cygwin-snapshot'
-          New-Item -ItemType Directory -Force -Path $directory | Out-Null
-          foreach ($asset in @($pin, $source)) {
-            $uri = "https://github.com/openai/codex/releases/download/$($pin.tag)/$($asset.name)"
-            Invoke-WebRequest -Uri $uri -OutFile (Join-Path $directory $asset.name)
-          }
-          $sourceFile = Join-Path $directory $source.name
-          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
-              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
-            throw 'Public Cygwin source archive mismatch.'
-          }
-          $archiveFile = Join-Path $directory $pin.name
-          if ((Get-Item $archiveFile).Length -ne $pin.bytes -or
-              (Get-FileHash $archiveFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
-            throw 'Pinned Cygwin archive mismatch.'
-          }
-          "VOICE_WINDOWS_TARGET=x86_64-pc-windows-msvc" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "VOICE_CYGWIN_ARCHIVE=$archiveFile" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          # Use the normal drive path so the pinned-image helper can reject reparse points.
-          & ./.github/scripts/setup-voice-windows.ps1 -Target x86_64-pc-windows-msvc -SnapshotArchive $archiveFile -PkgconfImage 'R:\provisioned\pkgconf\3.0.6-x64\native'
-
-      - name: Provide a working python3 launcher for native actions
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $python = (Get-Command python.exe -ErrorAction Stop).Source
-          $venv = Join-Path $env:CI_BUILD_ROOT 'tools/python-native'
-          # Use Python's venv launcher, which retains the base interpreter and DLL paths.
-          # A renamed copy of the base python.exe outside its installation is insufficient.
-          & $python -m venv --without-pip --system-site-packages $venv
-          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the Python launcher environment.' }
-          $shim = Join-Path $venv 'Scripts'
-          Copy-Item -LiteralPath (Join-Path $shim 'python.exe') -Destination (Join-Path $shim 'python3.exe') -Force
-          & (Join-Path $shim 'python3.exe') -c 'import sys, ssl; print(sys.executable); print(sys.version)'
-          if ($LASTEXITCODE -ne 0) { throw 'The python3 launcher failed.' }
-          "PATH=$shim;$env:PATH" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "CODEX_PYTHON_BIN=$shim" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Prepare checksum-pinned zstd for local package archives
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $code = @'
-          import json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, 'scripts')
-          from codex_package.dotslash import fetch_dotslash_executable
-          from codex_package.targets import TARGET_SPECS
-          # The zstd DotSlash manifest has leading comments; the shared fetcher's
-          # JSON reader only strips its shebang. Normalize a separate evidence copy.
-          lines = Path('.github/workflows/zstd').read_text(encoding='utf-8').splitlines()
-          while lines and (not lines[0].strip() or lines[0].lstrip().startswith(('#!', '//'))):
-              lines.pop(0)
-          manifest = Path(os.environ['RUNNER_TEMP']) / 'native-codex-evidence' / 'zstd-manifest.json'
-          manifest.write_text(json.dumps(json.loads('\n'.join(lines))), encoding='utf-8')
-          path = fetch_dotslash_executable(TARGET_SPECS['x86_64-pc-windows-msvc'], manifest_path=manifest, artifact_label='zstd', cache_key='zstd-windows-x64', dest_name='zstd.exe')
-          print(path)
-          '@
-          $zstd = & python3.exe -c $code
-          if ($LASTEXITCODE -ne 0 -or -not $zstd) { throw 'Could not prepare checksum-pinned zstd.' }
-          $zstd = $zstd.Trim()
-          if (-not ([IO.Path]::GetFullPath($zstd)).StartsWith('R:\', [StringComparison]::OrdinalIgnoreCase)) { throw 'zstd must be cached on the bounded build volume.' }
-          & $zstd --version
-          if ($LASTEXITCODE -ne 0) { throw 'zstd failed to execute.' }
-          Split-Path -Parent $zstd | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Compute and verify the native Windows Bazel path
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./.github/scripts/compute-bazel-windows-path.ps1
-          # The upstream filter recognizes hosted Visual Studio paths but misses C:\BuildTools.
-          $derived = Get-Content $env:GITHUB_ENV | Where-Object { $_.StartsWith('CODEX_BAZEL_WINDOWS_PATH=') } | Select-Object -Last 1
-          if (-not $derived) { throw 'Stable Windows Bazel PATH was not generated.' }
-          $entries = @(
-            (Join-Path $env:VCToolsInstallDir 'bin/HostX64/x64'),
-            (Join-Path $env:WindowsSdkBinPath "$($env:WindowsSDKVersion.TrimEnd('\'))/x64"),
-            $env:CODEX_PYTHON_BIN
-          ) + ($derived.Substring('CODEX_BAZEL_WINDOWS_PATH='.Length) -split ';')
-          $stablePath = ($entries | Where-Object { $_ } | Select-Object -Unique) -join ';'
-          $env:PATH = $stablePath
-          foreach ($command in @('cl.exe','link.exe','rc.exe','python3.exe','git.exe','node.exe','pwsh.exe')) {
-            Write-Host "$command -> $((Get-Command $command -ErrorAction Stop).Source)"
-          }
-          & python3.exe -c 'import ssl, sys; print(sys.version)'
-          if ($LASTEXITCODE -ne 0) { throw 'Python failed under the Bazel action PATH.' }
-          "CODEX_BAZEL_WINDOWS_PATH=$stablePath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host 'Bazel target: //:windows_x86_64_msvc; host: //:local_windows_msvc'
-
-      - name: Run native Windows Bazel tests
-        shell: bash
-        env:
-          CODEX_BAZEL_WINDOWS_MSVC_FALLBACK: "1"
-        run: |
-          set -euo pipefail
-          cd "$(cygpath -u "$CODEX_BAZEL_WORKSPACE")"
-          targets=(
-            //...
-            -//third_party/v8:all
-            -//codex-rs/v8-poc:v8-poc-unit-tests
-          )
-          # The local wrapper omits CI configs without BuildBuddy credentials.
-          # Retain the repository's native Windows policy and override caches below.
-          ./.github/scripts/run-bazel-ci.sh \
-            --print-failed-action-summary \
-            --print-failed-test-logs \
-            --windows-msvc-host-platform \
-            -- \
-            test \
-            --config=ci-windows \
-            --keep_going \
-            --platforms=//:windows_x86_64_msvc \
-            --action_env="SystemRoot=${SYSTEMROOT:?Windows directory missing}" \
-            --host_action_env="SystemRoot=${SYSTEMROOT}" \
-            --test_env="SystemRoot=${SYSTEMROOT}" \
-            --action_env="PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:?Windows host architecture missing}" \
-            --host_action_env="PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}" \
-            --disk_cache=R:/bazel-disk-cache \
-            --experimental_disk_cache_gc_max_size=200G \
-            --experimental_disk_cache_gc_max_age=14d \
-            --jobs=56 \
-            --local_resources=cpu=56 \
-            --local_test_jobs=8 \
-            --test_env=RUST_TEST_THREADS=4 \
-            --test_tag_filters=-argument-comment-lint \
-            --test_verbose_timeout_warnings \
-            --build_metadata=COMMIT_SHA="$SOURCE_SHA" \
-            --build_metadata=TAG_windows_native_private=true \
-            -- \
-            "${targets[@]}" \
-            2>&1 | tee "$RUNNER_TEMP/native-codex-evidence/bazel.log"
-          test "${PIPESTATUS[0]}" -eq 0
-
-      - name: Prepare V8 inputs for the x64 Windows package target
-        uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-pc-windows-msvc
-
-      - name: Build the x64 Windows npm handoff package
-        shell: bash
-        env:
-          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-        run: |
-          set -euo pipefail
-          version="$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "codex-cli"))')"
-          target=x86_64-pc-windows-msvc
-          handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
-          mkdir -p "$handoff"
-          cargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml --locked --release --timings --target "$target" \
-            --bin codex --bin codex-app-server --bin codex-code-mode-host \
-            --bin codex-command-runner --bin codex-windows-sandbox-setup \
-            2>&1 | tee "$handoff/build.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          cp "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" "$handoff/cargo-timing.html"
-          release="$CARGO_TARGET_DIR/$target/release"
-          python3 scripts/build_codex_package.py \
-            --target "$target" --variant codex --package-version "$version" \
-            --entrypoint-bin "$release/codex.exe" \
-            --code-mode-host-bin "$release/codex-code-mode-host.exe" \
-            --codex-command-runner-bin "$release/codex-command-runner.exe" \
-            --codex-windows-sandbox-setup-bin "$release/codex-windows-sandbox-setup.exe" \
-            --archive-output "$handoff/codex-package-$target.tar.gz" \
-            --archive-output "$handoff/codex-package-$target.tar.zst" \
-            2>&1 | tee "$handoff/package.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          sha256sum "$handoff"/* > "$handoff/SHA256SUMS"
-
-      - name: Import and verify the ARM64 MSVC package environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vsDevCmd = 'C:\BuildTools\Common7\Tools\VsDevCmd.bat'
-          $envLines = & $env:ComSpec /d /c ('"{0}" -no_logo -arch=arm64 -host_arch=x64 >nul && set' -f $vsDevCmd)
-          if ($LASTEXITCODE -ne 0) { throw 'ARM64 VsDevCmd failed.' }
-          $exports = @('INCLUDE','LIB','LIBPATH','PATH','UCRTVersion','UniversalCRTSdkDir','VCINSTALLDIR','VCToolsInstallDir','WindowsLibPath','WindowsSdkBinPath','WindowsSdkDir','WindowsSDKLibVersion','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')
-          foreach ($line in $envLines) {
-            if ($line -match '^([^=]+)=(.*)$' -and $exports -contains $matches[1]) {
-              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
-              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-            }
-          }
-          if ($env:VSCMD_ARG_HOST_ARCH -ne 'x64' -or $env:VSCMD_ARG_TGT_ARCH -ne 'arm64') { throw 'Expected x64 host / ARM64 target for the package build.' }
-          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence/arm64-probe'
-          New-Item -ItemType Directory -Force $probe | Out-Null
-          '#include <windows.h>', 'int main(void) { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content (Join-Path $probe 'probe.c')
-          & cl.exe /nologo /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe/probe.obj" "/Fe$probe/probe.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'ARM64 MSVC SDK compilation failed.' }
-          $bytes = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))
-          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
-          if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0xaa64) { throw 'Compiler did not produce an ARM64 PE executable.' }
-          & rustup target add --toolchain 1.95.0-x86_64-pc-windows-msvc aarch64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw 'ARM64 Rust standard library setup failed.' }
-          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$((Get-Command link.exe).Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "ARM64 compiler: $((Get-Command cl.exe).Source)"
-          $version = '21.1.8'
-          $archiveHash = '749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47'
-          $installation = 'R:\tools\llvm-21.1.8'
-          $manifestPath = Join-Path $installation 'codex-installation.json'
-          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-          if ($manifest.version -cne $version -or $manifest.archiveSha256 -cne $archiveHash) { throw 'LLVM installation provenance mismatch.' }
-          $bin = Join-Path $installation 'bin'
-          if (@($manifest.binaries.PSObject.Properties).Count -ne 6) { throw 'Incomplete LLVM installation inventory.' }
-          foreach ($entry in $manifest.binaries.PSObject.Properties) {
-              if ($entry.Name -notin @('clang.exe','clang-cl.exe','clang++.exe','llvm-lib.exe','llvm-ar.exe','lld-link.exe')) { throw 'Unexpected LLVM manifest entry.' }
-              $path = Join-Path $bin $entry.Name
-              if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value) { throw "LLVM binary checksum mismatch: $($entry.Name)" }
-          }
-          $env:PATH = "$bin;$env:PATH"
-          $clang = Join-Path $bin 'clang.exe'
-          $clangCl = Join-Path $bin 'clang-cl.exe'
-          $llvmLib = Join-Path $bin 'llvm-lib.exe'
-          & $clang --version
-          if ($LASTEXITCODE -ne 0) { throw 'Clang could not start.' }
-          $probe = Join-Path $env:RUNNER_TEMP 'native-codex-evidence\arm64-clang-probe'
-          $null = New-Item -ItemType Directory -Path $probe -Force
-          '#include <windows.h>', 'int main(void) { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content -LiteralPath (Join-Path $probe 'probe.c') -Encoding ascii
-          & $clangCl --target=aarch64-pc-windows-msvc /nologo /MT /W4 /WX (Join-Path $probe 'probe.c') "/Fo$probe\probe.obj" "/Fe$probe\probe.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'Clang ARM64 C/Windows SDK/MSVC link probe failed.' }
-          $pe = [IO.File]::ReadAllBytes((Join-Path $probe 'probe.exe'))
-          $peOffset = [BitConverter]::ToInt32($pe, 0x3c)
-          if ([BitConverter]::ToUInt16($pe, $peOffset + 4) -ne 0xaa64) { throw 'Clang did not produce an ARM64 PE executable.' }
-          '.text', '.globl codex_arm64_probe', 'codex_arm64_probe:', '  ret' | Set-Content -LiteralPath (Join-Path $probe 'probe.S') -Encoding ascii
-          & $clang --target=aarch64-pc-windows-msvc -c (Join-Path $probe 'probe.S') -o (Join-Path $probe 'assembly.obj')
-          if ($LASTEXITCODE -ne 0) { throw 'Clang ARM64 assembler probe failed.' }
-          $coff = [IO.File]::ReadAllBytes((Join-Path $probe 'assembly.obj'))
-          if ([BitConverter]::ToUInt16($coff, 0) -ne 0xaa64) { throw 'Assembler did not produce ARM64 COFF.' }
-          & $llvmLib "/out:$probe\probe.lib" (Join-Path $probe 'assembly.obj')
-          if ($LASTEXITCODE -ne 0) { throw 'LLVM MSVC librarian probe failed.' }
-          @(
-              "PATH=$env:PATH",
-              "CC_aarch64_pc_windows_msvc=$clangCl",
-              "CXX_aarch64_pc_windows_msvc=$clangCl",
-              "AR_aarch64_pc_windows_msvc=$llvmLib"
-          ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          [ordered]@{version=$version;path=$installation;archiveSha256=$archiveHash;host='x86_64-pc-windows-msvc';target='aarch64-pc-windows-msvc';cAndSdkProbe='passed';assemblyProbe='passed';librarianProbe='passed'} |
-              ConvertTo-Json | Set-Content -LiteralPath (Join-Path $probe 'verification.json') -Encoding utf8
-
-      - name: Prepare V8 inputs for the ARM64 Windows package target
-        uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: aarch64-pc-windows-msvc
-
-      - name: Build the ARM64 Windows npm handoff package
-        shell: bash
-        env:
-          LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-        run: |
-          set -euo pipefail
-          version="$(cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "codex-cli"))')"
-          target=aarch64-pc-windows-msvc
-          handoff="$RUNNER_TEMP/native-codex-evidence/windows-handoff/$target"
-          mkdir -p "$handoff"
-          cargo --config codex-rs/.cargo/config.toml build --manifest-path codex-rs/Cargo.toml --locked --release --timings --target "$target" \
-            --bin codex --bin codex-app-server --bin codex-code-mode-host \
-            --bin codex-command-runner --bin codex-windows-sandbox-setup \
-            2>&1 | tee "$handoff/build.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          cp "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" "$handoff/cargo-timing.html"
-          release="$CARGO_TARGET_DIR/$target/release"
-          python3 scripts/build_codex_package.py \
-            --target "$target" --variant codex --package-version "$version" \
-            --entrypoint-bin "$release/codex.exe" \
-            --code-mode-host-bin "$release/codex-code-mode-host.exe" \
-            --codex-command-runner-bin "$release/codex-command-runner.exe" \
-            --codex-windows-sandbox-setup-bin "$release/codex-windows-sandbox-setup.exe" \
-            --archive-output "$handoff/codex-package-$target.tar.gz" \
-            --archive-output "$handoff/codex-package-$target.tar.zst" \
-            2>&1 | tee "$handoff/package.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          sha256sum "$handoff"/* > "$handoff/SHA256SUMS"
-
-      - name: Write Windows handoff manifest
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $evidence = Join-Path $env:RUNNER_TEMP 'native-codex-evidence'
-          $bazelLog = Join-Path $evidence 'bazel.log'
-          if (-not (Test-Path -LiteralPath $bazelLog)) { throw 'Bazel evidence is missing.' }
-          $digest = (Get-FileHash -LiteralPath $bazelLog -Algorithm SHA256).Hash.ToLowerInvariant()
-          $x64Build = Join-Path $evidence 'windows-handoff/x86_64-pc-windows-msvc/build.log'
-          $x64Package = Join-Path $evidence 'windows-handoff/x86_64-pc-windows-msvc/package.log'
-          $arm64Build = Join-Path $evidence 'windows-handoff/aarch64-pc-windows-msvc/build.log'
-          $arm64Package = Join-Path $evidence 'windows-handoff/aarch64-pc-windows-msvc/package.log'
-          foreach ($path in @($x64Build, $x64Package, $arm64Build, $arm64Package)) {
-            if (-not (Test-Path -LiteralPath $path)) { throw "Windows package evidence is missing: $path" }
-          }
-          [ordered]@{
-            schema = 1
-            commit = $env:SOURCE_SHA
-            producer = 'windows-private-controller'
-            status = 'success'
-            checks = @(
-              [ordered]@{ name = 'windows-bazel'; exit_code = 0; log_sha256 = $digest }
-              [ordered]@{ name = 'windows-package-x64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $x64Build -Algorithm SHA256).Hash.ToLowerInvariant() }
-              [ordered]@{ name = 'windows-package-x64-stage'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $x64Package -Algorithm SHA256).Hash.ToLowerInvariant() }
-              [ordered]@{ name = 'windows-package-arm64-build'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $arm64Build -Algorithm SHA256).Hash.ToLowerInvariant() }
-              [ordered]@{ name = 'windows-package-arm64-stage'; exit_code = 0; log_sha256 = (Get-FileHash -LiteralPath $arm64Package -Algorithm SHA256).Hash.ToLowerInvariant() }
-            )
-          } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'windows-manifest.json')
-
-      - name: Record source and runner evidence
-        if: always()
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\native-codex-evidence" | Out-Null
-          [ordered]@{
-            sourceSha = $env:SOURCE_SHA
-            machine = $env:COMPUTERNAME
-            runner = $env:RUNNER_NAME
-            target = 'x86_64-pc-windows-msvc'
-            host = 'local_windows_msvc'
-            workspaceRoot = 'H:/codex-ci'
-            bazelBuildRoot = 'R:/'
-            backingImage = 'H:/CodexRunnerVolume/build-20tb.vhdx'
-          } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\native-codex-evidence\identity.json"
-
-      - name: Upload native evidence
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: native-codex-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/native-codex-evidence
-          if-no-files-found: error
-
-      - name: Upload Windows package handoff
-        if: success()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: windows-handoff-${{ inputs.source_sha }}
-          path: |
-            ${{ runner.temp }}/native-codex-evidence/windows-handoff
-            ${{ runner.temp }}/native-codex-evidence/windows-manifest.json
-          if-no-files-found: error
-          retention-days: 14
