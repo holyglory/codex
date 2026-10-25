@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +106,14 @@ def prepare(state):
         raise ValueError("pkg-config is required for native Cargo inputs")
     state.mkdir(parents=True, exist_ok=True)
     platform_environment = alsa_inputs(state, system_pkg_config)
-    command = ["bash", ".github/scripts/run-bazel-ci.sh", "--", "build"]
+    command = [
+        "bash",
+        ".github/scripts/run-bazel-ci.sh",
+        "--remote-download-all",
+        "--",
+        "build",
+        "--output_groups=+runtime_payloads",
+    ]
     if cache := os.environ.get("LOCAL_BAZEL_CACHE"):
         command.append(f"--disk_cache={cache}")
     subprocess.run(
@@ -176,6 +184,32 @@ def run(state, arguments):
     environment = json.loads((state / "cargo-native-env.json").read_text())
     if environment["STABLE_GIT_COMMIT"] != commit():
         raise ValueError("Native Cargo inputs belong to another candidate")
+    runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
+    required_plugin = runtime / "lib/gstreamer-1.0/libgstapp.so"
+    if not required_plugin.is_file():
+        prepare(state)
+        environment = json.loads((state / "cargo-native-env.json").read_text())
+        runtime = Path(environment["CODEX_TEST_VOICE_RUNTIME"])
+        required_plugin = runtime / "lib/gstreamer-1.0/libgstapp.so"
+    # Remote tree-artifact downloads can finish after Bazel reports the build
+    # complete. Keep the Cargo handoff bounded, but allow the downloader time
+    # to materialize nested plugins such as libgstapp.so.
+    for _ in range(600):
+        if required_plugin.is_file():
+            break
+        time.sleep(0.5)
+    if not required_plugin.is_file():
+        raise ValueError(f"native voice runtime did not materialize: {required_plugin}")
+    stable_runtime = state / "native-voice-runtime"
+    stable_plugin = stable_runtime / "lib/gstreamer-1.0/libgstapp.so"
+    if not stable_plugin.is_file():
+        shutil.copytree(runtime, stable_runtime, dirs_exist_ok=True)
+    runtime_text = str(runtime)
+    stable_runtime_text = str(stable_runtime)
+    for key, value in list(environment.items()):
+        if isinstance(value, str) and runtime_text in value:
+            environment[key] = value.replace(runtime_text, stable_runtime_text)
+    environment["CODEX_TEST_VOICE_RUNTIME"] = stable_runtime_text
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]
     if not arguments:

@@ -2,6 +2,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::path::Path;
 
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::ChatGptIdTokenClaims;
 use app_test_support::encode_id_token;
@@ -127,9 +128,7 @@ fn stdout_json(assertion: assert_cmd::assert::Assert) -> Result<Value> {
     Ok(serde_json::from_slice(&assertion.get_output().stdout)?)
 }
 
-// Read cells from the rendered terminal grid at the header positions. This catches
-// shifted columns even when the text or ANSI-delimited fields look correct.
-fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, String>> {
+fn account_terminal(output: &str) -> vt100::Screen {
     let mut terminal = vt100::Parser::new(
         /*rows*/ 32, /*cols*/ 240, /*scrollback_len*/ 0,
     );
@@ -139,7 +138,65 @@ fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, S
             .replace('\n', "\r\n")
             .as_bytes(),
     );
-    let screen = terminal.screen();
+    terminal.screen().clone()
+}
+
+// Compare rendered cells, including their visible styles. ConPTY may replace
+// spaces with cursor movements and emit its own title/cursor control sequences.
+fn assert_account_terminal_matches(output: &str, expected: &str) -> Result<()> {
+    let actual = account_terminal(output);
+    let expected = account_terminal(expected);
+    assert_eq!(actual.contents(), expected.contents());
+    for row in 0..32 {
+        for col in 0..240 {
+            let actual = actual
+                .cell(row, col)
+                .with_context(|| format!("missing actual cell at row {row}, column {col}"))?;
+            let expected = expected
+                .cell(row, col)
+                .with_context(|| format!("missing expected cell at row {row}, column {col}"))?;
+            assert_eq!(
+                (actual.bgcolor(), actual.underline(), actual.inverse()),
+                (expected.bgcolor(), expected.underline(), expected.inverse()),
+                "terminal background at row {row}, column {col}"
+            );
+            // ConPTY can extend a foreground color across padding spaces. That
+            // has no visible effect unless those spaces are underlined/inverted.
+            if actual.contents().trim().is_empty() && !actual.underline() && !actual.inverse() {
+                continue;
+            }
+            assert_eq!(
+                (
+                    actual.fgcolor(),
+                    actual.bold(),
+                    actual.dim(),
+                    actual.italic(),
+                ),
+                (
+                    expected.fgcolor(),
+                    expected.bold(),
+                    expected.dim(),
+                    expected.italic(),
+                ),
+                "terminal style at row {row}, column {col}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn account_snapshot_terminal(snapshot: &str) -> Result<String> {
+    let snapshot = snapshot.replace("\r\n", "\n");
+    let (_, contents) = snapshot
+        .split_once("\n---\n")
+        .context("account snapshot has a metadata header")?;
+    Ok(contents.replace("ESC", "\x1b"))
+}
+
+// Read cells from the rendered terminal grid at the header positions. This catches
+// shifted columns even when the text or ANSI-delimited fields look correct.
+fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, String>> {
+    let screen = account_terminal(output);
     let Some(header) = screen.rows(/*start*/ 0, /*width*/ 240).next() else {
         return Vec::new();
     };
@@ -156,7 +213,10 @@ fn account_table(output: &str) -> Vec<std::collections::BTreeMap<&'static str, S
     .into_iter()
     .filter_map(|name| header.find(name).map(|start| (name, start as u16)))
     .collect::<Vec<_>>();
-    let mut rows = vec![std::collections::BTreeMap::new(); output.lines().count() - 1];
+    let mut rows = vec![
+        std::collections::BTreeMap::new();
+        screen.contents().lines().count().saturating_sub(1)
+    ];
     for (index, (name, start)) in columns.iter().enumerate() {
         let end = columns.get(index + 1).map_or(240, |(_, next)| *next);
         for (row, cell) in rows
@@ -268,7 +328,6 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
     insta::assert_snapshot!("account_list_long_alias", human);
     assert!(!human.contains('\x1b'));
     let program = codex_utils_cargo_bin::cargo_bin("codex")?;
-    let ansi = regex_lite::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]")?;
     for no_color in [false, true] {
         let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
         for key in [
@@ -316,13 +375,16 @@ async fn account_list_aligns_columns_after_long_alias() -> Result<()> {
             .await??;
         drop(session);
         assert_eq!(code, 0);
-        assert_eq!(output.contains('\x1b'), !no_color);
-        assert_eq!(ansi.replace_all(&output, "").replace('\r', ""), human);
-        if !no_color {
-            insta::assert_snapshot!(
-                "account_list_colors",
-                output.replace('\x1b', "ESC").replace('\r', "")
-            );
+        assert_eq!(account_terminal(&output).contents(), human.trim_end());
+        if no_color {
+            assert_account_terminal_matches(&output, &human)?;
+        } else {
+            assert_account_terminal_matches(
+                &output,
+                &account_snapshot_terminal(include_str!(
+                    "snapshots/account__account_list_colors.snap"
+                ))?,
+            )?;
         }
     }
     let long_note = "週次 確認 e\u{301}quipe with a long note";
@@ -515,7 +577,7 @@ async fn account_list_colors_usage_and_prioritizes_banked_resets() -> Result<()>
         .rows(/*start*/ 0, /*width*/ 240)
         .next()
         .unwrap();
-    let mut normalized = output.replace('\x1b', "ESC").replace('\r', "");
+    let mut normalized = output.clone();
     for (index, row) in rows.iter().enumerate() {
         let alias = row["ALIAS"].trim_start_matches('*');
         let (_, _, used, reset_in, count) = cases.iter().find(|case| case.0 == alias).unwrap();
@@ -568,7 +630,12 @@ async fn account_list_colors_usage_and_prioritizes_banked_resets() -> Result<()>
         expected_order
     );
     assert_eq!(serde_json::to_value(store.read()?)?, registry_before);
-    insta::assert_snapshot!("account_list_usage_colors", normalized);
+    assert_account_terminal_matches(
+        &normalized,
+        &account_snapshot_terminal(include_str!(
+            "snapshots/account__account_list_usage_colors.snap"
+        ))?,
+    )?;
     server.verify().await;
     Ok(())
 }

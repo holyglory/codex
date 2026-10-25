@@ -134,7 +134,8 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
-    timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || 90 }}
+    # Community runners compile locally at bounded concurrency without RBE.
+    timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || 180 }}
     if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
     strategy:
       fail-fast: false
@@ -332,7 +333,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || 90 }}
+    timeout-minutes: ${{ github.repository_owner == 'openai' && 30 || (matrix.os == 'windows-latest' && 180 || 90) }}
     strategy:
       fail-fast: false
       matrix:

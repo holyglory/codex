@@ -603,6 +603,49 @@ async fn filters_clip_intervals_and_keep_observation_time_distinct_from_operatio
 }
 
 #[tokio::test]
+async fn finite_review_coverage_handles_a_large_token_fact_fanout() {
+    let fixture = Fixture::new().await;
+    let mut model = fixture.operation(/*started_at_ms*/ 1_000_000);
+    model.kind = OperationKind::ModelRequest;
+    model.activity_state = ActivityState::ModelActive;
+    let request = fixture.model(&model).await;
+    fixture.finish(&model, /*duration_ms*/ 10).await;
+    for count in 0..100 {
+        fixture
+            .token(
+                TokenObservationSource::ModelRequest(request),
+                FactEventId::new(),
+                "total_tokens",
+                count,
+            )
+            .await;
+    }
+
+    let packet = fixture
+        .store
+        .performance_review_packet(PerformanceReviewQuery {
+            thread_id: Some(ThreadId::new("spec").expect("thread")),
+            time_range: Some(
+                UtcTimeRange::new(/*start_ms*/ 1_000_000, /*end_ms*/ 1_000_030).expect("range"),
+            ),
+            ..Default::default()
+        })
+        .await
+        .expect("finite review");
+
+    assert_eq!(
+        (
+            packet.coverage.raw_token_observations,
+            packet.coverage.deduplicated_token_observations,
+            packet.coverage.model_requests_without_provider_total,
+            packet.tokens[0].measured_tokens,
+            packet.tokens[0].exact_tokens,
+        ),
+        (100, 100, 0, 4_950, Some(4_950))
+    );
+}
+
+#[tokio::test]
 async fn finite_window_selection_scales_with_lifetime_history() {
     let fixture = Fixture::new().await;
     fixture

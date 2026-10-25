@@ -358,6 +358,14 @@ impl HttpClientBuilder {
 
     fn base_reqwest_builder(self) -> reqwest::ClientBuilder {
         let mut builder = reqwest::Client::builder();
+        #[cfg(windows)]
+        {
+            // Schannel can report a generic illegal-message error for a peer's
+            // protocol-version alert when the legacy TLS 1.0/1.1 protocols are
+            // enabled. Set the modern minimum explicitly so the narrow backend
+            // fallback recognizes the alert without accepting generic failures.
+            builder = builder.min_tls_version(reqwest::tls::Version::TLS_1_2);
+        }
         if self.http2_prior_knowledge {
             builder = builder.http2_prior_knowledge();
         }

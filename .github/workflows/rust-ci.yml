@@ -165,7 +165,9 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.name == 'Windows' && 'windows-2025' || matrix.runner }}
     if: ${{ github.repository_owner == 'openai' || (github.head_ref != 'codex/release1621-candidate-v3' && github.ref_name != 'codex/release1621-candidate-v3') }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    # Hosted Windows forks compile the local dependency graph without RBE.
+    # A cold build can exceed the upstream runner's thirty-minute budget.
+    timeout-minutes: ${{ github.repository_owner != 'openai' && matrix.name == 'Windows' && 60 || matrix.timeout_minutes }}
     needs: changed
     environment:
       name: bazel

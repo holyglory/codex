@@ -276,9 +276,10 @@ impl CoreShellActionProvider {
         additional_permissions: Option<AdditionalPermissionProfile>,
     ) -> anyhow::Result<ReviewDecision> {
         let command = join_program_and_argv(program, argv);
+        let approval_id = Uuid::new_v4().to_string();
         let action = ApprovalAction::Execve {
             id: self.call_id.clone(),
-            approval_id: Uuid::new_v4().to_string(),
+            approval_id: approval_id.clone(),
             environment_id: self.environment_id.clone(),
             source: self.source,
             program: program.clone(),
@@ -314,7 +315,21 @@ impl CoreShellActionProvider {
                     retry_reason: None,
                     network_approval_context: None,
                 };
-                self.session.request_approval(action, approval_ctx).await
+                let turn_state = self
+                    .session
+                    .register_exec_approval_decline_flag(
+                        &turn_context.sub_id,
+                        approval_id.clone(),
+                        Arc::clone(&self.user_declined),
+                    )
+                    .await
+                    .ok_or(ToolError::Codex(CodexErr::TurnAborted))?;
+                let result = self.session.request_approval(action, approval_ctx).await;
+                turn_state
+                    .lock()
+                    .await
+                    .remove_exec_approval_decline_flag(&approval_id);
+                result
             })
             .await
         {

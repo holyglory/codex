@@ -1219,14 +1219,12 @@ impl MessageProcessor {
                 );
                 // Keep queued requests small to avoid large stack temporaries during construction.
                 let result = originator
-                    .scope(Box::pin(
-                        processor_for_request.handle_initialized_client_request(
-                            connection_request_id,
-                            codex_request,
-                            request_context,
-                            session,
-                            event_stream_ready,
-                        ),
+                    .scope(processor_for_request.handle_initialized_client_request(
+                        connection_request_id,
+                        codex_request,
+                        request_context,
+                        session,
+                        event_stream_ready,
                     ))
                     .await;
                 if let Err(error) = result {
@@ -1249,7 +1247,104 @@ impl MessageProcessor {
         Ok(())
     }
 
-    async fn handle_initialized_client_request(
+    fn handle_initialized_client_request(
+        self: Arc<Self>,
+        connection_request_id: ConnectionRequestId,
+        codex_request: ClientRequest,
+        request_context: RequestContext,
+        session: Arc<ConnectionSessionState>,
+        event_stream_ready: Option<McpEventStreamReady>,
+    ) -> futures::future::BoxFuture<'static, Result<(), JSONRPCErrorError>> {
+        // Select the future before polling it: the general dispatcher has a large
+        // debug-build stack frame that must not remain on session creation's stack.
+        match codex_request {
+            request @ (ClientRequest::ThreadStart { .. }
+            | ClientRequest::ThreadResume { .. }
+            | ClientRequest::ThreadFork { .. }
+            | ClientRequest::ThreadRevert { .. }) => {
+                Box::pin(self.handle_thread_lifecycle_request(
+                    connection_request_id,
+                    request,
+                    request_context,
+                    session,
+                ))
+            }
+            request => Box::pin(self.handle_other_initialized_client_request(
+                connection_request_id,
+                request,
+                request_context,
+                session,
+                event_stream_ready,
+            )),
+        }
+    }
+
+    async fn handle_thread_lifecycle_request(
+        self: Arc<Self>,
+        connection_request_id: ConnectionRequestId,
+        codex_request: ClientRequest,
+        request_context: RequestContext,
+        session: Arc<ConnectionSessionState>,
+    ) -> Result<(), JSONRPCErrorError> {
+        let connection_id = connection_request_id.connection_id;
+        let app_server_client_name = session.app_server_client_name().map(str::to_string);
+        let client_version = session.client_version().map(str::to_string);
+        let client_mcp_extensions = session.client_mcp_extensions();
+        let request_id = ConnectionRequestId {
+            connection_id,
+            request_id: codex_request.id().clone(),
+        };
+        let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
+            ClientRequest::ThreadStart { params, .. } => {
+                self.thread_processor
+                    .thread_start(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                        client_mcp_extensions.clone(),
+                        request_context,
+                    )
+                    .await
+            }
+            ClientRequest::ThreadResume { params, .. } => {
+                self.thread_processor
+                    .thread_resume(
+                        ThreadResumeTarget::Client(request_id.clone()),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                        client_mcp_extensions.clone(),
+                    )
+                    .await
+            }
+            ClientRequest::ThreadFork { params, .. } => {
+                self.thread_processor
+                    .thread_fork(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                        client_mcp_extensions.clone(),
+                    )
+                    .await
+            }
+            ClientRequest::ThreadRevert { params, .. } => {
+                self.thread_processor
+                    .thread_revert(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
+                    .await
+            }
+            _ => unreachable!("matched a thread lifecycle request"),
+        };
+        self.send_initialized_response(request_id, result).await
+    }
+
+    async fn handle_other_initialized_client_request(
         self: Arc<Self>,
         connection_request_id: ConnectionRequestId,
         codex_request: ClientRequest,
@@ -1266,6 +1361,12 @@ impl MessageProcessor {
             request_id: codex_request.id().clone(),
         };
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
+            ClientRequest::ThreadStart { .. }
+            | ClientRequest::ThreadResume { .. }
+            | ClientRequest::ThreadFork { .. }
+            | ClientRequest::ThreadRevert { .. } => {
+                unreachable!("thread lifecycle requests use their own dispatcher");
+            }
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
             }
@@ -1462,18 +1563,6 @@ impl MessageProcessor {
                 .model_provider_capabilities_read()
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ThreadStart { params, .. } => {
-                self.thread_processor
-                    .thread_start(
-                        request_id.clone(),
-                        params,
-                        app_server_client_name.clone(),
-                        client_version.clone(),
-                        client_mcp_extensions.clone(),
-                        request_context,
-                    )
-                    .await
-            }
             ClientRequest::ThreadUnsubscribe { params, .. } => {
                 let thread_id = params.thread_id.clone();
                 let response = self
@@ -1484,28 +1573,6 @@ impl MessageProcessor {
                     session.mcp_event_streams.stop_thread(thread_id).await;
                 }
                 Ok(response)
-            }
-            ClientRequest::ThreadResume { params, .. } => {
-                self.thread_processor
-                    .thread_resume(
-                        ThreadResumeTarget::Client(request_id.clone()),
-                        params,
-                        app_server_client_name.clone(),
-                        client_version.clone(),
-                        client_mcp_extensions.clone(),
-                    )
-                    .await
-            }
-            ClientRequest::ThreadFork { params, .. } => {
-                self.thread_processor
-                    .thread_fork(
-                        request_id.clone(),
-                        params,
-                        app_server_client_name.clone(),
-                        client_version.clone(),
-                        client_mcp_extensions.clone(),
-                    )
-                    .await
             }
             ClientRequest::ThreadArchive { params, .. } => {
                 self.thread_processor
@@ -1685,16 +1752,6 @@ impl MessageProcessor {
             ClientRequest::ThreadBackgroundTerminalsTerminate { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_terminate(params)
-                    .await
-            }
-            ClientRequest::ThreadRevert { params, .. } => {
-                self.thread_processor
-                    .thread_revert(
-                        request_id.clone(),
-                        params,
-                        app_server_client_name.clone(),
-                        client_version.clone(),
-                    )
                     .await
             }
             ClientRequest::ThreadList { params, .. } => {
@@ -2197,6 +2254,14 @@ impl MessageProcessor {
             }
         };
 
+        self.send_initialized_response(request_id, result).await
+    }
+
+    async fn send_initialized_response(
+        &self,
+        request_id: ConnectionRequestId,
+        result: Result<Option<ClientResponsePayload>, JSONRPCErrorError>,
+    ) -> Result<(), JSONRPCErrorError> {
         match result {
             Ok(Some(response)) => {
                 self.outgoing

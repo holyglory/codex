@@ -1,6 +1,7 @@
 use crate::*;
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
 fn detail_query(limit: u32) -> UsageDetailListQuery {
     UsageDetailListQuery {
         page: UsagePageRequest {
@@ -604,6 +605,7 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
     assert!(!encoded.contains(&OS_PID_SENTINEL.to_string()));
 }
 
+#[cfg(unix)]
 async fn attribute(
     store: &UsageStore,
     operation_id: OperationId,

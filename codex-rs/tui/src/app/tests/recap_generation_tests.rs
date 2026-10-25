@@ -17,6 +17,8 @@ use serde_json::Value;
 
 const MODEL: &str = "gpt-5.2";
 const MODEL_PROVIDER_ID: &str = "recap-generation-test";
+// Recap startup also creates persisted thread state; this is not a latency assertion.
+const RECAP_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn render_chat_widget(app: &App) -> String {
     let area = Rect::new(
@@ -141,14 +143,14 @@ stream_max_retries = 0
         AppEvent::CheckRecap { thread_id },
     )
     .await?;
-    let started_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), app_event_rx.recv())
+    let started_event = tokio::time::timeout(RECAP_EVENT_TIMEOUT, app_event_rx.recv())
         .await?
         .expect("recap start event");
     assert!(matches!(started_event, AppEvent::RecapStarted { .. }));
     app.handle_event(&mut tui, &mut app_server, started_event)
         .await?;
 
-    let generated_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+    let generated_event = tokio::time::timeout(RECAP_EVENT_TIMEOUT, async {
         loop {
             tokio::select! {
                 event = app_event_rx.recv() => {

@@ -318,6 +318,119 @@ mod thread_processor_behavior_tests {
         assert_eq!(turns.last(), Some(&active_turn));
     }
 
+    fn thread_read_snapshot(statuses: Vec<TurnStatus>) -> Result<Thread> {
+        let metadata = test_thread_metadata(/*model*/ None, /*reasoning_effort*/ None)?;
+        let cwd = AbsolutePathBuf::from_absolute_path(test_path_buf("/tmp"))?;
+        let mut thread = summary_to_thread(summary_from_thread_metadata(&metadata), &cwd);
+        thread.turns = statuses
+            .into_iter()
+            .enumerate()
+            .map(|(index, status)| Turn {
+                id: format!("turn-{index}"),
+                root_turn_id: None,
+                items: Vec::new(),
+                items_view: TurnItemsView::Full,
+                error: None,
+                status,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            })
+            .collect();
+        Ok(thread)
+    }
+
+    #[test]
+    fn thread_read_preserves_live_snapshot_when_completion_follows_history_read() -> Result<()> {
+        let mut thread = thread_read_snapshot(vec![TurnStatus::InProgress])?;
+
+        set_thread_read_status(
+            &mut thread,
+            ThreadStatus::Idle,
+            /*was_running_before_read*/ true,
+            /*is_running_after_read*/ false,
+        );
+
+        assert_eq!(
+            thread.status,
+            ThreadStatus::Active {
+                active_flags: vec![]
+            }
+        );
+        assert_eq!(thread.turns[0].status, TurnStatus::InProgress);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_read_does_not_reactivate_completed_history() -> Result<()> {
+        let mut thread = thread_read_snapshot(vec![TurnStatus::InProgress, TurnStatus::Completed])?;
+
+        set_thread_read_status(
+            &mut thread,
+            ThreadStatus::Idle,
+            /*was_running_before_read*/ true,
+            /*is_running_after_read*/ false,
+        );
+
+        assert_eq!(thread.status, ThreadStatus::Idle);
+        assert_eq!(thread.turns[0].status, TurnStatus::Interrupted);
+        assert_eq!(thread.turns[1].status, TurnStatus::Completed);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_read_interrupts_stale_history_without_a_live_turn() -> Result<()> {
+        let mut thread = thread_read_snapshot(vec![TurnStatus::InProgress])?;
+
+        set_thread_read_status(
+            &mut thread,
+            ThreadStatus::Idle,
+            /*was_running_before_read*/ false,
+            /*is_running_after_read*/ false,
+        );
+
+        assert_eq!(thread.status, ThreadStatus::Idle);
+        assert_eq!(thread.turns[0].status, TurnStatus::Interrupted);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_read_observes_turn_started_during_history_read() -> Result<()> {
+        let mut thread = thread_read_snapshot(vec![TurnStatus::InProgress])?;
+
+        set_thread_read_status(
+            &mut thread,
+            ThreadStatus::Idle,
+            /*was_running_before_read*/ false,
+            /*is_running_after_read*/ true,
+        );
+
+        assert_eq!(
+            thread.status,
+            ThreadStatus::Active {
+                active_flags: vec![]
+            }
+        );
+        assert_eq!(thread.turns[0].status, TurnStatus::InProgress);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_read_without_turns_uses_current_running_state() -> Result<()> {
+        let mut thread = thread_read_snapshot(vec![])?;
+
+        set_thread_read_status(
+            &mut thread,
+            ThreadStatus::Idle,
+            /*was_running_before_read*/ true,
+            /*is_running_after_read*/ false,
+        );
+
+        assert_eq!(thread.status, ThreadStatus::Idle);
+        assert!(thread.turns.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn validate_dynamic_tools_rejects_empty_namespace() {
         let tools = vec![dynamic_tool(

@@ -23,6 +23,16 @@ WINDOWS_RUSTC_LINK_FLAGS = select({
     "//conditions:default": [],
 })
 
+# Keep full DWARF while bounding native Linux binary sizes on local CI workers.
+# Resolve this per target so Windows binaries used by Wine keep their own flags.
+PLATFORM_RUSTC_LINK_FLAGS = WINDOWS_RUSTC_LINK_FLAGS + select({
+    "@platforms//os:linux": [
+        "-C",
+        "link-arg=-Wl,--compress-debug-sections=zlib",
+    ],
+    "//conditions:default": [],
+})
+
 WINDOWS_GNULLVM_INCOMPATIBLE = select({
     "@llvm//constraints/windows/abi:gnullvm": ["@platforms//:incompatible"],
     "//conditions:default": [],
@@ -66,7 +76,7 @@ def _workspace_root_test_impl(ctx):
     )
 
     runfiles = ctx.runfiles(files = [test_bin, workspace_root_marker]).merge(ctx.attr.test_bin[DefaultInfo].default_runfiles)
-    for data_dep in ctx.attr.data:
+    for data_dep in ctx.attr.data + ctx.attr.runtime_deps:
         runfiles = runfiles.merge(ctx.runfiles(files = data_dep[DefaultInfo].files.to_list()))
         runfiles = runfiles.merge(data_dep[DefaultInfo].default_runfiles)
     for runfile_dep in ctx.attr.runfile_env:
@@ -114,7 +124,22 @@ def _windows_runfile_env_exports(ctx):
         lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(runfile)))
         lines.append("if errorlevel 1 exit /b 1")
         lines.append('set "{}=!resolve_runfile_result!"'.format(env_var))
-    return "\n".join(lines)
+
+    # Windows resolves linked DLLs before Rust main runs. Resolve only declared
+    # runtime dependencies, including manifest-only runfiles, before launching.
+    dll_directories = {}
+    for dependency in ctx.attr.runtime_deps:
+        for file in dependency[DefaultInfo].default_runfiles.files.to_list():
+            if file.extension.lower() == "dll":
+                dll_directories[file.dirname] = file
+    for directory in sorted(dll_directories):
+        file = dll_directories[directory]
+        lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(file)))
+        lines.append("if errorlevel 1 exit /b 1")
+        lines.append('for %%I in ("!resolve_runfile_result!") do set "PATH=%%~dpI;!PATH!"')
+
+    # cmd.exe label scanning also requires CRLF in expanded template blocks.
+    return "\r\n".join(lines)
 
 def _runfile_env_file(target):
     executable = target[DefaultInfo].files_to_run.executable
@@ -137,8 +162,7 @@ def _bash_workspace_root_setup(ctx):
 def _windows_workspace_root_setup(ctx):
     if not ctx.attr.chdir_workspace_root:
         return ""
-    return """set "INSTA_WORKSPACE_ROOT=%workspace_root%"
-cd /d "%workspace_root%" || exit /b 1"""
+    return 'set "INSTA_WORKSPACE_ROOT=%workspace_root%"\r\ncd /d "%workspace_root%" || exit /b 1'
 
 workspace_root_test = rule(
     implementation = _workspace_root_test_impl,
@@ -153,6 +177,7 @@ workspace_root_test = rule(
         ),
         "env": attr.string_dict(),
         "env_inherit": attr.string_list(),
+        "runtime_deps": attr.label_list(),
         "runfile_env": attr.label_keyed_string_dict(
             cfg = "target",
         ),
@@ -205,6 +230,7 @@ def codex_rust_crate(
         binary_test_target_compatible_with = [],
         integration_test_timeout = None,
         test_data_extra = [],
+        test_runtime_deps = [],
         test_shard_counts = {},
         test_tags = [],
         test_threads = 0,
@@ -254,6 +280,9 @@ def codex_rust_crate(
         integration_test_timeout: Optional Bazel timeout for integration test
             targets generated from `tests/*.rs`.
         test_data_extra: Extra runtime data for tests.
+        test_runtime_deps: Declared native runtime dependencies. Their DLL
+            directories are resolved into PATH by the Windows test launcher.
+            Integration tests with these dependencies also use the launcher.
         test_shard_counts: Mapping from generated test target name to Bazel
             shard count. Matching tests use native Bazel sharding on the outer
             workspace-root launcher, not rules_rust's inner sharding wrapper.
@@ -362,7 +391,7 @@ def codex_rust_crate(
             # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
             # prefix so the workspace-root launcher sees Cargo-like metadata
             # such as `tui/src/...`.
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
@@ -384,6 +413,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = unit_test_name,
             env = test_env,
+            runtime_deps = test_runtime_deps,
             runfile_env = {
                 binary: "CARGO_BIN_EXE_" + Label(binary).name
                 for binary in extra_binaries
@@ -413,7 +443,7 @@ def codex_rust_crate(
             # Keep per-binary Cargo link behavior scoped to the matching
             # generated rust_binary instead of leaking it to sibling binaries.
             compile_data = binary_compile_data_extra.get(binary, []),
-            rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + WINDOWS_RUSTC_LINK_FLAGS,
+            rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + PLATFORM_RUSTC_LINK_FLAGS,
             # Keep stamp = 0: rules_rust otherwise makes stable-status.txt and
             # volatile-status.txt compiler inputs, even though we only consume
             # STABLE_GIT_COMMIT. BUILD_USER and BUILD_HOST vary across developers
@@ -439,7 +469,7 @@ def codex_rust_crate(
             crate = ":" + binary,
             crate_features = crate_features,
             deps = all_crate_deps(normal_dev = True),
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
@@ -461,6 +491,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = binary_unit_test_name,
             env = test_env,
+            runtime_deps = test_runtime_deps,
             test_bin = ":" + binary_unit_test_binary,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             target_compatible_with = binary_test_target_compatible_with,
@@ -543,7 +574,8 @@ def codex_rust_crate(
         #
         # 1. Unsharded native tests keep the plain rust_test label for minimal
         #    churn and the usual rules_rust Cargo-like environment.
-        # 2. Sharded native tests split into a manual rust_test binary plus an
+        # 2. Sharded native tests and tests with native runtime dependencies
+        #    split into a manual rust_test binary plus an
         #    outer workspace_root_test. The outer test action receives Bazel's
         #    sharding environment, resolves the real binary through the
         #    runfiles manifest, and implements stable libtest sharding itself.
@@ -556,7 +588,7 @@ def codex_rust_crate(
         #    owns cleanup. The outer workspace_root_test resolves the runner,
         #    test, and server from runfiles, sets a Cargo-like cwd, and applies
         #    the native test's shard count.
-        if test_shard_count:
+        if test_shard_count or test_runtime_deps:
             # This target is intentionally a binary-like helper, not the public
             # test target. The wrapper below owns cwd setup, runfile env
             # materialization, sharding, and flaky retry behavior.
@@ -571,7 +603,7 @@ def codex_rust_crate(
                 # Bazel has emitted both `codex-rs/<crate>/...` and
                 # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
                 # prefix so Insta records Cargo-like metadata such as `core/tests/...`.
-                rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+                rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                     "--remap-path-prefix=../codex-rs=",
                     "--remap-path-prefix=codex-rs=",
                 ],
@@ -584,6 +616,8 @@ def codex_rust_crate(
             workspace_root_test(
                 name = test_name,
                 env = test_env,
+                chdir_workspace_root = bool(test_shard_count),
+                runtime_deps = test_runtime_deps,
                 # CARGO_BIN_EXE_* values are rlocation paths at analysis time.
                 # The launcher rewrites them to absolute paths at execution
                 # time so tests keep working after chdir_workspace_root and on
@@ -612,7 +646,7 @@ def codex_rust_crate(
                 # Bazel has emitted both `codex-rs/<crate>/...` and
                 # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
                 # prefix so Insta records Cargo-like metadata such as `core/tests/...`.
-                rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+                rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                     "--remap-path-prefix=../codex-rs=",
                     "--remap-path-prefix=codex-rs=",
                 ],
@@ -626,7 +660,7 @@ def codex_rust_crate(
 
         if run_tests_with_wine_exec:
             wine_test_name = test_name.removesuffix("-test") + "-wine-exec-test"
-            native_test_binary = ":" + (integration_test_binary if test_shard_count else test_name)
+            native_test_binary = ":" + (integration_test_binary if test_shard_count or test_runtime_deps else test_name)
             wine_test_binaries = dict(wine_host_binaries)
 
             wine_exec_server = wine_test_name + "-windows-exec-server"
@@ -685,7 +719,7 @@ def codex_rust_crate(
             data = integration_test_files + integration_test_binaries + integration_test_data_extra,
             compile_data = integration_test_files + integration_compile_data_extra,
             deps = all_crate_deps(normal = True, normal_dev = True) + maybe_deps + deps_extra,
-            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
+            rustc_flags = rustc_flags_extra + PLATFORM_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],

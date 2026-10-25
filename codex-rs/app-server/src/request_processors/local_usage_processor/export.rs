@@ -1,12 +1,18 @@
 use codex_app_server_protocol::LocalUsageExportFormat;
 use codex_app_server_protocol::LocalUsageSummaryResponse;
 use std::fmt;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use tempfile::Builder;
 
+#[cfg(unix)]
 const MAX_EXPORT_PATH_BYTES: usize = 4_096;
 
 pub(super) struct ExportResult {
@@ -14,18 +20,34 @@ pub(super) struct ExportResult {
 }
 
 pub(super) enum ExportError {
+    #[cfg(unix)]
     InvalidDestination,
     Unavailable,
+    #[cfg(unix)]
     CommittedDurabilityUncertain,
 }
 
 impl ExportError {
     pub fn committed(&self) -> bool {
-        matches!(self, Self::CommittedDurabilityUncertain)
+        #[cfg(unix)]
+        {
+            matches!(self, Self::CommittedDurabilityUncertain)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 
     pub fn invalid_destination(&self) -> bool {
-        matches!(self, Self::InvalidDestination)
+        #[cfg(unix)]
+        {
+            matches!(self, Self::InvalidDestination)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 }
 
@@ -43,7 +65,7 @@ pub(super) fn create(
     #[cfg(not(unix))]
     {
         let _ = (output_path, format, summary);
-        return Err(ExportError::Unavailable);
+        Err(ExportError::Unavailable)
     }
     #[cfg(unix)]
     create_unix(output_path, format, summary)

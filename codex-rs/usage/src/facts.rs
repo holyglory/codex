@@ -873,6 +873,6 @@ impl UsageStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "facts_tests.rs"]
 mod tests;

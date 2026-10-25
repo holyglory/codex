@@ -54,6 +54,12 @@ fn initialize_v8_with_mode(jit_mode: V8JitMode) -> Result<V8Initialization, Stri
     let platform = v8::new_default_platform(0, false).make_shared();
     v8::V8::initialize_platform(platform.clone());
     v8::V8::initialize();
+    // V8 15.0 lazily initializes the process-wide PartitionAlloc backing pool
+    // without synchronization when the first default ArrayBuffer allocator is
+    // created. Finish that initialization inside our OnceLock before runtime
+    // threads can create their first isolates concurrently. The backing pool
+    // belongs to the isolate group and outlives this temporary allocator.
+    drop(v8::new_default_allocator());
     Ok(V8Initialization {
         _platform: platform,
         jit_mode,
@@ -66,5 +72,55 @@ impl V8JitMode {
             Self::Enabled => "enabled",
             Self::Disabled => "disabled",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_v8_initialized;
+    use std::sync::Barrier;
+
+    #[test]
+    fn concurrent_first_isolates_initialize_array_buffer_pool_once() {
+        const CHILD: &str = "CODEX_TEST_CONCURRENT_FIRST_ISOLATES";
+        if std::env::var_os(CHILD).is_none() {
+            // Each subprocess starts with a fresh V8 singleton, even when other
+            // tests in this binary have already initialized it.
+            for _ in 0..5 {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "v8_init::tests::concurrent_first_isolates_initialize_array_buffer_pool_once",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "fresh-process concurrent isolate creation failed: {}\n{}\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            return;
+        }
+
+        let barrier = Barrier::new(16);
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| {
+                    ensure_v8_initialized().unwrap();
+                    barrier.wait();
+                    let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
+                    v8::scope!(let scope, isolate);
+                    let context = v8::Context::new(scope, Default::default());
+                    let scope = &mut v8::ContextScope::new(scope, context);
+                    let buffer = v8::ArrayBuffer::new(scope, 64);
+                    assert_eq!(buffer.byte_length(), 64);
+                });
+            }
+        });
     }
 }

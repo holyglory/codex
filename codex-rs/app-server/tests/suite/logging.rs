@@ -9,6 +9,7 @@ use app_test_support::create_exec_command_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::encode_id_token;
+use app_test_support::to_response;
 use app_test_support::write_models_cache;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
@@ -23,6 +24,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
 use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
@@ -243,6 +245,8 @@ async fn credentials_stay_out_of_persisted_and_feedback_logs() -> Result<()> {
     let server_uri = server.uri();
     MockResponsesConfig::new(&server_uri)
         .with_root_config(&format!("chatgpt_base_url = \"{server_uri}/backend-api\""))
+        // Host keyring startup must not block the short attestation exchange.
+        .with_root_config("mcp_oauth_credentials_store = \"file\"")
         .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
         .with_extra_config(&format!(
             r#"
@@ -290,26 +294,45 @@ supports_websockets = false
 
     let mut thread_ids = Vec::new();
     for provider in ["bearer_provider", "mock_provider"] {
-        let thread = app_server
-            .start_thread(ThreadStartParams {
+        let thread_request_id = app_server
+            .send_thread_start_request_with_auto_env(ThreadStartParams {
                 model_provider: Some(provider.into()),
                 ..Default::default()
             })
-            .await?
-            .thread;
-        app_server
-            .send_turn_start_request(TurnStartParams {
-                thread_id: thread.id.clone(),
-                input: vec![UserInput::Text {
-                    text: "hello".into(),
-                    text_elements: Vec::new(),
-                }],
-                ..Default::default()
-            })
             .await?;
+        let mut thread_id = None;
+        let mut turn_request_id = None;
+        let mut turn_started = false;
+        let mut turn_completed = false;
+        // Prewarming can request attestation before thread/start responds.
+        // Handle server requests while awaiting both RPC responses and completion.
         timeout(Duration::from_secs(/*secs*/ 60), async {
             loop {
                 match app_server.read_next_message().await? {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(thread_request_id) =>
+                    {
+                        let ThreadStartResponse { thread, .. } = to_response(response)?;
+                        turn_request_id = Some(RequestId::Integer(
+                            app_server
+                                .send_turn_start_request(TurnStartParams {
+                                    thread_id: thread.id.clone(),
+                                    input: vec![UserInput::Text {
+                                        text: "hello".into(),
+                                        text_elements: Vec::new(),
+                                    }],
+                                    ..Default::default()
+                                })
+                                .await?,
+                        ));
+                        thread_id = Some(thread.id);
+                    }
+                    JSONRPCMessage::Response(response)
+                        if turn_request_id.as_ref() == Some(&response.id) =>
+                    {
+                        let _: TurnStartResponse = to_response(response)?;
+                        turn_started = true;
+                    }
                     JSONRPCMessage::Request(request) => {
                         let (request_id, result) = match ServerRequest::try_from(request)? {
                             ServerRequest::AttestationGenerate { request_id, .. } => {
@@ -334,15 +357,18 @@ supports_websockets = false
                             .params
                             .context("missing turn/completed params")?;
                         assert_eq!(params["turn"]["status"], "completed");
-                        break Ok::<_, anyhow::Error>(());
+                        turn_completed = true;
                     }
                     JSONRPCMessage::Error(error) => anyhow::bail!("unexpected error: {error:?}"),
                     JSONRPCMessage::Response(_) | JSONRPCMessage::Notification(_) => {}
                 }
+                if turn_started && turn_completed {
+                    break Ok::<_, anyhow::Error>(());
+                }
             }
         })
         .await??;
-        thread_ids.push(thread.id);
+        thread_ids.push(thread_id.context("missing thread/start response")?);
     }
     let requests = responses.requests();
     assert_eq!(

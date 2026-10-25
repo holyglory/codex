@@ -36,7 +36,12 @@ async fn build_commit() -> Result<String> {
             .output(),
     )
     .await??;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "voice helper build identity failed: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 

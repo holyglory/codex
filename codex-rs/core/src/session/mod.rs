@@ -3360,6 +3360,45 @@ impl Session {
         }
     }
 
+    #[cfg(unix)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "register the decline flag only while the captured turn remains active"
+    )]
+    pub(crate) async fn register_exec_approval_decline_flag(
+        &self,
+        turn_id: &str,
+        approval_id: String,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Option<Arc<Mutex<crate::state::TurnState>>> {
+        let active = self.active_turn.lock().await;
+        let active = active.as_ref()?;
+        if active.task.as_ref()?.turn_context.sub_id != turn_id {
+            return None;
+        }
+        let turn_state = Arc::clone(&active.turn_state);
+        turn_state
+            .lock()
+            .await
+            .insert_exec_approval_decline_flag(approval_id, flag);
+        Some(turn_state)
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "record the approval decision before interrupting its active turn"
+    )]
+    pub(crate) async fn mark_pending_exec_approval_declined(&self, approval_id: &str) {
+        let active = self.active_turn.lock().await;
+        if let Some(active) = active.as_ref() {
+            active
+                .turn_state
+                .lock()
+                .await
+                .mark_pending_exec_approval_declined(approval_id);
+        }
+    }
+
     pub(crate) fn response_item_create_time() -> serde_json::Number {
         let create_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)

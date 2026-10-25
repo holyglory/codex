@@ -102,6 +102,10 @@ def _native_link_impl(ctx):
             files = depset([locator]),
             runfiles = ctx.runfiles(files = [locator] + originals + aliases + payloads + [lib.dynamic_library for lib in libraries]),
         ),
+        # Cargo validation consumes nested runtime files after Bazel exits.
+        # Expose them as an explicit output group so remote execution downloads
+        # the tree-artifact payloads instead of only the locator directory.
+        OutputGroupInfo(runtime_payloads = depset(originals + aliases + payloads)),
     ]
 
 native_link = rule(

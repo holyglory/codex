@@ -1,13 +1,17 @@
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 
 use base64::Engine;
+#[cfg(unix)]
 use chrono::Duration;
 use chrono::Utc;
 use codex_account_registry::AccountId;
 use codex_account_registry::AccountMetadata;
 use codex_account_registry::AccountRegistry;
+#[cfg(unix)]
 use codex_account_registry::DEFAULT_ACCOUNT_PRIORITY;
+#[cfg(unix)]
 use codex_account_registry::LegacyMigrationStage;
 use codex_account_registry::RegistryStore;
 use codex_config::types::AuthCredentialsStoreMode;
@@ -17,12 +21,17 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
 
+#[cfg(unix)]
 use super::migration::MigrationJournalRecord;
 use super::migration::migrate_legacy_auth_with_store;
+#[cfg(unix)]
 use super::migration::registry_for;
 use super::*;
+#[cfg(unix)]
 use crate::auth::storage::AuthStorage;
+#[cfg(unix)]
 use crate::auth::storage::PersistentAuthBackendKind;
+#[cfg(unix)]
 use crate::auth::storage::create_auth_storage_with_store;
 use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_jwt_claims;
@@ -73,6 +82,7 @@ fn chatgpt_auth(marker: &str, email: &str) -> AuthDotJson {
     }
 }
 
+#[cfg(unix)]
 fn personal_access_token_auth(marker: &str) -> AuthDotJson {
     AuthDotJson {
         auth_mode: Some(AuthMode::PersonalAccessToken),
@@ -86,12 +96,14 @@ fn personal_access_token_auth(marker: &str) -> AuthDotJson {
     }
 }
 
+#[cfg(unix)]
 fn external_chatgpt_tokens_auth(marker: &str) -> AuthDotJson {
     let mut auth = chatgpt_auth(marker, "external@example.com");
     auth.auth_mode = Some(AuthMode::ChatgptAuthTokens);
     auth
 }
 
+#[cfg(unix)]
 fn legacy_storage(
     codex_home: &Path,
     mode: AuthCredentialsStoreMode,
@@ -105,6 +117,7 @@ fn legacy_storage(
     )
 }
 
+#[cfg(unix)]
 fn write_journal(codex_home: &Path, journal: &MigrationJournalRecord) {
     let accounts = codex_home.join("accounts");
     std::fs::create_dir_all(&accounts).expect("create accounts directory");
@@ -115,6 +128,7 @@ fn write_journal(codex_home: &Path, journal: &MigrationJournalRecord) {
     .expect("write migration journal fixture");
 }
 
+#[cfg(unix)]
 fn read_journal(codex_home: &Path) -> MigrationJournalRecord {
     serde_json::from_slice(
         &std::fs::read(

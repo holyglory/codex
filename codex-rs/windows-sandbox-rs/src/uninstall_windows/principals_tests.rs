@@ -11,7 +11,6 @@ use std::ptr::null_mut;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use pretty_assertions::assert_eq;
@@ -19,10 +18,15 @@ use rand::RngCore;
 use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::NetworkManagement::NetManagement as network;
+use windows_sys::Win32::Security::LOGON32_LOGON_INTERACTIVE;
+use windows_sys::Win32::Security::LOGON32_PROVIDER_DEFAULT;
+use windows_sys::Win32::Security::LogonUserW;
 use windows_sys::Win32::System::Registry as registry;
-use windows_sys::Win32::System::Threading as threading;
+use windows_sys::Win32::UI::Shell::LoadUserProfileW;
+use windows_sys::Win32::UI::Shell::PROFILEINFOW;
+use windows_sys::Win32::UI::Shell::UnloadUserProfile;
 
 use super::SandboxUser;
 use crate::winutil::local_user_flags;
@@ -33,24 +37,19 @@ use crate::winutil::to_wide;
 
 struct ProfileFixture {
     user: SandboxUser,
-    process: Option<OwnedHandle>,
+    profile: Option<(OwnedHandle, HANDLE)>,
 }
 
 impl ProfileFixture {
     fn stop(&mut self) -> Result<()> {
-        if let Some(process) = self.process.take() {
-            let handle = process.as_raw_handle() as _;
-            unsafe {
-                threading::TerminateProcess(handle, /*uexitcode*/ 0)
-            };
+        if let Some((token, profile)) = self.profile.as_ref() {
             ensure!(
-                unsafe {
-                    threading::WaitForSingleObject(handle, /*dwmilliseconds*/ 10_000)
-                } == WAIT_OBJECT_0,
-                "owned profile fixture did not exit"
+                unsafe { UnloadUserProfile(token.as_raw_handle() as _, *profile) } != 0,
+                "unload owned profile fixture: {}",
+                io::Error::last_os_error()
             );
-            drop(process);
-            // User Profile Service unloads the hive after the last owned process exits.
+            self.profile = None;
+            // Observe the same unloaded-hive boundary without killing a shell during startup.
             let sid = string_from_sid_bytes(&self.user.sid).map_err(anyhow::Error::msg)?;
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -131,44 +130,40 @@ fn profile_cleanup_preserves_account_until_profile_can_be_deleted() -> Result<()
             original_flags: user_info.usri1_flags,
             sid: Vec::new(),
         },
-        process: None,
+        profile: None,
     };
     fixture.user.sid = resolve_sid(name)?;
     let sid = string_from_sid_bytes(&fixture.user.sid).map_err(anyhow::Error::msg)?;
     let profile_key = to_wide(format!(
         r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}"
     ));
-    let system_root = std::env::var_os("SystemRoot").context("SystemRoot is missing")?;
-    let executable =
-        PathBuf::from(&system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
-    let executable = to_wide(executable);
-    let mut command =
-        to_wide("powershell.exe -NoProfile -NonInteractive -Command Start-Sleep -Seconds 600");
-    let mut startup: threading::STARTUPINFOW = unsafe { std::mem::zeroed() };
-    startup.cb = std::mem::size_of_val(&startup) as u32;
-    let mut process: threading::PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let created = unsafe {
-        threading::CreateProcessWithLogonW(
+    let mut token = null_mut();
+    let logged_on = unsafe {
+        LogonUserW(
             username.as_ptr(),
             to_wide(".").as_ptr(),
             password.as_ptr(),
-            threading::LOGON_WITH_PROFILE,
-            executable.as_ptr(),
-            command.as_mut_ptr(),
-            threading::CREATE_NO_WINDOW,
-            null(),
-            to_wide(&system_root).as_ptr(),
-            &startup,
-            &mut process,
+            LOGON32_LOGON_INTERACTIVE,
+            LOGON32_PROVIDER_DEFAULT,
+            &mut token,
         )
     };
     ensure!(
-        created != 0,
-        "start owned profile fixture: {}",
+        logged_on != 0,
+        "log on owned profile fixture: {}",
         io::Error::last_os_error()
     );
-    fixture.process = Some(unsafe { OwnedHandle::from_raw_handle(process.hProcess as _) });
-    drop(unsafe { OwnedHandle::from_raw_handle(process.hThread as _) });
+    let token = unsafe { OwnedHandle::from_raw_handle(token as _) };
+    let mut profile: PROFILEINFOW = unsafe { std::mem::zeroed() };
+    profile.dwSize = std::mem::size_of_val(&profile) as u32;
+    profile.dwFlags = /* PI_NOUI */ 1;
+    profile.lpUserName = username.as_ptr().cast_mut();
+    ensure!(
+        unsafe { LoadUserProfileW(token.as_raw_handle() as _, &mut profile) } != 0,
+        "load owned profile fixture: {}",
+        io::Error::last_os_error()
+    );
+    fixture.profile = Some((token, profile.hProfile));
     let mut path = [0u16; 32768];
     let mut length = std::mem::size_of_val(&path) as u32;
     let status = unsafe {
