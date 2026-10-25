@@ -112,6 +112,7 @@ def prepare(state):
         "--remote-download-all",
         "--",
         "build",
+        "--output_groups=+runtime_payloads",
     ]
     if cache := os.environ.get("LOCAL_BAZEL_CACHE"):
         command.append(f"--disk_cache={cache}")
