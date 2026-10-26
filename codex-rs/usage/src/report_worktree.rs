@@ -39,7 +39,12 @@ pub(super) async fn global_aggregates(
             },
         ));
     }
-    aggregates(connection, /*time_range*/ None).await
+    aggregates(
+        connection,
+        /*time_range*/ None,
+        CoverageMode::GlobalCache,
+    )
+    .await
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,9 +67,16 @@ pub struct WorktreeCoverage {
     pub unassigned_token_observation_count: u64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum CoverageMode {
+    GlobalCache,
+    Selected,
+}
+
 pub(super) async fn aggregates(
     connection: &mut SqliteConnection,
     time_range: Option<UtcTimeRange>,
+    coverage_mode: CoverageMode,
 ) -> Result<(Vec<WorktreeAggregate>, WorktreeCoverage), UsageStoreError> {
     let operation_rows = sqlx::query(
         r#"
@@ -137,32 +149,63 @@ pub(super) async fn aggregates(
         });
     }
 
-    let mut coverage_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "WITH all_tokens AS (SELECT DISTINCT selected.id AS operation_id, token.id AS token_id FROM _usage_selected AS selected JOIN model_requests AS request ON request.operation_id = selected.id JOIN token_observations AS token ON token.model_request_id = request.id WHERE token.category_path NOT GLOB 'attribution.items.*'",
-    );
-    if let Some(range) = time_range {
-        coverage_query
-            .push(" AND token.observed_at_ms >= ")
-            .push_bind(range.start_ms())
-            .push(" AND token.observed_at_ms < ")
-            .push_bind(range.end_ms());
-    }
-    coverage_query.push(" UNION SELECT DISTINCT selected.id, token.id FROM _usage_selected AS selected JOIN tool_invocations AS tool ON tool.operation_id = selected.id JOIN token_observations AS token ON token.tool_invocation_id = tool.id WHERE token.category_path NOT GLOB 'attribution.items.*'");
-    if let Some(range) = time_range {
-        coverage_query
-            .push(" AND token.observed_at_ms >= ")
-            .push_bind(range.start_ms())
-            .push(" AND token.observed_at_ms < ")
-            .push_bind(range.end_ms());
-    }
-    coverage_query.push(") SELECT COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM repository_attributions AS attribution WHERE attribution.operation_id = all_tokens.operation_id AND attribution.worktree_id IS NOT NULL) THEN all_tokens.token_id END) AS assigned_tokens, COUNT(DISTINCT CASE WHEN NOT EXISTS (SELECT 1 FROM repository_attributions AS attribution WHERE attribution.operation_id = all_tokens.operation_id AND attribution.worktree_id IS NOT NULL) THEN all_tokens.token_id END) AS unassigned_tokens FROM all_tokens");
-    let coverage_row = coverage_query
-        .build()
+    let coverage = if coverage_mode == CoverageMode::GlobalCache && time_range.is_none() {
+        let total_tokens: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(observation_count), 0) FROM _usage_report_token_coverage",
+        )
         .fetch_one(&mut *connection)
         .await
         .map_err(database_error)?;
+        let assigned_tokens: i64 =
+            sqlx::query_scalar("SELECT COUNT(DISTINCT token_id) FROM _usage_worktree_tokens")
+                .fetch_one(&mut *connection)
+                .await
+                .map_err(database_error)?;
+        let assigned_operations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT operation_id) FROM repository_attributions WHERE worktree_id IS NOT NULL",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        let total_operations: i64 = sqlx::query_scalar(
+            "SELECT operations FROM _usage_report_global_counts WHERE singleton = 1",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        (
+            assigned_operations,
+            total_operations.saturating_sub(assigned_operations),
+            assigned_tokens,
+            total_tokens.saturating_sub(assigned_tokens),
+        )
+    } else {
+        let mut coverage_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "WITH all_tokens AS (SELECT DISTINCT selected.id AS operation_id, token.id AS token_id FROM _usage_selected AS selected JOIN model_requests AS request ON request.operation_id = selected.id JOIN token_observations AS token ON token.model_request_id = request.id WHERE token.category_path NOT GLOB 'attribution.items.*'",
+        );
+        if let Some(range) = time_range {
+            coverage_query
+                .push(" AND token.observed_at_ms >= ")
+                .push_bind(range.start_ms())
+                .push(" AND token.observed_at_ms < ")
+                .push_bind(range.end_ms());
+        }
+        coverage_query.push(" UNION SELECT DISTINCT selected.id, token.id FROM _usage_selected AS selected JOIN tool_invocations AS tool ON tool.operation_id = selected.id JOIN token_observations AS token ON token.tool_invocation_id = tool.id WHERE token.category_path NOT GLOB 'attribution.items.*'");
+        if let Some(range) = time_range {
+            coverage_query
+                .push(" AND token.observed_at_ms >= ")
+                .push_bind(range.start_ms())
+                .push(" AND token.observed_at_ms < ")
+                .push_bind(range.end_ms());
+        }
+        coverage_query.push(") SELECT COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM repository_attributions AS attribution WHERE attribution.operation_id = all_tokens.operation_id AND attribution.worktree_id IS NOT NULL) THEN all_tokens.token_id END) AS assigned_tokens, COUNT(DISTINCT CASE WHEN NOT EXISTS (SELECT 1 FROM repository_attributions AS attribution WHERE attribution.operation_id = all_tokens.operation_id AND attribution.worktree_id IS NOT NULL) THEN all_tokens.token_id END) AS unassigned_tokens FROM all_tokens");
+        let coverage_row = coverage_query
+            .build()
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(database_error)?;
 
-    let operation_coverage = sqlx::query(
+        let operation_coverage = sqlx::query(
         r#"
         WITH assigned AS (
             SELECT DISTINCT selected.id AS operation_id
@@ -175,15 +218,22 @@ pub(super) async fn aggregates(
                COALESCE(SUM(NOT EXISTS(SELECT 1 FROM assigned WHERE assigned.operation_id = selected.id)), 0) AS unassigned_operations
         FROM _usage_selected AS selected
         "#,
-    )
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(database_error)?;
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        (
+            operation_coverage.get("assigned_operations"),
+            operation_coverage.get("unassigned_operations"),
+            coverage_row.get("assigned_tokens"),
+            coverage_row.get("unassigned_tokens"),
+        )
+    };
     let coverage = WorktreeCoverage {
-        assigned_operation_count: count(operation_coverage.get("assigned_operations"))?,
-        unassigned_operation_count: count(operation_coverage.get("unassigned_operations"))?,
-        assigned_token_observation_count: count(coverage_row.get("assigned_tokens"))?,
-        unassigned_token_observation_count: count(coverage_row.get("unassigned_tokens"))?,
+        assigned_operation_count: count(coverage.0)?,
+        unassigned_operation_count: count(coverage.1)?,
+        assigned_token_observation_count: count(coverage.2)?,
+        unassigned_token_observation_count: count(coverage.3)?,
     };
     Ok((aggregates, coverage))
 }

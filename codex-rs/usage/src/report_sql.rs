@@ -337,7 +337,12 @@ impl UsageStore {
         let (worktrees, worktree_coverage) = if source == ReportSource::CachedAll {
             crate::report_worktree::global_aggregates(&mut tx).await?
         } else {
-            crate::report_worktree::aggregates(&mut tx, query.time_range).await?
+            crate::report_worktree::aggregates(
+                &mut tx,
+                query.time_range,
+                crate::report_worktree::CoverageMode::Selected,
+            )
+            .await?
         };
         tracing::debug!(
             stage = "summary_worktrees",
