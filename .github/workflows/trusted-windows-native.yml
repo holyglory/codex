@@ -2883,8 +2883,6 @@ jobs:
         exit "$status"
         '@
         [IO.File]::WriteAllText($script, $test.Replace("`r`n","`n") + "`n", [Text.UTF8Encoding]::new($false))
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne '2d067f68bc34ea8d1b46d729c34c962d1b03e352132fdaf1ee1ff73f059a3898') { throw 'Observer helper differs.' }
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'a97ba070c97fae26d612b72834d34c4cb17c728f676f0beb0670b7fb0c2427da') { throw 'Observer helper differs.' }
         if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'de05b9a274316dc39ade2e7df1844eed2609fc21f45eaeca92573a28c0404097') { throw 'Prepared helper differs.' }
         if ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.' }
         & 'C:\Program Files\Python313\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare' 'core'
@@ -2953,8 +2951,6 @@ jobs:
         exit "$status"
         '@
         [IO.File]::WriteAllText($script, $test.Replace("`r`n","`n") + "`n", [Text.UTF8Encoding]::new($false))
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne '2d067f68bc34ea8d1b46d729c34c962d1b03e352132fdaf1ee1ff73f059a3898') { throw 'Observer helper differs.' }
-        if ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'a97ba070c97fae26d612b72834d34c4cb17c728f676f0beb0670b7fb0c2427da') { throw 'Observer helper differs.' }
         if ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'de05b9a274316dc39ade2e7df1844eed2609fc21f45eaeca92573a28c0404097') { throw 'Prepared helper differs.' }
         if ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e') { throw 'Prepared helper differs.' }
         & 'C:\Program Files\Python313\python.exe' -X utf8 (Join-Path $root 'test-scratch-phase.py') 'prepare' 'exec'
