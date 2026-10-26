@@ -2801,7 +2801,7 @@ jobs:
          "--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}" "--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}"
          --disk_cache=R:/bazel-disk-cache --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d
 
-         --jobs=8 --local_resources=cpu=8 --local_test_jobs=8 --test_env=RUST_TEST_THREADS=4
+         --jobs=32 --local_resources=cpu=32 --local_test_jobs=4 --test_env=RUST_TEST_THREADS=2
          --test_env=SystemDrive --test_env=LOCALAPPDATA "--test_env=SystemRoot=${SYSTEMROOT}"
          --nocache_test_results --flaky_test_attempts=1 --test_tag_filters=-argument-comment-lint --test_verbose_timeout_warnings
         )
@@ -2869,7 +2869,7 @@ jobs:
          "--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}" "--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}"
          --disk_cache=R:/bazel-disk-cache --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d
 
-         --jobs=8 --local_resources=cpu=8 --local_test_jobs=8 --test_env=RUST_TEST_THREADS=4
+         --jobs=32 --local_resources=cpu=32 --local_test_jobs=4 --test_env=RUST_TEST_THREADS=2
          --test_env=SystemDrive --test_env=LOCALAPPDATA "--test_env=SystemRoot=${SYSTEMROOT}"
          --nocache_test_results --flaky_test_attempts=1 --test_tag_filters=-argument-comment-lint --test_verbose_timeout_warnings
         )
@@ -2937,7 +2937,7 @@ jobs:
          "--action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}" "--host_action_env=PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE}"
          --disk_cache=R:/bazel-disk-cache --experimental_disk_cache_gc_max_size=200G --experimental_disk_cache_gc_max_age=14d
 
-         --jobs=8 --local_resources=cpu=8 --local_test_jobs=1 --test_env=RUST_TEST_THREADS=4
+         --jobs=32 --local_resources=cpu=32 --local_test_jobs=2 --test_env=RUST_TEST_THREADS=2
          --test_env=SystemDrive --test_env=LOCALAPPDATA "--test_env=SystemRoot=${SYSTEMROOT}"
          --nocache_test_results --flaky_test_attempts=1 --test_tag_filters=-argument-comment-lint --test_verbose_timeout_warnings
         )
