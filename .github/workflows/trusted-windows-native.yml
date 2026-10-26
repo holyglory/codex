@@ -854,11 +854,32 @@ jobs:
         \    wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]\n_kernel.CreateFileW.restype = wintypes.HANDLE\n\
         _kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE,ctypes.c_int,wintypes.LPVOID,wintypes.DWORD]\n\
         _kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL\n_kernel.CloseHandle.argtypes = [wintypes.HANDLE]\n\
-        _kernel.CloseHandle.restype = wintypes.BOOL\n_INVALID_HANDLE = ctypes.c_void_p(-1).value\n\ndef parse_directory_entries(data,\
-        \ volume):\n    \"\"\"Decode the documented 88-byte FILE_ID_EXTD_DIR_INFO fixed header.\"\"\"\n    if volume\
-        \ <= 0:\n        raise ValueError('Missing directory volume identity')\n    entries=[]\n    offset=0\n \
-        \   while True:\n        if offset+88 > len(data):\n            raise ValueError('Truncated directory identity\
-        \ header')\n        next_offset=struct.unpack_from('<I',data,offset)[0]\n        size=struct.unpack_from('<q',data,offset+40)[0]\n\
+        _kernel.CloseHandle.restype = wintypes.BOOL\n_INVALID_HANDLE = ctypes.c_void_p(-1).value\n\nclass _UnicodeString(ctypes.Structure):\n\
+        \    _fields_=[('Length',wintypes.USHORT),('MaximumLength',wintypes.USHORT),('Buffer',wintypes.LPWSTR)]\n\
+        class _ObjectAttributes(ctypes.Structure):\n    _fields_=[('Length',wintypes.ULONG),('RootDirectory',wintypes.HANDLE),\n\
+        \        ('ObjectName',ctypes.POINTER(_UnicodeString)),('Attributes',wintypes.ULONG),\n        ('SecurityDescriptor',wintypes.LPVOID),('SecurityQualityOfService',wintypes.LPVOID)]\n\
+        class _IoStatusBlock(ctypes.Structure):\n    _fields_=[('StatusOrPointer',wintypes.LPVOID),('Information',ctypes.c_size_t)]\n\
+        _native=ctypes.WinDLL('ntdll')\n_native.NtOpenFile.argtypes=[ctypes.POINTER(wintypes.HANDLE),wintypes.ULONG,\n\
+        \    ctypes.POINTER(_ObjectAttributes),ctypes.POINTER(_IoStatusBlock),wintypes.ULONG,wintypes.ULONG]\n_native.NtOpenFile.restype=wintypes.LONG\n\
+        _native.RtlNtStatusToDosError.argtypes=[wintypes.LONG]\n_native.RtlNtStatusToDosError.restype=wintypes.ULONG\n\
+        \nclass DirectoryRetiredError(FileNotFoundError):\n    \"\"\"Windows explicitly reported STATUS_DELETE_PENDING\
+        \ on the initial open.\"\"\"\n\ndef raise_for_native_status(status):\n    status &= 0xffffffff\n    if status==0:return\n\
+        \    if status==0xc0000056:\n        error=DirectoryRetiredError('Directory is already pending deletion')\n\
+        \    else:\n        error=ctypes.WinError(_native.RtlNtStatusToDosError(ctypes.c_long(status).value))\n\
+        \    error.ntstatus=f'0x{status:08x}'\n    raise error\n\ndef _open_child_directory(parent,name):\n    #\
+        \ A single relative, read-only open keeps the original native status.\n    # Win32 maps deletion-pending\
+        \ and access-denied to the same error number.\n    if not name or name in ('.','..') or any(c in name for\
+        \ c in ('\\x00','/','\\\\',':')):\n        raise ValueError('Expected one ordinary child name')\n    encoded=name.encode('utf-16-le')\n\
+        \    if len(encoded)>65532:raise ValueError('Child name is too long')\n    buffer=ctypes.create_unicode_buffer(name)\n\
+        \    text=_UnicodeString(len(encoded),len(encoded)+2,ctypes.cast(buffer,wintypes.LPWSTR))\n    attributes=_ObjectAttributes(ctypes.sizeof(_ObjectAttributes),parent,ctypes.pointer(text),0x40,None,None)\n\
+        \    handle=wintypes.HANDLE();status_block=_IoStatusBlock()\n    # LIST_DIRECTORY | READ_ATTRIBUTES | SYNCHRONIZE;\
+        \ share read/write/delete.\n    # DIRECTORY_FILE | SYNCHRONOUS_IO_NONALERT | OPEN_REPARSE_POINT.\n    status=_native.NtOpenFile(ctypes.byref(handle),0x100081,ctypes.byref(attributes),ctypes.byref(status_block),7,0x200021)\n\
+        \    raise_for_native_status(status)\n    if not handle.value or handle.value==_INVALID_HANDLE:raise ValueError('Missing\
+        \ directory handle')\n    return handle.value\n\ndef parse_directory_entries(data, volume):\n    \"\"\"\
+        Decode the documented 88-byte FILE_ID_EXTD_DIR_INFO fixed header.\"\"\"\n    if volume <= 0:\n        raise\
+        \ ValueError('Missing directory volume identity')\n    entries=[]\n    offset=0\n    while True:\n     \
+        \   if offset+88 > len(data):\n            raise ValueError('Truncated directory identity header')\n   \
+        \     next_offset=struct.unpack_from('<I',data,offset)[0]\n        size=struct.unpack_from('<q',data,offset+40)[0]\n\
         \        attributes,name_bytes=struct.unpack_from('<II',data,offset+56)\n        inode=int.from_bytes(data[offset+72:offset+88],'little')\n\
         \        end=offset+88+name_bytes\n        if name_bytes==0 or name_bytes%2 or end>len(data) or size<0:\n\
         \            raise ValueError('Invalid directory identity record')\n        name=data[offset+88:end].decode('utf-16-le',errors='strict')\n\
@@ -867,66 +888,100 @@ jobs:
         \                st_size=size,st_file_attributes=attributes)))\n        if next_offset==0:\n           \
         \ break\n        if next_offset%8 or next_offset<88+name_bytes or offset+next_offset>=len(data):\n     \
         \       raise ValueError('Invalid directory entry offset')\n        offset+=next_offset\n    return entries\n\
-        \ndef enumerate_directory_identities(directory):\n    # FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, share\
-        \ read/write/delete,\n    # OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT. No privilege enabled.\n\
-        \    handle=_kernel.CreateFileW(str(directory),0x81,7,None,3,0x02200000,None)\n    if handle==_INVALID_HANDLE:\n\
-        \        raise ctypes.WinError(ctypes.get_last_error())\n    try:\n        attributes=ctypes.create_string_buffer(8)\n\
-        \        if not _kernel.GetFileInformationByHandleEx(handle,9,attributes,8):\n            raise ctypes.WinError(ctypes.get_last_error())\n\
-        \        flags=struct.unpack_from('<I',attributes.raw)[0]\n        if not flags & 0x10 or flags & 0x400:\n\
-        \            raise ValueError('Fixture directory is not an ordinary directory')\n        identity=ctypes.create_string_buffer(24)\n\
-        \        if not _kernel.GetFileInformationByHandleEx(handle,18,identity,24):\n            raise ctypes.WinError(ctypes.get_last_error())\n\
-        \        volume=struct.unpack_from('<Q',identity.raw)[0]\n        if volume<=0 or int.from_bytes(identity.raw[8:24],'little')<=0:\n\
-        \            raise ValueError('Missing directory identity')\n        buffer=ctypes.create_string_buffer(65536)\n\
-        \        entries=[]\n        for page in range(256):\n            if not _kernel.GetFileInformationByHandleEx(handle,20\
+        \nclass DirectoryIdentityReader:\n    \"\"\"Keep one read-only directory handle and its positive object\
+        \ identity.\"\"\"\n    def __init__(self,directory=None,*,parent=None,name=None):\n        # List/read attributes;\
+        \ share read, write and delete. No privilege enabled.\n        if parent is not None:\n            if directory\
+        \ is not None or parent.handle is None:raise ValueError('Expected a live parent handle')\n            self.handle=_open_child_directory(parent.handle,name)\n\
+        \        else:\n            if directory is None or name is not None:raise ValueError('Expected a root directory\
+        \ path')\n            self.handle=_kernel.CreateFileW(str(directory),0x81,7,None,3,0x02200000,None)\n  \
+        \      if self.handle==_INVALID_HANDLE:\n            self.handle=None\n            raise ctypes.WinError(ctypes.get_last_error())\n\
+        \        try:self._initialize()\n        except BaseException:\n            self.close()\n            raise\n\
+        \n    def _initialize(self):\n        attributes=ctypes.create_string_buffer(8)\n        if not _kernel.GetFileInformationByHandleEx(self.handle,9,attributes,8):\n\
+        \            raise ctypes.WinError(ctypes.get_last_error())\n        flags=struct.unpack_from('<I',attributes.raw)[0]\n\
+        \        if not flags & 0x10 or flags & 0x400:\n            raise ValueError('Fixture directory is not an\
+        \ ordinary directory')\n        identity=ctypes.create_string_buffer(24)\n        if not _kernel.GetFileInformationByHandleEx(self.handle,18,identity,24):\n\
+        \            raise ctypes.WinError(ctypes.get_last_error())\n        self.device=struct.unpack_from('<Q',identity.raw)[0]\n\
+        \        self.inode=int.from_bytes(identity.raw[8:24],'little')\n        if self.device<=0 or self.inode<=0:\n\
+        \            raise ValueError('Missing directory identity')\n\n    def delete_pending(self):\n        standard=ctypes.create_string_buffer(24)\n\
+        \        if not _kernel.GetFileInformationByHandleEx(self.handle,1,standard,24):\n            raise ctypes.WinError(ctypes.get_last_error())\n\
+        \        if not standard.raw[21]:raise ValueError('Expected directory standard information')\n        return\
+        \ bool(standard.raw[20])\n\n    def identities(self):\n        buffer=ctypes.create_string_buffer(65536)\n\
+        \        entries=[]\n        for page in range(256):\n            if not _kernel.GetFileInformationByHandleEx(self.handle,20\
         \ if page==0 else 19,buffer,len(buffer)):\n                error=ctypes.get_last_error()\n             \
         \   if error==18: # ERROR_NO_MORE_FILES: successful end of enumeration.\n                    names=[name\
         \ for name,_ in entries]\n                    if len(names)!=len(set(names)):\n                        raise\
         \ ValueError('Duplicate directory entry')\n                    return entries\n                raise ctypes.WinError(error)\n\
-        \            entries.extend(parse_directory_entries(buffer.raw,volume))\n        raise ValueError('Fixture\
-        \ directory enumeration exceeded its bound')\n    finally:\n        if not _kernel.CloseHandle(handle):\n\
-        \            raise ctypes.WinError(ctypes.get_last_error())\n'@\n[IO.File]::WriteAllText((Join-Path $root\
-        \ 'windows_directory_identity.py'), $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
-        \n$tool = @'\n\"\"\"Observe positive IDs through directory entries; keep all unresolved errors fatal.\"\"\
-        \"\nfrom contextlib import contextmanager\nfrom pathlib import Path\nimport stat\nimport threading\nimport\
-        \ time\nfrom windows_directory_identity import enumerate_directory_identities\n\ndef classify_fixture_identity(device,inode,expected):\n\
+        \            entries.extend(parse_directory_entries(buffer.raw,self.device))\n        raise ValueError('Fixture\
+        \ directory enumeration exceeded its bound')\n    def close(self):\n        if self.handle is None:return\n\
+        \        if not _kernel.CloseHandle(self.handle):\n            raise ctypes.WinError(ctypes.get_last_error())\n\
+        \        self.handle=None\n\n    def __enter__(self):return self\n    def __exit__(self,*unused):self.close()\n\
+        \n\ndef enumerate_directory_identities(directory):\n    with DirectoryIdentityReader(directory) as reader:\n\
+        \        return reader.identities()\n'@\n[IO.File]::WriteAllText((Join-Path $root 'windows_directory_identity.py'),\
+        \ $tool.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\n$tool = @'\n\"\"\"Observe\
+        \ directory handles across retirement; unresolved errors remain fatal.\"\"\"\nfrom contextlib import contextmanager\n\
+        from pathlib import Path\nimport stat\nimport threading\nimport time\nfrom windows_directory_identity import\
+        \ DirectoryIdentityReader,DirectoryRetiredError\n\n\ndef classify_fixture_identity(device,inode,expected):\n\
         \    if device==0 or inode==0:return 'unavailable'\n    return 'hard_link' if (device,inode)==expected else\
-        \ 'copy'\n\n@contextmanager\ndef observe_binary_fixtures(folder,prepared,record):\n    folder=Path(folder).resolve(strict=True)\n\
+        \ 'copy'\n\n\n@contextmanager\ndef observe_binary_fixtures(folder,prepared,record):\n    folder=Path(folder).resolve(strict=True)\n\
         \    assert folder.drive.upper()=='R:' and folder==Path(prepared['root'])\n    expected={p['name']:(p['device'],p['inode'])\
         \ for p in prepared['probes']}\n    assert set(expected)=={'codex-app-server.exe','codex-code-mode-host.exe'}\n\
-        \    assert all(d>0 and i>0 for d,i in expected.values())\n    stop=threading.Event();linked=set();copied=set();unavailable=set();directories=set();blocked=set()\n\
-        \    record.update(root=str(folder),samples=0,observedDirectories=0,hardLinkedExecutables=0,\n        hardLinksByExecutable={name:0\
-        \ for name in expected},copiedExecutables=0,errors=0,observerStopped=False,\n        identityMethod='positive-volume-and-file-id-v1',identityObservation='windows-directory-file-id-v1',\n\
+        \    assert all(d>0 and i>0 for d,i in expected.values())\n    stop=threading.Event();linked=set();copied=set();unavailable=set();directories=set();blocked=set();retired=set()\n\
+        \    readers={}\n    record.update(root=str(folder),samples=0,observedDirectories=0,hardLinkedExecutables=0,\n\
+        \        hardLinksByExecutable={name:0 for name in expected},copiedExecutables=0,errors=0,observerStopped=False,\n\
+        \        identityMethod='positive-volume-and-file-id-v1',identityObservation='windows-directory-file-id-v1',\n\
+        \        directoryHandleLifetime='retained-until-retired-v1',openedDirectoryHandles=0,closedDirectoryHandles=0,\n\
+        \        directoryOpenStatus='native-status-v1',initiallyRetiredDirectories=0,\n        liveDirectoryHandles=0,retiredPendingDirectories=0,retiredDisappearedDirectories=0,\n\
         \        unavailableIdentitySamples=0,unavailableOnlyExecutables=0,unavailableIdentityExamples=[],\n   \
-        \     copyIdentityExamples=[],errorExamples=[],errorExamplesTruncated=0,blockedDirectories=0)\n    def error_record(error,operation,directory=None):\n\
-        \        record['errors']+=1\n        if len(record['errorExamples'])<32:\n            record['errorExamples'].append(dict(operation=operation,directory=directory,name=None,\n\
-        \                type=type(error).__name__,errno=getattr(error,'errno',None),winerror=getattr(error,'winerror',None)))\n\
-        \        else:record['errorExamplesTruncated']+=1\n    def sample():\n        while not stop.is_set():\n\
-        \            try:\n                entries=list(folder.iterdir())\n            except Exception as error:\n\
-        \                error_record(error,'enumerate_root')\n                break # No retries of a failed or\
-        \ denied root.\n            for directory in entries:\n                if directory.name in ('.fixture-owner.json','.seed')\
-        \ or directory.name in blocked:continue\n                operation='directory_lstat'\n                try:\n\
-        \                    info=directory.lstat()\n                    if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:continue\n\
-        \                    if not info.st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:continue\n         \
-        \           operation='directory_file_ids'\n                    # Query both executable identities from\
-        \ the parent handle. Opening a\n                    # short-lived executable separately can race with Windows\
-        \ deletion.\n                    identities=enumerate_directory_identities(directory)\n                \
-        \    directories.add(directory.name)\n                    for name,file_info in identities:\n          \
-        \              if name not in expected or file_info.st_file_attributes & (stat.FILE_ATTRIBUTE_REPARSE_POINT|stat.FILE_ATTRIBUTE_DIRECTORY):continue\n\
-        \                        key=(directory.name,name)\n                        kind=classify_fixture_identity(file_info.st_dev,file_info.st_ino,expected[name])\n\
-        \                        if kind=='hard_link':linked.add(key)\n                        else:\n         \
-        \                   target=unavailable if kind=='unavailable' else copied\n                            examples=record['unavailableIdentityExamples'\
-        \ if kind=='unavailable' else 'copyIdentityExamples']\n                            if key not in target\
-        \ and len(examples)<32:\n                                examples.append(dict(directory=directory.name,name=name,device=file_info.st_dev,\n\
-        \                                    inode=file_info.st_ino,bytes=file_info.st_size,attributes=file_info.st_file_attributes,\n\
-        \                                    previouslyLinked=key in linked))\n                            target.add(key)\n\
-        \                            if kind=='unavailable':record['unavailableIdentitySamples']+=1\n          \
-        \      except FileNotFoundError:\n                    continue # The directory retired before this sample.\n\
-        \                except Exception as error:\n                    error_record(error,operation,directory.name)\n\
-        \                    blocked.add(directory.name) # Preserve failure; never retry it.\n            record.update(samples=record['samples']+1,observedDirectories=len(directories),\n\
-        \                hardLinkedExecutables=len(linked),copiedExecutables=len(copied),blockedDirectories=len(blocked),\n\
-        \                unavailableOnlyExecutables=len(unavailable-linked-copied),\n                hardLinksByExecutable={name:sum(n==name\
-        \ for _,n in linked) for name in expected})\n            if linked and 'firstObservationUnixSeconds' not\
-        \ in record:record['firstObservationUnixSeconds']=time.time()\n            stop.wait(0.25)\n    thread=threading.Thread(target=sample,daemon=True);thread.start()\n\
+        \     copyIdentityExamples=[],errorExamples=[],errorExamplesTruncated=0,blockedDirectories=0)\n\n    def\
+        \ error_record(error,operation,directory=None):\n        record['errors']+=1\n        if len(record['errorExamples'])<32:\n\
+        \            record['errorExamples'].append(dict(operation=operation,directory=directory,name=None,\n  \
+        \              type=type(error).__name__,errno=getattr(error,'errno',None),winerror=getattr(error,'winerror',None),ntstatus=getattr(error,'ntstatus',None)))\n\
+        \        else:record['errorExamplesTruncated']+=1\n\n    def close_reader(key):\n        reader,name=readers.pop(key)\n\
+        \        try:reader.close();record['closedDirectoryHandles']+=1\n        except Exception as error:error_record(error,'close_directory_handle',name)\n\
+        \        record['liveDirectoryHandles']=record['openedDirectoryHandles']-record['closedDirectoryHandles']\n\
+        \n    def sample():\n        root=None\n        try:\n            root=DirectoryIdentityReader(folder)\n\
+        \            while not stop.is_set():\n                try:\n                    entries=root.identities();present={}\n\
+        \                    for name,info in entries:\n                        if name in ('.fixture-owner.json','.seed')\
+        \ or name in blocked:continue\n                        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:continue\n\
+        \                        if not info.st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:continue\n     \
+        \                   key=(info.st_dev,info.st_ino)\n                        if key[0]<=0 or key[1]<=0:raise\
+        \ ValueError('Unavailable child directory identity')\n                        if key in present:raise ValueError('Duplicate\
+        \ child directory identity')\n                        present[key]=name\n                    if len(present)>8192:raise\
+        \ ValueError('Too many live fixture directories')\n                except Exception as error:\n        \
+        \            error_record(error,'enumerate_root')\n                    break\n                for key in\
+        \ list(readers):\n                    if key not in present:\n                        close_reader(key);retired.add(key);record['retiredDisappearedDirectories']+=1\n\
+        \                for key,name in present.items():\n                    if key in retired:continue\n    \
+        \                operation='open_directory_handle'\n                    try:\n                        if\
+        \ key not in readers:\n                            reader=DirectoryIdentityReader(parent=root,name=name)\n\
+        \                            readers[key]=(reader,name)\n                            record['openedDirectoryHandles']+=1;record['liveDirectoryHandles']+=1\n\
+        \                            if (reader.device,reader.inode)!=key:raise ValueError('Directory changed between\
+        \ listing and open')\n                        reader=readers[key][0]\n                        operation='directory_deletion_state'\n\
+        \                        if reader.delete_pending():\n                            close_reader(key);retired.add(key);record['retiredPendingDirectories']+=1\n\
+        \                            continue\n                        # Use the original read-only handle; no repeated\
+        \ child opens.\n                        operation='directory_file_ids';identities=reader.identities()\n\
+        \                        directories.add(key)\n                        for executable,file_info in identities:\n\
+        \                            if executable not in expected or file_info.st_file_attributes & (stat.FILE_ATTRIBUTE_REPARSE_POINT|stat.FILE_ATTRIBUTE_DIRECTORY):continue\n\
+        \                            item=(key,executable)\n                            kind=classify_fixture_identity(file_info.st_dev,file_info.st_ino,expected[executable])\n\
+        \                            if kind=='hard_link':linked.add(item)\n                            else:\n\
+        \                                target=unavailable if kind=='unavailable' else copied\n               \
+        \                 examples=record['unavailableIdentityExamples' if kind=='unavailable' else 'copyIdentityExamples']\n\
+        \                                if item not in target and len(examples)<32:\n                         \
+        \           examples.append(dict(directory=name,name=executable,device=file_info.st_dev,\n             \
+        \                           inode=file_info.st_ino,bytes=file_info.st_size,attributes=file_info.st_file_attributes,\n\
+        \                                        previouslyLinked=item in linked))\n                           \
+        \     target.add(item)\n                                if kind=='unavailable':record['unavailableIdentitySamples']+=1\n\
+        \                    except DirectoryRetiredError:\n                        retired.add(key);record['initiallyRetiredDirectories']+=1\n\
+        \                        record['retiredPendingDirectories']+=1\n                    except FileNotFoundError:\n\
+        \                        if key in readers:close_reader(key)\n                        retired.add(key);record['retiredDisappearedDirectories']+=1\n\
+        \                    except Exception as error:\n                        error_record(error,operation,name);blocked.add(name)\n\
+        \                        if key in readers:close_reader(key)\n                record.update(samples=record['samples']+1,observedDirectories=len(directories),\n\
+        \                    hardLinkedExecutables=len(linked),copiedExecutables=len(copied),blockedDirectories=len(blocked),\n\
+        \                    unavailableOnlyExecutables=len(unavailable-linked-copied),\n                    hardLinksByExecutable={name:sum(n==name\
+        \ for _,n in linked) for name in expected})\n                if linked and 'firstObservationUnixSeconds'\
+        \ not in record:record['firstObservationUnixSeconds']=time.time()\n                stop.wait(0.25)\n   \
+        \     except Exception as error:error_record(error,'open_or_monitor_root')\n        finally:\n         \
+        \   for key in list(readers):close_reader(key)\n            if root is not None:\n                try:root.close()\n\
+        \                except Exception as error:error_record(error,'close_root_handle')\n\n    thread=threading.Thread(target=sample,daemon=True);thread.start()\n\
         \    try:yield\n    finally:\n        stop.set();thread.join(timeout=5);record['observerStopped']=not thread.is_alive()\n\
         '@\n[IO.File]::WriteAllText((Join-Path $root 'binary_fixture_observer.py'), $tool.Replace(\"`r`n\",\"`n\"\
         ) + \"`n\", [Text.UTF8Encoding]::new($false))\n"
@@ -979,9 +1034,9 @@ jobs:
         \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/general-exit-code.txt\"\
         \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
         if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ -cne '2d067f68bc34ea8d1b46d729c34c962d1b03e352132fdaf1ee1ff73f059a3898') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ -cne 'a97ba070c97fae26d612b72834d34c4cb17c728f676f0beb0670b7fb0c2427da') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
@@ -1068,9 +1123,9 @@ jobs:
         set -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/core-exit-code.txt\"\nexit \"\
         $status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
         if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ -cne '2d067f68bc34ea8d1b46d729c34c962d1b03e352132fdaf1ee1ff73f059a3898') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ -cne 'a97ba070c97fae26d612b72834d34c4cb17c728f676f0beb0670b7fb0c2427da') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
@@ -1138,9 +1193,9 @@ jobs:
         \nstatus=${PIPESTATUS[0]}\nset -e\nprintf '%s\\n' \"$status\" > \"$RUNNER_TEMP/native-codex-evidence/exec-exit-code.txt\"\
         \nexit \"$status\"\n'@\n[IO.File]::WriteAllText($script, $test.Replace(\"`r`n\",\"`n\") + \"`n\", [Text.UTF8Encoding]::new($false))\n\
         if ((Get-FileHash -LiteralPath (Join-Path $root 'binary_fixture_observer.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne '9b14e02bccb7316c6b1a076b2b22498fab8b5a4c882e18e95c541931b209df47') { throw 'Observer helper differs.'\
+        \ -cne '2d067f68bc34ea8d1b46d729c34c962d1b03e352132fdaf1ee1ff73f059a3898') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'windows_directory_identity.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
-        \ -cne 'c907ed85c2feb7c2ea47865aa4214d38cefd00fe9e3b8cbe41dbbf2924dca5d5') { throw 'Observer helper differs.'\
+        \ -cne 'a97ba070c97fae26d612b72834d34c4cb17c728f676f0beb0670b7fb0c2427da') { throw 'Observer helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'run-private-desktop-command.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
         \ -cne '6996993b0210211f9431898d2e82f0251926b8d461260a41af7b6483bcc0ed8c') { throw 'Prepared helper differs.'\
         \ }\nif ((Get-FileHash -LiteralPath (Join-Path $root 'test-scratch-phase.py') -Algorithm SHA256).Hash.ToLowerInvariant()\
