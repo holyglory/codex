@@ -10,7 +10,7 @@ jobs:
     - self-hosted
     - Windows
     - X64
-    - codex-win-msvc
+    - codex-win-msvc-ssd-check
     timeout-minutes: 360
     defaults:
       run:
