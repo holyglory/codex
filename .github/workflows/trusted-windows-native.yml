@@ -545,7 +545,7 @@ jobs:
                                 args.core, args.exec_events, args.output)
                 print(json.dumps({k: v for k, v in result.items() if k != "mixedTargetCoverage"}))
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '743ae490e96ef542b3a2944ed07c77dae041c12b78283f88738adb532cb4737a'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'run-private-desktop-command.py'
         $text = '
@@ -862,7 +862,7 @@ jobs:
             assert record[''restoreError'']==record[''restoredVerificationError'']==0, ''Service object restoration was not verified.''
         raise SystemExit(code)
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'de05b9a274316dc39ade2e7df1844eed2609fc21f45eaeca92573a28c0404097'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'test-scratch-phase.py'
         $text = '"""Prepare and remove only a single run''s explicitly authorized test scratch."""
@@ -968,7 +968,7 @@ jobs:
         if __name__ == ''__main__'':
             main()
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'b5a6bfecdc45f53ab887140205b80735650673f07d65d837562cd67186be784e'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'native_d_scratch_evidence.py'
         $text = '"""Validate only the whitelisted temporary-path evidence from native Bazel tests."""
@@ -1002,7 +1002,7 @@ jobs:
                         runtimeObserved=runtime_observed, cleaned=True, boundedCacheOnR=True,
                         observedEntries=observation[''observedEntries''], observationErrors=observation[''errors''])
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'a653d35c9c1d0038bb52e71d62f6dc15acce5b26a380b5b885736de335d4633d'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'verify-test-storage.py'
         $text = '"""Compare effective Windows action environments without emitting client secrets."""
@@ -1102,7 +1102,7 @@ jobs:
         (root / ''test-storage-verification.json'').write_text(json.dumps(results, indent=2) + ''\n'')
         print(json.dumps(results))
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '5abb8ebf828f0a698370f93443cfdea7dda90477d1a097cdf19ed92d52b6b91a'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'capture-native-test.py'
         $text = '"""Preserve native test output before Bazel''s Windows output tee can truncate it."""
@@ -1202,7 +1202,7 @@ jobs:
         if __name__==''__main__'':
             sys.exit(main())
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '42dae3d8175bf803aba6d9fbe4fe30bc83a8836b92a67d76b4e48fb107bf1a7c'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'capture-phase.py'
         $text = '"""Snapshot original Bazel results and independently completed test output."""
@@ -1278,7 +1278,7 @@ jobs:
             collect(root,sys.argv[1],dict(runId=os.environ[''GITHUB_RUN_ID''],runAttempt=os.environ[''GITHUB_RUN_ATTEMPT''],controllerSha=os.environ[''GITHUB_SHA''],
                 sourceSha=os.environ[''SOURCE_SHA''],sourceTree=os.environ[''NATIVE_SOURCE_TREE'']))
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '0fa6d27128370791a36b5855dfc0ef07eb3709a4034fdbd150bafb8689581055'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'mixed-targets.cquery'
         $text = 'def format(target):
@@ -1293,7 +1293,7 @@ jobs:
                 "inheritedEnvironmentNames": env.inherited_environment if env else [],
             })
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'e0b2736ffb8cdf2375b1089dd9120f4df83361388455176889faa8c80e62e289'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-tests.cquery'
         $text = 'def format(target):
@@ -1308,7 +1308,7 @@ jobs:
                 "inheritedEnvironmentNames": env.inherited_environment if env else [],
             })
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'e0b2736ffb8cdf2375b1089dd9120f4df83361388455176889faa8c80e62e289'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'package_guest.py'
         $text = '"""Copy only declared test runfiles; never run guest tests on this host."""
@@ -1470,7 +1470,7 @@ jobs:
         if __name__ == ''__main__'':
             package(sys.argv[1], sys.argv[2])
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'e9fce3db4703c7af0fefa951457c3b6d2afef667b360fa57377b5c274190db23'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'runner_guest_client.py'
         $text = '"""Unprivileged CI client for the protected, expiring guest-only channel."""
@@ -1581,7 +1581,7 @@ jobs:
                     result=read_result(request_id)
                 print(json.dumps(dict(id=request_id,result=result)))
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c3921d962d73b174cccbf3559e6da712038433787b7d9551b3cb572a19dfe44b'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest_rpc.py'
         $text = '"""Durable, bounded requests through the guest-only bridge, never host elevation."""
@@ -1693,7 +1693,7 @@ jobs:
                     raise RuntimeError(''Expected one structured guest response.'')
                 return data[0]
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4958ecb7d3537ab624123e8350ed5b32bc3529bdcd3a33ff0f5b16ba42cfcdf6'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest_transfer.py'
         $text = '"""Transfer only the current run''s verified bundle through guest-only requests."""
@@ -1782,7 +1782,7 @@ jobs:
                 raise ValueError(''Guest did not verify the complete archive.'')
             return result
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '7330fb6792bcde85d70a2c28975cf6136e410c44976df3ac16962ad7aa6cf0ea'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest_results.py'
         $text = '"""Separate verified guest execution from application pass/fail results."""
@@ -1903,7 +1903,7 @@ jobs:
                 coverage.validate_report(record,plan[''sourceTree''])
             return record
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'dff3bca634cc3e45d040d00cbe5a180d86d1df1bfad562e902c6b808ffe931fc'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest_controller.py'
         $text = '"""Start guest validation alongside host tests, then collect the exact run''s results."""
@@ -2125,7 +2125,7 @@ jobs:
         if __name__==''__main__'':
             raise SystemExit(main())
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '272c5fa06ef0d5439b5bb7a4180f4f5d943ef986e6dffdfabbcbc9e81fc6d1e7'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-start.ps1'
         $text = 'param([Parameter(Mandatory=$true)][string]$PlanEncoded,[Parameter(Mandatory=$true)][string]$PayloadEncoded)
@@ -2232,7 +2232,7 @@ jobs:
         Start-ScheduledTask -TaskName $name
         [ordered]@{planId=$plan.planId;task=$name;root=$root;bundleId=$plan.bundleId;sourceSha=$plan.sourceSha;bodySha256=$payload.''guest-run-tests.ps1''.sha256;targetCount=5;hostExecution=$false}
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '9a742b5e8f7841a8a0a9302f7847604985fe54fd78ea8c29a34e2f14371d0634'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-read.ps1'
         $text = 'param(
@@ -2301,7 +2301,7 @@ jobs:
          }finally{$stream.Dispose()}
         }
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '3ef3145ff974223b454c2ce7a6e7515c0f8ad503a0b56cbcb571291f96de04cc'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-run-tests.ps1'
         $text = 'param(
@@ -2542,7 +2542,7 @@ jobs:
          Get-Event -SourceIdentifier $eventSource -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
         }
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '52076333a849cb0885c6bef9826ec5a386ee9ed4ca0472bf2b15d094c80a53ce'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-observed-process.ps1'
         $text = 'function Invoke-CodexObservedProcess {
@@ -2635,7 +2635,7 @@ jobs:
             return [pscustomobject]$state
         }
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '6ae7c0bea8e4f2bd0e43b3a34dbea5faa155dd760216b2e0c86bbd57f3499140'){throw 'Prepared helper checksum differs.'}
         $path=Join-Path $root 'guest-libtest-coverage.ps1'
         $text = 'function Get-CodexGuestCoverage {
@@ -2671,7 +2671,7 @@ jobs:
                 coverageMatched=$complete;testsPassed=($complete -and $failed -eq 0 -and $summaryState -ceq ''ok'')}
         }
         '
-        [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4f4da02bb3144af9f49350bafd1504a647171d5d678563f36f316b83b086c91a'){throw 'Prepared helper checksum differs.'}
         [ordered]@{sourceTree=$tree;bulkVolume='R:';testScratch='D:/cxt';applicationFixtureHooksRequired=$false;guestExecution='current workflow run and attempt'}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $root 'execution-plan.json') -Encoding utf8
     - name: Build the complete native MSVC target selection
