@@ -2687,6 +2687,10 @@ jobs:
         # but remove that irrelevant rc entry in this ephemeral runner checkout.
         cp .bazelrc "$RUNNER_TEMP/native-codex-evidence/bazelrc.original"
         sed -i -e '/archiver_flags:use_libtool_on_macos/d' -e '/^common --@/d' .bazelrc
+        # Recreate only the derived Bazel graph after runner repository-cache repairs.
+        set +e
+        ./.github/scripts/run-bazel-ci.sh --windows-msvc-host-platform -- clean --expunge
+        set -e
         args=(
          --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp --config=ci-windows --platforms=//:windows_x86_64_msvc --keep_going
          "--action_env=SystemRoot=${SYSTEMROOT}" "--host_action_env=SystemRoot=${SYSTEMROOT}"
