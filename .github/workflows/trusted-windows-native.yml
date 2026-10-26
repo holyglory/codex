@@ -2675,6 +2675,18 @@ jobs:
         [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4f4da02bb3144af9f49350bafd1504a647171d5d678563f36f316b83b086c91a'){throw 'Prepared helper checksum differs.'}
         [ordered]@{sourceTree=$tree;bulkVolume='R:';testScratch='D:/cxt';applicationFixtureHooksRequired=$false;guestExecution='current workflow run and attempt'}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $root 'execution-plan.json') -Encoding utf8
+    - name: Repair derived Bazel repository caches
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        foreach ($path in @('R:\bazel-repository-cache','R:\bazel-repo-contents-cache')) {
+          if (Test-Path -LiteralPath $path) {
+            Get-ChildItem -LiteralPath $path -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+          } else {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
+        }
+        Write-Host 'Derived Bazel repository caches cleared; source and action caches retained.'
     - name: Build the complete native MSVC target selection
       shell: bash
       env:
