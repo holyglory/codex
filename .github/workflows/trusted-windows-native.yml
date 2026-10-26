@@ -2681,6 +2681,11 @@ jobs:
       run: |
         set -euo pipefail
         cd "$(cygpath -u "$CODEX_BAZEL_WORKSPACE")"
+        # Bazel 9.2 resolves the upstream macOS-only rules_cc archiver label
+        # before native Windows analysis. Keep the frozen source tree unchanged
+        # but remove that irrelevant rc entry in this ephemeral runner checkout.
+        cp .bazelrc "$RUNNER_TEMP/native-codex-evidence/bazelrc.original"
+        sed -i '/archiver_flags:use_libtool_on_macos/d' .bazelrc
         args=(
          --repo_env=TMP=R:/tmp --repo_env=TEMP=R:/tmp --config=ci-windows --platforms=//:windows_x86_64_msvc --keep_going
          "--action_env=SystemRoot=${SYSTEMROOT}" "--host_action_env=SystemRoot=${SYSTEMROOT}"
