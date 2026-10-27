@@ -201,8 +201,9 @@ async fn summary(
         args.scope.unwrap_or(UsageStatsScope::CurrentChat),
         UsageStatsScope::All
     );
+    let account_is_none = account.is_none();
     let unbounded = time_range.is_none_or(|range| !range.is_finite());
-    if all_scope && account.is_none() && unbounded {
+    if all_scope && account_is_none && unbounded {
         let cache = store.report_cache_status().await.map_err(report_error)?;
         if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
             if !cache.ready || snapshot.freshness == "fresh" {
@@ -235,7 +236,7 @@ async fn summary(
         structured.provider_tokens = aggregate_all_provider_tokens(structured.provider_tokens)?;
     }
     let mut value = serde_json::to_value(structured).map_err(|_| storage_error())?;
-    if all_scope && account.is_none() && unbounded {
+    if all_scope && account_is_none && unbounded {
         if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
             attach_snapshot_metadata(&mut value, &snapshot);
         } else if let Some(object) = value.as_object_mut() {
