@@ -120,7 +120,7 @@ impl UsageStore {
         .map_err(UsageStoreError::Database)
     }
 
-    async fn persist_global_report_snapshot(&self, summary: &UsageSummary) {
+    pub(crate) async fn persist_global_report_snapshot(&self, summary: &UsageSummary) {
         if let Err(error) = crate::report_cache::write_global_snapshot(&self.pool, summary).await {
             tracing::debug!(
                 sqlite_code = crate::report_status::sqlite_code(&error),

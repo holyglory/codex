@@ -526,12 +526,13 @@ pub(crate) async fn write_global_snapshot(
 ) -> Result<(), sqlx::Error> {
     let payload = serde_json::to_string(&crate::StructuredUsageSummary::new(summary, None))
         .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
-    let generated_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| sqlx::Error::Protocol("snapshot timestamp overflow".into()))?;
+    let generated_at_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?
+            .as_millis(),
+    )
+    .map_err(|_| sqlx::Error::Protocol("snapshot timestamp overflow".into()))?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     crate::report_global::ensure_snapshot_schema(&mut tx).await?;
     if !crate::report_global::is_ready_on(&mut tx).await? {
