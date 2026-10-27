@@ -343,7 +343,7 @@ async fn agent_reads_finite_performance_review_with_descendants() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result<()> {
+async fn agent_gets_current_chat_summary_while_cache_warms() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -419,12 +419,9 @@ async fn agent_gets_typed_warming_for_unbounded_current_chat_summary() -> Result
             .iter()
             .find_map(|request| request.function_call_output_text(call_id))
             .with_context(|| format!("current chat usage output for {call_id}"))?;
-        let warming: Value = serde_json::from_str(&warming)?;
-        assert_eq!(warming["kind"], "usageReportWarming");
-        assert_eq!(warming["action"], "summary");
-        assert_eq!(warming["reportingOperationInProgress"], false);
-        assert_eq!(warming["retryAfterMs"], 1_000);
-        assert_eq!(warming["cache"]["ready"], false);
+        let summary: Value = serde_json::from_str(&warming)?;
+        assert_eq!(summary["kind"], "usageSummary");
+        assert_eq!(summary["reportingOperationInProgress"], true);
     }
     Ok(())
 }

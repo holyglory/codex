@@ -109,6 +109,17 @@ async fn initialize_seed_frontier(
     Ok(())
 }
 
+pub(crate) async fn ensure_snapshot_schema(
+    connection: &mut SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS _usage_report_global_snapshot(singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton=1), as_of_revision INTEGER NOT NULL, generated_at_ms INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
+    )
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn is_supported(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let mut connection = pool.acquire().await?;
     let component: Option<i64> = sqlx::query_scalar(

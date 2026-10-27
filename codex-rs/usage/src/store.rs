@@ -1,3 +1,4 @@
+use crate::report::UsageSummary;
 use crate::repository::RepositoryHmacKey;
 use crate::repository::load_or_create_repository_key;
 use crate::types::Activity;
@@ -106,6 +107,42 @@ impl UsageStore {
         .await
         .map_err(|_| UsageStoreError::ReportTimedOut)?
         .map_err(UsageStoreError::Database)
+    }
+
+    pub async fn global_report_snapshot(
+        &self,
+    ) -> Result<Option<crate::GlobalReportSnapshot>, UsageStoreError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::report_cache::read_global_snapshot(&self.pool),
+        )
+        .await
+        .map_err(|_| UsageStoreError::ReportTimedOut)?
+        .map_err(UsageStoreError::Database)
+    }
+
+    pub(crate) async fn global_report_revision(&self) -> Result<Option<i64>, UsageStoreError> {
+        sqlx::query_scalar(
+            "SELECT applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)
+    }
+
+    pub(crate) async fn persist_global_report_snapshot(
+        &self,
+        summary: &UsageSummary,
+        expected_revision: i64,
+    ) {
+        if let Err(error) =
+            crate::report_cache::write_global_snapshot(&self.pool, summary, expected_revision).await
+        {
+            tracing::debug!(
+                sqlite_code = crate::report_status::sqlite_code(&error),
+                "usage report snapshot publication skipped"
+            );
+        }
     }
 
     /// Unbounded public requests must not scan raw history during rebuilding.
