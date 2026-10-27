@@ -202,14 +202,20 @@ async fn summary(
         UsageStatsScope::All
     );
     let account_is_none = account.is_none();
-    let unbounded = time_range.is_none_or(|range| !range.is_finite());
-    if all_scope && account_is_none && unbounded {
+    let snapshot_eligible = all_scope && account_is_none && time_range.is_none();
+    let fallback_snapshot = if snapshot_eligible {
+        store.global_report_snapshot().await.ok().flatten()
+    } else {
+        None
+    };
+    if let Some(snapshot) = fallback_snapshot.as_ref() {
+        let cache = store.report_cache_status().await.ok();
+        if snapshot.freshness == "fresh" || cache.as_ref().is_none_or(|cache| !cache.ready) {
+            return snapshot_response(snapshot.clone(), cache);
+        }
+    } else if snapshot_eligible {
         let cache = store.report_cache_status().await.map_err(report_error)?;
-        if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
-            if !cache.ready || snapshot.freshness == "fresh" {
-                return snapshot_response(snapshot, cache);
-            }
-        } else if !cache.ready {
+        if !cache.ready {
             return Ok(warming_response(UsageStatsAction::Summary, cache));
         }
     }
@@ -228,6 +234,15 @@ async fn summary(
         Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
             return Ok(warming_response(UsageStatsAction::Summary, *cache));
         }
+        Err(
+            error @ (codex_usage::UsageStoreError::ReportTimedOut
+            | codex_usage::UsageStoreError::ReportBusy),
+        ) => {
+            if let Some(snapshot) = fallback_snapshot {
+                return snapshot_response(snapshot, store.report_cache_status().await.ok());
+            }
+            return Err(report_error(error));
+        }
         Err(error) => return Err(report_error(error)),
     };
     let mut structured =
@@ -236,7 +251,7 @@ async fn summary(
         structured.provider_tokens = aggregate_all_provider_tokens(structured.provider_tokens)?;
     }
     let mut value = serde_json::to_value(structured).map_err(|_| storage_error())?;
-    if all_scope && account_is_none && unbounded {
+    if snapshot_eligible {
         if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
             attach_snapshot_metadata(&mut value, &snapshot);
         } else if let Some(object) = value.as_object_mut() {
@@ -260,7 +275,7 @@ struct SnapshotToken {
 
 fn snapshot_response(
     snapshot: codex_usage::GlobalReportSnapshot,
-    cache: codex_usage::ReportCacheStatus,
+    cache: Option<codex_usage::ReportCacheStatus>,
 ) -> Result<Value, FunctionCallError> {
     let mut value = snapshot.payload.clone();
     if let Some(tokens) = value.get("providerTokens").cloned() {
@@ -287,7 +302,9 @@ fn snapshot_response(
         }
     }
     attach_snapshot_metadata(&mut value, &snapshot);
-    if let Some(object) = value.as_object_mut() {
+    if let Some(cache) = cache
+        && let Some(object) = value.as_object_mut()
+    {
         object.insert(
             "cache".to_string(),
             serde_json::to_value(cache).map_err(|_| storage_error())?,

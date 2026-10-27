@@ -486,7 +486,6 @@ pub(crate) async fn read_global_snapshot(
     pool: &SqlitePool,
 ) -> Result<Option<GlobalReportSnapshot>, sqlx::Error> {
     let mut connection = pool.acquire().await?;
-    crate::report_global::ensure_snapshot_schema(&mut connection).await?;
     let row = sqlx::query_as::<_, (i64, i64, String)>(
         "SELECT as_of_revision, generated_at_ms, payload FROM _usage_report_global_snapshot WHERE singleton=1",
     )
@@ -500,11 +499,10 @@ pub(crate) async fn read_global_snapshot(
     )
     .fetch_one(&mut *connection)
     .await?;
-    let global_ready = crate::report_global::is_ready_on(&mut connection).await?;
     let latest_revision = dirty_revision.max(applied_revision);
     let pending_changes =
         u64::try_from(latest_revision.saturating_sub(as_of_revision)).unwrap_or(0);
-    let freshness = if global_ready && pending_changes == 0 && as_of_revision == applied_revision {
+    let freshness = if pending_changes == 0 && as_of_revision == applied_revision {
         "fresh"
     } else {
         "stale"
@@ -523,6 +521,7 @@ pub(crate) async fn read_global_snapshot(
 pub(crate) async fn write_global_snapshot(
     pool: &SqlitePool,
     summary: &crate::UsageSummary,
+    expected_revision: i64,
 ) -> Result<(), sqlx::Error> {
     let payload = serde_json::to_string(&crate::StructuredUsageSummary::new(summary, None))
         .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
@@ -544,6 +543,10 @@ pub(crate) async fn write_global_snapshot(
     )
     .fetch_one(&mut *tx)
     .await?;
+    if applied_revision != expected_revision {
+        tx.rollback().await?;
+        return Ok(());
+    }
     sqlx::query(
         "INSERT INTO _usage_report_global_snapshot(singleton,as_of_revision,generated_at_ms,payload) VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET as_of_revision=excluded.as_of_revision,generated_at_ms=excluded.generated_at_ms,payload=excluded.payload",
     )

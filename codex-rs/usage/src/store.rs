@@ -1,3 +1,4 @@
+use crate::report::UsageSummary;
 use crate::repository::RepositoryHmacKey;
 use crate::repository::load_or_create_repository_key;
 use crate::types::Activity;
@@ -120,8 +121,23 @@ impl UsageStore {
         .map_err(UsageStoreError::Database)
     }
 
-    pub(crate) async fn persist_global_report_snapshot(&self, summary: &UsageSummary) {
-        if let Err(error) = crate::report_cache::write_global_snapshot(&self.pool, summary).await {
+    pub(crate) async fn global_report_revision(&self) -> Result<Option<i64>, UsageStoreError> {
+        sqlx::query_scalar(
+            "SELECT applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(UsageStoreError::Database)
+    }
+
+    pub(crate) async fn persist_global_report_snapshot(
+        &self,
+        summary: &UsageSummary,
+        expected_revision: i64,
+    ) {
+        if let Err(error) =
+            crate::report_cache::write_global_snapshot(&self.pool, summary, expected_revision).await
+        {
             tracing::debug!(
                 sqlite_code = crate::report_status::sqlite_code(&error),
                 "usage report snapshot publication skipped"

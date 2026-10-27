@@ -133,9 +133,15 @@ impl UsageStore {
         query: UsageSummaryQuery,
     ) -> Result<UsageSummary, UsageStoreError> {
         let snapshot_eligible = Self::is_global_snapshot_eligible(&query);
+        let snapshot_revision = if snapshot_eligible {
+            self.global_report_revision().await.ok().flatten()
+        } else {
+            None
+        };
         let summary = self.bounded_usage_summary(query).await?;
-        if snapshot_eligible {
-            self.persist_global_report_snapshot(&summary).await;
+        if let Some(snapshot_revision) = snapshot_revision {
+            self.persist_global_report_snapshot(&summary, snapshot_revision)
+                .await;
         }
         Ok(summary)
     }
@@ -146,9 +152,15 @@ impl UsageStore {
         query: UsageSummaryQuery,
     ) -> Result<UsageSummary, UsageStoreError> {
         let snapshot_eligible = Self::is_global_snapshot_eligible(&query);
+        let snapshot_revision = if snapshot_eligible {
+            self.global_report_revision().await.ok().flatten()
+        } else {
+            None
+        };
         let summary = self.bounded_usage_summary_strict(query).await?;
-        if snapshot_eligible {
-            self.persist_global_report_snapshot(&summary).await;
+        if let Some(snapshot_revision) = snapshot_revision {
+            self.persist_global_report_snapshot(&summary, snapshot_revision)
+                .await;
         }
         Ok(summary)
     }
