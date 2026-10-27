@@ -27,6 +27,7 @@ use codex_usage::UsagePageRequest;
 use codex_usage::UsageStore;
 use codex_usage::UsageSummaryQuery;
 use codex_usage::UtcTimeRange;
+use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -43,11 +44,7 @@ pub(super) async fn execute(
     let requires_ready_cache = matches!(
         args.action,
         UsageStatsAction::PerformanceReview | UsageStatsAction::TaskTreeSummary
-    ) || (matches!(args.action, UsageStatsAction::Summary)
-        && matches!(
-            args.scope.unwrap_or(UsageStatsScope::CurrentChat),
-            UsageStatsScope::All
-        ));
+    );
     if unbounded && requires_ready_cache {
         let cache = store.report_cache_status().await.map_err(|error| {
             if let Some(failure) = error.report_failure() {
@@ -200,8 +197,23 @@ async fn summary(
         .as_deref()
         .map(|reference| resolve_account(context, reference))
         .transpose()?;
+    let all_scope = matches!(
+        args.scope.unwrap_or(UsageStatsScope::CurrentChat),
+        UsageStatsScope::All
+    );
+    let unbounded = time_range.is_none_or(|range| !range.is_finite());
+    if all_scope && account.is_none() && unbounded {
+        let cache = store.report_cache_status().await.map_err(report_error)?;
+        if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
+            if !cache.ready || snapshot.freshness == "fresh" {
+                return snapshot_response(snapshot, cache);
+            }
+        } else if !cache.ready {
+            return Ok(warming_response(UsageStatsAction::Summary, cache));
+        }
+    }
     let summary = match store
-        .usage_summary_query_strict(UsageSummaryQuery {
+        .usage_summary_query(UsageSummaryQuery {
             worktree_ids: None,
             include_unassigned_worktrees: true,
             thread_id,
@@ -215,17 +227,95 @@ async fn summary(
         Err(codex_usage::UsageStoreError::ReportWarming(cache)) => {
             return Ok(warming_response(UsageStatsAction::Summary, *cache));
         }
-        Err(_) => return Err(storage_error()),
+        Err(error) => return Err(report_error(error)),
     };
     let mut structured =
         StructuredUsageSummary::new(&summary, account.map(|account| account.display));
-    if matches!(
-        args.scope.unwrap_or(UsageStatsScope::CurrentChat),
-        UsageStatsScope::All
-    ) {
+    if all_scope {
         structured.provider_tokens = aggregate_all_provider_tokens(structured.provider_tokens)?;
     }
-    serde_json::to_value(structured).map_err(|_| storage_error())
+    let mut value = serde_json::to_value(structured).map_err(|_| storage_error())?;
+    if all_scope && account.is_none() && unbounded {
+        if let Some(snapshot) = store.global_report_snapshot().await.map_err(report_error)? {
+            attach_snapshot_metadata(&mut value, &snapshot);
+        } else if let Some(object) = value.as_object_mut() {
+            object.insert("freshness".to_string(), json!("fresh"));
+        }
+    }
+    Ok(value)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotToken {
+    category: String,
+    repository_bucket: String,
+    measurement_provenance: String,
+    measured_tokens: i64,
+    exact_tokens: Option<i64>,
+    unknown_observations: u64,
+    observation_count: u64,
+}
+
+fn snapshot_response(
+    snapshot: codex_usage::GlobalReportSnapshot,
+    cache: codex_usage::ReportCacheStatus,
+) -> Result<Value, FunctionCallError> {
+    let mut value = snapshot.payload;
+    if let Some(tokens) = value.get("providerTokens").cloned() {
+        let tokens: Vec<SnapshotToken> =
+            serde_json::from_value(tokens).map_err(|_| storage_error())?;
+        let tokens = tokens
+            .into_iter()
+            .map(|token| StructuredTokenAggregate {
+                category: token.category,
+                repository_bucket: token.repository_bucket,
+                measurement_provenance: token.measurement_provenance,
+                measured_tokens: token.measured_tokens,
+                exact_tokens: token.exact_tokens,
+                unknown_observations: token.unknown_observations,
+                observation_count: token.observation_count,
+            })
+            .collect();
+        let tokens = aggregate_all_provider_tokens(tokens)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "providerTokens".to_string(),
+                serde_json::to_value(tokens).map_err(|_| storage_error())?,
+            );
+        }
+    }
+    attach_snapshot_metadata(&mut value, &snapshot);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "cache".to_string(),
+            serde_json::to_value(cache).map_err(|_| storage_error())?,
+        );
+    }
+    Ok(value)
+}
+
+fn attach_snapshot_metadata(value: &mut Value, snapshot: &codex_usage::GlobalReportSnapshot) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("freshness".to_string(), json!(snapshot.freshness));
+        object.insert("asOfRevision".to_string(), json!(snapshot.as_of_revision));
+        object.insert(
+            "pendingChanges".to_string(),
+            json!(snapshot.pending_changes),
+        );
+        object.insert(
+            "snapshotGeneratedAtMs".to_string(),
+            json!(snapshot.generated_at_ms),
+        );
+    }
+}
+
+fn report_error(error: codex_usage::UsageStoreError) -> FunctionCallError {
+    match error {
+        error @ (codex_usage::UsageStoreError::ReportTimedOut
+        | codex_usage::UsageStoreError::ReportBusy) => tool_error(&error.to_string()),
+        _ => storage_error(),
+    }
 }
 
 pub(super) fn aggregate_all_provider_tokens(

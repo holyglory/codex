@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 
@@ -41,6 +42,15 @@ pub struct ReportCacheStatus {
     pub ready: bool,
     pub freshness: &'static str,
     pub progress: Vec<ReportCacheProgress>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalReportSnapshot {
+    pub payload: Value,
+    pub as_of_revision: i64,
+    pub generated_at_ms: i64,
+    pub pending_changes: u64,
+    pub freshness: &'static str,
 }
 
 const RESET_CACHE_SQL: &str = r#"
@@ -89,6 +99,7 @@ DROP TABLE IF EXISTS _usage_report_global_counts;
 DROP TABLE IF EXISTS _usage_report_global_operations;
 DROP TABLE IF EXISTS _usage_report_global_meta;
 DROP TABLE IF EXISTS _usage_report_global_seed;
+DROP TABLE IF EXISTS _usage_report_global_snapshot;
 DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
 DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
 DROP TABLE IF EXISTS _usage_report_global_gap_v9;
@@ -403,6 +414,7 @@ pub(crate) async fn prepare(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
             }
         }
     }
+    crate::report_global::ensure_snapshot_schema(&mut tx).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS _usage_report_interval_end_idx ON _usage_report_operations(ended_at_ms,started_at_ms,operation_id) WHERE ended_at_ms IS NOT NULL")
         .execute(&mut *tx).await?;
     let global_pending = !crate::report_global::is_ready_on(&mut tx).await?;
@@ -468,6 +480,78 @@ pub(crate) async fn status_on(
             })
             .collect(),
     })
+}
+
+pub(crate) async fn read_global_snapshot(
+    pool: &SqlitePool,
+) -> Result<Option<GlobalReportSnapshot>, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    crate::report_global::ensure_snapshot_schema(&mut connection).await?;
+    let row = sqlx::query_as::<_, (i64, i64, String)>(
+        "SELECT as_of_revision, generated_at_ms, payload FROM _usage_report_global_snapshot WHERE singleton=1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((as_of_revision, generated_at_ms, payload)) = row else {
+        return Ok(None);
+    };
+    let (dirty_revision, applied_revision): (i64, i64) = sqlx::query_as(
+        "SELECT dirty_revision, applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    let global_ready = crate::report_global::is_ready_on(&mut connection).await?;
+    let latest_revision = dirty_revision.max(applied_revision);
+    let pending_changes =
+        u64::try_from(latest_revision.saturating_sub(as_of_revision)).unwrap_or(0);
+    let freshness = if global_ready && pending_changes == 0 && as_of_revision == applied_revision {
+        "fresh"
+    } else {
+        "stale"
+    };
+    let payload = serde_json::from_str(&payload)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
+    Ok(Some(GlobalReportSnapshot {
+        payload,
+        as_of_revision,
+        generated_at_ms,
+        pending_changes,
+        freshness,
+    }))
+}
+
+pub(crate) async fn write_global_snapshot(
+    pool: &SqlitePool,
+    summary: &crate::UsageSummary,
+) -> Result<(), sqlx::Error> {
+    let payload = serde_json::to_string(&crate::StructuredUsageSummary::new(summary, None))
+        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
+    let generated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| sqlx::Error::Protocol("snapshot timestamp overflow".into()))?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    crate::report_global::ensure_snapshot_schema(&mut tx).await?;
+    if !crate::report_global::is_ready_on(&mut tx).await? {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    let applied_revision: i64 = sqlx::query_scalar(
+        "SELECT applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO _usage_report_global_snapshot(singleton,as_of_revision,generated_at_ms,payload) VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET as_of_revision=excluded.as_of_revision,generated_at_ms=excluded.generated_at_ms,payload=excluded.payload",
+    )
+    .bind(applied_revision)
+    .bind(generated_at_ms)
+    .bind(payload)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 pub(crate) async fn status(pool: &SqlitePool) -> Result<ReportCacheStatus, sqlx::Error> {

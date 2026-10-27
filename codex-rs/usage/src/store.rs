@@ -108,6 +108,27 @@ impl UsageStore {
         .map_err(UsageStoreError::Database)
     }
 
+    pub async fn global_report_snapshot(
+        &self,
+    ) -> Result<Option<crate::GlobalReportSnapshot>, UsageStoreError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::report_cache::read_global_snapshot(&self.pool),
+        )
+        .await
+        .map_err(|_| UsageStoreError::ReportTimedOut)?
+        .map_err(UsageStoreError::Database)
+    }
+
+    async fn persist_global_report_snapshot(&self, summary: &UsageSummary) {
+        if let Err(error) = crate::report_cache::write_global_snapshot(&self.pool, summary).await {
+            tracing::debug!(
+                sqlite_code = crate::report_status::sqlite_code(&error),
+                "usage report snapshot publication skipped"
+            );
+        }
+    }
+
     /// Unbounded public requests must not scan raw history during rebuilding.
     pub async fn require_report_ready(
         &self,

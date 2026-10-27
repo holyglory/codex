@@ -30,6 +30,7 @@ DROP TABLE IF EXISTS _usage_report_global_unpriced_meta;
 DROP TABLE IF EXISTS _usage_report_global_unresolved_meta;
 DROP TABLE IF EXISTS _usage_report_global_meta;
 DROP TABLE IF EXISTS _usage_report_global_seed;
+DROP TABLE IF EXISTS _usage_report_global_snapshot;
 "#;
 
 /// Additive metadata used by the bounded source seeder.
@@ -45,6 +46,12 @@ CREATE TABLE IF NOT EXISTS _usage_report_global_seed(
 "#;
 
 pub(crate) const SCHEMA: &str = r#"
+CREATE TABLE _usage_report_global_snapshot(
+ singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton=1),
+ as_of_revision INTEGER NOT NULL,
+ generated_at_ms INTEGER NOT NULL,
+ payload TEXT NOT NULL
+) STRICT;
 CREATE TABLE _usage_report_global_meta(
  singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton=1),
  component_version INTEGER NOT NULL,

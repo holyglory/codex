@@ -132,7 +132,12 @@ impl UsageStore {
         &self,
         query: UsageSummaryQuery,
     ) -> Result<UsageSummary, UsageStoreError> {
-        self.bounded_usage_summary(query).await
+        let snapshot_eligible = Self::is_global_snapshot_eligible(&query);
+        let summary = self.bounded_usage_summary(query).await?;
+        if snapshot_eligible {
+            self.persist_global_report_snapshot(&summary).await;
+        }
+        Ok(summary)
     }
 
     /// Read a public unbounded summary only from a ready derived cache.
@@ -140,7 +145,21 @@ impl UsageStore {
         &self,
         query: UsageSummaryQuery,
     ) -> Result<UsageSummary, UsageStoreError> {
-        self.bounded_usage_summary_strict(query).await
+        let snapshot_eligible = Self::is_global_snapshot_eligible(&query);
+        let summary = self.bounded_usage_summary_strict(query).await?;
+        if snapshot_eligible {
+            self.persist_global_report_snapshot(&summary).await;
+        }
+        Ok(summary)
+    }
+
+    fn is_global_snapshot_eligible(query: &UsageSummaryQuery) -> bool {
+        query.thread_id.is_none()
+            && query.repository_id.is_none()
+            && query.account_profile_ref.is_none()
+            && query.time_range.is_none()
+            && query.worktree_ids.is_none()
+            && query.include_unassigned_worktrees
     }
 }
 
