@@ -2676,6 +2676,37 @@ jobs:
           [IO.File]::WriteAllText($path,$text.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
           if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4f4da02bb3144af9f49350bafd1504a647171d5d678563f36f316b83b086c91a'){throw 'Prepared helper checksum differs.'}
           [ordered]@{sourceTree=$tree;bulkVolume='R:';testScratch='D:/cxt';applicationFixtureHooksRequired=$false;guestExecution='current workflow run and attempt'}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $root 'execution-plan.json') -Encoding utf8
+      - name: Verify isolated guest prerequisites before native build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $path=Join-Path $env:RUNNER_TEMP 'native-codex-evidence/guest-prerequisites.py'
+          $code=@'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import base64, json
+          import runner_guest_client as client
+          from guest_rpc import GuestRpc
+          root = Path(__file__).resolve().parent
+          rpc = GuestRpc(client, root / 'guest-prerequisite-control')
+          rpc.recover()
+          rpc.recover_channel()
+          status = rpc.call('status', timeout=60)
+          if status['vm']['Id'] != '23b78cc8-71f0-45c1-ad87-f763fd2c1165' or status['network'] != []:
+              raise RuntimeError('Guest identity or network isolation differs.')
+          rpc.call('vm-start', timeout=90)
+          code = base64.b64decode('JEVycm9yQWN0aW9uUHJlZmVyZW5jZT0nU3RvcCcKaWYoJGVudjpDT01QVVRFUk5BTUUgLWNuZSAnQ09ERVgtVk0tMDEnIC1vciBAKEdldC1OZXRBZGFwdGVyIC1FcnJvckFjdGlvbiBTaWxlbnRseUNvbnRpbnVlKS5Db3VudCl7dGhyb3cgJ0V4cGVjdGVkIHRoZSBpc29sYXRlZCB0ZXN0IGd1ZXN0Lid9CiRpZGVudGl0eT1bU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NJZGVudGl0eV06OkdldEN1cnJlbnQoKQppZigkaWRlbnRpdHkuTmFtZSAtaW5lICdDT0RFWC1WTS0wMVxDb2RleFZtQWRtaW4nIC1vciAtbm90IChbU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NQcmluY2lwYWxdJGlkZW50aXR5KS5Jc0luUm9sZShbU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NCdWlsdEluUm9sZV06OkFkbWluaXN0cmF0b3IpKXt0aHJvdyAnRXhwZWN0ZWQgdGhlIGd1ZXN0IHRlc3QgYWRtaW5pc3RyYXRvci4nfQokZ2l0PSdDOlxjb2RleC10ZXN0c1x0b29sc1xNaW5HaXQtMi41NS4wLjVcY21kXGdpdC5leGUnCiRwd3NoPSdDOlxQcm9ncmFtIEZpbGVzXFBvd2VyU2hlbGxcN1xwd3NoLmV4ZScKaWYoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkZ2l0IC1QYXRoVHlwZSBMZWFmKSl7dGhyb3cgJ0d1ZXN0IEdpdCBwcmVyZXF1aXNpdGUgaXMgbWlzc2luZzsgcmVwYWlyIGl0IGJlZm9yZSBjb21waWxpbmcgdGVzdCBpbnB1dHMuJ30KaWYoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkcHdzaCAtUGF0aFR5cGUgTGVhZikpe3Rocm93ICdHdWVzdCBQb3dlclNoZWxsIHByZXJlcXVpc2l0ZSBpcyBtaXNzaW5nLid9CiRnaXRWZXJzaW9uPSgmICRnaXQgLS12ZXJzaW9uKS5UcmltKCkKaWYoJExBU1RFWElUQ09ERSAtbmUgMCAtb3IgJGdpdFZlcnNpb24gLWNuZSAnZ2l0IHZlcnNpb24gMi41NS4wLndpbmRvd3MuNScpe3Rocm93ICdHdWVzdCBHaXQgdmVyc2lvbiBvciBydW50aW1lIGRpZmZlcnMuJ30KJGNhcGFjaXR5PUdldC1DaW1JbnN0YW5jZSBXaW4zMl9PcGVyYXRpbmdTeXN0ZW0gLVByb3BlcnR5IFRvdGFsVmlzaWJsZU1lbW9yeVNpemUsRnJlZVBoeXNpY2FsTWVtb3J5CmlmKFtsb25nXSRjYXBhY2l0eS5Ub3RhbFZpc2libGVNZW1vcnlTaXplKjEwMjQgLWx0IDMxR0Ipe3Rocm93ICdHdWVzdCByZXF1aXJlcyBhdCBsZWFzdCAzMSBHaUIgdmlzaWJsZSBSQU0uJ30KJHNlc3Npb25zPUAoR2V0LUNpbUluc3RhbmNlIFdpbjMyX1Byb2Nlc3MgLUZpbHRlciAiTmFtZT0nZXhwbG9yZXIuZXhlJyJ8Rm9yRWFjaC1PYmplY3R7CiAkb3duZXI9SW52b2tlLUNpbU1ldGhvZCAtSW5wdXRPYmplY3QgJF8gLU1ldGhvZE5hbWUgR2V0T3duZXIKIGlmKCRvd25lci5SZXR1cm5WYWx1ZSAtZXEgMCAtYW5kICRvd25lci5Vc2VyIC1pZXEgJ0NvZGV4Vm1BZG1pbicgLWFuZCAkXy5TZXNzaW9uSWQgLWd0IDApe1tpbnRdJF8uU2Vzc2lvbklkfQp9fFNlbGVjdC1PYmplY3QgLVVuaXF1ZSkKaWYoJHNlc3Npb25zLkNvdW50IC1lcSAwKXt0aHJvdyAnR3Vlc3QgaW50ZXJhY3RpdmUgYWRtaW5pc3RyYXRvciBzZXNzaW9uIGlzIG1pc3Npbmc7IHByZXBhcmUgaXQgYmVmb3JlIGNvbXBpbGluZyB0ZXN0IGlucHV0cy4nfQokcmV0ZW50aW9uPSdDOlxQcm9ncmFtRGF0YVxDb2RleENpUmV0ZW50aW9uXGNsZWFudXAucHMxJwppZigoR2V0LUZpbGVIYXNoIC1MaXRlcmFsUGF0aCAkcmV0ZW50aW9uIC1BbGdvcml0aG0gU0hBMjU2KS5IYXNoIC1pbmUgJ2U0NTEzMzE1MjU3NzAzOGZmMWZhYjIyZWU0M2ZiMWExNDk2MTRhNWVjMzMwYjc1YTAzNGZhNjAwYTUzODVmOTYnKXt0aHJvdyAnR3Vlc3QgcmV0ZW50aW9uIG11c3QgcHJlc2VydmUgdGhlIHZlcmlmaWVkIEdpdCBwcmVyZXF1aXNpdGUuJ30KaWYoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAnQzpcY29kZXgtdGVzdHNccXVhcmFudGluZS5qc29uJyl7dGhyb3cgJ1ByaW9yIGd1ZXN0IGNsZWFudXAgcmVxdWlyZXMgaW5zcGVjdGlvbi4nfQpbb3JkZXJlZF1Ae21hY2hpbmU9JGVudjpDT01QVVRFUk5BTUU7aWRlbnRpdHk9JGlkZW50aXR5Lk5hbWU7bmV0d29ya0FkYXB0ZXJzPTA7Z2l0VmVyc2lvbj0kZ2l0VmVyc2lvbjt2aXNpYmxlTWVtb3J5S2lCPVtsb25nXSRjYXBhY2l0eS5Ub3RhbFZpc2libGVNZW1vcnlTaXplO2ludGVyYWN0aXZlU2Vzc2lvbklkcz0kc2Vzc2lvbnM7cmV0ZW50aW9uUHJlc2VydmVzR2l0PSR0cnVlO2NoZWNrZWRVdGM9W0RhdGVUaW1lXTo6VXRjTm93LlRvU3RyaW5nKCdvJyl9Cg==').decode()
+          result = rpc.guest(code, timeout=120)
+          if result['machine'] != 'CODEX-VM-01' or result['networkAdapters'] != 0 or not result['retentionPreservesGit']:
+              raise RuntimeError('Guest prerequisite acceptance differs.')
+          (root / 'guest-prerequisites.json').write_text(json.dumps(result, indent=2)+'\n')
+          print(json.dumps(dict(guestPrerequisitesPassed=True, gitVersion=result['gitVersion'],
+                               interactiveSessionIds=result['interactiveSessionIds'],
+                               checkedUtc=datetime.now(timezone.utc).isoformat())), flush=True)
+          '@
+          [IO.File]::WriteAllText($path,$code,[Text.UTF8Encoding]::new($false))
+          & 'C:\Program Files\Python313\python.exe' -B -X utf8 $path
+          if($LASTEXITCODE -ne 0){throw 'Isolated guest prerequisites failed before native compilation.'}
       - name: Build the complete native MSVC target selection
         shell: bash
         env:
