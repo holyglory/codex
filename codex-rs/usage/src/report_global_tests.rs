@@ -164,6 +164,63 @@ async fn global_component_initializes_and_reopens_from_core_schema() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn all_history_snapshot_remains_readable_while_global_rollup_is_dirty() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = UsageStore::open(temp.path()).await.expect("store");
+    let process_id = ProcessId::new();
+    store
+        .register_process(&process_id, /*os_pid*/ 51, /*started_at_ms*/ 0)
+        .await
+        .expect("process");
+    insert_thread(&store, "snapshot-thread").await;
+    let mut initial = operation(process_id, "snapshot-thread", OperationKind::ModelRequest);
+    initial.started_at_ms = 1_000;
+    record_request(&store, &initial).await;
+    store
+        .finish_operation(&TerminalOperation {
+            operation_id: initial.id,
+            status: TerminalStatus::Completed,
+            occurred_at_ms: 2_000,
+            duration_ns: 1_000_000,
+            error_category: None,
+        })
+        .await
+        .expect("initial terminal");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial rollup");
+
+    let summary = store
+        .usage_summary(UsageSummaryScope::All)
+        .await
+        .expect("initial summary");
+    assert_eq!(summary.operation_count, 1);
+    let fresh = store
+        .global_report_snapshot()
+        .await
+        .expect("fresh snapshot read")
+        .expect("published snapshot");
+    assert_eq!(fresh.freshness, "fresh");
+    assert_eq!(fresh.payload["counts"]["operations"], 1);
+
+    let mut pending = operation(process_id, "snapshot-thread", OperationKind::LocalTool);
+    pending.started_at_ms = 3_000;
+    store
+        .begin_operation(&pending)
+        .await
+        .expect("pending operation");
+    let stale = store
+        .global_report_snapshot()
+        .await
+        .expect("stale snapshot read")
+        .expect("previous snapshot");
+    assert_eq!(stale.freshness, "stale");
+    assert!(stale.pending_changes > 0);
+    assert_eq!(stale.payload["counts"]["operations"], 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn global_component_upgrade_rebuilds_only_derived_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = UsageStore::open(temp.path()).await.expect("store");
@@ -983,4 +1040,47 @@ async fn global_counters_follow_terminal_classification_and_late_token_facts() {
     assert_eq!(global.operation_count, canonical.operation_count);
     assert_eq!(global.model_request_count, canonical.model_request_count);
     assert_eq!(global.classifications, canonical.classifications);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn global_snapshot_reports_stale_revision_and_pending_changes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = crate::UsageStore::open(temp.path()).await.expect("store");
+    crate::report_cache::ensure(&store.pool, &store.report_refresh.reader)
+        .await
+        .expect("initial global cache");
+    store.report_refresh.cancel();
+
+    let applied_revision: i64 = sqlx::query_scalar(
+        "SELECT applied_revision FROM _usage_report_global_meta WHERE singleton=1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("applied revision");
+    sqlx::query(
+        "INSERT INTO _usage_report_global_snapshot(singleton,as_of_revision,generated_at_ms,payload) VALUES (1,?,?,?)",
+    )
+    .bind(applied_revision)
+    .bind(7_i64)
+    .bind(r#"{"kind":"usageSummary"}"#)
+    .execute(&store.pool)
+    .await
+    .expect("snapshot");
+    sqlx::query(
+        "UPDATE _usage_report_global_meta SET dirty_revision=applied_revision+3 WHERE singleton=1",
+    )
+    .execute(&store.pool)
+    .await
+    .expect("dirty revision");
+
+    let snapshot = crate::report_cache::read_global_snapshot(&store.pool)
+        .await
+        .expect("read snapshot")
+        .expect("snapshot exists");
+    assert_eq!(snapshot.as_of_revision, applied_revision);
+    assert_eq!(snapshot.generated_at_ms, 7);
+    assert_eq!(snapshot.pending_changes, 3);
+    assert_eq!(snapshot.freshness, "stale");
+    assert_eq!(snapshot.payload["kind"], "usageSummary");
 }
