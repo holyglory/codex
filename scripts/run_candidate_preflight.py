@@ -159,8 +159,19 @@ def run_preflight(root: Path) -> None:
                 json.dumps({"capability": capability["id"], "selection": selection}),
                 flush=True,
             )
+            selection_environment = None
+            if selection == "test(inherited_home_and_explicit_codex_home)":
+                # The isolated acceptance environment sets CODEX_HOME so the other
+                # checks cannot touch the caller's state. This root-owned-data
+                # regression intentionally verifies the runner's inherited HOME
+                # behavior, so clear only CODEX_HOME for that subprocess.
+                selection_environment = os.environ.copy()
+                selection_environment.pop("CODEX_HOME", None)
             subprocess.run(
-                [*command, "-E", selection], cwd=root / "codex-rs", check=True
+                [*command, "-E", selection],
+                cwd=root / "codex-rs",
+                check=True,
+                env=selection_environment,
             )
 
 
