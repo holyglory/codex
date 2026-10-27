@@ -68,7 +68,8 @@ Last reviewed: 2026-10-23
   GitHub retains final artifacts and npm publication gates. This separately
   authorizes the existing private Windows runner, not public PR execution on it
   or a new public cache listener (current release task; PR #26).
-- **Upstream D-Bus maintenance advisories:** For `0.162.1-multi.2`, the owner
+- **Upstream D-Bus maintenance advisories:** For `0.162.1-multi.3`, carried
+  forward from the approved `0.162.1-multi.2` baseline, the owner
   approved exceptions limited to `RUSTSEC-2026-0370`, `RUSTSEC-2026-0371`, and
   `RUSTSEC-2026-0372` on 2026-10-18. The affected versions are inherited unchanged
   from upstream `rust-v0.162.1`, and these advisories identify no specific

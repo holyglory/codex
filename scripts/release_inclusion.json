@@ -8,8 +8,8 @@
     "tag": "npm-v0.162.1-multi.1",
     "commit": "10da2ab565b9c322ef12b852eef1ad2041f47d4e"
   },
-  "rust_version": "0.162.1+multi.2",
-  "npm_version": "0.162.1-multi.2",
+  "rust_version": "0.162.1+multi.3",
+  "npm_version": "0.162.1-multi.3",
   "capabilities": [
     {
       "id": "root-owned-data",
@@ -54,6 +54,22 @@
         "test(history_cell::tests::pnpm_update_available_history_cell_snapshot)",
         "test(history_cell::tests::standalone_unix_update_available_history_cell_snapshot)",
         "test(history_cell::tests::standalone_windows_update_available_history_cell_snapshot)"
+      ]
+    },
+    {
+      "id": "dead-thread-input-recovery",
+      "required_files": [
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_background_resume.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_reconnect_tests.rs"
+      ],
+      "packages": [
+        "codex-core",
+        "codex-app-server"
+      ],
+      "filters": [
+        "test(suite::v2::thread_reconnect::)"
       ]
     },
     {

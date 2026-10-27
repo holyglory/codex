@@ -877,7 +877,8 @@ impl CodexThread {
         &self.startup_metadata
     }
 
-    pub(crate) fn is_running(&self) -> bool {
+    /// Returns whether the session loop still accepts submissions.
+    pub fn is_running(&self) -> bool {
         !self.io.tx_sub.is_closed()
     }
 

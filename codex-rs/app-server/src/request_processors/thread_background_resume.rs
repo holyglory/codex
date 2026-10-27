@@ -33,39 +33,41 @@ impl ThreadRequestProcessor {
         let thread_id = ThreadId::from_string(raw_thread_id)
             .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
         let thread = match self.thread_manager.get_thread(thread_id).await {
-            Ok(thread) => thread,
-            Err(_) => {
-                // Serialize cold loads with explicit resume, archive, and deletion. The loader
-                // checks memory again after acquiring the permit and preserves the writer lease.
-                let _permit = self.acquire_thread_list_state_permit().await?;
-                let thread = self
-                    .ensure_stored_thread_loaded(thread_id, client_mcp_extensions)
+            Ok(thread) if thread.is_running() => thread,
+            Ok(thread) => {
+                if self
+                    .pending_thread_unloads
+                    .lock()
                     .await
-                    .map_err(|message| {
-                        // Loading saved tasks must not change the existing input error
-                        // contract when the requested task genuinely does not exist.
-                        if message == format!("no rollout found for thread id {thread_id}") {
-                            invalid_request(format!("thread not found: {thread_id}"))
-                        } else {
-                            invalid_request(message)
-                        }
-                    })?;
-                self.thread_watch_manager.upsert_thread(raw_thread_id).await;
-                tracing::info!(%thread_id, "recovered unloaded thread for client input");
-                thread
+                    .contains(&thread_id)
+                {
+                    return Err(invalid_request(format!(
+                        "thread {thread_id} is still unloading"
+                    )));
+                }
+                // A stale core handle can remain after its submission loop exits. Remove only
+                // that exact handle, then rebuild it through the persisted resume path.
+                thread.wait_until_terminated().await;
+                if self
+                    .thread_manager
+                    .remove_thread_if_matches(&thread_id, &thread)
+                    .await
+                    .is_some()
+                {
+                    self.finalize_thread_teardown(thread_id).await;
+                }
+                self.load_thread_for_input(thread_id, raw_thread_id, client_mcp_extensions)
+                    .await?
+            }
+            Err(_) => {
+                self.load_thread_for_input(thread_id, raw_thread_id, client_mcp_extensions)
+                    .await?
             }
         };
         ensure_direct_input_allowed(&thread).await?;
-        if self
-            .thread_state_manager
-            .subscribed_connection_ids(thread_id)
-            .await
-            .contains(&request_id.connection_id)
-        {
-            return Ok(());
-        }
-        // A loaded core handle alone is insufficient: the reconnecting client must receive
-        // the resulting deltas and completion before we allow its input to execute.
+        // Re-check the listener even when the connection is already registered. A listener can
+        // have exited while leaving the connection subscription behind, and input must not be
+        // accepted until a live listener is attached again.
         match self
             .ensure_conversation_listener(
                 thread_id,
@@ -79,6 +81,32 @@ impl ThreadRequestProcessor {
                 "connection closed before task input could be attached",
             )),
         }
+    }
+
+    async fn load_thread_for_input(
+        &self,
+        thread_id: ThreadId,
+        raw_thread_id: &str,
+        client_mcp_extensions: ClientMcpExtensions,
+    ) -> Result<Arc<CodexThread>, JSONRPCErrorError> {
+        // Serialize cold loads with explicit resume, archive, and deletion. The loader checks
+        // memory again after acquiring the permit and preserves the writer lease.
+        let _permit = self.acquire_thread_list_state_permit().await?;
+        let thread = self
+            .ensure_stored_thread_loaded(thread_id, client_mcp_extensions)
+            .await
+            .map_err(|message| {
+                // Loading saved tasks must not change the existing input error contract when the
+                // requested task genuinely does not exist.
+                if message == format!("no rollout found for thread id {thread_id}") {
+                    invalid_request(format!("thread not found: {thread_id}"))
+                } else {
+                    invalid_request(message)
+                }
+            })?;
+        self.thread_watch_manager.upsert_thread(raw_thread_id).await;
+        tracing::info!(%thread_id, "recovered unloaded thread for client input");
+        Ok(thread)
     }
 
     async fn ensure_stored_thread_loaded(
