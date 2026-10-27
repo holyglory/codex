@@ -12,6 +12,15 @@ target=x86_64-unknown-linux-musl
 for tool in cargo python3 pkg-config x86_64-linux-musl-gcc strip sha256sum zstd; do
   command -v "$tool" >/dev/null
 done
+target_libdir=$(rustc --print target-libdir --target "$target")
+compgen -G "$target_libdir/libcore-*.rlib" >/dev/null || {
+  echo "Rust target $target is not installed for the selected Rust toolchain" >&2
+  exit 1
+}
+compgen -G "$target_libdir/libstd-*.rlib" >/dev/null || {
+  echo "Rust standard library for $target is not installed for the selected Rust toolchain" >&2
+  exit 1
+}
 test -f "$LOCAL_MUSL_V8_ARCHIVE"
 test -f "$LOCAL_MUSL_V8_BINDING"
 test -d "$LOCAL_MUSL_PKG_CONFIG"
