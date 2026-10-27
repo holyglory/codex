@@ -261,7 +261,7 @@ fn snapshot_response(
     snapshot: codex_usage::GlobalReportSnapshot,
     cache: codex_usage::ReportCacheStatus,
 ) -> Result<Value, FunctionCallError> {
-    let mut value = snapshot.payload;
+    let mut value = snapshot.payload.clone();
     if let Some(tokens) = value.get("providerTokens").cloned() {
         let tokens: Vec<SnapshotToken> =
             serde_json::from_value(tokens).map_err(|_| storage_error())?;
