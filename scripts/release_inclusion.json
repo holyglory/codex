@@ -8,8 +8,8 @@
     "tag": "npm-v0.162.1-multi.1",
     "commit": "10da2ab565b9c322ef12b852eef1ad2041f47d4e"
   },
-  "rust_version": "0.162.1+multi.3",
-  "npm_version": "0.162.1-multi.3",
+  "rust_version": "0.162.1+multi.4",
+  "npm_version": "0.162.1-multi.4",
   "capabilities": [
     {
       "id": "root-owned-data",
@@ -288,6 +288,37 @@
       ],
       "filters": [
         "test(suite::project_automation::shell_work_context_)"
+      ]
+    },
+    {
+      "id": "usage-stale-snapshot",
+      "source_commit": "6072965c0fa8335789dc22dc6f9f2377574ebabd",
+      "required_files": [
+        "codex-rs/core/src/tools/handlers/usage_stats/query.rs",
+        "codex-rs/core/tests/suite/usage_stats.rs",
+        "codex-rs/usage/src/report.rs",
+        "codex-rs/usage/src/report_cache.rs",
+        "codex-rs/usage/src/report_global.rs",
+        "codex-rs/usage/src/report_global_schema.rs",
+        "codex-rs/usage/src/report_global_tests.rs",
+        "codex-rs/usage/src/store.rs"
+      ],
+      "packages": [
+        "codex-core",
+        "codex-usage"
+      ],
+      "filters": [
+        "test(suite::usage_stats::)",
+        "test(report::tests::global_tests::)"
+      ],
+      "included_patches": [
+        {
+          "source_commit": "6072965c0fa8335789dc22dc6f9f2377574ebabd",
+          "applied_commit": "6072965c0fa8335789dc22dc6f9f2377574ebabd",
+          "source_patch_id": "0e28594debd1974391848b7dfd29fe7300fc802b",
+          "applied_patch_id": "0e28594debd1974391848b7dfd29fe7300fc802b",
+          "reviewed_adaptation": "Integrated PR #33 unchanged onto the verified multi.3 release head for multi.4."
+        }
       ]
     },
     {
