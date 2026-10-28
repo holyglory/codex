@@ -563,7 +563,7 @@ winapi-util = "0.1.11"
 windows-sys = "0.61.2"
 # Curated plugin sync consumes GitHub repository ZIP archives (stored/deflate).
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
-zstd = "0.13"
+zstd = "0.14"
 
 wiremock = "0.6"
 zeroize = "1.8.2"
