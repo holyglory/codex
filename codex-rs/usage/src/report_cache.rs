@@ -507,8 +507,8 @@ pub(crate) async fn read_global_snapshot(
     } else {
         "stale"
     };
-    let payload = serde_json::from_str(&payload)
-        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
+    let payload =
+        serde_json::from_str(&payload).map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
     Ok(Some(GlobalReportSnapshot {
         payload,
         as_of_revision,
@@ -524,11 +524,11 @@ pub(crate) async fn write_global_snapshot(
     expected_revision: i64,
 ) -> Result<(), sqlx::Error> {
     let payload = serde_json::to_string(&crate::StructuredUsageSummary::new(summary, None))
-        .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?;
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
     let generated_at_ms = i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| sqlx::Error::Protocol(error.to_string().into()))?
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
             .as_millis(),
     )
     .map_err(|_| sqlx::Error::Protocol("snapshot timestamp overflow".into()))?;
