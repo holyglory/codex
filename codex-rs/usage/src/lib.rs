@@ -2,9 +2,10 @@
 //!
 //! Usage observations are appended to a journal, materialized into immutable
 //! hourly Parquet segments, and queried by combining a consistent snapshot
-//! with an in-memory tail. The manifest records snapshot generation, journal
-//! watermark, freshness, correction segments, and mergeable totals without
-//! opening the retired SQLite report database.
+//! with an in-memory tail. DuckDB reads the exact immutable segment list for
+//! finite-range and multi-dimensional aggregates. The manifest records
+//! snapshot generation, journal watermark, freshness, correction segments, and
+//! mergeable totals without opening the retired SQLite report database.
 
 mod duckdb_snapshot;
 mod error;
