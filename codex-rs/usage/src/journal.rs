@@ -3,11 +3,12 @@ use std::fs::OpenOptions;
 use std::fs::{self};
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -50,24 +51,29 @@ pub struct JournalPosition {
     pub byte_offset: u64,
 }
 
+/// A replay watermark at the end of a complete journal entry.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JournalCheckpoint {
+    /// Sequence of the last consumed entry, or zero for an empty journal.
+    pub sequence: JournalSequence,
+    /// Byte offset immediately after that entry's terminating newline.
+    pub byte_offset: u64,
+}
+
 /// Append-only JSONL journal for observations and corrections.
 ///
-/// A `UsageJournal` serializes writers cloned from the same handle. Multiple
-/// processes should use one journal owner or an outer file lock; no writer ever
-/// rewrites an existing line.
+/// OS file locks serialize independent writers, including other processes.
+/// Complete lines are immutable; an interrupted final line is discarded before
+/// the next append. Successful appends have been synchronized to storage.
 #[derive(Clone, Debug)]
 pub struct UsageJournal {
     path: PathBuf,
-    append_lock: Arc<Mutex<()>>,
 }
 
 impl UsageJournal {
     /// Open a journal path without creating or mutating it.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            append_lock: Arc::new(Mutex::new(())),
-        }
+        Self { path: path.into() }
     }
 
     /// Return the JSONL journal path.
@@ -85,20 +91,16 @@ impl UsageJournal {
         self.append(JournalPayload::Correction(correction))
     }
 
-    /// Append one payload and flush it as a complete JSONL line.
+    /// Append one payload and synchronize its complete JSONL line to storage.
     pub fn append(&self, payload: JournalPayload) -> Result<JournalPosition> {
-        let _guard = self
-            .append_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let sequence = self
-            .last_sequence_locked()?
-            .checked_add(1)
-            .ok_or_else(|| StorageError::InvalidData("journal sequence exhausted".into()))?;
-        let entry = JournalEntry { sequence, payload };
-        let mut line = serde_json::to_vec(&entry)?;
-        line.push(b'\n');
+        Ok(self.append_batch(vec![payload])?[0])
+    }
 
+    /// Append an ordered batch, synchronizing every returned position together.
+    pub fn append_batch(&self, payloads: Vec<JournalPayload>) -> Result<Vec<JournalPosition>> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -106,16 +108,47 @@ impl UsageJournal {
         }
         let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.path)?;
-        let byte_offset = file.metadata()?.len();
-        file.write_all(&line)?;
-        file.flush()?;
+        file.lock()?;
+        let length = file.metadata()?.len();
+        let mut checkpoint = tail_checkpoint(&mut file, length)?;
+        #[cfg(unix)]
+        let needs_directory_sync = checkpoint.byte_offset == 0;
+        checkpoint
+            .sequence
+            .checked_add(payloads.len() as u64)
+            .ok_or_else(|| StorageError::InvalidData("journal sequence exhausted".into()))?;
+        if checkpoint.byte_offset != length {
+            file.set_len(checkpoint.byte_offset)?;
+        }
+        let mut positions = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            let sequence = checkpoint.sequence + 1;
+            let mut line = serde_json::to_vec(&JournalEntry { sequence, payload })?;
+            line.push(b'\n');
+            file.write_all(&line)?;
+            positions.push(JournalPosition {
+                sequence,
+                byte_offset: checkpoint.byte_offset,
+            });
+            checkpoint = JournalCheckpoint {
+                sequence,
+                byte_offset: checkpoint.byte_offset + line.len() as u64,
+            };
+        }
         file.sync_data()?;
-        Ok(JournalPosition {
-            sequence,
-            byte_offset,
-        })
+        #[cfg(unix)]
+        if needs_directory_sync {
+            let parent = self
+                .path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(positions)
     }
 
     /// Replay all valid entries in sequence order.
@@ -134,9 +167,91 @@ impl UsageJournal {
 
     /// Return the highest sequence currently present, or zero for an empty journal.
     pub fn last_sequence(&self) -> Result<JournalSequence> {
-        self.read_entries()?
-            .last()
-            .map_or(Ok(0), |entry| Ok(entry.sequence))
+        Ok(self.checkpoint()?.sequence)
+    }
+
+    /// Inspect only the final entry and any interrupted suffix.
+    pub fn checkpoint(&self) -> Result<JournalCheckpoint> {
+        Ok(self
+            .snapshot()?
+            .map_or_else(JournalCheckpoint::default, |(_, checkpoint)| checkpoint))
+    }
+
+    /// Read complete entries after a saved watermark from one fixed snapshot.
+    ///
+    /// Shared locks cover tail inspection and each bounded buffered read.
+    /// Parsing runs without the lock, allowing writers to continue during replay.
+    pub fn read_from(
+        &self,
+        checkpoint: JournalCheckpoint,
+    ) -> Result<(Vec<JournalEntry>, JournalCheckpoint)> {
+        let (mut file, snapshot) = match self.snapshot()? {
+            Some(snapshot) => snapshot,
+            None if checkpoint == JournalCheckpoint::default() => {
+                return Ok((Vec::new(), checkpoint));
+            }
+            None => {
+                return Err(StorageError::InvalidData(
+                    "journal checkpoint past end".into(),
+                ));
+            }
+        };
+        if checkpoint.byte_offset > snapshot.byte_offset
+            || checkpoint.sequence > snapshot.sequence
+            || (checkpoint.byte_offset == 0 && checkpoint.sequence != 0)
+            || (checkpoint.byte_offset == snapshot.byte_offset && checkpoint != snapshot)
+        {
+            return Err(StorageError::InvalidData(
+                "invalid journal checkpoint".into(),
+            ));
+        }
+        if checkpoint.byte_offset > 0 {
+            file.seek(SeekFrom::Start(checkpoint.byte_offset - 1))?;
+            let mut boundary = [0];
+            file.read_exact(&mut boundary)?;
+            if boundary != [b'\n'] {
+                return Err(StorageError::InvalidData(
+                    "journal checkpoint inside entry".into(),
+                ));
+            }
+        }
+        file.seek(SeekFrom::Start(checkpoint.byte_offset))?;
+        file.unlock()?;
+        let mut reader = BufReader::with_capacity(
+            /*capacity*/ 64 * 1024,
+            SnapshotReader(file).take(snapshot.byte_offset - checkpoint.byte_offset),
+        );
+        let mut checkpoint = checkpoint;
+        let mut line = Vec::new();
+        let mut entries = Vec::new();
+        loop {
+            line.clear();
+            let bytes = reader.read_until(b'\n', &mut line)?;
+            if bytes == 0 {
+                break;
+            }
+            let entry: JournalEntry = serde_json::from_slice(&line).map_err(|error| {
+                StorageError::InvalidData(format!(
+                    "journal byte {}: {error}",
+                    checkpoint.byte_offset
+                ))
+            })?;
+            if Some(entry.sequence) != checkpoint.sequence.checked_add(1) {
+                return Err(StorageError::InvalidData(format!(
+                    "journal byte {} has nonconsecutive sequence {} after {}",
+                    checkpoint.byte_offset, entry.sequence, checkpoint.sequence
+                )));
+            }
+            checkpoint.sequence = entry.sequence;
+            checkpoint.byte_offset += bytes as u64;
+            entries.push(entry);
+        }
+        if checkpoint != snapshot {
+            return Err(StorageError::InvalidData(
+                "journal snapshot changed during replay".into(),
+            ));
+        }
+        Ok((entries, checkpoint))
     }
 
     /// Replay only observation records.
@@ -163,46 +278,71 @@ impl UsageJournal {
             .collect())
     }
 
-    fn last_sequence_locked(&self) -> Result<JournalSequence> {
-        self.read_entries()?
-            .last()
-            .map_or(Ok(0), |entry| Ok(entry.sequence))
+    fn snapshot(&self) -> Result<Option<(File, JournalCheckpoint)>> {
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        file.lock_shared()?;
+        let length = file.metadata()?.len();
+        let checkpoint = tail_checkpoint(&mut file, length)?;
+        Ok(Some((file, checkpoint)))
     }
 
     fn read_entries(&self) -> Result<Vec<JournalEntry>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-        let file = File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        let mut line_number = 0usize;
-        let mut expected_sequence = 1u64;
-        let mut entries = Vec::new();
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line)?;
-            if bytes == 0 {
-                break;
-            }
-            line_number += 1;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let entry = serde_json::from_str::<JournalEntry>(line.trim_end()).map_err(|error| {
-                StorageError::InvalidData(format!("journal line {line_number}: {error}"))
-            })?;
-            if entry.sequence != expected_sequence {
-                return Err(StorageError::InvalidData(format!(
-                    "journal line {line_number} has sequence {}, expected {expected_sequence}",
-                    entry.sequence
-                )));
-            }
-            expected_sequence = expected_sequence
-                .checked_add(1)
-                .ok_or_else(|| StorageError::InvalidData("journal sequence exhausted".into()))?;
-            entries.push(entry);
-        }
-        Ok(entries)
+        Ok(self.read_from(JournalCheckpoint::default())?.0)
     }
 }
+
+struct SnapshotReader(File);
+
+impl Read for SnapshotReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        // Windows file locks also restrict reads from handles without a lock.
+        self.0.lock_shared()?;
+        let result = self.0.read(buffer);
+        self.0.unlock()?;
+        result
+    }
+}
+
+fn tail_checkpoint(file: &mut File, length: u64) -> Result<JournalCheckpoint> {
+    let Some(end) = previous_newline(file, length)? else {
+        return Ok(JournalCheckpoint::default());
+    };
+    let start = previous_newline(file, end)?.map_or(0, |offset| offset + 1);
+    file.seek(SeekFrom::Start(start))?;
+    let mut line = Vec::new();
+    file.take(end - start).read_to_end(&mut line)?;
+    let entry: JournalEntry = serde_json::from_slice(&line)
+        .map_err(|error| StorageError::InvalidData(format!("journal byte {start}: {error}")))?;
+    if entry.sequence == 0 || (start == 0 && entry.sequence != 1) {
+        return Err(StorageError::InvalidData(
+            "invalid journal tail sequence".into(),
+        ));
+    }
+    Ok(JournalCheckpoint {
+        sequence: entry.sequence,
+        byte_offset: end + 1,
+    })
+}
+
+fn previous_newline(file: &mut File, mut end: u64) -> Result<Option<u64>> {
+    let mut buffer = [0; 8192];
+    while end > 0 {
+        let start = end.saturating_sub(buffer.len() as u64);
+        let length = (end - start) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buffer[..length])?;
+        if let Some(index) = buffer[..length].iter().rposition(|byte| *byte == b'\n') {
+            return Ok(Some(start + index as u64));
+        }
+        end = start;
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+#[path = "journal_tests.rs"]
+mod tests;
