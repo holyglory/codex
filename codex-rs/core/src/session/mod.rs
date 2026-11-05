@@ -5321,6 +5321,10 @@ impl Session {
         if let Some(account_id) = account_id {
             usage_record = usage_record.with_account(account_id);
         }
+        usage_record.cached_input_tokens =
+            u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
+        usage_record.reasoning_output_tokens =
+            u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default();
         let _ = tokio::task::spawn_blocking(move || {
             let mut store = UsageStore::open(codex_home).map_err(|error| error.to_string())?;
             store
