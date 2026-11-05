@@ -193,7 +193,7 @@ use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreResumePreparation;
 use codex_usage::UsageRecord;
-use codex_usage::UsageStore;
+use codex_usage::capture_record;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_output_truncation::with_serialization_allowance;
@@ -5304,11 +5304,11 @@ impl Session {
             .await;
 
         let codex_home = turn_context.config.codex_home.clone();
-        let account_id = if let Some(manager) = turn_context.auth_manager.as_ref() {
-            manager.auth_cached().and_then(|auth| auth.get_account_id())
-        } else {
-            None
-        };
+        let account_id = turn_context
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.local_profile_id())
+            .map(ToString::to_string);
         let mut usage_record = UsageRecord::new(
             format!("{}:{}", self.thread_id, response_id),
             i64::try_from(codex_analytics::now_unix_millis() / 1_000).unwrap_or(i64::MAX),
@@ -5325,14 +5325,12 @@ impl Session {
             u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
         usage_record.reasoning_output_tokens =
             u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default();
-        let _ = tokio::task::spawn_blocking(move || {
-            let mut store = UsageStore::open(codex_home).map_err(|error| error.to_string())?;
-            store
-                .append_record(usage_record)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
-        })
-        .await;
+        if !matches!(
+            tokio::task::spawn_blocking(move || capture_record(&codex_home, usage_record)).await,
+            Ok(Ok(_))
+        ) {
+            tracing::warn!("local usage observation could not be persisted");
+        }
     }
 
     pub(crate) async fn record_token_usage_info(

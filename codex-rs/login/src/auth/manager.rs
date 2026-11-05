@@ -37,6 +37,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tracing::instrument;
 
+use codex_account_registry::AccountId;
 use codex_agent_identity::ChatGptEnvironment;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -2225,6 +2226,7 @@ impl UnauthorizedRecovery {
 /// different parts of the program seeing inconsistent auth data mid‑run.
 pub struct AuthManager {
     codex_home: PathBuf,
+    local_profile_id: Option<AccountId>,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
@@ -2386,6 +2388,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: None,
             enable_codex_api_key_env,
             auth_credentials_store_mode,
             keyring_backend_kind,
@@ -2405,6 +2408,7 @@ impl AuthManager {
 
     pub(super) fn shared_from_resolved_profile(
         auth_config: AuthConfig,
+        local_profile_id: AccountId,
         auth: Option<CodexAuth>,
     ) -> std::io::Result<Arc<Self>> {
         auth_config.validate()?;
@@ -2439,6 +2443,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: Some(local_profile_id),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode,
             keyring_backend_kind,
@@ -2481,6 +2486,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2511,6 +2517,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2545,6 +2552,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2586,6 +2594,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2605,6 +2614,12 @@ impl AuthManager {
                 OutboundProxyPolicy::ReqwestDefault,
             )),
         })
+    }
+
+    /// Local registry identity of the profile whose credentials this manager owns.
+    /// Legacy and externally managed authentication have no local profile identity.
+    pub fn local_profile_id(&self) -> Option<&AccountId> {
+        self.local_profile_id.as_ref()
     }
 
     /// Current cached auth (clone) without attempting a refresh.

@@ -251,6 +251,7 @@ async fn shared_auto_selection_uses_cache_and_retains_selected_account() {
         .expect("selection")
         .expect("lease");
     assert_eq!(first.account_id(), &account_b.id);
+    assert_eq!(first.auth_manager().local_profile_id(), Some(&account_b.id));
     assert!(first.automatic_switched());
     drop(first);
     let second = shared
@@ -259,6 +260,10 @@ async fn shared_auto_selection_uses_cache_and_retains_selected_account() {
         .expect("selection")
         .expect("lease");
     assert_eq!(second.account_id(), &account_b.id);
+    assert_eq!(
+        second.auth_manager().local_profile_id(),
+        Some(&account_b.id)
+    );
     assert!(!second.automatic_switched());
 }
 
@@ -802,6 +807,14 @@ async fn active_lease_survives_global_activation_and_same_manager_observes_refre
     let lease_b = router.lease_for_turn().await.expect("lease account b");
     assert_eq!(lease_a.account_id(), &account_a.id);
     assert_eq!(lease_b.account_id(), &account_b.id);
+    assert_eq!(
+        lease_a.auth_manager().local_profile_id(),
+        Some(&account_a.id)
+    );
+    assert_eq!(
+        lease_b.auth_manager().local_profile_id(),
+        Some(&account_b.id)
+    );
 
     ProfileAuthStorage::new(
         home.path(),
@@ -813,6 +826,10 @@ async fn active_lease_survives_global_activation_and_same_manager_observes_refre
     .save(&auth("a-refreshed"))
     .expect("refresh account a storage");
     lease_a.auth_manager().reload().await;
+    assert_eq!(
+        lease_a.auth_manager().local_profile_id(),
+        Some(&account_a.id)
+    );
     assert_eq!(
         lease_a
             .auth_manager()
@@ -1187,6 +1204,8 @@ async fn operation_lease_uses_upstream_auth_for_an_empty_registry() {
         .lease_for_operation()
         .await
         .expect("legacy operation lease");
+
+    assert_eq!(lease.auth_manager().local_profile_id(), None);
 
     assert_eq!(
         lease

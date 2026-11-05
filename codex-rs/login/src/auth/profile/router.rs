@@ -1364,7 +1364,7 @@ async fn load_manager(
     };
     let mut manager_config = auth_config.clone();
     manager_config.codex_home = profile.profile_home().to_path_buf();
-    AuthManager::shared_from_resolved_profile(manager_config, auth)
+    AuthManager::shared_from_resolved_profile(manager_config, account.id.clone(), auth)
         .map_err(ProfileAuthRouterError::Authentication)
 }
 
