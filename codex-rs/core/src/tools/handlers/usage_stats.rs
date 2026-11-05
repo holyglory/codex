@@ -377,13 +377,16 @@ fn page_records<'a>(
         };
         page.push(record);
     }
-    let next = filtered.next().map(|record| {
+    if filtered.next().is_none() {
+        return (page, Value::Null);
+    }
+    let cursor = page.last().map(|record| {
         json!({
             "sortValue": record.observed_at.saturating_mul(1_000),
             "id": record.id,
         })
     });
-    (page, next.map_or(Value::Null, |value| value))
+    (page, cursor.map_or(Value::Null, |value| value))
 }
 
 fn record_fields(record: &codex_usage::UsageRecord) -> Value {

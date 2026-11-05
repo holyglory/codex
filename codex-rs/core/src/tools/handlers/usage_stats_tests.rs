@@ -74,6 +74,29 @@ fn event_queries_return_metadata_and_a_cursor() {
 }
 
 #[test]
+fn event_cursor_continuation_does_not_skip_the_next_record() {
+    let directory = tempdir().expect("temporary directory");
+    let mut store = UsageStore::open(directory.path()).expect("open usage store");
+    store.append_record(record("one", 10)).expect("append one");
+    store.append_record(record("two", 11)).expect("append two");
+    let context = UsageStatsContext {
+        codex_home: directory.path().to_path_buf(),
+        thread_id: "thread-1".to_string(),
+    };
+    let mut first_request = args(UsageStatsAction::Events);
+    first_request.limit = Some(1);
+    let first = execute(&mut store, &context, first_request).expect("first page");
+    let cursor = first["nextCursor"].as_object().expect("next cursor");
+    let mut second_request = args(UsageStatsAction::Events);
+    second_request.limit = Some(1);
+    second_request.cursor_sort_value = cursor["sortValue"].as_i64();
+    second_request.cursor_id = cursor["id"].as_str().map(str::to_string);
+    let second = execute(&mut store, &context, second_request).expect("second page");
+    assert_eq!(second["data"][0]["id"], json!("two"));
+    assert!(second["nextCursor"].is_null());
+}
+
+#[test]
 fn dimension_actions_expose_recorded_rows() {
     let directory = tempdir().expect("temporary directory");
     let mut store = UsageStore::open(directory.path()).expect("open usage store");
