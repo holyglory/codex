@@ -18,7 +18,7 @@ use crate::model::SnapshotGeneration;
 use crate::model::UsageTotals;
 
 /// Current on-disk manifest schema version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 1;
+pub const MANIFEST_FORMAT_VERSION: u32 = 2;
 
 /// Metadata describing the materialized usage snapshot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -30,6 +30,9 @@ pub struct UsageManifest {
     pub snapshot_generation: SnapshotGeneration,
     /// Highest journal sequence represented by the snapshot.
     pub watermark: JournalSequence,
+    /// End offset of the complete journal entry at the snapshot watermark.
+    /// Recovery seeks here and reads only the mutable tail.
+    pub journal_byte_offset: u64,
     /// Wall-clock time at which the snapshot watermark was published.
     pub watermark_at_ms: i64,
     /// Producer freshness state for the snapshot.
@@ -69,6 +72,7 @@ impl Default for UsageManifest {
             format_version: MANIFEST_FORMAT_VERSION,
             snapshot_generation: 0,
             watermark: 0,
+            journal_byte_offset: 0,
             watermark_at_ms: 0,
             freshness: Freshness::Unknown,
             pending_corrections: Vec::new(),

@@ -43,6 +43,29 @@ fn journal_is_append_only_and_replays_corrections() {
 }
 
 #[test]
+fn capture_remains_durable_when_report_metadata_is_unreadable() {
+    let directory = tempdir().expect("temporary directory");
+    let root = directory.path().join(USAGE_DIRECTORY_NAME);
+    std::fs::create_dir(&root).expect("usage directory");
+    // Capture must not consult either the new report snapshot or retired history.
+    std::fs::write(root.join("manifest.json"), b"incomplete snapshot").expect("manifest");
+    let retired = directory.path().join("usage.sqlite3");
+    std::fs::write(&retired, b"retired history").expect("retired history");
+    let observation = record("captured", 3_600, 10, 4).with_account("local-profile");
+    capture_record(directory.path(), observation.clone()).expect("capture");
+    assert_eq!(
+        UsageJournal::new(root.join("events.jsonl"))
+            .records()
+            .expect("restart journal"),
+        vec![observation]
+    );
+    assert_eq!(
+        std::fs::read(retired).expect("retired file"),
+        b"retired history"
+    );
+}
+
+#[test]
 fn manifest_round_trip_tracks_generation_and_pending_corrections() {
     let directory = tempdir().expect("temporary directory");
     let store = ManifestStore::new(directory.path().join("manifest.json"));
@@ -284,6 +307,22 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
             records: 1,
         }
     );
+    assert_eq!(
+        DuckDbSnapshot
+            .query(
+                &store.root().join("segments"),
+                &store.manifest().segment_files,
+                TimeRange::all(),
+                &UsageFilter::default().for_repository("repo-a"),
+            )
+            .expect("duckdb snapshot rows"),
+        vec![
+            record("one", 3_605, 8, 1)
+                .with_account("account-a")
+                .with_thread("thread-a")
+                .with_repository("repo-a")
+        ]
+    );
 }
 
 #[test]
@@ -338,5 +377,58 @@ fn materialization_reconciles_records_written_through_another_journal_handle() {
     assert_eq!(
         restarted.query(TimeRange::all(), &UsageFilter::default()),
         vec![first_record, second_record]
+    );
+}
+
+#[test]
+fn stale_publishers_reconcile_new_generation_and_journal_only_corrections() {
+    let directory = tempdir().expect("temporary directory");
+    let mut first = UsageStore::open(directory.path()).expect("first publisher");
+    let mut second = UsageStore::open(directory.path()).expect("second publisher");
+    first
+        .append_record(record("first", 3_610, 8, 1))
+        .expect("first record");
+    second
+        .append_record(record("second", 7_210, 4, 2))
+        .expect("second record");
+    let published = first
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("publish first");
+    second
+        .append_correction(UsageCorrection::new(
+            "fix-second",
+            "second",
+            7_220,
+            -1,
+            1,
+            "provider reconciliation",
+        ))
+        .expect("correction");
+    // A writer with stale report metadata may only append to the journal.
+    assert_eq!(
+        ManifestStore::new(first.root().join("manifest.json"))
+            .load()
+            .expect("published manifest"),
+        published
+    );
+    second
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("publish second");
+    capture_record(directory.path(), record("tail", 7_230, 2, 3)).expect("capture tail");
+    let restarted = UsageStore::open(directory.path()).expect("restart");
+    assert_eq!(restarted.manifest().snapshot_generation, 2);
+    assert_eq!(
+        restarted.memory().tail().records(),
+        &[record("tail", 7_230, 2, 3)]
+    );
+    assert_eq!(
+        restarted.totals(TimeRange::all(), &UsageFilter::default()),
+        UsageTotals {
+            input_tokens: 13,
+            cached_input_tokens: 0,
+            output_tokens: 7,
+            reasoning_output_tokens: 0,
+            records: 3,
+        }
     );
 }

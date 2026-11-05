@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use crate::duckdb_snapshot::DuckDbSnapshot;
 use crate::error::Result;
 use crate::error::StorageError;
+use crate::journal::JournalCheckpoint;
 use crate::journal::JournalPayload;
 use crate::journal::JournalPosition;
 use crate::journal::UsageJournal;
@@ -59,7 +60,7 @@ impl UsageStore {
         fs::create_dir_all(root.join(SEGMENTS_DIRECTORY_NAME))?;
         let journal = UsageJournal::new(root.join(JOURNAL_FILE_NAME));
         let manifest_store = ManifestStore::new(root.join(MANIFEST_FILE_NAME));
-        let manifest = manifest_store.load()?;
+        let mut manifest = manifest_store.load()?;
         if manifest.format_version != MANIFEST_FORMAT_VERSION {
             return Err(StorageError::InvalidData(format!(
                 "unsupported usage manifest version {}",
@@ -71,6 +72,9 @@ impl UsageStore {
         let mut memory = InMemoryUsageStore::new(snapshot);
         replay_manifest_corrections(&root, &manifest, &mut memory)?;
         replay_tail_and_corrections(&journal, &manifest, &mut memory)?;
+        for correction in memory.pending_corrections() {
+            manifest.add_pending_correction(correction.id.clone());
+        }
         Ok(Self {
             root,
             journal,
@@ -109,12 +113,24 @@ impl UsageStore {
         let position = self.journal.append_correction(correction.clone())?;
         self.memory.append_correction(correction.clone());
         self.manifest.add_pending_correction(correction.id);
-        self.manifest_store.save(&self.manifest)?;
         Ok(position)
     }
 
     /// Query records across the latest immutable snapshot and hot tail.
     pub fn query(&self, range: TimeRange, filter: &UsageFilter) -> Vec<UsageRecord> {
+        if self.memory.tail().is_empty()
+            && self.memory.pending_corrections().is_empty()
+            && !self.manifest.segment_files.is_empty()
+            && needs_duckdb_query(range, filter)
+            && let Ok(records) = self.duckdb_snapshot.query(
+                &self.root.join(SEGMENTS_DIRECTORY_NAME),
+                &self.manifest.segment_files,
+                range,
+                filter,
+            )
+        {
+            return records;
+        }
         self.memory.query(range, filter)
     }
 
@@ -124,13 +140,8 @@ impl UsageStore {
         let immutable_only = self.memory.tail().is_empty()
             && self.memory.pending_corrections().is_empty()
             && !self.manifest.segment_files.is_empty();
-        let requires_columnar_query = range != TimeRange::all()
-            || filter.model.is_some()
-            || (filter.account_id.is_some() && filter.thread_id.is_some())
-            || (filter.account_id.is_some() && filter.repository_id.is_some())
-            || (filter.thread_id.is_some() && filter.repository_id.is_some());
         if immutable_only
-            && requires_columnar_query
+            && needs_duckdb_query(range, filter)
             && let Ok(totals) = self.duckdb_snapshot.totals(
                 &self.root.join(SEGMENTS_DIRECTORY_NAME),
                 &self.manifest.segment_files,
@@ -201,14 +212,30 @@ impl UsageStore {
     /// Existing segment files are never overwritten. A crash before manifest
     /// replacement leaves unreferenced files that are ignored on the next open.
     pub fn materialize_snapshot(&mut self, freshness: Freshness) -> Result<UsageManifest> {
+        // Only publishers share this lock. Journal writers and readers never
+        // acquire it, so report publication cannot stall event capture.
+        let publisher_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.root.join(".snapshot.lock"))?;
+        publisher_lock.lock()?;
+        if self.manifest_store.load()?.snapshot_generation != self.manifest.snapshot_generation {
+            *self = Self::open_at(&self.root)?;
+        }
         // Reconcile entries written by another journal owner before taking the
         // snapshot boundary. Otherwise `last_sequence` could advance past
         // records that are absent from this process's in-memory tail, causing
         // a restart to skip those records permanently.
-        let watermark = self.journal.last_sequence()?;
+        let checkpoint = self.journal.checkpoint()?;
+        let watermark = checkpoint.sequence;
         replay_journal_range(
             &self.journal,
-            self.manifest.watermark,
+            JournalCheckpoint {
+                sequence: self.manifest.watermark,
+                byte_offset: self.manifest.journal_byte_offset,
+            },
             watermark,
             &mut self.memory,
         )?;
@@ -273,6 +300,7 @@ impl UsageStore {
 
         let mut manifest = self.manifest.clone();
         manifest.mark_snapshot(watermark, freshness);
+        manifest.journal_byte_offset = checkpoint.byte_offset;
         let summaries_initialized = manifest.snapshot_totals.records != 0
             || !manifest.account_totals.is_empty()
             || !manifest.repository_totals.is_empty()
@@ -321,10 +349,17 @@ impl UsageStore {
         // Preserve records appended while the segments were being written as
         // the new hot tail. They remain above the published watermark and are
         // therefore also replayed after a restart.
-        let latest_sequence = self.journal.last_sequence()?;
-        replay_journal_range(&self.journal, watermark, latest_sequence, &mut self.memory)?;
+        replay_journal_range(&self.journal, checkpoint, u64::MAX, &mut self.memory)?;
         Ok(manifest)
     }
+}
+
+fn needs_duckdb_query(range: TimeRange, filter: &UsageFilter) -> bool {
+    range != TimeRange::all()
+        || filter.model.is_some()
+        || (filter.account_id.is_some() && filter.thread_id.is_some())
+        || (filter.account_id.is_some() && filter.repository_id.is_some())
+        || (filter.thread_id.is_some() && filter.repository_id.is_some())
 }
 
 fn load_manifest_segments(root: &Path, manifest: &UsageManifest) -> Result<Vec<UsageSegment>> {
@@ -419,23 +454,18 @@ fn replay_tail_and_corrections(
     manifest: &UsageManifest,
     memory: &mut InMemoryUsageStore,
 ) -> Result<()> {
-    let pending: std::collections::BTreeSet<_> = manifest
-        .pending_corrections
-        .iter()
-        .map(String::as_str)
-        .collect();
-    for entry in journal.replay()? {
+    let (entries, _) = journal.read_from(JournalCheckpoint {
+        sequence: manifest.watermark,
+        byte_offset: manifest.journal_byte_offset,
+    })?;
+    for entry in entries {
         match entry.payload {
-            JournalPayload::Record(record) if entry.sequence > manifest.watermark => {
+            JournalPayload::Record(record) => {
                 memory.append(record);
             }
-            JournalPayload::Correction(correction)
-                if entry.sequence > manifest.watermark
-                    || pending.contains(correction.id.as_str()) =>
-            {
+            JournalPayload::Correction(correction) => {
                 memory.append_correction(correction);
             }
-            JournalPayload::Record(_) | JournalPayload::Correction(_) => {}
         }
     }
     Ok(())
@@ -443,11 +473,12 @@ fn replay_tail_and_corrections(
 
 fn replay_journal_range(
     journal: &UsageJournal,
-    after_sequence: JournalSequence,
+    checkpoint: JournalCheckpoint,
     through_sequence: JournalSequence,
     memory: &mut InMemoryUsageStore,
 ) -> Result<()> {
-    for entry in journal.read_after(after_sequence)? {
+    let (entries, _) = journal.read_from(checkpoint)?;
+    for entry in entries {
         if entry.sequence > through_sequence {
             break;
         }
