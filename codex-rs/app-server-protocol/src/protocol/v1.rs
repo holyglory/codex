@@ -81,6 +81,8 @@ pub struct InitializeResponse {
     /// Operating system for the running app-server target, for example
     /// `"macos"`, `"linux"`, or `"windows"`.
     pub platform_os: String,
+    #[serde(default)]
+    pub multi_account: Option<crate::protocol::v2::MultiAccountCapability>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

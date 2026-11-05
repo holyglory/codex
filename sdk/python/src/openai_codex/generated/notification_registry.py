@@ -8,6 +8,7 @@ from typing import TypeAlias
 from pydantic import BaseModel
 
 from .v2_all import AccountLoginCompletedNotification
+from .v2_all import AccountProfileActiveChangedNotification
 from .v2_all import AccountRateLimitsUpdatedNotification
 from .v2_all import AccountUpdatedNotification
 from .v2_all import AgentMessageDeltaNotification
@@ -93,6 +94,7 @@ from .v2_all import WindowsWorldWritableWarningNotification
 
 KnownNotificationPayload: TypeAlias = (
     AccountLoginCompletedNotification
+    | AccountProfileActiveChangedNotification
     | AccountRateLimitsUpdatedNotification
     | AccountUpdatedNotification
     | AgentMessageDeltaNotification
@@ -182,6 +184,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "account/login/completed": AccountLoginCompletedNotification,
     "account/rateLimits/updated": AccountRateLimitsUpdatedNotification,
     "account/updated": AccountUpdatedNotification,
+    "accountProfile/activeChanged": AccountProfileActiveChangedNotification,
     "app/list/updated": AppListUpdatedNotification,
     "autoApprovalReview/strictReviewRequired": StrictReviewRequiredNotification,
     "command/exec/outputDelta": CommandExecOutputDeltaNotification,

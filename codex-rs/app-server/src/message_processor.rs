@@ -25,6 +25,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::plugin_config_reload;
 use crate::plugin_config_reload::PluginStartupConfig;
+use crate::request_processors::AccountProfileRequestProcessor;
 use crate::request_processors::AccountRequestProcessor;
 use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
@@ -89,6 +90,8 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
+use codex_login::RouterExternalAuthState;
+use codex_login::SharedProfileAuthRouter;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -154,6 +157,7 @@ pub(crate) struct MessageProcessor {
     turn_cost_worker: Option<TurnCostWorker>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: Arc<AccountRequestProcessor>,
+    account_profile_processor: AccountProfileRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
@@ -445,6 +449,16 @@ impl MessageProcessor {
             config_manager.clone(),
             Arc::clone(&model_catalog),
         );
+        let profile_auth_router = SharedProfileAuthRouter::new_with_external_auth(
+            config.auth_config(),
+            RouterExternalAuthState::default(),
+            auth_manager.clone(),
+        );
+        let account_profile_processor = AccountProfileRequestProcessor::new(
+            Arc::clone(&config),
+            profile_auth_router,
+            outgoing.clone(),
+        );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -619,6 +633,7 @@ impl MessageProcessor {
             turn_cost_worker,
             skills_watcher,
             account_processor,
+            account_profile_processor,
             apps_processor,
             catalog_processor,
             command_exec_processor,
@@ -1805,6 +1820,36 @@ impl MessageProcessor {
                 self.windows_sandbox_processor
                     .windows_sandbox_setup_start(&request_id, params)
                     .await
+            }
+            ClientRequest::AccountProfileList { params, .. } => {
+                self.account_profile_processor.list(params).await
+            }
+            ClientRequest::AccountProfileRead { params, .. } => {
+                self.account_profile_processor.read(params).await
+            }
+            ClientRequest::AccountProfileActivate { params, .. } => {
+                self.account_profile_processor.activate(params).await
+            }
+            ClientRequest::AccountProfileUpdate { params, .. } => {
+                self.account_profile_processor.update(params).await
+            }
+            ClientRequest::AccountProfileRemove { params, .. } => {
+                self.account_profile_processor.remove(params).await
+            }
+            ClientRequest::AccountProfileLoginStart { params, .. } => {
+                self.account_profile_processor.login_start(params).await
+            }
+            ClientRequest::AccountProfileLoginCancel { params, .. } => {
+                self.account_profile_processor.login_cancel(params).await
+            }
+            ClientRequest::AccountProfileRateLimitRead { params, .. } => {
+                self.account_profile_processor.rate_limits(params).await
+            }
+            ClientRequest::AccountAutoSelectionRead { params, .. } => {
+                self.account_profile_processor.auto_read(params).await
+            }
+            ClientRequest::AccountAutoSelectionWrite { params, .. } => {
+                self.account_profile_processor.auto_write(params).await
             }
             ClientRequest::LoginAccount { params, .. } => {
                 self.account_processor

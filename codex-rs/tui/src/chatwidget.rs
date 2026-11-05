@@ -343,6 +343,7 @@ mod luna_reserve_model;
 mod luna_reserve_return;
 mod security_setup;
 pub(crate) use backend_banners::AutomaticModelSwitchReason;
+mod account_profiles;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
@@ -397,6 +398,13 @@ use self::status_surface_commands::StatusSurfaceOverrides;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
 mod thread_usage;
+pub(crate) use self::account_profiles::AccountLoginChoice;
+#[cfg(test)]
+pub(crate) use self::account_profiles::AccountPostListAction;
+pub(crate) use self::account_profiles::AccountProfilesError;
+pub(crate) use self::account_profiles::AccountProfilesListData;
+pub(crate) use self::account_profiles::AccountProfilesRequest;
+pub(crate) use self::account_profiles::AccountProfilesResponse;
 pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tool_lifecycle;
 mod tool_requests;
@@ -582,6 +590,11 @@ pub(crate) struct ChatWidget {
     pending_rate_limit_reset_hint: Option<PlainHistoryCell>,
     available_rate_limit_reset_credits: Option<i64>,
     next_rate_limit_reset_request_id: u64,
+    account_profiles_supported: bool,
+    next_account_profiles_request_id: u64,
+    pending_account_profiles_request: Option<(u64, account_profiles::AccountProfilesRequest)>,
+    account_profiles: Vec<codex_app_server_protocol::AccountProfile>,
+    account_auto_selection_enabled: Option<bool>,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
     codex_spend_control_reached: Option<bool>,

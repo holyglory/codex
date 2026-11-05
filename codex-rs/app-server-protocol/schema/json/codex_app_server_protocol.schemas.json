@@ -3475,6 +3475,17 @@
           ],
           "description": "Absolute path to the server's $CODEX_HOME directory."
         },
+        "multiAccount": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MultiAccountCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "platformFamily": {
           "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",
           "type": "string"
@@ -4287,6 +4298,27 @@
         "action"
       ],
       "title": "McpServerElicitationRequestResponse",
+      "type": "object"
+    },
+    "MultiAccountCapability": {
+      "properties": {
+        "supportsAutoSelection": {
+          "type": "boolean"
+        },
+        "supportsManagedLogin": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsAutoSelection",
+        "supportsManagedLogin",
+        "version"
+      ],
       "type": "object"
     },
     "NetworkApprovalContext": {
@@ -5616,6 +5648,26 @@
           "properties": {
             "method": {
               "enum": [
+                "accountProfile/activeChanged"
+              ],
+              "title": "AccountProfile/activeChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AccountProfileActiveChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "AccountProfile/activeChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "account/gatewayOAuth/changed"
               ],
               "title": "Account/gatewayOAuth/changedNotificationMethod",
@@ -6861,6 +6913,31 @@
           }
         ]
       },
+      "AccountAutoSelection": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "policy": {
+            "$ref": "#/definitions/v2/AccountAutoSelectionPolicy"
+          },
+          "priorityOrder": {
+            "$ref": "#/definitions/v2/AccountPriorityOrder"
+          }
+        },
+        "required": [
+          "enabled",
+          "policy",
+          "priorityOrder"
+        ],
+        "type": "object"
+      },
+      "AccountAutoSelectionPolicy": {
+        "enum": [
+          "priority"
+        ],
+        "type": "string"
+      },
       "AccountLoginCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -6895,6 +6972,303 @@
         ],
         "title": "AccountLoginCompletedNotification",
         "type": "object"
+      },
+      "AccountPriorityOrder": {
+        "enum": [
+          "higherFirst"
+        ],
+        "type": "string"
+      },
+      "AccountProfile": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "authMode": {
+            "$ref": "#/definitions/v2/AuthMode"
+          },
+          "authenticated": {
+            "description": "Whether this profile currently has locally managed credentials. Credential values are never returned.",
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "lastUsedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PlanType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias",
+          "authMode",
+          "authenticated",
+          "createdAt",
+          "enabled",
+          "id",
+          "isActive",
+          "isDefault",
+          "priority"
+        ],
+        "type": "object"
+      },
+      "AccountProfileActiveChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "changedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "previousAccountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accountId",
+          "changedAt",
+          "generation"
+        ],
+        "title": "AccountProfileActiveChangedNotification",
+        "type": "object"
+      },
+      "AccountProfileLogin": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authUrl": {
+                "type": "string"
+              },
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "authUrl",
+              "loginId",
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginType",
+                "type": "string"
+              },
+              "userCode": {
+                "type": "string"
+              },
+              "verificationUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "loginId",
+              "type",
+              "userCode",
+              "verificationUrl"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLogin",
+            "type": "object"
+          }
+        ]
+      },
+      "AccountProfileLoginMethodParams": {
+        "oneOf": [
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "appBrand": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/LoginAppBrand"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "codexStreamlinedLogin": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginMethodParamsType",
+                "type": "string"
+              },
+              "useHostedLoginSuccessPage": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "region",
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLoginMethodParams",
+            "type": "object"
+          }
+        ]
       },
       "AccountRateLimitsUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",

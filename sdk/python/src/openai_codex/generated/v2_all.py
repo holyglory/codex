@@ -46,6 +46,104 @@ class GcpAccount(BaseModel):
     type: Annotated[Literal["gcp"], Field(title="GcpAccountType")]
 
 
+class AccountAutoSelectionPolicy(RootModel[Literal["priority"]]):
+    root: Literal["priority"]
+
+
+class AccountPriorityOrder(RootModel[Literal["higherFirst"]]):
+    root: Literal["higherFirst"]
+
+
+class AccountProfileActiveChangedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str, Field(alias="accountId")]
+    changed_at: Annotated[int, Field(alias="changedAt")]
+    generation: Annotated[int, Field(ge=0)]
+    previous_account_id: Annotated[str | None, Field(alias="previousAccountId")] = None
+
+
+class ApiKeyAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginType")]
+
+
+class ChatgptAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    auth_url: Annotated[str, Field(alias="authUrl")]
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginType")]
+
+
+class ChatgptDeviceCodeAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[
+        Literal["chatgptDeviceCode"], Field(title="ChatgptDeviceCodeAccountProfileLoginType")
+    ]
+    user_code: Annotated[str, Field(alias="userCode")]
+    verification_url: Annotated[str, Field(alias="verificationUrl")]
+
+
+class AmazonBedrockAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginType")]
+
+
+class AccountProfileLogin(
+    RootModel[
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    ]
+):
+    root: (
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    )
+
+
+class ApiKeyAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginMethodParamsType")]
+
+
+class ChatgptDeviceCodeAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[
+        Literal["chatgptDeviceCode"],
+        Field(title="ChatgptDeviceCodeAccountProfileLoginMethodParamsType"),
+    ]
+
+
+class AmazonBedrockAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    region: str
+    type: Annotated[
+        Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginMethodParamsType")
+    ]
+
+
 class AccountRoutingOverride(Enum):
     no_constraint = "NO_CONSTRAINT"
     us = "us"
@@ -4588,6 +4686,24 @@ class McpServerEventStreamNotificationServerNotification(BaseModel):
     params: McpServerEventStreamNotification
 
 
+class AccountProfileActiveChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["accountProfile/activeChanged"],
+        Field(title="AccountProfile/activeChangedNotificationMethod"),
+    ]
+    params: AccountProfileActiveChangedNotification
+
+
 class RemoteControlStatusChangedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6984,6 +7100,15 @@ class Account(RootModel[ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount | 
     root: ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount | GcpAccount
 
 
+class AccountAutoSelection(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    enabled: bool
+    policy: AccountAutoSelectionPolicy
+    priority_order: Annotated[AccountPriorityOrder, Field(alias="priorityOrder")]
+
+
 class AccountLoginCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6994,6 +7119,58 @@ class AccountLoginCompletedNotification(BaseModel):
         DesktopOnboardingEntrypoint | None, Field(alias="onboardingEntrypoint")
     ] = None
     success: bool
+
+
+class AccountProfile(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    alias: str
+    auth_mode: Annotated[AuthMode, Field(alias="authMode")]
+    authenticated: Annotated[
+        bool,
+        Field(
+            description="Whether this profile currently has locally managed credentials. Credential values are never returned."
+        ),
+    ]
+    created_at: Annotated[int, Field(alias="createdAt")]
+    email: str | None = None
+    enabled: bool
+    id: str
+    is_active: Annotated[bool, Field(alias="isActive")]
+    is_default: Annotated[bool, Field(alias="isDefault")]
+    last_used_at: Annotated[int | None, Field(alias="lastUsedAt")] = None
+    note: str | None = None
+    plan_type: Annotated[PlanType | None, Field(alias="planType")] = None
+    priority: Annotated[int, Field(ge=0)]
+
+
+class ChatgptAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    app_brand: Annotated[LoginAppBrand | None, Field(alias="appBrand")] = None
+    codex_streamlined_login: Annotated[bool | None, Field(alias="codexStreamlinedLogin")] = None
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginMethodParamsType")]
+    use_hosted_login_success_page: Annotated[
+        bool | None, Field(alias="useHostedLoginSuccessPage")
+    ] = None
+
+
+class AccountProfileLoginMethodParams(
+    RootModel[
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    ]
+):
+    root: (
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    )
 
 
 class AccountSessionWorkspace(BaseModel):
@@ -13663,6 +13840,7 @@ class ServerNotification(
         | McpServerStartupStatusUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
         | AppListUpdatedServerNotification
@@ -13751,6 +13929,7 @@ class ServerNotification(
         | McpServerStartupStatusUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
         | AppListUpdatedServerNotification

@@ -1,7 +1,14 @@
 // GENERATED CODE! DO NOT MODIFY BY HAND!
 
 export type { Account } from "./Account";
+export type { AccountAutoSelection } from "./AccountAutoSelection";
+export type { AccountAutoSelectionPolicy } from "./AccountAutoSelectionPolicy";
 export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
+export type { AccountPriorityOrder } from "./AccountPriorityOrder";
+export type { AccountProfile } from "./AccountProfile";
+export type { AccountProfileActiveChangedNotification } from "./AccountProfileActiveChangedNotification";
+export type { AccountProfileLogin } from "./AccountProfileLogin";
+export type { AccountProfileLoginMethodParams } from "./AccountProfileLoginMethodParams";
 export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
 export type { AccountRoutingOverride } from "./AccountRoutingOverride";
 export type { AccountSession } from "./AccountSession";
@@ -338,6 +345,7 @@ export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
 export type { ModelVerification } from "./ModelVerification";
 export type { ModelVerificationNotification } from "./ModelVerificationNotification";
 export type { ModelsRequirements } from "./ModelsRequirements";
+export type { MultiAccountCapability } from "./MultiAccountCapability";
 export type { MultiAgentVersion } from "./MultiAgentVersion";
 export type { NetworkAccess } from "./NetworkAccess";
 export type { NetworkApprovalContext } from "./NetworkApprovalContext";
