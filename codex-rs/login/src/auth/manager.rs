@@ -57,6 +57,7 @@ use super::change_state::AuthChangeState;
 use super::change_state::same_login;
 use super::change_state::same_owner;
 use super::external_bearer::BearerTokenRefresher;
+use super::profile::ProfileAuthStorage;
 use super::revoke::revoke_auth_tokens;
 use super::workload_identity::WorkloadIdentityExternalAuth;
 use super::workload_identity::WorkloadIdentitySessionError;
@@ -116,6 +117,30 @@ pub enum CodexAuth {
     PersonalAccessToken(PersonalAccessTokenAuth),
     BedrockApiKey(BedrockApiKeyAuth),
     BedrockAccessKeys(BedrockAccessKeysAuth),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthProfileMetadata {
+    pub auth_mode: AuthMode,
+    pub email: Option<String>,
+    pub plan_type: Option<InternalPlanType>,
+    pub service_account_id: Option<String>,
+    pub service_workspace_id: Option<String>,
+}
+
+impl std::fmt::Debug for AuthProfileMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthProfileMetadata")
+            .field("auth_mode", &self.auth_mode)
+            .field("has_email", &self.email.is_some())
+            .field("plan_type", &self.plan_type)
+            .field(
+                "has_service_identity",
+                &(self.service_account_id.is_some() && self.service_workspace_id.is_some()),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 /// Policy for resolving Agent Identity auth from a broader Codex auth snapshot.
@@ -458,6 +483,33 @@ impl CodexAuth {
             AuthMode::BedrockAccessKeys => {
                 unreachable!("bedrock access keys mode is handled above")
             }
+        }
+    }
+
+    pub(super) async fn from_profile_storage(
+        profile: &crate::auth::profile::ProfileAuthStorage,
+        auth_dot_json: AuthDotJson,
+        chatgpt_base_url: Option<&str>,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        agent_identity_authapi_base_url: Option<&str>,
+        auth_route_config: &AuthRouteConfig,
+    ) -> std::io::Result<Self> {
+        let auth = Self::from_auth_dot_json(
+            profile.profile_home(),
+            auth_dot_json,
+            AuthCredentialsStoreMode::File,
+            chatgpt_base_url,
+            keyring_backend_kind,
+            agent_identity_authapi_base_url,
+            auth_route_config,
+        )
+        .await?;
+        match auth {
+            Self::Chatgpt(mut chatgpt) => {
+                chatgpt.storage = profile.auth_backend();
+                Ok(Self::Chatgpt(chatgpt))
+            }
+            auth => Ok(auth),
         }
     }
 
@@ -1086,6 +1138,23 @@ pub fn login_with_api_key(
         auth_credentials_store_mode,
         keyring_backend_kind,
     )
+}
+
+/// Store API-key credentials in one managed profile namespace.
+pub fn login_with_api_key_to_profile(
+    profile: &ProfileAuthStorage,
+    api_key: &str,
+) -> std::io::Result<()> {
+    profile.save(&AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+        bedrock_access_keys: None,
+    })
 }
 
 /// Validate and store personal-access-token or Agent Identity credentials through
@@ -1809,6 +1878,30 @@ fn refresh_token_endpoint(provenance: Option<&AccountOAuthProvenance>) -> String
 }
 
 impl AuthDotJson {
+    pub fn profile_metadata(&self) -> AuthProfileMetadata {
+        let token_info = self.tokens.as_ref().map(|tokens| &tokens.id_token);
+        let agent_record = self
+            .agent_identity
+            .as_ref()
+            .and_then(|identity| match identity {
+                AgentIdentityStorage::Jwt(_) => None,
+                AgentIdentityStorage::Record(record) => Some(record),
+            });
+        AuthProfileMetadata {
+            auth_mode: self.resolved_mode(),
+            email: token_info
+                .and_then(|info| info.email.clone())
+                .or_else(|| agent_record.and_then(|record| record.email.clone())),
+            plan_type: token_info.and_then(|info| info.chatgpt_plan_type.clone()),
+            service_account_id: token_info
+                .and_then(|info| info.chatgpt_user_id.clone())
+                .or_else(|| agent_record.map(|record| record.chatgpt_user_id.clone())),
+            service_workspace_id: token_info
+                .and_then(|info| info.chatgpt_account_id.clone())
+                .or_else(|| agent_record.map(|record| record.account_id.clone())),
+        }
+    }
+
     fn from_external_access_token(
         access_token: &str,
         chatgpt_account_id: &str,
@@ -1842,7 +1935,7 @@ impl AuthDotJson {
         })
     }
 
-    pub(super) fn resolved_mode(&self) -> AuthMode {
+    pub fn resolved_mode(&self) -> AuthMode {
         if let Some(mode) = self.auth_mode {
             return mode;
         }
@@ -2307,6 +2400,65 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
+        }
+    }
+
+    pub(super) fn shared_from_resolved_profile(
+        auth_config: AuthConfig,
+        auth: Option<CodexAuth>,
+    ) -> std::io::Result<Arc<Self>> {
+        auth_config.validate()?;
+        if auth
+            .as_ref()
+            .is_some_and(|auth| !auth_config.allows_auth(auth))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "profile authentication does not satisfy configured restrictions",
+            ));
+        }
+        let AuthConfig {
+            codex_home,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+            forced_login_method,
+            chatgpt_base_url,
+            forced_chatgpt_workspace_id,
+            managed_auth_policy,
+            auth_route_config,
+        } = auth_config;
+        let agent_identity_authapi_base_url =
+            agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
+        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
+        Ok(Arc::new(Self {
+            codex_home,
+            inner: RwLock::new(CachedAuth {
+                auth,
+                permanent_refresh_failure: None,
+            }),
+            auth_change_tx,
+            auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            workspace_routing_resolver: OnceLock::new(),
+            enable_codex_api_key_env: false,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+            forced_login_method,
+            forced_chatgpt_workspace_id: RwLock::new(forced_chatgpt_workspace_id),
+            managed_auth_policy,
+            chatgpt_base_url,
+            agent_identity_authapi_base_url,
+            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            agent_identity_lock: Semaphore::new(/*permits*/ 1),
+            agent_identity_bootstrap_cooldown: Mutex::default(),
+            external_auth: RwLock::new(None),
+            workload_identity_selected: false,
+            auth_route_config,
+        }))
+    }
+
+    pub(super) fn inherit_workspace_routing_resolver(&self, owner: &Arc<Self>) {
+        if let Some(resolver) = owner.workspace_routing_resolver.get() {
+            let _ = self.workspace_routing_resolver.set(Weak::clone(resolver));
         }
     }
 

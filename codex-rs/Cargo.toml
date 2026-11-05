@@ -6,6 +6,8 @@ members = [
     "agent-message-board-client",
     "agent-identity",
     "agent-roles",
+    "account-registry",
+    "account-selection",
     "backend-client",
     "cloud-client",
     "bwrap",
@@ -98,6 +100,7 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "private-storage",
     "realtime-webrtc",
     "voice-host",
     "protocol",
@@ -116,6 +119,7 @@ members = [
     "tcp-tunnel",
     "tui",
     "user-verification",
+    "usage",
     "tools",
     "v8-poc",
     "websocket-auth",
@@ -169,7 +173,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.166.0"
+version = "0.166.0+multi.1"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -186,6 +190,8 @@ codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
+codex-account-registry = { path = "account-registry" }
+codex-account-selection = { path = "account-selection" }
 codex-api = { path = "codex-api" }
 codex-attachment-store = { path = "attachment-store" }
 codex-aws-auth = { path = "aws-auth" }
@@ -277,6 +283,7 @@ codex-otel-trace-websocket = { path = "otel-trace-websocket" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
+codex-private-storage = { path = "private-storage" }
 codex-protocol = { path = "protocol" }
 codex-protocol-test-support = { path = "protocol/tests/support" }
 codex-prompts = { path = "prompts" }
@@ -330,6 +337,7 @@ codex-utils-sleep-inhibitor = { path = "utils/sleep-inhibitor" }
 codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-utils-template = { path = "utils/template" }
+codex-usage = { path = "usage" }
 codex-user-verification = { path = "user-verification" }
 codex-v8-poc = { path = "v8-poc" }
 codex-workload-identity = { path = "workload-identity" }

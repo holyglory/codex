@@ -28,6 +28,8 @@ mod storage_telemetry;
 
 use super::BedrockAccessKeysAuth;
 use super::BedrockApiKeyAuth;
+use super::credential_lock::CredentialLock;
+use super::credential_lock::CredentialLockGuard;
 use crate::token_data::TokenData;
 use codex_agent_identity::AgentIdentityJwtClaims;
 use codex_agent_identity::decode_agent_identity_jwt;
@@ -214,6 +216,124 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
     }
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()>;
     fn delete(&self) -> std::io::Result<bool>;
+
+    fn repair_durability(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::File
+    }
+
+    fn resolved_backend_kind(&self) -> std::io::Result<Option<PersistentAuthBackendKind>> {
+        Ok(self.load()?.map(|_| self.backend_kind()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PersistentAuthBackendKind {
+    File,
+    DirectKeyring,
+    Secrets,
+    Ephemeral,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AuthStorageNamespace {
+    LegacyV0,
+    ProfileV1,
+}
+
+#[derive(Clone)]
+pub(super) struct AuthStorage {
+    backend: Arc<dyn AuthStorageBackend>,
+    lock: CredentialLock,
+    namespace: AuthStorageNamespace,
+}
+
+impl Debug for AuthStorage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthStorage")
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AuthStorage {
+    fn new(
+        storage_home: PathBuf,
+        backend: Arc<dyn AuthStorageBackend>,
+        namespace: AuthStorageNamespace,
+    ) -> Self {
+        Self {
+            backend,
+            lock: CredentialLock::new(storage_home),
+            namespace,
+        }
+    }
+
+    pub(super) fn backend(&self) -> Arc<dyn AuthStorageBackend> {
+        Arc::clone(&self.backend)
+    }
+
+    pub(super) fn acquire_lock(&self) -> std::io::Result<CredentialLockGuard> {
+        self.lock.acquire()
+    }
+
+    pub(super) fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+        self.backend.load()
+    }
+
+    pub(super) fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let guard = self.acquire_lock()?;
+        self.save_with_guard(&guard, auth)
+    }
+
+    pub(super) fn load_with_guard(
+        &self,
+        guard: &CredentialLockGuard,
+    ) -> std::io::Result<Option<AuthDotJson>> {
+        self.lock.verify(guard)?;
+        self.backend.load()
+    }
+
+    pub(super) fn save_with_guard(
+        &self,
+        guard: &CredentialLockGuard,
+        auth: &AuthDotJson,
+    ) -> std::io::Result<()> {
+        self.lock.verify(guard)?;
+        self.backend.save(auth)
+    }
+
+    pub(super) fn delete_with_guard(&self, guard: &CredentialLockGuard) -> std::io::Result<bool> {
+        self.lock.verify(guard)?;
+        self.backend.delete()
+    }
+
+    pub(super) fn delete(&self) -> std::io::Result<bool> {
+        let guard = self.acquire_lock()?;
+        self.delete_with_guard(&guard)
+    }
+
+    pub(super) fn repair_durability_with_guard(
+        &self,
+        guard: &CredentialLockGuard,
+    ) -> std::io::Result<()> {
+        self.lock.verify(guard)?;
+        self.backend.repair_durability()
+    }
+
+    pub(super) fn resolved_backend_kind_with_guard(
+        &self,
+        guard: &CredentialLockGuard,
+    ) -> std::io::Result<Option<PersistentAuthBackendKind>> {
+        self.lock.verify(guard)?;
+        self.backend.resolved_backend_kind()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +394,10 @@ impl AuthStorageBackend for FileAuthStorage {
 
     fn delete(&self) -> std::io::Result<bool> {
         delete_file_if_exists(&self.codex_home)
+    }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::File
     }
 }
 
@@ -389,6 +513,10 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
         let file_removed = delete_file_if_exists(&self.codex_home)?;
         Ok(keyring_removed || file_removed)
     }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::DirectKeyring
+    }
 }
 
 #[derive(Clone)]
@@ -497,6 +625,10 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
         let direct_removed = self.direct_storage.delete()?;
         Ok(keyring_removed || file_removed || direct_removed)
     }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::Secrets
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -599,6 +731,10 @@ impl AuthStorageBackend for AutoAuthStorage {
         telemetry.record_delete_attempt(Store::Multiple, &result);
         result
     }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::File
+    }
 }
 
 // A global in-memory store for mapping codex_home -> AuthDotJson.
@@ -642,6 +778,10 @@ impl AuthStorageBackend for EphemeralAuthStorage {
     fn delete(&self) -> std::io::Result<bool> {
         self.with_store(|store, key| Ok(store.remove(&key).is_some()))
     }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        PersistentAuthBackendKind::Ephemeral
+    }
 }
 
 pub(super) fn create_auth_storage(
@@ -653,7 +793,7 @@ pub(super) fn create_auth_storage(
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
 
-fn create_auth_storage_with_store(
+pub(super) fn create_auth_storage_with_store(
     codex_home: PathBuf,
     mode: AuthCredentialsStoreMode,
     keyring_store: Arc<dyn KeyringStore>,
@@ -672,6 +812,48 @@ fn create_auth_storage_with_store(
         AuthCredentialsStoreMode::Ephemeral => Arc::new(EphemeralAuthStorage::new(codex_home)),
     };
     storage_telemetry::observe(storage, mode, keyring_backend_kind)
+}
+
+pub(super) fn create_auth_storage_with_store_and_namespace(
+    codex_home: PathBuf,
+    mode: AuthCredentialsStoreMode,
+    keyring_store: Arc<dyn KeyringStore>,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    namespace: AuthStorageNamespace,
+) -> Arc<AuthStorage> {
+    Arc::new(AuthStorage::new(
+        codex_home.clone(),
+        create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind),
+        namespace,
+    ))
+}
+
+pub(super) fn create_auth_storage_for_backend(
+    codex_home: PathBuf,
+    backend_kind: PersistentAuthBackendKind,
+    keyring_store: Arc<dyn KeyringStore>,
+    namespace: AuthStorageNamespace,
+) -> Arc<AuthStorage> {
+    let mode = match backend_kind {
+        PersistentAuthBackendKind::File => AuthCredentialsStoreMode::File,
+        PersistentAuthBackendKind::DirectKeyring | PersistentAuthBackendKind::Secrets => {
+            AuthCredentialsStoreMode::Keyring
+        }
+        PersistentAuthBackendKind::Ephemeral => AuthCredentialsStoreMode::Ephemeral,
+    };
+    create_auth_storage_with_store_and_namespace(
+        codex_home,
+        mode,
+        keyring_store,
+        match backend_kind {
+            PersistentAuthBackendKind::DirectKeyring => AuthKeyringBackendKind::Direct,
+            PersistentAuthBackendKind::Secrets => AuthKeyringBackendKind::Secrets,
+            PersistentAuthBackendKind::File | PersistentAuthBackendKind::Ephemeral => {
+                AuthKeyringBackendKind::default()
+            }
+        },
+        namespace,
+    )
 }
 
 fn create_keyring_auth_storage(

@@ -36,6 +36,8 @@ codex-app-server = { workspace = true }
 codex-app-server-daemon = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-app-server-test-client = { workspace = true }
+codex-account-registry = { workspace = true }
+codex-backend-client = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-build-info = { workspace = true }
 codex-api = { workspace = true }
@@ -66,6 +68,7 @@ codex-model-provider = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
+codex-private-storage = { workspace = true }
 codex-responses-api-proxy = { workspace = true }
 codex-tcp-tunnel = { workspace = true }
 codex-rmcp-client = { workspace = true }
@@ -111,6 +114,7 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 unicode-segmentation = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 which = { workspace = true }
 
 [target.'cfg(all(target_os = "linux", target_env = "musl", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
