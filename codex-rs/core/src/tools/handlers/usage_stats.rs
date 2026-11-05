@@ -156,7 +156,13 @@ fn execute(
     let end = args.to_at_ms.map_or(i64::MAX, |value| value / 1_000);
     let range =
         TimeRange::new(start, end).map_err(|_| tool_error("usage_stats time range is invalid"))?;
-    let scope = args.scope.unwrap_or(UsageStatsScope::CurrentChat);
+    // Only summary has a current-chat default. List/detail actions are global
+    // unless they carry an explicit thread, repository, or account filter.
+    let scope = if matches!(args.action, UsageStatsAction::Summary) {
+        args.scope.unwrap_or(UsageStatsScope::CurrentChat)
+    } else {
+        args.scope.unwrap_or(UsageStatsScope::All)
+    };
     let mut filter = UsageFilter::default();
     if let Some(account) = args.account.as_deref() {
         filter = filter.for_account(account);
@@ -173,6 +179,9 @@ fn execute(
                 .ok_or_else(|| tool_error("repository is required for repository scope"))?;
             filter = filter.for_repository(repository);
         }
+    }
+    if let Some(repository) = args.repository.as_deref() {
+        filter = filter.for_repository(repository);
     }
     if let Some(thread_id) = args.thread_id.as_deref() {
         filter = filter.for_thread(if thread_id == "current" {
