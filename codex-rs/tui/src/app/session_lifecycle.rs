@@ -514,7 +514,10 @@ impl App {
                 self.chat_widget.windows_sandbox_elevated_setup_complete;
         }
         chat_widget.set_command_center_enabled(self.app_server_target.supports_command_center());
-        chat_widget.set_account_profiles_supported(true);
+        chat_widget.set_account_profiles_supported(
+            self.config.cli_auth_credentials_store_mode
+                != codex_config::types::AuthCredentialsStoreMode::Ephemeral,
+        );
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
         chat_widget.inherit_security_setup(&mut self.chat_widget);
         chat_widget
