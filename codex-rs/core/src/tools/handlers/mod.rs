@@ -32,6 +32,7 @@ pub(crate) mod test_sync_spec;
 mod tool_search;
 pub(crate) mod tool_search_spec;
 pub(crate) mod unified_exec;
+mod usage_stats;
 mod view_image;
 pub(crate) mod view_image_spec;
 mod wait_for_environment;
@@ -83,6 +84,7 @@ pub(crate) use tool_search::ToolSearchHandlerCache;
 pub use unified_exec::ExecCommandHandler;
 pub(crate) use unified_exec::ExecCommandHandlerOptions;
 pub use unified_exec::WriteStdinHandler;
+pub use usage_stats::UsageStatsHandler;
 pub use view_image::ViewImageHandler;
 pub(crate) use wait_for_environment::WaitForEnvironmentHandler;
 pub use wait_for_environment::WaitForEnvironmentToolConfig;
@@ -188,7 +190,12 @@ fn selected_executor<'a>(
     snapshot: &'a TurnEnvironmentSnapshot,
 ) -> Result<&'a TurnEnvironment, FunctionCallError> {
     match environments {
-        ToolEnvironments::Arguments(args) if let [(_, env)] = args.as_slice() => Ok(env),
+        ToolEnvironments::Arguments(args) => match args.as_slice() {
+            [(_, env)] => Ok(env),
+            _ => Err(FunctionCallError::Fatal(
+                "expected one executor for this call".to_string(),
+            )),
+        },
         // Direct handler callers may supply only the step context.
         ToolEnvironments::All => resolve_tool_environment(snapshot, /*environment_id*/ None),
         _ => Err(FunctionCallError::Fatal(

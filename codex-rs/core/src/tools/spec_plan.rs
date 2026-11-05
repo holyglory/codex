@@ -28,6 +28,7 @@ use crate::tools::handlers::SendMessageToUserAsyncHandler;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::UsageStatsHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -1387,6 +1388,14 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         .any(|tool| tool == "clock");
     if current_time_reminder_enabled || model_has_clock {
         registry.add(CurrentTimeHandler);
+    }
+    if context
+        .model_info
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool == "usage_stats")
+    {
+        registry.add(UsageStatsHandler);
     }
     if features.enabled(Feature::SleepTool)
         && match turn_context.config.sleep_tool_mode {
