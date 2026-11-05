@@ -6,6 +6,7 @@
 //! watermark, freshness, correction segments, and mergeable totals without
 //! opening the retired SQLite report database.
 
+mod duckdb_snapshot;
 mod error;
 mod journal;
 mod manifest;
@@ -14,6 +15,7 @@ mod query;
 mod segment;
 mod store;
 
+pub use duckdb_snapshot::DuckDbSnapshot;
 pub use error::Result;
 pub use error::StorageError;
 pub use journal::JournalEntry;

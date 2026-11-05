@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::duckdb_snapshot::DuckDbSnapshot;
 use crate::error::Result;
 use crate::error::StorageError;
 use crate::journal::JournalPayload;
@@ -43,6 +44,7 @@ pub struct UsageStore {
     manifest_store: ManifestStore,
     manifest: UsageManifest,
     memory: InMemoryUsageStore,
+    duckdb_snapshot: DuckDbSnapshot,
 }
 
 impl UsageStore {
@@ -75,6 +77,7 @@ impl UsageStore {
             manifest_store,
             manifest,
             memory,
+            duckdb_snapshot: DuckDbSnapshot,
         })
     }
 
@@ -118,6 +121,25 @@ impl UsageStore {
     /// Aggregate records across the latest immutable snapshot and hot tail,
     /// applying pending corrections.
     pub fn totals(&self, range: TimeRange, filter: &UsageFilter) -> UsageTotals {
+        let immutable_only = self.memory.tail().is_empty()
+            && self.memory.pending_corrections().is_empty()
+            && !self.manifest.segment_files.is_empty();
+        let requires_columnar_query = range != TimeRange::all()
+            || filter.model.is_some()
+            || (filter.account_id.is_some() && filter.thread_id.is_some())
+            || (filter.account_id.is_some() && filter.repository_id.is_some())
+            || (filter.thread_id.is_some() && filter.repository_id.is_some());
+        if immutable_only
+            && requires_columnar_query
+            && let Ok(totals) = self.duckdb_snapshot.totals(
+                &self.root.join(SEGMENTS_DIRECTORY_NAME),
+                &self.manifest.segment_files,
+                range,
+                filter,
+            )
+        {
+            return totals;
+        }
         if range == TimeRange::all()
             && self.memory.tail().is_empty()
             && self.memory.pending_corrections().is_empty()

@@ -16,6 +16,7 @@ workspace = true
 arrow-array = "60.1.0"
 arrow-schema = "60.1.0"
 bytes = { workspace = true }
+duckdb = { workspace = true }
 parquet = { version = "60.1.0", default-features = false, features = ["arrow", "zstd"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

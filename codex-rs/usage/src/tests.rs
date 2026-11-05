@@ -267,6 +267,23 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
             &UsageFilter::default().for_repository("repo-a")
         )
     );
+    assert_eq!(
+        DuckDbSnapshot
+            .totals(
+                &store.root().join("segments"),
+                &store.manifest().segment_files,
+                TimeRange::all(),
+                &UsageFilter::default().for_repository("repo-a"),
+            )
+            .expect("duckdb snapshot totals"),
+        UsageTotals {
+            input_tokens: 8,
+            cached_input_tokens: 0,
+            output_tokens: 1,
+            reasoning_output_tokens: 0,
+            records: 1,
+        }
+    );
 }
 
 #[test]
