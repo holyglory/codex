@@ -230,6 +230,72 @@ fn materialization_reuses_untouched_hour_segments() {
 }
 
 #[test]
+fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
+    let directory = tempdir().expect("temporary directory");
+    let mut store = UsageStore::open(directory.path()).expect("open store");
+    store
+        .append_record(
+            record("one", 3_605, 8, 1)
+                .with_account("account-a")
+                .with_thread("thread-a")
+                .with_repository("repo-a"),
+        )
+        .expect("append one");
+    store
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("materialize");
+    assert_eq!(
+        store.totals(
+            TimeRange::all(),
+            &UsageFilter::default().for_account("account-a")
+        ),
+        UsageTotals {
+            input_tokens: 8,
+            cached_input_tokens: 0,
+            output_tokens: 1,
+            reasoning_output_tokens: 0,
+            records: 1,
+        }
+    );
+    assert_eq!(
+        store.totals(
+            TimeRange::all(),
+            &UsageFilter::default().for_thread("thread-a")
+        ),
+        store.totals(
+            TimeRange::all(),
+            &UsageFilter::default().for_repository("repo-a")
+        )
+    );
+}
+
+#[test]
+#[ignore = "large acceptance fixture; run explicitly with --ignored"]
+fn synthetic_volume_fixture_covers_rebase_acceptance_scale() {
+    let directory = tempdir().expect("temporary directory");
+    let mut store = UsageStore::open(directory.path()).expect("open store");
+    for index in 0..3_000_000_u32 {
+        store
+            .append_record(
+                UsageRecord::new(format!("operation-{index}"), i64::from(index), 10, 5)
+                    .with_account(format!("account-{}", index % 8))
+                    .with_thread(format!("thread-{}", index % 256))
+                    .with_repository(format!("repository-{}", index % 16)),
+            )
+            .expect("append synthetic record");
+    }
+    store
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("materialize synthetic fixture");
+    assert_eq!(
+        store
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .records,
+        3_000_000
+    );
+}
+
+#[test]
 fn materialization_reconciles_records_written_through_another_journal_handle() {
     let directory = tempdir().expect("temporary directory");
     let first_record = record("first", 3_605, 8, 1);

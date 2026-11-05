@@ -119,11 +119,46 @@ impl UsageStore {
     /// applying pending corrections.
     pub fn totals(&self, range: TimeRange, filter: &UsageFilter) -> UsageTotals {
         if range == TimeRange::all()
-            && *filter == UsageFilter::default()
             && self.memory.tail().is_empty()
             && self.memory.pending_corrections().is_empty()
+            && filter.model.is_none()
         {
-            return self.manifest.snapshot_totals.clone();
+            if let Some(account) = filter.account_id.as_deref()
+                && filter.thread_id.is_none()
+                && filter.repository_id.is_none()
+            {
+                return self
+                    .manifest
+                    .account_totals
+                    .get(account)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            if let Some(thread) = filter.thread_id.as_deref()
+                && filter.account_id.is_none()
+                && filter.repository_id.is_none()
+            {
+                return self
+                    .manifest
+                    .thread_totals
+                    .get(thread)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            if let Some(repository) = filter.repository_id.as_deref()
+                && filter.account_id.is_none()
+                && filter.thread_id.is_none()
+            {
+                return self
+                    .manifest
+                    .repository_totals
+                    .get(repository)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            if *filter == UsageFilter::default() {
+                return self.manifest.snapshot_totals.clone();
+            }
         }
         self.memory.totals(range, filter)
     }
@@ -185,9 +220,11 @@ impl UsageStore {
         let generation = self.manifest.snapshot_generation.saturating_add(1);
         let mut segments_by_hour = existing_segments;
         let mut segment_files_by_hour = existing_files;
+        let mut touched_segments = BTreeMap::<i64, (Option<UsageSegment>, UsageSegment)>::new();
         for (hour, tail_records) in tail_by_hour {
             let mut records_by_id = BTreeMap::new();
-            if let Some(existing) = segments_by_hour.get(&hour) {
+            let previous = segments_by_hour.get(&hour).cloned();
+            if let Some(existing) = &previous {
                 for record in existing.records() {
                     records_by_id.insert(record.id.clone(), record.clone());
                 }
@@ -198,6 +235,7 @@ impl UsageStore {
             let segment = UsageSegment::new(hour, records_by_id.into_values().collect())?;
             let file_name = segment_file_name(generation, hour);
             write_segment_file(&self.root, &file_name, &segment)?;
+            touched_segments.insert(hour, (previous, segment.clone()));
             segments_by_hour.insert(hour, segment);
             segment_files_by_hour.insert(hour, file_name);
         }
@@ -213,13 +251,26 @@ impl UsageStore {
 
         let mut manifest = self.manifest.clone();
         manifest.mark_snapshot(watermark, freshness);
-        manifest.snapshot_totals =
-            segments
-                .iter()
-                .fold(UsageTotals::default(), |mut totals, segment| {
-                    totals.add_assign(&segment.totals(TimeRange::all(), &UsageFilter::default()));
-                    totals
-                });
+        let summaries_initialized = manifest.snapshot_totals.records != 0
+            || !manifest.account_totals.is_empty()
+            || !manifest.repository_totals.is_empty()
+            || !manifest.thread_totals.is_empty();
+        if !summaries_initialized {
+            manifest.snapshot_totals = UsageTotals::default();
+            manifest.account_totals.clear();
+            manifest.repository_totals.clear();
+            manifest.thread_totals.clear();
+            for segment in &segments {
+                apply_segment_summary_delta(&mut manifest, segment, true);
+            }
+        } else {
+            for (_, (previous, current)) in touched_segments {
+                if let Some(previous) = previous {
+                    apply_segment_summary_delta(&mut manifest, &previous, false);
+                }
+                apply_segment_summary_delta(&mut manifest, &current, true);
+            }
+        }
         for correction in self.memory.pending_corrections() {
             manifest.add_pending_correction(correction.id.clone());
         }
@@ -269,6 +320,53 @@ fn load_manifest_segments(root: &Path, manifest: &UsageManifest) -> Result<Vec<U
         segments.push(codec.decode(&bytes)?);
     }
     Ok(segments)
+}
+
+fn apply_segment_summary_delta(manifest: &mut UsageManifest, segment: &UsageSegment, add: bool) {
+    let segment_totals = segment.totals(TimeRange::all(), &UsageFilter::default());
+    if add {
+        manifest.snapshot_totals.add_assign(&segment_totals);
+    } else {
+        manifest.snapshot_totals.subtract_assign(&segment_totals);
+    }
+    for record in segment.records() {
+        let totals = record.totals();
+        apply_dimension_delta(
+            &mut manifest.account_totals,
+            record.account_id.as_deref(),
+            &totals,
+            add,
+        );
+        apply_dimension_delta(
+            &mut manifest.repository_totals,
+            record.repository_id.as_deref(),
+            &totals,
+            add,
+        );
+        apply_dimension_delta(
+            &mut manifest.thread_totals,
+            record.thread_id.as_deref(),
+            &totals,
+            add,
+        );
+    }
+}
+
+fn apply_dimension_delta(
+    totals: &mut BTreeMap<String, UsageTotals>,
+    key: Option<&str>,
+    delta: &UsageTotals,
+    add: bool,
+) {
+    let Some(key) = key else {
+        return;
+    };
+    let entry = totals.entry(key.to_string()).or_default();
+    if add {
+        entry.add_assign(delta);
+    } else {
+        entry.subtract_assign(delta);
+    }
 }
 
 fn replay_manifest_corrections(

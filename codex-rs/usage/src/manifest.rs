@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -49,6 +50,15 @@ pub struct UsageManifest {
     /// Immutable correction segment files referenced by this snapshot.
     #[serde(default)]
     pub correction_files: Vec<String>,
+    /// Mergeable immutable totals grouped by account identity.
+    #[serde(default)]
+    pub account_totals: BTreeMap<String, UsageTotals>,
+    /// Mergeable immutable totals grouped by repository identity.
+    #[serde(default)]
+    pub repository_totals: BTreeMap<String, UsageTotals>,
+    /// Mergeable immutable totals grouped by thread identity.
+    #[serde(default)]
+    pub thread_totals: BTreeMap<String, UsageTotals>,
     /// Unix timestamp when this manifest was last changed.
     pub updated_at: i64,
 }
@@ -65,6 +75,9 @@ impl Default for UsageManifest {
             segment_files: Vec::new(),
             snapshot_totals: UsageTotals::default(),
             correction_files: Vec::new(),
+            account_totals: BTreeMap::new(),
+            repository_totals: BTreeMap::new(),
+            thread_totals: BTreeMap::new(),
             updated_at: 0,
         }
     }

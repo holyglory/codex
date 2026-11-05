@@ -346,6 +346,15 @@ impl UsageTotals {
         self.records += other.records;
     }
 
+    /// Subtract another aggregate while preserving the non-negative record count.
+    pub fn subtract_assign(&mut self, other: &Self) {
+        self.input_tokens -= other.input_tokens;
+        self.cached_input_tokens -= other.cached_input_tokens;
+        self.output_tokens -= other.output_tokens;
+        self.reasoning_output_tokens -= other.reasoning_output_tokens;
+        self.records = self.records.saturating_sub(other.records);
+    }
+
     /// Apply a correction delta without changing the observation count.
     pub fn apply_correction(&mut self, correction: &UsageCorrection) {
         let delta = correction.totals();
