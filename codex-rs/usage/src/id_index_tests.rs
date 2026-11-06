@@ -100,6 +100,118 @@ fn exact_lookup_uses_full_ids_and_preserves_first_sequence_across_runs() {
 }
 
 #[test]
+fn exact_lookup_scans_full_collision_groups_across_fence_boundaries() {
+    let stride = usize::try_from(ID_FENCE_STRIDE).expect("fence stride");
+    for prefix_count in [0, stride - 1] {
+        let directory = tempdir().expect("index directory");
+        let root = directory.path();
+        // Deterministic collisions exercise the real run framing and fence I/O
+        // without depending on a chance collision in the production hash.
+        let hash_id = |id: &str| match id {
+            "before" => 0,
+            "gap" => 3,
+            "tail" => 4,
+            "after" => 5,
+            _ if id.starts_with("prefix-") => 1,
+            _ => 2,
+        };
+        let write_run = |name: &str, entries: &[RecordIdEntry]| {
+            let mut writer = RunWriter::new(
+                root,
+                &format!("{name}.bin"),
+                &format!("{name}-fences.bin"),
+                /*level*/ 0,
+            )
+            .expect("run writer");
+            for entry in entries {
+                writer
+                    .push_with_test_hash(entry, hash_id(&entry.id))
+                    .expect("write routed entry");
+            }
+            writer.finish().expect("immutable run")
+        };
+
+        let mut original = (0..prefix_count)
+            .map(|index| {
+                entry(
+                    &format!("prefix-{index:03}"),
+                    u64::try_from(index + 1).expect("sequence"),
+                    "first.parquet",
+                )
+            })
+            .collect::<Vec<_>>();
+        original.extend((0..2 * stride + 3).map(|index| {
+            entry(
+                &format!("collision-{index:03}"),
+                u64::try_from(prefix_count + index + 1).expect("sequence"),
+                "first.parquet",
+            )
+        }));
+        let tail_sequence = u64::try_from(original.len() + 1).expect("tail sequence");
+        original.push(entry("tail", tail_sequence, "first.parquet"));
+        let first_run = write_run("first", &original);
+        let later = [
+            entry("collision-001", tail_sequence + 1, "later.parquet"),
+            entry("collision-new", tail_sequence + 2, "later.parquet"),
+        ];
+        let later_run = write_run("later", &later);
+        let descriptor = IdIndexDescriptor {
+            version: 1,
+            hash_version: ID_HASH_VERSION,
+            watermark: checkpoint(tail_sequence + 2),
+            complete_from_sequence: 1,
+            runs: vec![later_run, first_run],
+        };
+        let mut expected = original
+            .iter()
+            .map(|entry| (entry.id.clone(), entry.clone()))
+            .collect::<BTreeMap<_, _>>();
+        expected.insert(later[1].id.clone(), later[1].clone());
+        let mut all_requested = expected.keys().cloned().collect::<BTreeSet<_>>();
+        all_requested.extend(ids(&["before", "collision-missing", "gap", "after"]));
+
+        for requested in [
+            all_requested,
+            ids(&["collision-000"]),
+            ids(&["collision-001", "collision-missing", "gap", "tail"]),
+        ] {
+            let lookup = lookup_ids_with_hash(root, &descriptor, &requested, hash_id)
+                .expect("exact lookup across collision fences");
+            assert_eq!(
+                lookup,
+                IdLookup {
+                    found: expected
+                        .iter()
+                        .filter(|(id, _)| requested.contains(*id))
+                        .map(|(id, entry)| (id.clone(), entry.clone()))
+                        .collect(),
+                    watermark: descriptor.watermark,
+                    complete_from_sequence: 1,
+                },
+                "prefix count {prefix_count}"
+            );
+        }
+
+        let mut conflicting = expected["collision-001"].clone();
+        conflicting.segment_file = "conflict.parquet".into();
+        let mut conflicting_descriptor = descriptor;
+        conflicting_descriptor
+            .runs
+            .insert(/*index*/ 0, write_run("conflict", &[conflicting]));
+        assert!(matches!(
+            lookup_ids_with_hash(
+                root,
+                &conflicting_descriptor,
+                &ids(&["collision-001"]),
+                hash_id,
+            ),
+            Err(StorageError::InvalidData(message))
+                if message == "conflicting record-id facts at one sequence"
+        ));
+    }
+}
+
+#[test]
 fn missing_pointer_is_explicitly_incomplete_and_entry_limits_are_hard() {
     let directory = tempdir().expect("index directory");
     let root = directory.path();

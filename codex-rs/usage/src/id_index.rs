@@ -135,11 +135,20 @@ pub fn load_id_index(
     Ok(descriptor)
 }
 
-/// Lookup exact ids through immutable fences and bounded framed pages.
+/// Lookup exact ids through immutable fences, including complete hash-collision groups.
 pub fn lookup_ids(
     root: &Path,
     descriptor: &IdIndexDescriptor,
     ids: &BTreeSet<String>,
+) -> Result<IdLookup> {
+    lookup_ids_with_hash(root, descriptor, ids, id_hash)
+}
+
+fn lookup_ids_with_hash(
+    root: &Path,
+    descriptor: &IdIndexDescriptor,
+    ids: &BTreeSet<String>,
+    hash_id: impl Fn(&str) -> u64,
 ) -> Result<IdLookup> {
     validate_descriptor(root, descriptor)?;
     if ids.is_empty() {
@@ -152,7 +161,7 @@ pub fn lookup_ids(
     let mut found = BTreeMap::<String, RecordIdEntry>::new();
     let mut by_hash = BTreeMap::<u64, Vec<&str>>::new();
     for id in ids {
-        by_hash.entry(id_hash(id)).or_default().push(id);
+        by_hash.entry(hash_id(id)).or_default().push(id);
     }
     for run in &descriptor.runs {
         let path = data_path(root, &run.data_file)?;
@@ -172,43 +181,32 @@ pub fn lookup_ids(
                 return Err(invalid("record-id fence points outside its run"));
             }
             data.seek(SeekFrom::Start(offset))?;
-            let Some(mut entry) = next_frame(&mut data)? else {
-                break;
-            };
+            let mut entry = next_frame(&mut data)?;
             for hash in hashes {
-                let mut exhausted = false;
-                while id_hash(&entry.id) < hash {
-                    match next_frame(&mut data)? {
-                        Some(next) => entry = next,
-                        None => {
-                            exhausted = true;
-                            break;
-                        }
+                while let Some(current) = entry.as_ref() {
+                    let current_hash = hash_id(&current.id);
+                    if current_hash > hash {
+                        break;
                     }
-                }
-                if exhausted {
-                    break;
-                }
-                let current_hash = id_hash(&entry.id);
-                if current_hash == hash
-                    && by_hash[&hash]
-                        .iter()
-                        .any(|candidate| *candidate == entry.id)
-                {
-                    match found.get(&entry.id) {
-                        Some(previous) if previous.first_sequence < entry.first_sequence => {}
-                        Some(previous) if previous.first_sequence == entry.first_sequence => {
-                            if previous != &entry {
-                                return Err(invalid("conflicting record-id facts at one sequence"));
+                    if current_hash == hash && by_hash[&hash].contains(&current.id.as_str()) {
+                        match found.get(&current.id) {
+                            Some(previous) if previous.first_sequence < current.first_sequence => {}
+                            Some(previous) if previous.first_sequence == current.first_sequence => {
+                                if previous != current {
+                                    return Err(invalid(
+                                        "conflicting record-id facts at one sequence",
+                                    ));
+                                }
+                            }
+                            _ => {
+                                found.insert(current.id.clone(), current.clone());
                             }
                         }
-                        _ => {
-                            found.insert(entry.id.clone(), entry.clone());
-                        }
                     }
+                    entry = next_frame(&mut data)?;
                 }
-                if current_hash > hash {
-                    continue;
+                if entry.is_none() {
+                    break;
                 }
             }
         }
@@ -363,20 +361,13 @@ fn read_fences(path: &Path, run: &IdRunDescriptor) -> Result<Vec<(u64, u64)>> {
 }
 
 fn candidate_offset(fences: &[(u64, u64)], hash: u64) -> Option<u64> {
-    let mut candidate = None;
-    let mut low = 0;
-    let mut high = fences.len();
-    while low < high {
-        let middle = low + (high - low) / 2;
-        let (current, offset) = fences[middle];
-        if current <= hash {
-            candidate = Some(offset);
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    candidate
+    // An equal-hash group can start before its first matching fence and span
+    // several pages. Begin at the preceding fence, or the first page when the
+    // group contains the run's minimum hash.
+    let first_equal_or_later = fences.partition_point(|(current, _)| *current < hash);
+    fences
+        .get(first_equal_or_later.saturating_sub(1))
+        .and_then(|(current, offset)| (*current <= hash).then_some(*offset))
 }
 
 fn write_descriptor(root: &Path, file: &str, descriptor: &IdIndexDescriptor) -> Result<()> {

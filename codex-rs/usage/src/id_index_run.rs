@@ -59,6 +59,15 @@ impl RunWriter {
     }
 
     pub(crate) fn push(&mut self, entry: &RecordIdEntry) -> Result<()> {
+        self.push_with_hash(entry, id_hash(&entry.id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_with_test_hash(&mut self, entry: &RecordIdEntry, hash: u64) -> Result<()> {
+        self.push_with_hash(entry, hash)
+    }
+
+    fn push_with_hash(&mut self, entry: &RecordIdEntry, hash: u64) -> Result<()> {
         let encoded = serde_json::to_vec(entry)?;
         if encoded.is_empty()
             || encoded.len() > MAX_ID_ENTRY_BYTES
@@ -66,7 +75,6 @@ impl RunWriter {
         {
             return Err(invalid("record-id index entry exceeds its size limit"));
         }
-        let hash = id_hash(&entry.id);
         if self.count.is_multiple_of(u64::from(ID_FENCE_STRIDE)) {
             self.fence.write_all(&hash.to_le_bytes())?;
             self.fence
