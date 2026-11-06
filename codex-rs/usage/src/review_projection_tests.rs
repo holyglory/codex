@@ -134,6 +134,10 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         .publish_batch(limits())
         .expect("publish open operation");
     let open_descriptor = descriptor(root, &open_manifest);
+    let pinned_reader = crate::UsageReader::open_at(root).expect("pin open summary");
+    let open_summary = pinned_reader
+        .summary(TimeRange::all(), &UsageFilter::default())
+        .expect("public open summary");
     assert_eq!(
         read_review_counts(root, &open_descriptor, &ReviewCountScope::Global)
             .expect("open operation summary"),
@@ -182,6 +186,22 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         .load()
         .expect("restart metadata");
     assert_eq!(restarted, closed_manifest);
+    let closed_summary = crate::UsageReader::open_at(root)
+        .expect("restart public reader")
+        .summary(TimeRange::all(), &UsageFilter::default())
+        .expect("public closed summary");
+    assert_eq!(
+        closed_summary["counts"],
+        serde_json::json!({"operations": 1, "modelRequests": 1, "tools": 0,
+            "warmups": 0, "unfinished": 0, "unknownIntervals": 0,
+            "unclassified": 0, "missingRepository": 0})
+    );
+    assert_eq!(
+        pinned_reader
+            .summary(TimeRange::all(), &UsageFilter::default())
+            .expect("pinned summary"),
+        open_summary
+    );
     let closed = descriptor(root, &restarted);
     assert_eq!(
         (closed.complete_from_sequence, closed.watermark),
@@ -442,7 +462,9 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
         "tool",
         /*at_ms*/ 5_000,
     ))];
-    records.extend((1..REVIEW_PARTITION_SIZE).map(|sequence| {
+    // Cross the bulk publication threshold, then publish a single new
+    // operation. Cached summaries must advance even on the small batch.
+    records.extend((1..=REVIEW_PARTITION_SIZE).map(|sequence| {
         JournalPayload::Record(UsageRecord::new_millis(
             format!("coverage-{sequence}"),
             /*observed_at_ms*/ 5_000,
@@ -455,7 +477,10 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
         .expect("real sequence boundary");
     let mut publisher = UsagePublisher::open_at(root).expect("publisher");
     let first = publisher
-        .publish_batch(limits())
+        .publish_batch(JournalReadLimits {
+            max_entries: REVIEW_PARTITION_SIZE as usize + 1,
+            ..limits()
+        })
         .expect("first bounded partition");
     let first = descriptor(root, &first);
     let mut unrelated = started("second-partition", "tool", /*at_ms*/ 6_000);
@@ -467,6 +492,16 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
     let second = publisher
         .publish_batch(limits())
         .expect("only new partition added");
+    assert_eq!(second.review_counts_watermark, Some(second.watermark));
+    assert_eq!(
+        crate::UsageReader::open_at(root)
+            .expect("restart after small publication")
+            .summary(TimeRange::all(), &UsageFilter::default())
+            .expect("public summary after small publication")["counts"],
+        serde_json::json!({"operations": 2, "modelRequests": 0, "tools": 2,
+            "warmups": 0, "unfinished": 2, "unknownIntervals": 2,
+            "unclassified": 0, "missingRepository": 0})
+    );
     assert_private_projection(root, &second);
     let second = descriptor(root, &second);
     assert_eq!(second.partitions.len(), 2);

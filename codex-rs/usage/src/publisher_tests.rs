@@ -130,6 +130,77 @@ fn lineage_survives_late_parent_facts_stale_publishers_and_restart() {
 }
 
 #[test]
+fn startup_worker_prewarms_ten_most_recent_chats_from_persisted_activity() {
+    let directory = tempdir().expect("home");
+    let root = directory.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal
+        .append_batch(
+            (0..12)
+                .map(|index| {
+                    JournalPayload::Record(record(
+                        &index.to_string(),
+                        /*at*/ index,
+                        /*input*/ 2,
+                    ))
+                })
+                .collect(),
+        )
+        .expect("capture chats");
+    journal
+        .append_record(record("reopened", /*at*/ 100, /*input*/ 3).with_thread("thread-0"))
+        .expect("reopen oldest chat");
+    let manifest = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("persist before startup");
+    assert_eq!(manifest.thread_last_activity_at_ms["thread-0"], 100_000);
+    let runtime = crate::UsagePublisherRuntime::start(directory.path()).expect("startup runtime");
+    let reader = UsageReader::open_at(&root).expect("foreground independent snapshot");
+    let expected = std::iter::once("thread-0".to_string())
+        .chain((3..12).map(|index| format!("thread-{index}")))
+        .collect::<Vec<_>>();
+    let cached = |thread: &str| {
+        crate::summary_cache::get(
+            root.clone(),
+            reader.metadata_revision,
+            reader.manifest().snapshot_generation,
+            reader.manifest().watermark,
+            reader.journal_watermark(),
+            reader.pending_entries(),
+            reader.manifest().pending_corrections.len(),
+            TimeRange::all(),
+            &UsageFilter::default().for_thread(thread),
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if expected.iter().all(|thread| cached(thread).is_some()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background startup warmup did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(cached("thread-1").is_none());
+    assert!(cached("thread-2").is_none());
+    assert_eq!(
+        cached("thread-0").expect("recent summary")["inputTokens"],
+        5
+    );
+    assert_eq!(
+        journal
+            .checkpoint()
+            .expect("unchanged captured data")
+            .sequence,
+        manifest.watermark
+    );
+    drop(runtime);
+}
+
+#[test]
 fn lineage_overlay_uses_canonical_tail_facts_and_validates_conflicts() {
     let directory = tempdir().expect("directory");
     let root = directory.path();

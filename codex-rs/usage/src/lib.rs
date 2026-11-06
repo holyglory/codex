@@ -16,6 +16,7 @@ mod id_index_run;
 mod journal;
 mod lineage;
 mod manifest;
+mod metadata_cache;
 mod model;
 mod publisher;
 mod query;

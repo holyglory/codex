@@ -30,7 +30,8 @@ const REPORT_TAIL_LIMITS: JournalReadLimits = JournalReadLimits {
 #[derive(Debug)]
 pub struct UsageReader {
     pub(crate) root: PathBuf,
-    pub(crate) manifest: UsageManifest,
+    pub(crate) manifest: std::sync::Arc<UsageManifest>,
+    pub(crate) metadata_revision: u64,
     pub(crate) records: Vec<UsageRecord>,
     pub(crate) record_sequences: std::collections::BTreeMap<String, u64>,
     pub(crate) corrections: Vec<UsageCorrection>,
@@ -129,7 +130,9 @@ impl UsageReader {
     /// Pin published metadata and a bounded, complete journal tail.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        let manifest = ManifestStore::new(root.join("manifest.json")).load()?;
+        let parsed = ManifestStore::new(root.join("manifest.json")).load_shared()?;
+        let metadata_revision = parsed.revision;
+        let manifest = parsed.value;
         if manifest.format_version != crate::MANIFEST_FORMAT_VERSION {
             return Err(StorageError::InvalidData(format!(
                 "unsupported usage manifest version {}",
@@ -172,6 +175,7 @@ impl UsageReader {
         Ok(Self {
             root,
             manifest,
+            metadata_revision,
             records,
             record_sequences,
             corrections,

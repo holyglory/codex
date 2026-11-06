@@ -114,20 +114,33 @@ pub fn read_review_counts(
     descriptor: &ReviewProjectionDescriptor,
     scope: &ReviewCountScope,
 ) -> Result<ReviewCounts> {
-    let Some(_file) = &descriptor.counts_file else {
+    let Some(file) = &descriptor.counts_file else {
         if !descriptor.partitions.is_empty() {
             return Err(invalid("operation counts have not been published"));
         }
         return Ok(ReviewCounts::default());
     };
-    let key = match scope {
-        ReviewCountScope::Global => "all".to_string(),
-        ReviewCountScope::Account(id) => format!("account:{id}"),
-        ReviewCountScope::Repository(id) => format!("repository:{id}"),
-        ReviewCountScope::Thread(id) => format!("thread:{id}"),
+    let (kind, id) = match scope {
+        ReviewCountScope::Global => ("all", ""),
+        ReviewCountScope::Account(id) => ("account", id.as_str()),
+        ReviewCountScope::Repository(id) => ("repository", id.as_str()),
+        ReviewCountScope::Thread(id) => ("thread", id.as_str()),
     };
-    Ok(read_review_counts_map(root, descriptor)?
-        .remove(&key)
+    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let source = parquet_source(root, std::slice::from_ref(file))?;
+    let rows = query_rows::<CountsRow>(
+        &connection,
+        &format!(
+            "SELECT * FROM {source} WHERE dimension_kind = {} AND dimension_id = {}",
+            quoted(kind),
+            quoted(id)
+        ),
+        /*max_rows*/ 1,
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|row| row.counts)
         .unwrap_or_default())
 }
 
@@ -230,7 +243,11 @@ impl<'a> ReviewCountsUpdate<'a> {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self, stamp: &str) -> Result<Option<String>> {
+    pub(crate) fn finish(
+        mut self,
+        stamp: &str,
+        cached_counts: &mut BTreeMap<String, ReviewCounts>,
+    ) -> Result<Option<String>> {
         let ids = self
             .classifications
             .keys()
@@ -251,6 +268,23 @@ impl<'a> ReviewCountsUpdate<'a> {
         columns.extend(FIELDS.iter().map(|name| (*name, DataType::Int64)));
         let mut rows = Vec::new();
         for ((kind, id), values) in self.deltas {
+            let key = if kind == "all" {
+                "all".to_string()
+            } else {
+                format!("{kind}:{id}")
+            };
+            let previous = cached_counts.entry(key).or_default();
+            let mut adjusted = serde_json::Map::new();
+            for ((field, value), delta) in FIELDS.iter().zip(previous.values()).zip(&values) {
+                let value = if *delta < 0 {
+                    value.checked_sub(delta.unsigned_abs())
+                } else {
+                    value.checked_add(*delta as u64)
+                }
+                .ok_or_else(|| invalid("cached operation summary delta overflow or underflow"))?;
+                adjusted.insert((*field).into(), value.into());
+            }
+            *previous = serde_json::from_value(serde_json::Value::Object(adjusted))?;
             let mut row = serde_json::Map::new();
             row.insert("dimension_kind".into(), kind.into());
             row.insert("dimension_id".into(), id.into());

@@ -50,10 +50,20 @@ impl UsagePublisherRuntime {
         }
         let (wake, receiver) = mpsc::sync_channel(1);
         let signal = Arc::new(PublisherSignal { wake });
+        let (warm, ready) = mpsc::channel();
+        let warm_root = root.clone();
+        let warm_signal = Arc::downgrade(&signal);
+        std::thread::Builder::new()
+            .name("codex-usage-startup-warmup".into())
+            .spawn(move || {
+                if ready.recv().is_ok() {
+                    prewarm_recent_chats(warm_root, warm_signal);
+                }
+            })?;
         let worker_root = root.clone();
         std::thread::Builder::new()
             .name("codex-usage-publisher".into())
-            .spawn(move || publish_loop(worker_root, receiver))?;
+            .spawn(move || publish_loop(worker_root, receiver, warm))?;
         let _ = signal.wake.try_send(());
         publishers.insert(root, Arc::downgrade(&signal));
         Ok(Self { _signal: signal })
@@ -76,9 +86,10 @@ pub(crate) fn notify_publisher(codex_home: &Path) {
     }
 }
 
-fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>) {
+fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>, warm: mpsc::Sender<()>) {
     let mut had_failure = false;
     let mut catch_up = false;
+    let mut warm = Some(warm);
     loop {
         // Polling while catching up observes channel closure between batches;
         // continuous capture cannot keep a dropped runtime alive indefinitely.
@@ -98,6 +109,13 @@ fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>) {
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
                     .checkpoint()
                     .is_ok_and(|end| end.sequence > manifest.watermark);
+                // The worker warms immutable metadata after publication. Reads
+                // can always fall back independently if warming fails.
+                let _ = crate::ManifestStore::new(root.join("manifest.json")).load_shared();
+                let _ = crate::review_projection::load_review_projection_shared(&root, &manifest);
+                if !catch_up && let Some(warm) = warm.take() {
+                    let _ = warm.send(());
+                }
                 had_failure = false;
             }
             Err(_) => {
@@ -109,6 +127,31 @@ fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>) {
                     had_failure = true;
                 }
             }
+        }
+    }
+}
+
+fn prewarm_recent_chats(root: PathBuf, signal: Weak<PublisherSignal>) {
+    let Ok(reader) = crate::UsageReader::open_at(root) else {
+        tracing::debug!("usage startup warmup could not pin a snapshot");
+        return;
+    };
+    // Retain only ten candidates while walking metadata; no history query,
+    // thread enumeration from the app, or user-visible request is required.
+    let mut recent = std::collections::BTreeSet::new();
+    for (thread, at) in &reader.manifest().thread_last_activity_at_ms {
+        recent.insert((*at, thread.as_str()));
+        if recent.len() > 10 {
+            recent.pop_first();
+        }
+    }
+    for (_, thread) in recent.into_iter().rev() {
+        if signal.strong_count() == 0 {
+            break;
+        }
+        let filter = crate::UsageFilter::default().for_thread(thread);
+        if reader.summary(crate::TimeRange::all(), &filter).is_err() {
+            tracing::debug!("usage startup warmup skipped an unavailable summary");
         }
     }
 }

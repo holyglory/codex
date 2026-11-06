@@ -18,7 +18,7 @@ use crate::report_query::canonical_tail;
 use crate::review_counts::read_review_counts;
 use crate::review_projection::ReviewProjectionDescriptor;
 use crate::review_projection::load_review_operations;
-use crate::review_projection::load_review_projection;
+use crate::review_projection::load_review_projection_shared as load_review_projection;
 use crate::review_state::ReviewClassification;
 use crate::review_state::ReviewOperation;
 use crate::review_state::lifecycle;
@@ -32,6 +32,7 @@ impl UsageReader {
     pub fn summary(&self, range: TimeRange, filter: &UsageFilter) -> Result<Value> {
         if let Some(cached) = crate::summary_cache::get(
             self.root.clone(),
+            self.metadata_revision,
             self.manifest.snapshot_generation,
             self.manifest.watermark,
             self.journal_watermark(),
@@ -58,6 +59,7 @@ impl UsageReader {
                 .manifest
                 .review_counts
                 .get(&key)
+                .filter(|_| self.manifest.review_counts_watermark == Some(self.manifest.watermark))
                 .cloned()
                 .map(Ok)
                 .unwrap_or_else(|| {
@@ -66,7 +68,7 @@ impl UsageReader {
                         |descriptor| read_review_counts(&self.root, descriptor, &scope),
                     )
                 })?;
-            self.count_tail(descriptor.as_ref(), filter, base)?
+            self.count_tail(descriptor.as_deref(), filter, base)?
         } else {
             let query = ReportQuery::new(self, range, filter)?;
             query_rows::<ReviewCounts>(&query.connection, &format!(
@@ -103,6 +105,7 @@ impl UsageReader {
         });
         crate::summary_cache::insert(
             self.root.clone(),
+            self.metadata_revision,
             self.manifest.snapshot_generation,
             self.manifest.watermark,
             self.journal_watermark(),

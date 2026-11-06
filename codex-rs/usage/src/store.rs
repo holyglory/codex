@@ -303,6 +303,7 @@ impl UsageStore {
         manifest.membership_files.clear();
         manifest.review_projection_file = None;
         manifest.review_counts.clear();
+        manifest.review_counts_watermark = None;
         manifest.id_index_file = None;
         if manifest.summaries_include_corrections || !manifest.applied_correction_ids.is_empty() {
             manifest.snapshot_totals = UsageTotals::default();
@@ -399,6 +400,9 @@ fn apply_segment_summary_delta(manifest: &mut UsageManifest, segment: &UsageSegm
         manifest.snapshot_totals.subtract_assign(&segment_totals);
     }
     for record in segment.records() {
+        if add {
+            manifest.observe_thread_activity(record);
+        }
         let totals = record.totals();
         apply_dimension_delta(
             &mut manifest.account_totals,

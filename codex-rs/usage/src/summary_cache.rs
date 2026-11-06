@@ -19,6 +19,7 @@ const MAX_ENTRIES: usize = 128;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Key {
     root: PathBuf,
+    metadata_revision: u64,
     snapshot_generation: u64,
     watermark: u64,
     journal_watermark: u64,
@@ -43,6 +44,7 @@ static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get(
     root: PathBuf,
+    metadata_revision: u64,
     snapshot_generation: u64,
     watermark: u64,
     journal_watermark: u64,
@@ -51,8 +53,12 @@ pub(crate) fn get(
     range: TimeRange,
     filter: &UsageFilter,
 ) -> Option<Value> {
+    if metadata_revision == 0 {
+        return None;
+    }
     let key = Key::new(
         root,
+        metadata_revision,
         snapshot_generation,
         watermark,
         journal_watermark,
@@ -75,6 +81,7 @@ pub(crate) fn get(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert(
     root: PathBuf,
+    metadata_revision: u64,
     snapshot_generation: u64,
     watermark: u64,
     journal_watermark: u64,
@@ -84,8 +91,12 @@ pub(crate) fn insert(
     filter: &UsageFilter,
     value: Value,
 ) {
+    if metadata_revision == 0 {
+        return;
+    }
     let key = Key::new(
         root,
+        metadata_revision,
         snapshot_generation,
         watermark,
         journal_watermark,
@@ -110,6 +121,7 @@ impl Key {
     #[allow(clippy::too_many_arguments)]
     fn new(
         root: PathBuf,
+        metadata_revision: u64,
         snapshot_generation: u64,
         watermark: u64,
         journal_watermark: u64,
@@ -120,6 +132,7 @@ impl Key {
     ) -> Self {
         Self {
             root,
+            metadata_revision,
             snapshot_generation,
             watermark,
             journal_watermark,

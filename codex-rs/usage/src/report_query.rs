@@ -20,7 +20,7 @@ use crate::reader_query::values_source;
 use crate::review_index::select_review_contribution_files;
 use crate::review_index::select_review_files;
 use crate::review_projection::load_review_operations;
-use crate::review_projection::load_review_projection;
+use crate::review_projection::load_review_projection_shared as load_review_projection;
 use crate::review_state::ReviewClassification;
 use crate::review_state::ReviewContribution;
 use crate::review_state::ReviewOperation;

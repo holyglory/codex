@@ -27,8 +27,6 @@ use crate::model::Freshness;
 use crate::model::UsageCorrection;
 use crate::model::UsageRecord;
 use crate::model::UsageTotals;
-use crate::review_counts::read_review_counts_map;
-use crate::review_projection::load_review_projection;
 use crate::review_projection::publish_review_projection;
 use crate::segment::ParquetCorrectionSegmentCodec;
 use crate::segment::ParquetSegmentCodec;
@@ -169,18 +167,21 @@ impl UsagePublisher {
         records.retain(|id, _| !existing.contains_key(id));
         let records = records.into_values().collect::<Vec<_>>();
         let index_candidates = records.clone();
-        let refresh_review_counts = records.len() > 16_384;
-        manifest.review_projection_file = Some(publish_review_projection(
+        let (review_file, review_counts) = publish_review_projection(
             &self.root,
             &manifest,
             batch.next,
             &format!("{generation:020}_{stamp}"),
             &records,
             &connection,
-        )?);
+        )?;
+        manifest.review_projection_file = Some(review_file);
+        manifest.review_counts = review_counts;
+        manifest.review_counts_watermark = Some(batch.next.sequence);
         let mut touched = BTreeMap::<i64, Vec<UsageRecord>>::new();
         let mut lineage = Vec::new();
         for (_, record) in records {
+            manifest.observe_thread_activity(&record);
             if let Some(parent) = &record.parent_thread_id {
                 let child = record.thread_id.clone().ok_or_else(|| {
                     StorageError::InvalidData("parent fact has no child thread id".into())
@@ -377,15 +378,6 @@ impl UsagePublisher {
             },
         );
         manifest.journal_byte_offset = batch.next.byte_offset;
-        // Read the freshly published count sidecar only after the manifest
-        // frontier has advanced to the same checkpoint. Small recovery tails
-        // are overlaid directly by readers to keep startup bounded.
-        if refresh_review_counts {
-            let descriptor = load_review_projection(&self.root, &manifest)?.ok_or_else(|| {
-                StorageError::InvalidData("published review descriptor missing".into())
-            })?;
-            manifest.review_counts = read_review_counts_map(&self.root, &descriptor)?;
-        }
         #[cfg(unix)]
         std::fs::File::open(&directory)?.sync_all()?;
         self.manifests.save(&manifest)?;

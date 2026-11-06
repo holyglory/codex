@@ -81,6 +81,19 @@ fn manifest_round_trip_tracks_generation_and_pending_corrections() {
     assert_eq!(loaded.pending_corrections, vec!["fix-1"]);
     assert!(loaded.updated_at > 0);
     assert!(store.path().is_file());
+    let first = store.load_shared().expect("pin parsed metadata");
+    let repeated = store.load_shared().expect("reuse parsed metadata");
+    assert!(std::sync::Arc::ptr_eq(&first.value, &repeated.value));
+    assert_eq!(first.revision, repeated.revision);
+
+    // A reset or replaced store can reuse its generation/watermark. Its cache
+    // identity must still change, and old pinned readers must remain valid.
+    manifest.snapshot_totals.input_tokens = 123;
+    store.save(&manifest).expect("replace same generation");
+    let replaced = store.load_shared().expect("reload changed identity");
+    assert_eq!(replaced.value.as_ref(), &manifest);
+    assert_ne!(first.revision, replaced.revision);
+    assert_eq!(first.value.as_ref(), &loaded);
 }
 
 #[test]

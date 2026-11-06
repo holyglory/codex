@@ -90,9 +90,16 @@ pub struct UsageManifest {
     /// Mergeable immutable totals grouped by thread identity.
     #[serde(default)]
     pub thread_totals: BTreeMap<String, UsageTotals>,
+    /// Latest observed activity per chat, used for startup warming and retention.
+    #[serde(default)]
+    pub thread_last_activity_at_ms: BTreeMap<String, i64>,
     /// Compact operation counts for all-time single-dimension summaries.
     #[serde(default)]
     pub review_counts: BTreeMap<String, ReviewCounts>,
+    /// Journal frontier represented by the cached operation counts. Missing
+    /// means readers must use the immutable count sidecar instead.
+    #[serde(default)]
+    pub review_counts_watermark: Option<JournalSequence>,
     /// Unix timestamp when this manifest was last changed.
     pub updated_at: i64,
 }
@@ -120,13 +127,24 @@ impl Default for UsageManifest {
             account_totals: BTreeMap::new(),
             repository_totals: BTreeMap::new(),
             thread_totals: BTreeMap::new(),
+            thread_last_activity_at_ms: BTreeMap::new(),
             review_counts: BTreeMap::new(),
+            review_counts_watermark: None,
             updated_at: 0,
         }
     }
 }
 
 impl UsageManifest {
+    pub(crate) fn observe_thread_activity(&mut self, record: &crate::UsageRecord) {
+        if let Some(id) = &record.thread_id {
+            let at = record.effective_observed_at_ms();
+            self.thread_last_activity_at_ms
+                .entry(id.clone())
+                .and_modify(|previous| *previous = (*previous).max(at))
+                .or_insert(at);
+        }
+    }
     /// Create an empty manifest with an explicit freshness state.
     pub fn new(freshness: Freshness) -> Self {
         Self {
@@ -177,6 +195,20 @@ pub struct ManifestStore {
 }
 
 impl ManifestStore {
+    /// Share parsed metadata with the long-lived reader/publisher process.
+    pub(crate) fn load_shared(&self) -> Result<crate::metadata_cache::Parsed<UsageManifest>> {
+        static CACHE: crate::metadata_cache::JsonCache<UsageManifest> =
+            crate::metadata_cache::JsonCache::new();
+        match CACHE.load(&self.path) {
+            Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(crate::metadata_cache::Parsed {
+                    value: std::sync::Arc::default(),
+                    revision: 0,
+                })
+            }
+            result => result,
+        }
+    }
     /// Open a manifest path without creating or mutating it.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -203,7 +235,7 @@ impl ManifestStore {
         if self.path.exists() {
             storage_file::protect_existing(&self.path)?;
         }
-        let mut encoded = serde_json::to_vec_pretty(manifest)?;
+        let mut encoded = serde_json::to_vec(manifest)?;
         encoded.push(b'\n');
         let temporary =
             self.path

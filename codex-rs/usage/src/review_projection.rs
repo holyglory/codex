@@ -14,7 +14,9 @@ use crate::Result;
 use crate::UsageManifest;
 use crate::UsageRecord;
 use crate::id_index::id_hash;
+use crate::review_counts::ReviewCounts;
 use crate::review_counts::ReviewCountsUpdate;
+use crate::review_counts::read_review_counts_map;
 use crate::review_index::IndexedInterval;
 use crate::review_index::ReviewIntervalBounds;
 use crate::review_index::write_membership;
@@ -137,6 +139,13 @@ pub fn load_review_projection(
     root: &Path,
     manifest: &UsageManifest,
 ) -> Result<Option<ReviewProjectionDescriptor>> {
+    Ok(load_review_projection_shared(root, manifest)?.map(std::sync::Arc::unwrap_or_clone))
+}
+
+pub(crate) fn load_review_projection_shared(
+    root: &Path,
+    manifest: &UsageManifest,
+) -> Result<Option<std::sync::Arc<ReviewProjectionDescriptor>>> {
     let descriptor = manifest
         .review_projection_file
         .as_deref()
@@ -158,7 +167,7 @@ pub(crate) fn publish_review_projection(
     stamp: &str,
     records: &[(u64, UsageRecord)],
     connection: &Connection,
-) -> Result<String> {
+) -> Result<(String, BTreeMap<String, ReviewCounts>)> {
     let prior = JournalCheckpoint {
         sequence: manifest.watermark,
         byte_offset: manifest.journal_byte_offset,
@@ -178,6 +187,11 @@ pub(crate) fn publish_review_projection(
     if descriptor.watermark != prior || next.sequence < prior.sequence {
         return Err(invalid("review projection and manifest frontiers disagree"));
     }
+    let mut cached_counts = if manifest.review_counts_watermark == Some(prior.sequence) {
+        manifest.review_counts.clone()
+    } else {
+        read_review_counts_map(root, &descriptor)?
+    };
     let mut updates = BTreeMap::<String, Vec<(u64, &UsageRecord)>>::new();
     let mut contributions = Vec::new();
     let mut classifications = Vec::new();
@@ -381,7 +395,7 @@ pub(crate) fn publish_review_projection(
         storage_file::finish_generated(&membership_path)?;
         descriptor.membership_index_file = Some(membership_index_file);
     }
-    descriptor.counts_file = counts.finish(stamp)?;
+    descriptor.counts_file = counts.finish(stamp, &mut cached_counts)?;
     if !contributions.is_empty() {
         contributions.sort_by(|a, b| {
             (&a.repository_id, a.observed_at_ms, &a.record_id).cmp(&(
@@ -432,7 +446,7 @@ pub(crate) fn publish_review_projection(
     descriptor.watermark = next;
     let file = format!("review-projection-{stamp}.json");
     write_json(root, &file, &descriptor)?;
-    Ok(file)
+    Ok((file, cached_counts))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -548,10 +562,11 @@ pub(crate) fn load_review_operations(
     Ok(rows)
 }
 
-fn load_descriptor(root: &Path, file: &str) -> Result<ReviewProjectionDescriptor> {
+fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProjectionDescriptor>> {
+    static CACHE: crate::metadata_cache::JsonCache<ReviewProjectionDescriptor> =
+        crate::metadata_cache::JsonCache::new();
     let path = segment_path(root, file)?;
-    storage_file::protect_existing(&path)?;
-    let descriptor: ReviewProjectionDescriptor = serde_json::from_slice(&std::fs::read(path)?)?;
+    let descriptor = CACHE.load(&path)?.value;
     if descriptor.version != 1 || descriptor.complete_from_sequence == 0 {
         return Err(invalid("unsupported review projection descriptor"));
     }
