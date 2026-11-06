@@ -227,6 +227,154 @@ fn startup_worker_prewarms_ten_most_recent_chats_from_persisted_activity() {
 }
 
 #[test]
+fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
+    const DAY: i64 = 86_400;
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let mut orphan = record("orphan", 11 * DAY, /*input*/ 40);
+    orphan.thread_id = None;
+    journal
+        .append_batch(vec![
+            JournalPayload::Record(record("old", DAY, /*input*/ 10).with_thread("active")),
+            JournalPayload::Record(record("inactive", 9 * DAY, /*input*/ 20)),
+            JournalPayload::Record(record("recent", 11 * DAY, /*input*/ 30).with_thread("active")),
+            JournalPayload::Record(orphan),
+            JournalPayload::Correction(UsageCorrection::new(
+                "adjust-old",
+                "old",
+                11 * DAY,
+                /*input_tokens_delta*/ 5,
+                /*output_tokens_delta*/ 0,
+                "late provider total",
+            )),
+        ])
+        .expect("capture mixed ages and a late correction");
+    let initial = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("publish before retention");
+    let pinned = UsageReader::open_at(&root).expect("pin before retirement");
+    let filter = UsageFilter::default()
+        .for_account("account-a")
+        .for_repository("repo-a");
+    let expected = pinned
+        .totals(TimeRange::all(), &filter)
+        .expect("corrected totals");
+    assert_eq!(
+        expected,
+        UsageTotals {
+            input_tokens: 105,
+            cached_input_tokens: 0,
+            output_tokens: 4,
+            reasoning_output_tokens: 0,
+            records: 4
+        }
+    );
+    let policy = crate::RetentionPolicy {
+        raw_retention_days: 7,
+        inactive_chat_days: 2,
+    };
+    for _ in 0..4 {
+        crate::retention::maintain(&root, policy, 12 * DAY * 1_000).expect("background retention");
+    }
+    let retained = UsageReader::open_at(&root).expect("restart after retention");
+    assert_eq!(retained.manifest().retired_observations, 2);
+    assert_eq!(
+        retained
+            .totals(TimeRange::all(), &filter)
+            .expect("filtered rollup totals"),
+        expected
+    );
+    let retained_ids = retained
+        .page(
+            TimeRange::all(),
+            &UsageFilter::default(),
+            crate::RecordKind::All,
+            /*after*/ None,
+            /*limit*/ 50,
+        )
+        .expect("remaining raw detail")
+        .records
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        retained_ids,
+        BTreeSet::from(["orphan".to_string(), "recent".to_string()])
+    );
+    assert_eq!(
+        pinned
+            .page(
+                TimeRange::all(),
+                &filter,
+                crate::RecordKind::All,
+                /*after*/ None,
+                /*limit*/ 50
+            )
+            .expect("older pinned detail remains readable")
+            .records
+            .len(),
+        4
+    );
+    let repository = retained
+        .repositories(
+            TimeRange::all(),
+            &filter,
+            /*after*/ None,
+            /*limit*/ 50,
+        )
+        .expect("repository aggregates")
+        .remove(0);
+    assert_eq!(
+        (
+            repository.id,
+            repository.first_observed_at_ms,
+            repository.last_observed_at_ms,
+            repository.totals
+        ),
+        (
+            "repo-a".to_string(),
+            DAY * 1_000,
+            11 * DAY * 1_000,
+            expected
+        )
+    );
+    drop(pinned);
+    drop(retained);
+    crate::reclamation::reclaim(&root).expect("reclaim after readers close");
+    assert!(
+        !root
+            .join("segments")
+            .join(&initial.segment_files[0])
+            .exists()
+    );
+    journal
+        .append_record(record("resumed", 12 * DAY + 1, /*input*/ 7).with_thread("thread-inactive"))
+        .expect("resume archived chat");
+    UsagePublisher::open_at(&root)
+        .expect("restart publisher")
+        .publish_batch(limits())
+        .expect("new activity");
+    let resumed = UsageReader::open_at(&root).expect("resumed report");
+    let chat = UsageFilter::default()
+        .for_thread("thread-inactive")
+        .for_account("account-a");
+    assert_eq!(
+        resumed
+            .totals(TimeRange::all(), &chat)
+            .expect("lifetime plus new activity"),
+        UsageTotals {
+            input_tokens: 27,
+            cached_input_tokens: 0,
+            output_tokens: 2,
+            reasoning_output_tokens: 0,
+            records: 2
+        }
+    );
+}
+
+#[test]
 fn lineage_overlay_uses_canonical_tail_facts_and_validates_conflicts() {
     let directory = tempdir().expect("directory");
     let root = directory.path();

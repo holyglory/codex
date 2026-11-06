@@ -7,6 +7,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 
 use crate::HooksToml;
+use crate::UsageConfigToml;
 use crate::browser_use::BrowserUseConfigToml;
 use crate::computer_use::ComputerUseConfigToml;
 use crate::permissions_toml::PermissionsToml;
@@ -493,6 +494,9 @@ pub struct ConfigToml {
 
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,
+
+    /// Local usage-retention settings. Both thresholds default independently to 7 days.
+    pub usage: Option<UsageConfigToml>,
 
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,

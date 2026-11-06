@@ -53,6 +53,7 @@ mod tui_keymap;
 mod tui_mouse_scroll;
 mod tui_rendering;
 pub mod types;
+mod usage;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 
@@ -250,3 +251,4 @@ pub use thread_config::ThreadConfigLoaderFuture;
 pub use thread_config::ThreadConfigSource;
 pub use thread_config::UserThreadConfig;
 pub use toml::Value as TomlValue;
+pub use usage::UsageConfigToml;

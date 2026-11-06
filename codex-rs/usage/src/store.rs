@@ -69,6 +69,12 @@ impl UsageStore {
                 manifest.format_version
             )));
         }
+        if !manifest.token_rollup_files.is_empty() {
+            return Err(StorageError::InvalidData(
+                "aggregate-only history requires UsageReader; eager materialization is unavailable"
+                    .into(),
+            ));
+        }
         let segments = load_manifest_segments(&root, &manifest)?;
         let snapshot = UsageSnapshot::new(manifest.clone(), segments)?;
         let mut memory = InMemoryUsageStore::new(snapshot);

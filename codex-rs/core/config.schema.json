@@ -7206,6 +7206,29 @@
         }
       ]
     },
+    "UsageConfigToml": {
+      "additionalProperties": false,
+      "description": "Independently configurable retention thresholds for local usage observations.",
+      "properties": {
+        "inactive_chat_days": {
+          "default": null,
+          "description": "Days of chat inactivity before retaining summary-only usage. Defaults to 7.",
+          "format": "uint32",
+          "maximum": 36500.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "raw_retention_days": {
+          "default": null,
+          "description": "Days before raw usage observations are rolled up. Defaults to 7.",
+          "format": "uint32",
+          "maximum": 36500.0,
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Verbosity": {
       "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
       "enum": [
@@ -8575,6 +8598,14 @@
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
+    },
+    "usage": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UsageConfigToml"
+        }
+      ],
+      "description": "Local usage-retention settings. Both thresholds default independently to 7 days."
     },
     "web_search": {
       "allOf": [

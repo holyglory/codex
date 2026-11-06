@@ -397,6 +397,15 @@ fn snapshot_metadata(store: &UsageReader) -> serde_json::Map<String, Value> {
             json!(manifest.snapshot_generation),
         ),
         ("watermarkAtMs".to_string(), json!(manifest.watermark_at_ms)),
+        (
+            "retention".to_string(),
+            json!({
+                "rolledUpObservations": manifest.retired_observations,
+                "historicalWindowCoverage": if manifest.retired_observations == 0 {
+                    "rawObservations"
+                } else { "wholeAggregateBuckets" },
+            }),
+        ),
         ("pendingEntries".to_string(), json!(store.pending_entries())),
         (
             "journalWatermark".to_string(),

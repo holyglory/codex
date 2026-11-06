@@ -62,6 +62,7 @@ pub(crate) struct SnapshotQuery {
     pub(crate) connection: Connection,
     pub(crate) source: String,
     pub(crate) corrections: String,
+    rollups: String,
 }
 
 impl SnapshotQuery {
@@ -139,11 +140,12 @@ impl SnapshotQuery {
             connection,
             source,
             corrections,
+            rollups: crate::token_rollup::source(reader, range, filter)?,
         })
     }
 
     pub(crate) fn totals(&self) -> Result<UsageTotals> {
-        let query = format!(
+        let raw = format!(
             "WITH records AS ({}), corrections AS ({}) \
              SELECT CAST(COALESCE(SUM(r.input_tokens::HUGEINT + COALESCE(c.i, 0)), 0) AS BIGINT), \
                     CAST(COALESCE(SUM(r.cached_input_tokens::HUGEINT + COALESCE(c.c, 0)), 0) AS BIGINT), \
@@ -154,6 +156,14 @@ impl SnapshotQuery {
                      SUM(output_tokens_delta) o, SUM(reasoning_output_tokens_delta) r \
               FROM corrections GROUP BY record_id) c ON r.id = c.record_id",
             self.source, self.corrections
+        );
+        let query = format!(
+            "WITH combined(input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,records) AS \
+             ({raw} UNION ALL SELECT input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,records FROM ({})) \
+             SELECT COALESCE(sum(input_tokens),0)::BIGINT, COALESCE(sum(cached_input_tokens),0)::BIGINT, \
+             COALESCE(sum(output_tokens),0)::BIGINT, COALESCE(sum(reasoning_output_tokens),0)::BIGINT, \
+             COALESCE(sum(records),0)::UBIGINT FROM combined",
+            self.rollups
         );
         self.connection
             .query_row(&query, [], |row| {
@@ -258,7 +268,7 @@ impl SnapshotQuery {
             || "true".to_string(),
             |id| format!("repository_id > {}", quoted(id)),
         );
-        let query = format!(
+        let raw = format!(
             "WITH records AS ({}), corrections AS ({}) \
              SELECT repository_id, MIN(r.effective_observed_at_ms), MAX(r.effective_observed_at_ms), \
                     CAST(COALESCE(SUM(r.input_tokens::HUGEINT + COALESCE(c.i, 0)), 0) AS BIGINT), \
@@ -269,9 +279,17 @@ impl SnapshotQuery {
              (SELECT record_id, SUM(input_tokens_delta) i, SUM(cached_input_tokens_delta) c, \
                      SUM(output_tokens_delta) o, SUM(reasoning_output_tokens_delta) r \
               FROM corrections GROUP BY record_id) c ON r.id = c.record_id \
-             WHERE repository_id IS NOT NULL AND {after} GROUP BY repository_id \
-             ORDER BY repository_id LIMIT {limit}",
+             WHERE repository_id IS NOT NULL GROUP BY repository_id",
             self.source, self.corrections
+        );
+        let query = format!(
+            "WITH combined(repository_id,first_at_ms,last_at_ms,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,records) AS \
+             ({raw} UNION ALL SELECT repository_id,first_at_ms,last_at_ms,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,records FROM ({})) \
+             SELECT repository_id,min(first_at_ms),max(last_at_ms),sum(input_tokens)::BIGINT, \
+             sum(cached_input_tokens)::BIGINT,sum(output_tokens)::BIGINT,sum(reasoning_output_tokens)::BIGINT, \
+             sum(records)::UBIGINT FROM combined WHERE repository_id IS NOT NULL AND {after} \
+             GROUP BY repository_id ORDER BY repository_id LIMIT {limit}",
+            self.rollups
         );
         let mut statement = self.connection.prepare(&query).map_err(query_error)?;
         let rows = statement

@@ -140,14 +140,17 @@ impl UsageReader {
             .unwrap_or_default();
         let observed_tokens = token_counts["observations"].as_u64().unwrap_or_default();
         let complete_projection = query.complete_from_sequence == 1;
-        let completeness =
-            if !complete_projection || self.pending_entries() != 0 || !gaps.is_empty() {
-                "partial"
-            } else if total_operations == 0 && observed_tokens == 0 {
-                "unobserved"
-            } else {
-                "recorded"
-            };
+        let completeness = if !complete_projection
+            || self.pending_entries() != 0
+            || !gaps.is_empty()
+            || self.manifest.retired_observations != 0
+        {
+            "partial"
+        } else if total_operations == 0 && observed_tokens == 0 {
+            "unobserved"
+        } else {
+            "recorded"
+        };
         let measurement = json!({"measured": token_counts["provider_total"],
             "exact": if observed_tokens > 0 && token_counts["unknown_totals"] == 0 { token_counts["provider_total"].clone() } else { Value::Null },
             "unknown": token_counts["unknown_totals"]});

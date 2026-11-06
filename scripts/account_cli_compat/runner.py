@@ -38,13 +38,6 @@ def source_contract(root: Path) -> dict:
     return {"root": str(root), "files": {name: digest(prefix / name) for name in names}}
 
 
-def comparable_output(case, key, value):
-    """Ignore the intentional credit-usage option extension in parser help text."""
-    if key == "stderr" and case.name.startswith("parser.edit."):
-        return value.replace("--credit-usage <CREDIT_USAGE>|", "")
-    return value
-
-
 def normalize(case, style, stdout, registry, requests, started, ended):
     """Replace only validated, case-declared generated scalar values, retaining raw JSON layout."""
     changes = []
@@ -286,9 +279,7 @@ def main() -> int:
                 changed = [
                     key
                     for key in result
-                    if key != "sourceFailures"
-                    and comparable_output(case, key, result[key])
-                    != comparable_output(case, key, baseline[key])
+                    if key != "sourceFailures" and result[key] != baseline[key]
                 ]
                 if changed:
                     result["sourceFailures"].append(

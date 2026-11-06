@@ -39,6 +39,15 @@ impl UsagePublisherRuntime {
     /// Start without waiting for recovery, publication or any report query.
     /// Multiple thread managers using the same local store share one worker.
     pub fn start(codex_home: impl Into<PathBuf>) -> Result<Self> {
+        Self::start_with_retention(codex_home, crate::RetentionPolicy::default())
+    }
+
+    /// Configure detail retention for this process's shared background worker.
+    pub fn start_with_retention(
+        codex_home: impl Into<PathBuf>,
+        policy: crate::RetentionPolicy,
+    ) -> Result<Self> {
+        policy.validate()?;
         let root = codex_home.into().join(USAGE_DIRECTORY_NAME);
         let mut publishers = PUBLISHERS
             .get_or_init(Mutex::default)
@@ -61,9 +70,25 @@ impl UsagePublisherRuntime {
                 }
             })?;
         let worker_root = root.clone();
+        let (maintenance, maintain) = mpsc::sync_channel(1);
+        let maintenance_root = root.clone();
+        std::thread::Builder::new()
+            .name("codex-usage-retention".into())
+            .spawn(move || {
+                while maintain.recv().is_ok() {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .min(i64::MAX as u128) as i64;
+                    if crate::retention::maintain(&maintenance_root, policy, now_ms).is_err() {
+                        tracing::debug!("usage retention deferred after failure");
+                    }
+                }
+            })?;
         std::thread::Builder::new()
             .name("codex-usage-publisher".into())
-            .spawn(move || publish_loop(worker_root, receiver, warm))?;
+            .spawn(move || publish_loop(worker_root, receiver, warm, maintenance))?;
         let _ = signal.wake.try_send(());
         publishers.insert(root, Arc::downgrade(&signal));
         Ok(Self { _signal: signal })
@@ -86,11 +111,16 @@ pub(crate) fn notify_publisher(codex_home: &Path) {
     }
 }
 
-fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>, warm: mpsc::Sender<()>) {
+fn publish_loop(
+    root: PathBuf,
+    receiver: mpsc::Receiver<()>,
+    warm: mpsc::Sender<()>,
+    maintenance: mpsc::SyncSender<()>,
+) {
     let mut had_failure = false;
     let mut catch_up = false;
     let mut warm = Some(warm);
-    let mut next_maintenance = std::time::Instant::now();
+    let mut next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         // Polling while catching up observes channel closure between batches;
         // continuous capture cannot keep a dropped runtime alive indefinitely.
@@ -118,11 +148,9 @@ fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>, warm: mpsc::Sender<
                     let _ = warm.send(());
                 }
                 if !catch_up && std::time::Instant::now() >= next_maintenance {
-                    // Maintenance runs independently of capture and reports.
-                    // A held report pin simply defers reclamation to a later pass.
-                    if crate::reclamation::reclaim(&root).is_err() {
-                        tracing::debug!("usage storage reclamation deferred after failure");
-                    }
+                    // Retention has its own worker and never holds up catch-up
+                    // or startup warming. A pending request coalesces later wakes.
+                    let _ = maintenance.try_send(());
                     next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
                 }
                 had_failure = false;

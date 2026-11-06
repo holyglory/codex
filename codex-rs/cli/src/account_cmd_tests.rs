@@ -43,24 +43,52 @@ fn parser_requires_an_explicit_credit_usage_mode() {
         ("enabled", super::CreditUsageMode::Enabled),
         ("disabled", super::CreditUsageMode::Disabled),
     ] {
-        let parsed =
-            AccountCommand::try_parse_from(["account", "edit", "alpha", "--credit-usage", value])
-                .expect("explicit credit permission");
-        let AccountAction::Edit(args) = parsed.action else {
-            panic!("expected account edit");
-        };
-        assert_eq!(args.credit_usage, Some(expected));
+        for changes in [vec![], vec!["--priority", "42", "--note", "updated"]] {
+            let parsed = crate::config_override_args::try_parse_from(
+                ["codex", "account", "edit", "alpha", "--credit-usage", value]
+                    .into_iter()
+                    .chain(changes.iter().copied()),
+            )
+            .expect("explicit credit permission through the CLI entrypoint");
+            let Some(crate::Subcommand::Account(parsed)) = parsed.subcommand else {
+                panic!("expected account command");
+            };
+            let AccountAction::Edit(args) = parsed.action else {
+                panic!("expected account edit");
+            };
+            let combined = !changes.is_empty();
+            assert_eq!(
+                (args.credit_usage, args.priority, args.note),
+                (
+                    Some(expected),
+                    combined.then_some(/*t*/ 42),
+                    combined.then(|| "updated".to_string()),
+                )
+            );
+        }
     }
     for invalid in ["true", "1", "ENABLED"] {
         assert!(
-            AccountCommand::try_parse_from(
-                ["account", "edit", "alpha", "--credit-usage", invalid,]
-            )
+            crate::config_override_args::try_parse_from([
+                "codex",
+                "account",
+                "edit",
+                "alpha",
+                "--credit-usage",
+                invalid,
+            ])
             .is_err()
         );
     }
     assert!(
-        AccountCommand::try_parse_from(["account", "edit", "alpha", "--credit-usage",]).is_err()
+        crate::config_override_args::try_parse_from([
+            "codex",
+            "account",
+            "edit",
+            "alpha",
+            "--credit-usage",
+        ])
+        .is_err()
     );
 }
 

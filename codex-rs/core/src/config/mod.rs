@@ -997,6 +997,9 @@ pub struct Config {
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
 
+    /// Retention thresholds for the local usage collector.
+    pub usage: codex_usage::RetentionPolicy,
+
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
@@ -3370,6 +3373,11 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        if let Some(usage) = cfg.usage.as_ref() {
+            usage.validate().map_err(|message| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
+            })?;
+        }
         for (slot, dial) in cfg.tui.iter().flat_map(|tui| &tui.quick_dials) {
             if !matches!(slot.as_bytes(), [b'0'..=b'9']) {
                 return Err(std::io::Error::new(
@@ -3704,6 +3712,17 @@ impl Config {
                 "config defines `[permissions]` profiles but does not set `default_permissions`",
             ));
         }
+
+        let usage_toml = cfg.usage.clone().unwrap_or_default();
+        let usage_defaults = codex_usage::RetentionPolicy::default();
+        let usage = codex_usage::RetentionPolicy {
+            raw_retention_days: usage_toml
+                .raw_retention_days
+                .unwrap_or(usage_defaults.raw_retention_days),
+            inactive_chat_days: usage_toml
+                .inactive_chat_days
+                .unwrap_or(usage_defaults.inactive_chat_days),
+        };
 
         let mut memories = cfg.memories.clone().unwrap_or_default();
         // Fresh profiles have no V1 context to preserve or warm up before using V2.
@@ -4642,6 +4661,7 @@ impl Config {
                 })
                 .transpose()?,
             memories: memories_config,
+            usage,
             agent_interrupt_message_enabled,
             codex_home,
             sqlite,

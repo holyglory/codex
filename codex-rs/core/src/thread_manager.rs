@@ -624,9 +624,12 @@ impl ThreadManager {
         let codex_home = config.codex_home.clone();
         let usage_capture = crate::usage_capture::UsageCaptureRuntime::new(codex_home.as_path());
         let extensions = usage_capture.instrument_extensions(extensions);
-        let usage_publisher = codex_usage::UsagePublisherRuntime::start(codex_home.to_path_buf())
-            .map_err(|_| tracing::warn!("local usage publisher is unavailable"))
-            .ok();
+        let usage_publisher = codex_usage::UsagePublisherRuntime::start_with_retention(
+            codex_home.to_path_buf(),
+            config.usage,
+        )
+        .map_err(|_| tracing::warn!("local usage publisher is unavailable"))
+        .ok();
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(

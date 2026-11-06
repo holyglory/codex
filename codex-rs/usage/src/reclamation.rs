@@ -71,6 +71,7 @@ pub(crate) fn reclaim(root: &Path) -> Result<Reclamation> {
                 "lineage-",
                 "record-id-",
                 "review-",
+                "rollup-",
             ]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -92,6 +93,7 @@ pub(crate) fn reclaim(root: &Path) -> Result<Reclamation> {
 fn retained_files(root: &Path, manifest: &UsageManifest) -> Result<BTreeSet<String>> {
     let mut files = BTreeSet::new();
     files.extend(manifest.segment_files.iter().cloned());
+    files.extend(manifest.token_rollup_files.iter().cloned());
     files.extend(manifest.correction_files.iter().cloned());
     files.extend(manifest.membership_file.iter().cloned());
     files.extend(manifest.membership_files.iter().cloned());

@@ -56,6 +56,15 @@ pub struct UsageManifest {
     /// crash between segment publication and manifest replacement.
     #[serde(default)]
     pub segment_files: Vec<String>,
+    /// Immutable aggregates replacing retired raw observations.
+    #[serde(default)]
+    pub token_rollup_files: Vec<String>,
+    /// Number of observations retained as aggregate values only.
+    #[serde(default)]
+    pub retired_observations: u64,
+    /// Background scan position; never used to select foreground report data.
+    #[serde(default)]
+    pub retention_scan_offset: usize,
     /// Complete immutable dimension/hour membership index, relative to segments.
     /// None preserves safe query fallback for manifests without an index.
     #[serde(default)]
@@ -117,6 +126,9 @@ impl Default for UsageManifest {
             applied_correction_ids: BTreeSet::new(),
             summaries_include_corrections: false,
             segment_files: Vec::new(),
+            token_rollup_files: Vec::new(),
+            retired_observations: 0,
+            retention_scan_offset: 0,
             membership_file: None,
             membership_files: Vec::new(),
             lineage_file: None,

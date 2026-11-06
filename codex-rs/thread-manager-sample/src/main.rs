@@ -338,6 +338,7 @@ async fn new_config(
         agent_max_depth: 1,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
+        usage: Default::default(),
         sqlite: SqliteConfig::from_sqlite_home_with_nfs_enforcement(
             codex_home.clone(),
             /*enforce_delete_on_nfs*/ false,

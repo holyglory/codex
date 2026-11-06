@@ -338,6 +338,14 @@ impl UsagePublisher {
             })?;
             if let Some(identity) = identities.get(&correction.record_id) {
                 apply_delta(&mut manifest, identity, &correction.totals())?;
+                if let Some(thread) = &identity.thread {
+                    let at_ms = correction.observed_at.saturating_mul(1_000);
+                    manifest
+                        .thread_last_activity_at_ms
+                        .entry(thread.clone())
+                        .and_modify(|previous| *previous = (*previous).max(at_ms))
+                        .or_insert(at_ms);
+                }
                 manifest.applied_correction_ids.insert(id);
             } else {
                 // Rotate unresolved targets so they cannot starve later resolvable IDs.

@@ -152,7 +152,7 @@ struct RenameArgs {
     clap::ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["priority", "credit_usage", "note", "clear_note"])
+        .args(["priority", "note", "clear_note"])
 ))]
 struct EditArgs {
     #[arg(value_name = "ACCOUNT")]
@@ -162,7 +162,7 @@ struct EditArgs {
     priority: Option<u32>,
 
     /// Permit automatic credit fallback after included usage at this priority is exhausted.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, hide = true)]
     credit_usage: Option<CreditUsageMode>,
 
     #[arg(long, value_name = "TEXT", conflicts_with = "clear_note")]
