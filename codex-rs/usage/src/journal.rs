@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::error::StorageError;
+use crate::journal_rotation::JournalBase;
 use crate::model::JournalSequence;
 use crate::model::UsageCorrection;
 use crate::model::UsageRecord;
@@ -152,9 +153,12 @@ impl UsageJournal {
         if payloads.is_empty() {
             return Ok(Vec::new());
         }
+        let writer_lock = storage_file::open_read_write(&self.path.with_extension("lock"))?;
+        writer_lock.lock()?;
         let mut file = storage_file::open_append(&self.path)?;
         file.lock()?;
         let length = file.metadata()?.len();
+        let base = JournalBase::read(&mut file)?;
         let mut checkpoint = tail_checkpoint(&mut file, length)?;
         #[cfg(unix)]
         let needs_directory_sync = checkpoint.byte_offset == 0;
@@ -162,8 +166,9 @@ impl UsageJournal {
             .sequence
             .checked_add(payloads.len() as u64)
             .ok_or_else(|| StorageError::InvalidData("journal sequence exhausted".into()))?;
-        if checkpoint.byte_offset != length {
-            file.set_len(checkpoint.byte_offset)?;
+        let complete_length = base.physical_offset(checkpoint.byte_offset)?;
+        if complete_length != length {
+            file.set_len(complete_length)?;
         }
         let mut positions = Vec::with_capacity(payloads.len());
         for payload in payloads {
@@ -261,12 +266,19 @@ impl UsageJournal {
         let mut file = File::open(&self.path)?;
         storage_file::protect_existing(&self.path)?;
         file.lock_shared()?;
-        if target.byte_offset > file.metadata()?.len() {
+        let base = JournalBase::read(&mut file)?;
+        if after.sequence < base.checkpoint.sequence {
+            return Err(StorageError::InvalidData(
+                "journal checkpoint was retired".into(),
+            ));
+        }
+        if base.physical_offset(target.byte_offset)? > file.metadata()?.len() {
             return Err(StorageError::InvalidData(
                 "journal checkpoint past end".into(),
             ));
         }
-        for offset in [after.byte_offset, target.byte_offset] {
+        for logical in [after.byte_offset, target.byte_offset] {
+            let offset = base.physical_offset(logical)?;
             if offset == 0 {
                 continue;
             }
@@ -282,7 +294,7 @@ impl UsageJournal {
         if after == target {
             return Ok(batch);
         }
-        file.seek(SeekFrom::Start(after.byte_offset))?;
+        file.seek(SeekFrom::Start(base.physical_offset(after.byte_offset)?))?;
         file.unlock()?;
         let byte_limit = limits.max_bytes.min(target.byte_offset - after.byte_offset);
         let mut reader = BufReader::with_capacity(
@@ -412,7 +424,21 @@ impl UsageJournal {
     }
 
     fn read_entries(&self) -> Result<Vec<JournalEntry>> {
-        Ok(self.read_from(JournalCheckpoint::default())?.0)
+        let Some((mut file, target)) = self.snapshot()? else {
+            return Ok(Vec::new());
+        };
+        let base = JournalBase::read(&mut file)?;
+        drop(file);
+        Ok(self
+            .read_batch(
+                base.checkpoint,
+                target,
+                JournalReadLimits {
+                    max_bytes: u64::MAX,
+                    max_entries: usize::MAX,
+                },
+            )?
+            .entries)
     }
 }
 
@@ -448,24 +474,36 @@ impl Read for SnapshotReader {
     }
 }
 
-fn tail_checkpoint(file: &mut File, length: u64) -> Result<JournalCheckpoint> {
+pub(crate) fn tail_checkpoint(file: &mut File, length: u64) -> Result<JournalCheckpoint> {
+    let base = JournalBase::read(file)?;
+    if length < base.header_bytes {
+        return Err(StorageError::InvalidData(
+            "incomplete journal header".into(),
+        ));
+    }
     let Some(end) = previous_newline(file, length)? else {
         return Ok(JournalCheckpoint::default());
     };
+    if end < base.header_bytes {
+        return Ok(base.checkpoint);
+    }
     let start = previous_newline(file, end)?.map_or(0, |offset| offset + 1);
     file.seek(SeekFrom::Start(start))?;
     let mut line = Vec::new();
     file.take(end - start).read_to_end(&mut line)?;
     let entry: JournalEntry = serde_json::from_slice(&line)
         .map_err(|error| StorageError::InvalidData(format!("journal byte {start}: {error}")))?;
-    if entry.sequence == 0 || (start == 0 && entry.sequence != 1) {
+    if entry.sequence <= base.checkpoint.sequence
+        || (start == base.header_bytes
+            && Some(entry.sequence) != base.checkpoint.sequence.checked_add(1))
+    {
         return Err(StorageError::InvalidData(
             "invalid journal tail sequence".into(),
         ));
     }
     Ok(JournalCheckpoint {
         sequence: entry.sequence,
-        byte_offset: end + 1,
+        byte_offset: base.logical_offset(end + 1)?,
     })
 }
 

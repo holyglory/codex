@@ -75,6 +75,51 @@ fn restart_checkpoint_replays_only_new_complete_entries() {
     ] {
         assert!(journal.read_from(invalid).is_err());
     }
+    let before = fs::metadata(&path).expect("before retirement").len();
+    assert!(crate::journal_rotation::rotate_prefix(&path, checkpoint).expect("retire prefix"));
+    assert!(fs::metadata(&path).expect("reclaimed bytes").len() < before);
+    assert_eq!(journal.checkpoint().expect("stable logical end"), consumed);
+    assert_eq!(
+        journal.read_from(checkpoint).expect("retained tail").0,
+        tail
+    );
+    assert!(journal.read_from(JournalCheckpoint::default()).is_err());
+    assert_eq!(
+        independent
+            .append(payload("fourth"))
+            .expect("append after replacement"),
+        JournalPosition {
+            sequence: 4,
+            byte_offset: consumed.byte_offset
+        }
+    );
+    let complete = journal.checkpoint().expect("new complete checkpoint");
+    assert!(crate::journal_rotation::rotate_prefix(&path, complete).expect("retire complete log"));
+    assert_eq!(
+        journal.checkpoint().expect("header-only checkpoint"),
+        complete
+    );
+    assert!(journal.replay().expect("no retained entries").is_empty());
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("interrupted writer")
+        .write_all(b"{\"sequence\":5")
+        .expect("partial entry after header");
+    assert_eq!(
+        journal.checkpoint().expect("ignore partial suffix"),
+        complete
+    );
+    journal
+        .append(payload("fifth"))
+        .expect("recover append after retirement");
+    assert_eq!(
+        journal.replay().expect("retained fifth entry"),
+        vec![JournalEntry {
+            sequence: 5,
+            payload: payload("fifth"),
+        }]
+    );
 }
 
 #[test]
@@ -192,6 +237,10 @@ fn independent_processes_append_one_contiguous_log() {
         let (entries, checkpoint) = journal.read_from(consumed).expect("concurrent replay");
         observed.extend(entries);
         consumed = checkpoint;
+        if index % 5 == 0 {
+            crate::journal_rotation::rotate_prefix(&path, consumed)
+                .expect("rotate while independent processes append");
+        }
     }
     let statuses: Vec<_> = children
         .iter_mut()
@@ -201,17 +250,19 @@ fn independent_processes_append_one_contiguous_log() {
         statuses.iter().all(std::process::ExitStatus::success),
         "{statuses:?}"
     );
-    let entries = journal.replay().expect("all writers replay");
     observed.extend(journal.read_from(consumed).expect("final replay").0);
-    assert_eq!(observed, entries);
     assert_eq!(
-        entries
+        observed
             .iter()
             .map(|entry| entry.sequence)
             .collect::<Vec<_>>(),
         (1..=200).collect::<Vec<_>>()
     );
-    let ids: std::collections::BTreeSet<_> = entries
+    assert_eq!(
+        journal.last_sequence().expect("all writers acknowledged"),
+        200
+    );
+    let ids: std::collections::BTreeSet<_> = observed
         .into_iter()
         .map(|entry| match entry.payload {
             JournalPayload::Record(record) => record.id,

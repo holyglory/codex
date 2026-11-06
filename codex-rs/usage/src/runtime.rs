@@ -90,6 +90,7 @@ fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>, warm: mpsc::Sender<
     let mut had_failure = false;
     let mut catch_up = false;
     let mut warm = Some(warm);
+    let mut next_maintenance = std::time::Instant::now();
     loop {
         // Polling while catching up observes channel closure between batches;
         // continuous capture cannot keep a dropped runtime alive indefinitely.
@@ -115,6 +116,14 @@ fn publish_loop(root: PathBuf, receiver: mpsc::Receiver<()>, warm: mpsc::Sender<
                 let _ = crate::review_projection::load_review_projection_shared(&root, &manifest);
                 if !catch_up && let Some(warm) = warm.take() {
                     let _ = warm.send(());
+                }
+                if !catch_up && std::time::Instant::now() >= next_maintenance {
+                    // Maintenance runs independently of capture and reports.
+                    // A held report pin simply defers reclamation to a later pass.
+                    if crate::reclamation::reclaim(&root).is_err() {
+                        tracing::debug!("usage storage reclamation deferred after failure");
+                    }
+                    next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
                 }
                 had_failure = false;
             }

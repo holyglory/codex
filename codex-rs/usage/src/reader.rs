@@ -29,6 +29,7 @@ const REPORT_TAIL_LIMITS: JournalReadLimits = JournalReadLimits {
 /// Opening never decodes historical Parquet rows or acquires the publisher lock.
 #[derive(Debug)]
 pub struct UsageReader {
+    _pin: crate::reclamation::SnapshotPin,
     pub(crate) root: PathBuf,
     pub(crate) manifest: std::sync::Arc<UsageManifest>,
     pub(crate) metadata_revision: u64,
@@ -130,6 +131,7 @@ impl UsageReader {
     /// Pin published metadata and a bounded, complete journal tail.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
+        let pin = crate::reclamation::SnapshotPin::acquire(&root)?;
         let parsed = ManifestStore::new(root.join("manifest.json")).load_shared()?;
         let metadata_revision = parsed.revision;
         let manifest = parsed.value;
@@ -173,6 +175,7 @@ impl UsageReader {
             } => (pending_entries, Freshness::Stale, manifest.watermark),
         };
         Ok(Self {
+            _pin: pin,
             root,
             manifest,
             metadata_revision,

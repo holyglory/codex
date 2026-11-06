@@ -40,6 +40,7 @@ const SEGMENTS_DIRECTORY_NAME: &str = "segments";
 /// segments and an in-memory snapshot/tail query view.
 #[derive(Debug)]
 pub struct UsageStore {
+    _pin: crate::reclamation::SnapshotPin,
     root: PathBuf,
     journal: UsageJournal,
     manifest_store: ManifestStore,
@@ -58,6 +59,7 @@ impl UsageStore {
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         storage_file::ensure_usage_directory(&root)?;
+        let pin = crate::reclamation::SnapshotPin::acquire(&root)?;
         let journal = UsageJournal::new(root.join(JOURNAL_FILE_NAME));
         let manifest_store = ManifestStore::new(root.join(MANIFEST_FILE_NAME));
         let mut manifest = manifest_store.load()?;
@@ -76,6 +78,7 @@ impl UsageStore {
             manifest.add_pending_correction(correction.id.clone());
         }
         Ok(Self {
+            _pin: pin,
             root,
             journal,
             manifest_store,

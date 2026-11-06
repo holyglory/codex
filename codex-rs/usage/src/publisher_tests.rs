@@ -76,6 +76,7 @@ fn lineage_survives_late_parent_facts_stale_publishers_and_restart() {
         .publish_batch(limits())
         .expect("publish known links only");
     assert_private_store(root, &before);
+    let pinned = UsageReader::open_at(root).expect("pin old report generation");
     assert_eq!(
         read_descendant_threads(root, &before, "root", ThreadLineageScope::Descendants, &[])
             .expect("unknown child ancestry"),
@@ -116,8 +117,33 @@ fn lineage_survives_late_parent_facts_stale_publishers_and_restart() {
         vec!["root"]
     );
     assert_eq!(
-        fs::read(root.join("segments").join(first_file)).expect("immutable prior index"),
+        fs::read(root.join("segments").join(&first_file)).expect("immutable prior index"),
         first_bytes
+    );
+    assert_eq!(
+        crate::reclamation::reclaim(root).expect("defer for pinned reader"),
+        crate::reclamation::Reclamation::default()
+    );
+    assert_eq!(
+        pinned
+            .thread_scope("root", ThreadLineageScope::Descendants)
+            .expect("pinned report"),
+        vec!["root"]
+    );
+    drop(pinned);
+    let checkpoint = journal.checkpoint().expect("before retirement");
+    let reclaimed = crate::reclamation::reclaim(root).expect("reclaim obsolete generations");
+    assert!(reclaimed.files_removed > 0);
+    assert!(reclaimed.journal_rotated);
+    assert!(!root.join("segments").join(first_file).exists());
+    assert_eq!(journal.checkpoint().expect("stable frontier"), checkpoint);
+    assert!(fs::metadata(journal.path()).expect("retired journal").len() < checkpoint.byte_offset);
+    assert_eq!(
+        UsageReader::open_at(root)
+            .expect("reopen report")
+            .thread_scope("root", ThreadLineageScope::Descendants)
+            .expect("retained lineage"),
+        vec!["child", "grandchild", "root"]
     );
     journal
         .append_record(linked_record("same-parent-confirmed", "child", "root"))
