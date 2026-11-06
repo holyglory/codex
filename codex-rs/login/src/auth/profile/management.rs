@@ -25,6 +25,8 @@ pub struct ManagedAccountSummary {
     pub alias: String,
     pub auth_mode: AuthMode,
     pub enabled: bool,
+    /// Whether automatic selection may use this profile's available credits.
+    pub credit_usage_enabled: bool,
     pub authenticated: bool,
     pub priority: u32,
     pub is_default: bool,
@@ -179,6 +181,7 @@ fn summary(
         alias: account.alias.to_string(),
         auth_mode: account.auth_mode,
         enabled: account.enabled,
+        credit_usage_enabled: account.credit_usage_enabled,
         authenticated: auth.is_some(),
         priority: account.priority,
         is_default: registry.default_account_id.as_ref() == Some(&account.id),

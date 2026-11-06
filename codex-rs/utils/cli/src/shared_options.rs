@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct SharedCliOptions {
+    /// Pin this invocation to one local account alias or ID.
+    #[arg(long, value_name = "ALIAS_OR_ID")]
+    pub account: Option<String>,
     /// Optional image(s) to attach to the initial prompt.
     #[arg(
         long = "image",
@@ -97,6 +100,7 @@ impl SharedCliOptions {
             || self.auto_review
             || self.dangerously_bypass_approvals_and_sandbox;
         let Self {
+            account,
             images,
             model,
             oss,
@@ -111,6 +115,7 @@ impl SharedCliOptions {
             add_dir,
         } = self;
         let Self {
+            account: root_account,
             images: root_images,
             model: root_model,
             oss: root_oss,
@@ -124,6 +129,10 @@ impl SharedCliOptions {
             worktree: root_worktree,
             add_dir: root_add_dir,
         } = root;
+
+        if account.is_none() {
+            account.clone_from(root_account);
+        }
 
         if model.is_none() {
             model.clone_from(root_model);
@@ -167,6 +176,7 @@ impl SharedCliOptions {
             || subcommand.auto_review
             || subcommand.dangerously_bypass_approvals_and_sandbox;
         let Self {
+            account,
             images,
             model,
             oss,
@@ -180,6 +190,10 @@ impl SharedCliOptions {
             worktree,
             add_dir,
         } = subcommand;
+
+        if account.is_some() {
+            self.account = account;
+        }
 
         if let Some(model) = model {
             self.model = Some(model);

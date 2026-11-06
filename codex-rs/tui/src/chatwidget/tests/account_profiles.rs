@@ -12,8 +12,17 @@ use codex_app_server_protocol::AccountProfileRateLimitReadResponse;
 use codex_app_server_protocol::AccountProfileUpdateParams;
 use codex_app_server_protocol::AccountProfileUpdateResponse;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::MultiAccountCapability;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+
+fn enable_profiles(chat: &mut ChatWidget) {
+    chat.set_account_profiles_capability(Some(&MultiAccountCapability {
+        version: 2,
+        supports_managed_login: true,
+        supports_auto_selection: true,
+    }));
+}
 
 fn profile(alias: &str, active: bool) -> AccountProfile {
     AccountProfile {
@@ -66,7 +75,7 @@ fn normalized_text(text: &str) -> String {
 #[tokio::test]
 async fn account_selector_populated_wide_and_narrow_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     chat.open_account_command("");
     let Ok(AppEvent::RefreshAccountProfiles {
         request_id,
@@ -115,7 +124,7 @@ async fn account_selector_populated_wide_and_narrow_snapshot() {
 #[tokio::test]
 async fn account_selector_empty_error_and_long_alias_states_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     let request = AccountProfilesRequest::List {
         cursor: None,
         after: AccountPostListAction::Show,
@@ -170,7 +179,7 @@ async fn account_selector_empty_error_and_long_alias_states_snapshot() {
 #[tokio::test]
 async fn activation_remove_auto_and_validation_actions_are_functional() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     let candidate = profile("candidate", /*active*/ false);
     chat.show_account_actions(candidate.clone());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -233,6 +242,7 @@ async fn activation_remove_auto_and_validation_actions_are_functional() {
 #[tokio::test]
 async fn note_edit_clear_and_cancel_restore_account_context() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    enable_profiles(&mut chat);
     let mut candidate = profile("notes", /*active*/ false);
     candidate.note = Some("existing note".to_string());
 
@@ -286,6 +296,7 @@ async fn note_edit_clear_and_cancel_restore_account_context() {
 #[tokio::test]
 async fn mutation_validation_returns_to_the_correct_editor_with_input() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    enable_profiles(&mut chat);
     let candidate = profile("correctable", /*active*/ false);
     chat.account_profiles = vec![candidate.clone()];
 
@@ -378,6 +389,121 @@ fn account_command_is_hidden_without_capability() {
     );
 }
 
+#[tokio::test]
+async fn account_command_uses_server_capability_instead_of_local_storage() {
+    for mode in [
+        codex_config::types::AuthCredentialsStoreMode::File,
+        codex_config::types::AuthCredentialsStoreMode::Ephemeral,
+    ] {
+        for version in [None, Some(2), Some(3)] {
+            let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+            chat.config.cli_auth_credentials_store_mode = mode;
+            let capability = version.map(|version| MultiAccountCapability {
+                version,
+                supports_managed_login: true,
+                supports_auto_selection: true,
+            });
+            chat.set_account_profiles_capability(capability.as_ref());
+            chat.open_account_command("list");
+            let mut requests = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let AppEvent::RefreshAccountProfiles { request, .. } = event {
+                    requests.push(request);
+                }
+            }
+            assert_eq!(chat.account_profiles_supported(), version == Some(2));
+            assert_eq!(requests.len(), usize::from(version == Some(2)));
+        }
+    }
+}
+
+#[tokio::test]
+async fn account_selector_disables_actions_the_server_does_not_support() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let capability = MultiAccountCapability {
+        version: 2,
+        supports_managed_login: false,
+        supports_auto_selection: false,
+    };
+    chat.set_account_profiles_capability(Some(&capability));
+    chat.open_account_command("list");
+    let Ok(AppEvent::RefreshAccountProfiles {
+        request_id,
+        request,
+    }) = rx.try_recv()
+    else {
+        panic!("profile list request");
+    };
+    let mut data = list_data(vec![profile("primary", /*active*/ true)]);
+    data.auto_selection = None;
+    chat.finish_account_profiles_request(
+        request_id,
+        request,
+        Ok(AccountProfilesResponse::List(data)),
+    );
+    let wide = render_bottom_popup(&chat, /*width*/ 96);
+    let narrow = render_bottom_popup(&chat, /*width*/ 40);
+    assert!(wide.contains("Add account"));
+    assert!(wide.contains("Automatic selection"));
+    assert!(wide.contains("Unavailable on this server"));
+    assert_chatwidget_snapshot!(
+        "account_selector_server_capabilities",
+        [wide, narrow].join("\n---\n")
+    );
+    chat.open_account_command("add backup");
+    chat.open_account_command("auto");
+    chat.open_account_profiles_request(AccountProfilesRequest::LoginStart {
+        alias: "backup".to_string(),
+        choice: AccountLoginChoice::Browser,
+    });
+    chat.open_account_profiles_request(AccountProfilesRequest::AutoWrite { enabled: true });
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::RefreshAccountProfiles { .. }),
+            "unsupported actions must not issue requests"
+        );
+    }
+    chat.open_account_command("list");
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshAccountProfiles {
+            request: AccountProfilesRequest::List { .. },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn account_actions_respect_independent_server_feature_flags() {
+    for (managed_login, automatic_selection) in [(true, false), (false, true)] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.set_account_profiles_capability(Some(&MultiAccountCapability {
+            version: 2,
+            supports_managed_login: managed_login,
+            supports_auto_selection: automatic_selection,
+        }));
+        chat.open_account_command("auto");
+        let mut auto_requested = false;
+        while let Ok(event) = rx.try_recv() {
+            auto_requested |= matches!(
+                event,
+                AppEvent::RefreshAccountProfiles {
+                    request: AccountProfilesRequest::AutoRead,
+                    ..
+                }
+            );
+        }
+        assert_eq!(auto_requested, automatic_selection);
+        chat.show_account_login_choice("new".to_string());
+        assert_eq!(
+            render_bottom_popup(&chat, /*width*/ 80)
+                .to_ascii_lowercase()
+                .contains("browser"),
+            managed_login
+        );
+    }
+}
+
 #[test]
 fn account_list_response_shape_remains_content_free_in_ui_fixture() {
     let response = AccountProfileListResponse {
@@ -390,7 +516,7 @@ fn account_list_response_shape_remains_content_free_in_ui_fixture() {
 #[tokio::test]
 async fn successful_mutations_refresh_and_reveal_the_changed_profile() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     let mut changed = profile("changed", /*active*/ false);
     let activate = AccountProfilesRequest::Activate {
         account_id: changed.id.clone(),
@@ -487,7 +613,7 @@ async fn successful_mutations_refresh_and_reveal_the_changed_profile() {
 #[tokio::test]
 async fn non_chatgpt_activation_with_auto_selection_has_honest_notice_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     let mut candidate = profile("metered", /*active*/ false);
     candidate.auth_mode = AuthMode::PersonalAccessToken;
 
@@ -570,7 +696,7 @@ async fn non_chatgpt_activation_with_auto_selection_has_honest_notice_snapshot()
 #[tokio::test]
 async fn active_change_notification_does_not_supersede_in_flight_activation() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     let mut candidate = profile("candidate", /*active*/ false);
     let activation = AccountProfilesRequest::Activate {
         account_id: candidate.id.clone(),
@@ -616,7 +742,7 @@ async fn active_change_notification_does_not_supersede_in_flight_activation() {
 #[tokio::test]
 async fn failed_login_notification_refreshes_with_an_honest_notice() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_account_profiles_supported(/*supported*/ true);
+    enable_profiles(&mut chat);
     chat.open_account_command("");
     let Ok(AppEvent::RefreshAccountProfiles {
         request_id,

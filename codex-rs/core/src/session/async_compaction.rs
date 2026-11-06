@@ -27,6 +27,7 @@ struct CompactionAttempt {
     model_slug: String,
     compaction_hash: Option<String>,
     auth_owner_generation: Option<u64>,
+    local_profile_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -90,13 +91,14 @@ pub(super) async fn maybe_start(
             model_slug: model_info.slug.clone(),
             compaction_hash: model_info.comp_hash.clone(),
             auth_owner_generation,
+            local_profile_id: turn_context.local_profile_id(),
         };
         // Stop blocks new launches; already-running compaction remains session-owned.
         if turn_cancellation.is_cancelled()
             || state.shutting_down
             || state.async_compaction.last_attempt.as_ref() == Some(&attempt)
             || state.history.annotated_items().is_empty()
-            || sess.services.model_client.auth_owner_generation() != auth_owner_generation
+            || turn_context.auth_owner_generation() != auth_owner_generation
         {
             return;
         }
@@ -169,7 +171,16 @@ pub(super) async fn take_ready(
         // try_recv consumes a closed receiver; awaiting it later would panic.
         Err(oneshot::error::TryRecvError::Closed) => return None,
     };
-    (candidate.prefix.generation == state.history.history_version()).then_some(candidate)
+    (candidate.prefix.generation == state.history.history_version()
+        && state
+            .async_compaction
+            .last_attempt
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.local_profile_id == turn_context.local_profile_id()
+                    && attempt.auth_owner_generation == turn_context.auth_owner_generation()
+            }))
+    .then_some(candidate)
 }
 
 pub(crate) async fn wait_for_pending(
@@ -187,7 +198,8 @@ pub(crate) async fn wait_for_pending(
         if attempt.history_version != state.history.history_version()
             || attempt.model_slug != model.slug
             || attempt.compaction_hash != model.comp_hash
-            || attempt.auth_owner_generation != sess.services.model_client.auth_owner_generation()
+            || attempt.auth_owner_generation != step_context.turn.auth_owner_generation()
+            || attempt.local_profile_id != step_context.turn.local_profile_id()
         {
             return None;
         }

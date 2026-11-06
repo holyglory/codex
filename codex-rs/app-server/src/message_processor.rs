@@ -90,7 +90,6 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
-use codex_login::RouterExternalAuthState;
 use codex_login::SharedProfileAuthRouter;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
@@ -314,6 +313,19 @@ impl MessageProcessor {
         let gateway_login_control =
             codex_login::GatewayLoginControl::for_runtime(&auth_manager.runtime_config());
         gateway_login_control.require_explicit_login();
+        let profile_auth_router = match &config.process_account {
+            Some(account) => SharedProfileAuthRouter::new_pinned(
+                config.auth_config(),
+                account.clone(),
+                codex_core::router_external_auth_state(&config),
+                Arc::clone(&auth_manager),
+            ),
+            None => SharedProfileAuthRouter::new_with_external_auth(
+                config.auth_config(),
+                codex_core::router_external_auth_state(&config),
+                Arc::clone(&auth_manager),
+            ),
+        };
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
         // The thread store is intentionally process-scoped. Config reloads can
@@ -396,6 +408,7 @@ impl MessageProcessor {
                     Some(time_provider)
                 },
             );
+            let manager = manager.with_profile_auth_router(profile_auth_router.clone());
             match code_mode_session_provider {
                 Some(provider) => manager.with_code_mode_session_provider(provider),
                 None => manager,
@@ -448,11 +461,6 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
             Arc::clone(&model_catalog),
-        );
-        let profile_auth_router = SharedProfileAuthRouter::new_with_external_auth(
-            config.auth_config(),
-            RouterExternalAuthState::default(),
-            auth_manager.clone(),
         );
         let account_profile_processor = AccountProfileRequestProcessor::new(
             Arc::clone(&config),

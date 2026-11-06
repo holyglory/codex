@@ -1,3 +1,5 @@
+use std::fs;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::process::Command;
 
@@ -217,6 +219,309 @@ fn independent_processes_append_one_contiguous_log() {
         })
         .collect();
     assert_eq!(ids.len(), 200);
+}
+
+#[test]
+fn bounded_batches_continue_through_one_captured_target() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let journal = UsageJournal::new(&path);
+    let expected = ["one", "two", "three", "four", "five"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| JournalEntry {
+            sequence: index as u64 + 1,
+            payload: payload(id),
+        })
+        .collect::<Vec<_>>();
+    journal
+        .append_batch(expected.iter().map(|entry| entry.payload.clone()).collect())
+        .expect("initial append");
+    let target = journal.checkpoint().expect("captured target");
+    UsageJournal::new(&path)
+        .append(payload("later"))
+        .expect("independent later append");
+    let limits = JournalReadLimits {
+        max_bytes: u64::MAX,
+        max_entries: 2,
+    };
+    let mut after = JournalCheckpoint::default();
+    let mut collected = Vec::new();
+    for chunk in expected.chunks(2) {
+        let batch = journal
+            .read_batch(after, target, limits)
+            .expect("bounded batch");
+        assert_eq!(batch.entries.as_slice(), chunk);
+        assert_eq!(batch.target, target);
+        assert_eq!(
+            batch.status,
+            if batch.next == target {
+                JournalReadStatus::Complete
+            } else {
+                JournalReadStatus::More
+            }
+        );
+        after = batch.next;
+        collected.extend(batch.entries);
+    }
+    assert_eq!(collected, expected);
+    assert_eq!(after, target);
+    assert_eq!(
+        journal
+            .read_batch(target, target, limits)
+            .expect("caught up"),
+        JournalReadBatch {
+            entries: Vec::new(),
+            next: target,
+            target,
+            status: JournalReadStatus::Complete,
+        }
+    );
+    assert_eq!(journal.last_sequence().expect("later append retained"), 6);
+}
+
+#[test]
+fn byte_limits_never_skip_an_entry_that_cannot_fit() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let journal = UsageJournal::new(&path);
+    let first = JournalEntry {
+        sequence: 1,
+        payload: payload("one"),
+    };
+    journal.append(first.payload.clone()).expect("first append");
+    let first_end = journal.checkpoint().expect("first checkpoint");
+    let second = JournalEntry {
+        sequence: 2,
+        payload: payload(&"large".repeat(10_000)),
+    };
+    let third = JournalEntry {
+        sequence: 3,
+        payload: payload("three"),
+    };
+    journal
+        .append_batch(vec![second.payload.clone(), third.payload.clone()])
+        .expect("remaining appends");
+    let target = journal.checkpoint().expect("target");
+    let original = fs::read(&path).expect("canonical bytes");
+    let limits = JournalReadLimits {
+        max_bytes: first_end.byte_offset + 13,
+        max_entries: 3,
+    };
+    assert_eq!(
+        journal
+            .read_batch(JournalCheckpoint::default(), target, limits)
+            .expect("first bounded read"),
+        JournalReadBatch {
+            entries: vec![first],
+            next: first_end,
+            target,
+            status: JournalReadStatus::More,
+        }
+    );
+    assert_eq!(
+        journal
+            .read_batch(first_end, target, limits)
+            .expect("oversized entry"),
+        JournalReadBatch {
+            entries: Vec::new(),
+            next: first_end,
+            target,
+            status: JournalReadStatus::EntryExceedsByteLimit {
+                minimum_bytes: limits.max_bytes + 1
+            },
+        }
+    );
+    let larger = JournalReadLimits {
+        max_bytes: target.byte_offset - first_end.byte_offset,
+        ..limits
+    };
+    assert_eq!(
+        journal
+            .read_batch(first_end, target, larger)
+            .expect("resume with explicit larger budget"),
+        JournalReadBatch {
+            entries: vec![second, third],
+            next: target,
+            target,
+            status: JournalReadStatus::Complete,
+        }
+    );
+    assert_eq!(fs::read(&path).expect("retained bytes"), original);
+}
+
+#[test]
+fn report_overlay_is_complete_or_explicitly_deferred_without_mutation() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let journal = UsageJournal::new(&path);
+    journal
+        .append(payload("published"))
+        .expect("published entry");
+    let published = journal.checkpoint().expect("published checkpoint");
+    let expected = vec![
+        JournalEntry {
+            sequence: 2,
+            payload: payload("second"),
+        },
+        JournalEntry {
+            sequence: 3,
+            payload: payload("third"),
+        },
+    ];
+    journal
+        .append_batch(expected.iter().map(|entry| entry.payload.clone()).collect())
+        .expect("unpublished tail");
+    let target = journal.checkpoint().expect("complete tail target");
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("interrupted writer")
+        .write_all(b"{\"sequence\":4")
+        .expect("torn suffix");
+    let original = fs::read(&path).expect("original canonical bytes");
+    let pending_bytes = target.byte_offset - published.byte_offset;
+    for limits in [
+        JournalReadLimits {
+            max_bytes: u64::MAX,
+            max_entries: 1,
+        },
+        JournalReadLimits {
+            max_bytes: pending_bytes - 1,
+            max_entries: 2,
+        },
+    ] {
+        assert_eq!(
+            journal
+                .read_tail(published, limits)
+                .expect("deferred overlay"),
+            JournalTailRead::Deferred {
+                target,
+                pending_entries: 2,
+                pending_bytes
+            }
+        );
+    }
+    assert_eq!(
+        journal
+            .read_tail(
+                published,
+                JournalReadLimits {
+                    max_bytes: pending_bytes,
+                    max_entries: 2
+                }
+            )
+            .expect("complete overlay"),
+        JournalTailRead::Complete(JournalReadBatch {
+            entries: expected,
+            next: target,
+            target,
+            status: JournalReadStatus::Complete,
+        })
+    );
+    assert_eq!(fs::read(&path).expect("retained canonical bytes"), original);
+}
+
+#[test]
+fn bounded_reads_do_not_replay_history_before_the_checkpoint() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let journal = UsageJournal::new(&path);
+    let limits = JournalReadLimits {
+        max_bytes: 8 * 1024,
+        max_entries: 1,
+    };
+    assert_eq!(
+        journal
+            .read_tail(JournalCheckpoint::default(), limits)
+            .expect("absent journal"),
+        JournalTailRead::Complete(JournalReadBatch {
+            entries: Vec::new(),
+            next: JournalCheckpoint::default(),
+            target: JournalCheckpoint::default(),
+            status: JournalReadStatus::Complete,
+        })
+    );
+    assert!(!path.exists());
+    journal.append(payload("historical")).expect("old entry");
+    let after = journal.checkpoint().expect("saved checkpoint");
+    let expected = JournalEntry {
+        sequence: 2,
+        payload: payload("new"),
+    };
+    journal.append(expected.payload.clone()).expect("new entry");
+    let target = journal.checkpoint().expect("target");
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("isolated damaged history")
+        .write_all(b"x")
+        .expect("damage old entry");
+    assert_eq!(
+        journal
+            .read_batch(after, target, limits)
+            .expect("only new range decoded"),
+        JournalReadBatch {
+            entries: vec![expected],
+            next: target,
+            target,
+            status: JournalReadStatus::Complete,
+        }
+    );
+    assert!(journal.replay().is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn private_usage_files_do_not_change_generic_or_codex_home_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempdir().expect("isolated owner directory");
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(/*mode*/ 0o755))
+        .expect("owner boundary mode");
+    let generic = UsageJournal::new(directory.path().join("standalone.jsonl"));
+    generic
+        .append(payload("generic"))
+        .expect("private standalone append");
+    codex_private_storage::verify_private_file(generic.path()).expect("private standalone journal");
+    assert_eq!(
+        fs::metadata(directory.path())
+            .expect("unchanged generic parent")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    let root = directory.path().join(crate::USAGE_DIRECTORY_NAME);
+    fs::create_dir_all(&root).expect("existing usage directory");
+    fs::set_permissions(&root, fs::Permissions::from_mode(/*mode*/ 0o755))
+        .expect("old broad directory mode");
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal
+        .append(payload("first"))
+        .expect("first private append");
+    let prefix = fs::read(journal.path()).expect("acknowledged prefix");
+    fs::set_permissions(journal.path(), fs::Permissions::from_mode(/*mode*/ 0o644))
+        .expect("old broad file mode");
+    journal
+        .append(payload("second"))
+        .expect("repair permissions before append");
+    codex_private_storage::verify_private_directory(&root).expect("private usage namespace");
+    codex_private_storage::verify_private_file(journal.path())
+        .expect("private acknowledged journal");
+    assert!(
+        fs::read(journal.path())
+            .expect("retained facts")
+            .starts_with(&prefix)
+    );
+    assert_eq!(journal.replay().expect("all facts remain").len(), 2);
+    assert_eq!(
+        fs::metadata(directory.path())
+            .expect("unchanged CODEX_HOME owner boundary")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
 }
 
 #[test]

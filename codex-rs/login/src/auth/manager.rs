@@ -2231,6 +2231,7 @@ pub struct AuthManager {
     auth_change_tx: watch::Sender<u64>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
     workspace_routing_resolver: OnceLock<Weak<dyn WorkspaceRoutingResolver>>,
+    inherited_workspace_routing_resolver: OnceLock<Arc<dyn WorkspaceRoutingResolver>>,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -2388,6 +2389,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: None,
             enable_codex_api_key_env,
             auth_credentials_store_mode,
@@ -2443,6 +2445,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: Some(local_profile_id),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode,
@@ -2461,9 +2464,26 @@ impl AuthManager {
         }))
     }
 
-    pub(super) fn inherit_workspace_routing_resolver(&self, owner: &Arc<Self>) {
-        if let Some(resolver) = owner.workspace_routing_resolver.get() {
-            let _ = self.workspace_routing_resolver.set(Weak::clone(resolver));
+    pub(super) fn inherit_workspace_routing_resolver(self: &Arc<Self>, owner: &Arc<Self>) {
+        if self.workspace_routing_resolver.get().is_some() {
+            return;
+        }
+        let Some(resolver) = owner
+            .workspace_routing_resolver
+            .get()
+            .and_then(Weak::upgrade)
+        else {
+            return;
+        };
+        if let Some(bound) = Arc::clone(&resolver).for_auth_manager(Arc::downgrade(self)) {
+            let bound = self
+                .inherited_workspace_routing_resolver
+                .get_or_init(|| bound);
+            let _ = self.workspace_routing_resolver.set(Arc::downgrade(bound));
+        } else {
+            let _ = self
+                .workspace_routing_resolver
+                .set(Arc::downgrade(&resolver));
         }
     }
 
@@ -2486,6 +2506,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2517,6 +2538,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2552,6 +2574,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2594,6 +2617,7 @@ impl AuthManager {
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
+            inherited_workspace_routing_resolver: OnceLock::new(),
             local_profile_id: None,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,

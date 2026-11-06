@@ -13,6 +13,14 @@ pub(super) async fn run_main_inner(
     loader_overrides: LoaderOverrides,
     mut explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    if cli.account.is_some() {
+        if explicit_remote_endpoint.is_some() || cli.agents_overview {
+            return Err(std::io::Error::other(
+                "--account requires a local session and cannot change an existing server",
+            ));
+        }
+        cli.no_daemon = true;
+    }
     if cli.no_daemon && explicit_remote_endpoint.is_some() {
         return Err(std::io::Error::other(
             "--no-daemon cannot be used with --remote.",
@@ -496,6 +504,7 @@ pub(super) async fn run_main_inner(
     let additional_dirs = cli.add_dir.clone();
 
     let mut overrides = ConfigOverrides {
+        process_account: cli.account.clone(),
         model,
         approval_policy,
         sandbox_mode,

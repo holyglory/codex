@@ -625,6 +625,8 @@ pub enum ThreadStoreConfig {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    /// Invocation-only profile pin; never loaded from or persisted to config.toml.
+    pub process_account: Option<String>,
     /// App-server-owned destination policy; other runtimes remain unmanaged.
     pub application_network_policy: codex_http_client::NetworkPolicy,
     /// Auth bootstrap routing installed by the app-server configuration owner.
@@ -2734,6 +2736,7 @@ fn resolve_permission_config_syntax(
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
+    pub process_account: Option<String>,
     pub model: Option<String>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -3483,6 +3486,7 @@ impl Config {
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
+            process_account,
             model,
             review_model: override_review_model,
             cwd,
@@ -4543,6 +4547,7 @@ impl Config {
             async_compaction_threshold_percent,
             model_provider_id,
             model_provider,
+            process_account,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

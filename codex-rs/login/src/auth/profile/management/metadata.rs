@@ -15,6 +15,7 @@ pub enum ManagedAccountUpdate {
     Enable { account: String },
     Disable { account: String },
     SetDefault { account: String },
+    SetCreditUsage { account: String, enabled: bool },
     EnableAutomaticSelection,
     DisableAutomaticSelection,
 }
@@ -39,7 +40,8 @@ pub fn update_managed_account(
                 ManagedAccountUpdate::Rename { account, .. }
                 | ManagedAccountUpdate::Enable { account }
                 | ManagedAccountUpdate::Disable { account }
-                | ManagedAccountUpdate::SetDefault { account } => Some(account),
+                | ManagedAccountUpdate::SetDefault { account }
+                | ManagedAccountUpdate::SetCreditUsage { account, .. } => Some(account),
                 ManagedAccountUpdate::EnableAutomaticSelection
                 | ManagedAccountUpdate::DisableAutomaticSelection => None,
             };
@@ -53,6 +55,14 @@ pub fn update_managed_account(
                 }
                 ManagedAccountUpdate::DisableAutomaticSelection => {
                     planned.auto_selection.enabled = false
+                }
+                ManagedAccountUpdate::SetCreditUsage { enabled, .. } => {
+                    planned
+                        .accounts
+                        .iter_mut()
+                        .find(|account| Some(&account.id) == id.as_ref())
+                        .ok_or(AccountManagementError::UnknownAccount)?
+                        .credit_usage_enabled = *enabled;
                 }
                 ManagedAccountUpdate::Rename { alias, .. } => {
                     let alias = alias

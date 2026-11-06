@@ -59,6 +59,8 @@ pub enum LocalSecretsNamespace {
     ManagedSecrets,
     /// Codex authentication credentials used by the CLI, TUI, app server, and other clients.
     CodexAuth,
+    /// Version-one profile authentication, retaining its historical encryption key identity.
+    CodexProfileAuthV1,
     /// OAuth credentials for external MCP servers.
     McpOAuth,
     /// Gateway OAuth credentials, isolated from primary auth in file and encryption key.
@@ -176,7 +178,9 @@ impl LocalSecretsBackend {
     fn secrets_path(&self) -> PathBuf {
         let filename = match self.namespace {
             LocalSecretsNamespace::ManagedSecrets => LOCAL_SECRETS_FILENAME,
-            LocalSecretsNamespace::CodexAuth => CODEX_AUTH_SECRETS_FILENAME,
+            LocalSecretsNamespace::CodexAuth | LocalSecretsNamespace::CodexProfileAuthV1 => {
+                CODEX_AUTH_SECRETS_FILENAME
+            }
             LocalSecretsNamespace::McpOAuth => MCP_OAUTH_SECRETS_FILENAME,
             LocalSecretsNamespace::GatewayOAuth => GATEWAY_OAUTH_SECRETS_FILENAME,
         };
@@ -188,7 +192,9 @@ impl LocalSecretsBackend {
     fn decrypted_cache(&self) -> &Mutex<Option<CachedSecrets>> {
         match self.namespace {
             LocalSecretsNamespace::ManagedSecrets => &MANAGED_SECRETS_CACHE,
-            LocalSecretsNamespace::CodexAuth => &CODEX_AUTH_CACHE,
+            LocalSecretsNamespace::CodexAuth | LocalSecretsNamespace::CodexProfileAuthV1 => {
+                &CODEX_AUTH_CACHE
+            }
             LocalSecretsNamespace::McpOAuth => &MCP_OAUTH_CACHE,
             LocalSecretsNamespace::GatewayOAuth => &self.gateway_cache,
         }
@@ -711,3 +717,7 @@ mod tests {
 #[cfg(test)]
 #[path = "local_cache_tests.rs"]
 mod cache_tests;
+
+#[cfg(test)]
+#[path = "profile_namespace_tests.rs"]
+mod profile_namespace_tests;

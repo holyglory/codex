@@ -38,6 +38,33 @@ fn parser_accepts_json_after_nested_auto_action() {
 }
 
 #[test]
+fn parser_requires_an_explicit_credit_usage_mode() {
+    for (value, expected) in [
+        ("enabled", super::CreditUsageMode::Enabled),
+        ("disabled", super::CreditUsageMode::Disabled),
+    ] {
+        let parsed =
+            AccountCommand::try_parse_from(["account", "edit", "alpha", "--credit-usage", value])
+                .expect("explicit credit permission");
+        let AccountAction::Edit(args) = parsed.action else {
+            panic!("expected account edit");
+        };
+        assert_eq!(args.credit_usage, Some(expected));
+    }
+    for invalid in ["true", "1", "ENABLED"] {
+        assert!(
+            AccountCommand::try_parse_from(
+                ["account", "edit", "alpha", "--credit-usage", invalid,]
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        AccountCommand::try_parse_from(["account", "edit", "alpha", "--credit-usage",]).is_err()
+    );
+}
+
+#[test]
 fn parser_requires_credit_id_when_replaying_reset() {
     assert!(
         AccountCommand::try_parse_from(["account", "reset", "alpha", "--request-id", "req"])

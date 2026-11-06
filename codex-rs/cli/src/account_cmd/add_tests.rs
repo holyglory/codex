@@ -24,6 +24,9 @@ use super::super::AccountErrorKind;
 use super::super::AddArgs;
 use super::add_with_authorizer;
 
+#[path = "add_contract_tests.rs"]
+mod contracts;
+
 async fn config(home: &TempDir) -> Config {
     std::fs::write(
         home.path().join("config.toml"),

@@ -35,6 +35,7 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -154,6 +155,7 @@ enum RemoteClientCommand {
 
 #[derive(Default)]
 struct RemoteServerMetadata {
+    multi_account: Option<MultiAccountCapability>,
     server_version: Option<String>,
     codex_home: Option<String>,
     platform_family: Option<String>,
@@ -236,6 +238,10 @@ impl RemoteAppServerClient {
 
     pub fn platform_os(&self) -> Option<&str> {
         self.metadata.platform_os.as_deref()
+    }
+
+    pub(super) fn multi_account_capability(&self) -> Option<&MultiAccountCapability> {
+        self.metadata.multi_account.as_ref()
     }
 
     async fn connect_with_stream<S>(
@@ -881,6 +887,8 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
+                            metadata.multi_account = response.result.get("multiAccount")
+                                .and_then(|value| serde_json::from_value(value.clone()).ok());
                             metadata.server_version = response
                                 .result
                                 .get("userAgent")

@@ -294,6 +294,97 @@ impl SegmentCodec for ParquetSegmentCodec {
                 Arc::new(cached_input_tokens),
                 Arc::new(output_tokens),
                 Arc::new(reasoning_output_tokens),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.parent_thread_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.turn_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.response_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.outcome.map(crate::UsageOutcome::as_str))
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.duration_ms)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.attempt_number)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.provider_total_tokens)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.cache_write_input_tokens)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.missing_observations)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.rework_of_operation_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.observed_at_ms)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.started_at_ms)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.ended_at_ms)
+                        .collect::<Vec<_>>(),
+                )),
             ],
         )
         .map_err(columnar_error)?;
@@ -351,6 +442,22 @@ impl SegmentCodec for ParquetSegmentCodec {
             let output_tokens = downcast::<UInt64Array>(&batch, 18, "output_tokens")?;
             let reasoning_output_tokens =
                 downcast::<UInt64Array>(&batch, 19, "reasoning_output_tokens")?;
+            let parent_thread_id = downcast::<StringArray>(&batch, 20, "parent_thread_id")?;
+            let turn_id = downcast::<StringArray>(&batch, 21, "turn_id")?;
+            let response_id = downcast::<StringArray>(&batch, 22, "response_id")?;
+            let outcome = downcast::<StringArray>(&batch, 23, "outcome")?;
+            let duration_ms = downcast::<UInt64Array>(&batch, 24, "duration_ms")?;
+            let attempt_number = downcast::<UInt64Array>(&batch, 25, "attempt_number")?;
+            let provider_total_tokens =
+                downcast::<UInt64Array>(&batch, 26, "provider_total_tokens")?;
+            let cache_write_input_tokens =
+                downcast::<UInt64Array>(&batch, 27, "cache_write_input_tokens")?;
+            let missing_observations = downcast::<UInt64Array>(&batch, 28, "missing_observations")?;
+            let rework_of_operation_id =
+                optional_column::<StringArray>(&batch, "rework_of_operation_id")?;
+            let observed_at_ms = optional_column::<Int64Array>(&batch, "observed_at_ms")?;
+            let started_at_ms = optional_column::<Int64Array>(&batch, "started_at_ms")?;
+            let ended_at_ms = optional_column::<Int64Array>(&batch, "ended_at_ms")?;
             for index in 0..batch.num_rows() {
                 let current_hour = hours.value(index);
                 if hour_start
@@ -388,6 +495,32 @@ impl SegmentCodec for ParquetSegmentCodec {
                     cached_input_tokens: cached_input_tokens.value(index),
                     output_tokens: output_tokens.value(index),
                     reasoning_output_tokens: reasoning_output_tokens.value(index),
+                    parent_thread_id: (!parent_thread_id.is_null(index))
+                        .then(|| parent_thread_id.value(index).to_string()),
+                    turn_id: (!turn_id.is_null(index)).then(|| turn_id.value(index).to_string()),
+                    response_id: (!response_id.is_null(index))
+                        .then(|| response_id.value(index).to_string()),
+                    outcome: (!outcome.is_null(index))
+                        .then(|| outcome.value(index).parse())
+                        .transpose()?,
+                    duration_ms: (!duration_ms.is_null(index)).then(|| duration_ms.value(index)),
+                    attempt_number: (!attempt_number.is_null(index))
+                        .then(|| attempt_number.value(index)),
+                    provider_total_tokens: (!provider_total_tokens.is_null(index))
+                        .then(|| provider_total_tokens.value(index)),
+                    cache_write_input_tokens: (!cache_write_input_tokens.is_null(index))
+                        .then(|| cache_write_input_tokens.value(index)),
+                    missing_observations: (!missing_observations.is_null(index))
+                        .then(|| missing_observations.value(index)),
+                    rework_of_operation_id: rework_of_operation_id.and_then(|column| {
+                        (!column.is_null(index)).then(|| column.value(index).to_string())
+                    }),
+                    observed_at_ms: observed_at_ms
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
+                    started_at_ms: started_at_ms
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
+                    ended_at_ms: ended_at_ms
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
                 });
             }
         }
@@ -608,6 +741,35 @@ fn parquet_schema() -> Arc<Schema> {
         Field::new("cached_input_tokens", DataType::UInt64, false),
         Field::new("output_tokens", DataType::UInt64, false),
         Field::new("reasoning_output_tokens", DataType::UInt64, false),
+        Field::new("parent_thread_id", DataType::Utf8, true),
+        Field::new("turn_id", DataType::Utf8, true),
+        Field::new("response_id", DataType::Utf8, true),
+        Field::new("outcome", DataType::Utf8, true),
+        Field::new("duration_ms", DataType::UInt64, true),
+        Field::new("attempt_number", DataType::UInt64, true),
+        Field::new(
+            "provider_total_tokens",
+            DataType::UInt64,
+            /*nullable*/ true,
+        ),
+        Field::new(
+            "cache_write_input_tokens",
+            DataType::UInt64,
+            /*nullable*/ true,
+        ),
+        Field::new(
+            "missing_observations",
+            DataType::UInt64,
+            /*nullable*/ true,
+        ),
+        Field::new(
+            "rework_of_operation_id",
+            DataType::Utf8,
+            /*nullable*/ true,
+        ),
+        Field::new("observed_at_ms", DataType::Int64, /*nullable*/ true),
+        Field::new("started_at_ms", DataType::Int64, /*nullable*/ true),
+        Field::new("ended_at_ms", DataType::Int64, /*nullable*/ true),
     ]))
 }
 
@@ -623,6 +785,20 @@ fn downcast<'a, T: arrow_array::Array + 'static>(
         .ok_or_else(|| {
             StorageError::InvalidData(format!("Parquet column {name} has the wrong type"))
         })
+}
+
+fn optional_column<'a, T: arrow_array::Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<Option<&'a T>> {
+    batch
+        .column_by_name(name)
+        .map(|column| {
+            column.as_any().downcast_ref::<T>().ok_or_else(|| {
+                StorageError::InvalidData(format!("Parquet column {name} has the wrong type"))
+            })
+        })
+        .transpose()
 }
 
 fn columnar_error(error: impl std::fmt::Display) -> StorageError {
@@ -668,17 +844,16 @@ impl UsageSegment {
                 "segment hour {segment_hour} is not aligned to an hour"
             )));
         }
-        if records
-            .iter()
-            .any(|record| hour_start(record.observed_at) != segment_hour)
-        {
+        if records.iter().any(|record| {
+            hour_start(record.effective_observed_at_ms().div_euclid(1_000)) != segment_hour
+        }) {
             return Err(StorageError::InvalidData(
                 "segment contains an observation from another hour".into(),
             ));
         }
         records.sort_by(|left, right| {
-            left.observed_at
-                .cmp(&right.observed_at)
+            left.effective_observed_at_ms()
+                .cmp(&right.effective_observed_at_ms())
                 .then_with(|| left.id.cmp(&right.id))
         });
         Ok(Self {
@@ -694,9 +869,9 @@ impl UsageSegment {
 
     /// Construct a segment from records by deriving the hour from the first one.
     pub fn from_records(records: Vec<UsageRecord>) -> Result<Self> {
-        let segment_hour = records
-            .first()
-            .map_or(0, |record| hour_start(record.observed_at));
+        let segment_hour = records.first().map_or(0, |record| {
+            hour_start(record.effective_observed_at_ms().div_euclid(1_000))
+        });
         Self::new(segment_hour, records)
     }
 
@@ -712,7 +887,8 @@ impl UsageSegment {
 
     /// Return whether this segment overlaps a timestamp range.
     pub fn overlaps(&self, range: TimeRange) -> bool {
-        range.start < self.hour_start + HOUR_SECONDS && range.end > self.hour_start
+        let (start, end) = range.coarse_seconds();
+        start < self.hour_start.saturating_add(HOUR_SECONDS) && end > self.hour_start
     }
 
     /// Query observations in this segment.
@@ -722,7 +898,9 @@ impl UsageSegment {
         }
         self.records
             .iter()
-            .filter(|record| range.contains(record.observed_at) && filter.matches(record))
+            .filter(|record| {
+                range.contains_millis(record.effective_observed_at_ms()) && filter.matches(record)
+            })
             .cloned()
             .collect()
     }
@@ -761,7 +939,7 @@ impl UsageSegmentBuilder {
 
     /// Add an observation to the builder.
     pub fn push(&mut self, record: UsageRecord) -> Result<()> {
-        if hour_start(record.observed_at) != self.hour_start {
+        if hour_start(record.effective_observed_at_ms().div_euclid(1_000)) != self.hour_start {
             return Err(StorageError::InvalidData(
                 "segment builder received an observation from another hour".into(),
             ));

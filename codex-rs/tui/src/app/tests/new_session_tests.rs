@@ -198,6 +198,38 @@ async fn widget_replacement_preserves_mention_usage_with_history_disabled() -> R
 }
 
 #[tokio::test]
+async fn widget_replacement_preserves_server_account_capability() -> Result<()> {
+    for (mode, capability) in [
+        (
+            codex_config::types::AuthCredentialsStoreMode::Ephemeral,
+            Some(codex_app_server_protocol::MultiAccountCapability {
+                version: 2,
+                supports_managed_login: false,
+                supports_auto_selection: true,
+            }),
+        ),
+        (codex_config::types::AuthCredentialsStoreMode::File, None),
+    ] {
+        let (mut app, _events, _ops) = make_test_app_with_channels().await;
+        app.config.cli_auth_credentials_store_mode = mode;
+        app.chat_widget
+            .set_account_profiles_capability(capability.as_ref());
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        let init = app.chatwidget_init_for_forked_or_resumed_thread(
+            &mut tui,
+            app.config.clone(),
+            /*initial_user_message*/ None,
+        );
+        app.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        assert_eq!(
+            app.chat_widget.account_profiles_capability().cloned(),
+            capability
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn replacement_uses_server_defaults_and_preserves_explicit_launch_settings() -> Result<()> {
     for (managed_effort, explicit, expected_model, expected_effort) in [
         (None, "saved", "server-model", "high"),

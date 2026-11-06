@@ -8,6 +8,9 @@ use crate::model::TimeRange;
 use crate::model::UsageFilter;
 use crate::model::UsageRecord;
 use crate::model::UsageTotals;
+use crate::reader_query::RECORD_COLUMNS;
+use crate::reader_query::milliseconds_expression;
+use crate::reader_query::parquet_source;
 
 /// Read-only DuckDB view over the immutable Parquet snapshot.
 ///
@@ -31,8 +34,9 @@ impl DuckDbSnapshot {
         }
         let connection = Connection::open_in_memory().map_err(duckdb_error)?;
         let query = format!(
-            "{} ORDER BY observed_at, id",
-            self.select_query(segments_directory, segment_files, range, filter)
+            "{} ORDER BY {}, id",
+            self.select_query(segments_directory, segment_files, range, filter)?,
+            milliseconds_expression("observed_at")
         );
         let mut statement = connection.prepare(&query).map_err(duckdb_error)?;
         let mut rows = statement.query([]).map_err(duckdb_error)?;
@@ -58,6 +62,19 @@ impl DuckDbSnapshot {
                 cached_input_tokens: row.get(16).map_err(duckdb_error)?,
                 output_tokens: row.get(17).map_err(duckdb_error)?,
                 reasoning_output_tokens: row.get(18).map_err(duckdb_error)?,
+                parent_thread_id: row.get(19).map_err(duckdb_error)?,
+                turn_id: row.get(20).map_err(duckdb_error)?,
+                response_id: row.get(21).map_err(duckdb_error)?,
+                outcome: row.get(22).map_err(duckdb_error)?,
+                duration_ms: row.get(23).map_err(duckdb_error)?,
+                attempt_number: row.get(24).map_err(duckdb_error)?,
+                provider_total_tokens: row.get(25).map_err(duckdb_error)?,
+                cache_write_input_tokens: row.get(26).map_err(duckdb_error)?,
+                missing_observations: row.get(27).map_err(duckdb_error)?,
+                rework_of_operation_id: row.get(28).map_err(duckdb_error)?,
+                observed_at_ms: row.get(29).map_err(duckdb_error)?,
+                started_at_ms: row.get(30).map_err(duckdb_error)?,
+                ended_at_ms: row.get(31).map_err(duckdb_error)?,
             });
         }
         Ok(records)
@@ -75,7 +92,7 @@ impl DuckDbSnapshot {
             return Ok(UsageTotals::default());
         }
         let connection = Connection::open_in_memory().map_err(duckdb_error)?;
-        let source = self.select_query(segments_directory, segment_files, range, filter);
+        let source = self.select_query(segments_directory, segment_files, range, filter)?;
         let query = format!(
             "SELECT CAST(COALESCE(SUM(input_tokens), 0) AS BIGINT), \
                     CAST(COALESCE(SUM(cached_input_tokens), 0) AS BIGINT), \
@@ -104,24 +121,33 @@ impl DuckDbSnapshot {
         segment_files: &[String],
         range: TimeRange,
         filter: &UsageFilter,
-    ) -> String {
-        let paths = segment_files
-            .iter()
-            .map(|file| {
-                let path = segments_directory.join(file);
-                sql_string_literal(&path.to_string_lossy())
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+    ) -> Result<String> {
+        let source = parquet_source(segments_directory, segment_files, RECORD_COLUMNS)?;
+        let observed_at_ms = milliseconds_expression("observed_at");
         let mut predicates = vec![format!(
-            "observed_at >= {} AND observed_at < {}",
-            range.start, range.end
+            "{observed_at_ms} >= {} AND {observed_at_ms} < {}",
+            range.start_ms(),
+            range.end_ms()
         )];
         if let Some(account) = filter.account_id.as_deref() {
             predicates.push(format!("account_id = {}", sql_string_literal(account)));
         }
         if let Some(thread) = filter.thread_id.as_deref() {
             predicates.push(format!("thread_id = {}", sql_string_literal(thread)));
+        }
+        if let Some(threads) = &filter.thread_ids {
+            predicates.push(if threads.is_empty() {
+                "false".to_string()
+            } else {
+                format!(
+                    "thread_id IN ({})",
+                    threads
+                        .iter()
+                        .map(|id| sql_string_literal(id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            });
         }
         if let Some(repository) = filter.repository_id.as_deref() {
             predicates.push(format!(
@@ -132,10 +158,10 @@ impl DuckDbSnapshot {
         if let Some(model) = filter.model.as_deref() {
             predicates.push(format!("model = {}", sql_string_literal(model)));
         }
-        format!(
-            "SELECT id, observed_at, operation_id, thread_id, repository_id, account_id, model, tool, activity, phase, classification, event, coverage, started_at, ended_at, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens FROM read_parquet([{paths}]) WHERE {}",
+        Ok(format!(
+            "SELECT * FROM ({source}) WHERE {}",
             predicates.join(" AND ")
-        )
+        ))
     }
 }
 

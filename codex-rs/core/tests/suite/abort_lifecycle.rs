@@ -142,6 +142,30 @@ async fn abort_lifecycle_finishes_before_terminal_event(
         thread.submit(Op::Shutdown).await?;
     }
     wait_for_event(&thread, |event| matches!(event, EventMsg::ShutdownComplete)).await;
+    let facts = codex_usage::UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    assert_eq!(
+        facts
+            .iter()
+            .filter(|fact| fact.event.as_deref() == Some("turn_finished")
+                && fact.turn_id.as_deref() == Some(call.turn_id.as_str()))
+            .map(|fact| (
+                fact.outcome,
+                fact.coverage.as_deref(),
+                fact.duration_ms.is_some()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            Some(codex_usage::UsageOutcome::Cancelled),
+            Some("recorded"),
+            true
+        )],
+    );
     assert_eq!(
         *gate.completed.lock().expect("abort callback records"),
         vec![(call.turn_id, TurnAbortReason::Interrupted)],

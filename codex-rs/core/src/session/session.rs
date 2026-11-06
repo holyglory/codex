@@ -1739,6 +1739,11 @@ impl Session {
                 extension_metrics::from_session_telemetry(session_telemetry.clone());
             let workspace_routing =
                 thread_extension_data.get_or_init(|| config.workspace_routing_context());
+            crate::usage_capture::seed_thread(
+                &thread_extension_data,
+                thread_id,
+                session_configuration.parent_thread_id,
+            );
             for contributor in extensions.thread_lifecycle_contributors() {
                 contributor
                     .on_thread_start(codex_extension_api::ThreadStartInput {

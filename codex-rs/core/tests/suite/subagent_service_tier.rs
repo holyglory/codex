@@ -301,6 +301,30 @@ async fn root_service_tier_change_updates_existing_subagent(
     let fresh_thread = test.thread_manager.get_thread(fresh_thread_id).await?;
     wait_for_turn_complete(&fresh_thread).await;
     assert_request_service_tier(&fresh_child_request, updated_request_service_tier);
+    let facts = codex_usage::UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let parents = [child_thread_id, fresh_thread_id]
+        .iter()
+        .map(|id| {
+            let id = id.to_string();
+            facts
+                .iter()
+                .find(|fact| {
+                    fact.event.as_deref() == Some("thread_started")
+                        && fact.thread_id.as_deref() == Some(id.as_str())
+                })
+                .expect("observed child thread start")
+                .parent_thread_id
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let parent = Some(test.session_configured.session_id.to_string());
+    assert_eq!(parents, vec![parent.clone(), parent]);
     Ok(())
 }
 

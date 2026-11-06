@@ -62,6 +62,7 @@ fn chatgpt_auth(marker: &str) -> AuthDotJson {
             access_token: format!("{marker}-access"),
             refresh_token: format!("{marker}-refresh"),
             account_id: Some(format!("{marker}-workspace")),
+            ..TokenData::default()
         }),
         last_refresh: Some(Utc::now()),
         agent_identity: None,
@@ -1067,12 +1068,24 @@ async fn every_external_source_conflicts_without_exposing_values() {
 #[tokio::test]
 #[serial(codex_auth_env)]
 async fn shared_process_pin_survives_global_default_changes_across_turns() {
-    struct RoutingOwner(Mutex<Vec<String>>);
+    struct RoutingOwner {
+        calls: Arc<Mutex<Vec<String>>>,
+        manager: Option<std::sync::Weak<AuthManager>>,
+    }
 
     impl crate::WorkspaceRoutingResolver for RoutingOwner {
+        fn for_auth_manager(
+            self: Arc<Self>,
+            manager: std::sync::Weak<AuthManager>,
+        ) -> Option<Arc<dyn crate::WorkspaceRoutingResolver>> {
+            Some(Arc::new(Self {
+                calls: Arc::clone(&self.calls),
+                manager: Some(manager),
+            }))
+        }
+
         fn resolve(
             &self,
-            manager: Arc<AuthManager>,
             _request: crate::WorkspaceRoutingRequest,
         ) -> std::pin::Pin<
             Box<
@@ -1082,7 +1095,12 @@ async fn shared_process_pin_survives_global_default_changes_across_turns() {
             >,
         > {
             Box::pin(async move {
-                self.0
+                let manager = self
+                    .manager
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .ok_or_else(|| std::io::Error::other("unbound routing owner"))?;
+                self.calls
                     .lock()
                     .expect("routing calls")
                     .push(manager.auth_cached().expect("leased auth").get_token()?);
@@ -1100,7 +1118,10 @@ async fn shared_process_pin_survives_global_default_changes_across_turns() {
         /*default*/ 0,
     );
     let upstream = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("upstream"));
-    let routing = Arc::new(RoutingOwner(Mutex::new(Vec::new())));
+    let routing = Arc::new(RoutingOwner {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        manager: None,
+    });
     upstream.set_workspace_routing_resolver(Arc::downgrade(
         &(routing.clone() as Arc<dyn crate::WorkspaceRoutingResolver>),
     ));
@@ -1145,7 +1166,7 @@ async fn shared_process_pin_survives_global_default_changes_across_turns() {
             .expect("profile routing");
     }
     assert_eq!(
-        *routing.0.lock().expect("routing calls"),
+        *routing.calls.lock().expect("routing calls"),
         ["a-key", "a-key"]
     );
     assert_eq!(

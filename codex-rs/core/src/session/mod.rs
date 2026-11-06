@@ -245,6 +245,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+pub(crate) mod account_routing;
 pub(crate) mod async_compaction;
 mod code_mode_warning;
 mod config_refresh;
@@ -4473,8 +4474,7 @@ impl Session {
                     // Validate immediately before slicing and replacing the captured prefix.
                     if state.history.history_version() != prefix.generation
                         || state.history.annotated_items().len() < prefix.len
-                        || self.services.model_client.auth_owner_generation()
-                            != prefix.auth_owner_generation
+                        || turn_context.auth_owner_generation() != prefix.auth_owner_generation
                     {
                         return false;
                     }
@@ -5309,9 +5309,9 @@ impl Session {
             .as_ref()
             .and_then(|manager| manager.local_profile_id())
             .map(ToString::to_string);
-        let mut usage_record = UsageRecord::new(
+        let mut usage_record = UsageRecord::new_millis(
             format!("{}:{}", self.thread_id, response_id),
-            i64::try_from(codex_analytics::now_unix_millis() / 1_000).unwrap_or(i64::MAX),
+            i64::try_from(codex_analytics::now_unix_millis()).unwrap_or(i64::MAX),
             u64::try_from(usage.input_tokens.max(0)).unwrap_or_default(),
             u64::try_from(usage.output_tokens.max(0)).unwrap_or_default(),
         )
@@ -5321,12 +5321,27 @@ impl Session {
         if let Some(account_id) = account_id {
             usage_record = usage_record.with_account(account_id);
         }
+        usage_record.event = Some("token_observation".to_string());
+        usage_record.classification = Some("provider_reported".to_string());
+        usage_record.coverage = Some("recorded".to_string());
+        usage_record.turn_id = Some(turn_context.sub_id.clone());
+        usage_record.response_id = Some(response_id.to_string());
+        usage_record.provider_total_tokens = u64::try_from(usage.total_tokens).ok();
+        usage_record.cache_write_input_tokens = u64::try_from(usage.cache_write_input_tokens).ok();
         usage_record.cached_input_tokens =
             u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
         usage_record.reasoning_output_tokens =
             u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default();
+        let usage_cwd = turn_context.config.cwd.clone();
         if !matches!(
-            tokio::task::spawn_blocking(move || capture_record(&codex_home, usage_record)).await,
+            tokio::task::spawn_blocking(move || {
+                if let Some(repository) = crate::usage_identity::repository_id(usage_cwd.as_path())
+                {
+                    usage_record = usage_record.with_repository(repository);
+                }
+                capture_record(&codex_home, usage_record)
+            })
+            .await,
             Ok(Ok(_))
         ) {
             tracing::warn!("local usage observation could not be persisted");
@@ -5455,6 +5470,21 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
+        if let Some(router) = self
+            .services
+            .thread_extension_data
+            .get::<codex_login::SharedProfileAuthRouter>()
+            && let Some(id) = turn_context
+                .auth_manager
+                .as_ref()
+                .and_then(|manager| manager.local_profile_id())
+        {
+            let _ = router.observe_rate_limits(
+                id.clone(),
+                Utc::now().timestamp(),
+                vec![new_rate_limits.clone()],
+            );
+        }
         self.record_rate_limits_info(new_rate_limits).await;
         self.send_token_count_event(turn_context).await;
     }

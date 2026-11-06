@@ -1270,7 +1270,7 @@ impl ChatWidget {
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             token_activity_command_enabled: self.has_codex_backend_auth,
-            account_command_enabled: self.account_profiles_supported,
+            account_command_enabled: self.account_profiles_supported(),
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
             service_tier_commands_enabled: !self.current_model_service_tier_commands().is_empty(),
             daybreak_command_description: self.daybreak_command_description(),

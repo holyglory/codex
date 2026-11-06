@@ -344,6 +344,7 @@ mod luna_reserve_return;
 mod security_setup;
 pub(crate) use backend_banners::AutomaticModelSwitchReason;
 mod account_profiles;
+mod account_profiles_capability;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
@@ -405,6 +406,7 @@ pub(crate) use self::account_profiles::AccountProfilesError;
 pub(crate) use self::account_profiles::AccountProfilesListData;
 pub(crate) use self::account_profiles::AccountProfilesRequest;
 pub(crate) use self::account_profiles::AccountProfilesResponse;
+pub(crate) use self::account_profiles_capability::account_profiles_request_supported;
 pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tool_lifecycle;
 mod tool_requests;
@@ -590,7 +592,7 @@ pub(crate) struct ChatWidget {
     pending_rate_limit_reset_hint: Option<PlainHistoryCell>,
     available_rate_limit_reset_credits: Option<i64>,
     next_rate_limit_reset_request_id: u64,
-    account_profiles_supported: bool,
+    account_profiles_capability: Option<codex_app_server_protocol::MultiAccountCapability>,
     next_account_profiles_request_id: u64,
     pending_account_profiles_request: Option<(u64, account_profiles::AccountProfilesRequest)>,
     account_profiles: Vec<codex_app_server_protocol::AccountProfile>,

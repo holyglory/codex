@@ -1,6 +1,4 @@
 use std::fs::File;
-use std::fs::OpenOptions;
-use std::fs::{self};
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
@@ -18,6 +16,7 @@ use crate::error::StorageError;
 use crate::model::JournalSequence;
 use crate::model::UsageCorrection;
 use crate::model::UsageRecord;
+use crate::storage_file;
 
 /// One append-only journal payload. Corrections are events, never in-place
 /// updates, so a replay can reconstruct the complete audit trail.
@@ -58,6 +57,58 @@ pub struct JournalCheckpoint {
     pub sequence: JournalSequence,
     /// Byte offset immediately after that entry's terminating newline.
     pub byte_offset: u64,
+}
+
+/// Positive bounds for one journal read, excluding checkpoint boundary checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JournalReadLimits {
+    /// Maximum bytes read from the requested range, including newlines.
+    pub max_bytes: u64,
+    /// Maximum complete entries returned.
+    pub max_entries: usize,
+}
+
+/// Whether a bounded read reached its captured target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JournalReadStatus {
+    /// Every entry through the target was consumed.
+    Complete,
+    /// Continue at the returned checkpoint with the same target.
+    More,
+    /// The next entry cannot fit; no entry was consumed or checkpoint advanced.
+    EntryExceedsByteLimit {
+        /// Lower bound on the byte limit needed, not the entry's full size.
+        minimum_bytes: u64,
+    },
+}
+
+/// Complete entries from one bounded portion of a captured journal prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalReadBatch {
+    /// Entries consumed, in strictly consecutive sequence order.
+    pub entries: Vec<JournalEntry>,
+    /// End of the last consumed entry; use this to continue without loss.
+    pub next: JournalCheckpoint,
+    /// Fixed end of the requested prefix, excluding later appends.
+    pub target: JournalCheckpoint,
+    /// Completion or the limit preventing further progress.
+    pub status: JournalReadStatus,
+}
+
+/// A complete report overlay, or an explicit backlog left for the publisher.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JournalTailRead {
+    /// The entire captured tail fits; this batch may overlay the saved snapshot.
+    Complete(JournalReadBatch),
+    /// No partial overlay is returned when the complete tail exceeds its bounds.
+    Deferred {
+        /// Captured end of the complete tail, including all deferred entries.
+        target: JournalCheckpoint,
+        /// Complete entries after the caller's watermark.
+        pending_entries: u64,
+        /// Complete bytes after the caller's watermark.
+        pending_bytes: u64,
+    },
 }
 
 /// Append-only JSONL journal for observations and corrections.
@@ -101,16 +152,7 @@ impl UsageJournal {
         if payloads.is_empty() {
             return Ok(Vec::new());
         }
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&self.path)?;
+        let mut file = storage_file::open_append(&self.path)?;
         file.lock()?;
         let length = file.metadata()?.len();
         let mut checkpoint = tail_checkpoint(&mut file, length)?;
@@ -185,28 +227,50 @@ impl UsageJournal {
         &self,
         checkpoint: JournalCheckpoint,
     ) -> Result<(Vec<JournalEntry>, JournalCheckpoint)> {
-        let (mut file, snapshot) = match self.snapshot()? {
-            Some(snapshot) => snapshot,
-            None if checkpoint == JournalCheckpoint::default() => {
-                return Ok((Vec::new(), checkpoint));
-            }
-            None => {
-                return Err(StorageError::InvalidData(
-                    "journal checkpoint past end".into(),
-                ));
-            }
+        let batch = self.read_batch(
+            checkpoint,
+            self.checkpoint()?,
+            JournalReadLimits {
+                max_bytes: u64::MAX,
+                max_entries: usize::MAX,
+            },
+        )?;
+        Ok((batch.entries, batch.next))
+    }
+
+    /// Read bounded complete entries through a previously captured target.
+    /// Later appends are excluded, and no historical prefix is replayed.
+    /// An oversized first entry leaves the checkpoint unchanged so callers can
+    /// explicitly increase the limit without skipping canonical data.
+    pub fn read_batch(
+        &self,
+        after: JournalCheckpoint,
+        target: JournalCheckpoint,
+        limits: JournalReadLimits,
+    ) -> Result<JournalReadBatch> {
+        validate_read(after, target, limits)?;
+        let mut batch = JournalReadBatch {
+            entries: Vec::new(),
+            next: after,
+            target,
+            status: JournalReadStatus::Complete,
         };
-        if checkpoint.byte_offset > snapshot.byte_offset
-            || checkpoint.sequence > snapshot.sequence
-            || (checkpoint.byte_offset == 0 && checkpoint.sequence != 0)
-            || (checkpoint.byte_offset == snapshot.byte_offset && checkpoint != snapshot)
-        {
+        if target == JournalCheckpoint::default() {
+            return Ok(batch);
+        }
+        let mut file = File::open(&self.path)?;
+        storage_file::protect_existing(&self.path)?;
+        file.lock_shared()?;
+        if target.byte_offset > file.metadata()?.len() {
             return Err(StorageError::InvalidData(
-                "invalid journal checkpoint".into(),
+                "journal checkpoint past end".into(),
             ));
         }
-        if checkpoint.byte_offset > 0 {
-            file.seek(SeekFrom::Start(checkpoint.byte_offset - 1))?;
+        for offset in [after.byte_offset, target.byte_offset] {
+            if offset == 0 {
+                continue;
+            }
+            file.seek(SeekFrom::Start(offset - 1))?;
             let mut boundary = [0];
             file.read_exact(&mut boundary)?;
             if boundary != [b'\n'] {
@@ -215,43 +279,99 @@ impl UsageJournal {
                 ));
             }
         }
-        file.seek(SeekFrom::Start(checkpoint.byte_offset))?;
+        if after == target {
+            return Ok(batch);
+        }
+        file.seek(SeekFrom::Start(after.byte_offset))?;
         file.unlock()?;
+        let byte_limit = limits.max_bytes.min(target.byte_offset - after.byte_offset);
         let mut reader = BufReader::with_capacity(
             /*capacity*/ 64 * 1024,
-            SnapshotReader(file).take(snapshot.byte_offset - checkpoint.byte_offset),
+            SnapshotReader(file).take(byte_limit),
         );
-        let mut checkpoint = checkpoint;
         let mut line = Vec::new();
-        let mut entries = Vec::new();
-        loop {
+        while batch.entries.len() < limits.max_entries
+            && batch.next.byte_offset < target.byte_offset
+        {
             line.clear();
             let bytes = reader.read_until(b'\n', &mut line)?;
             if bytes == 0 {
+                if batch.next.byte_offset - after.byte_offset < byte_limit {
+                    return Err(StorageError::InvalidData(
+                        "journal snapshot changed during replay".into(),
+                    ));
+                }
                 break;
+            }
+            if !line.ends_with(b"\n") {
+                if byte_limit == target.byte_offset - after.byte_offset {
+                    return Err(StorageError::InvalidData(
+                        "incomplete captured journal entry".into(),
+                    ));
+                }
+                batch.status = if batch.entries.is_empty() {
+                    JournalReadStatus::EntryExceedsByteLimit {
+                        minimum_bytes: limits.max_bytes.saturating_add(1),
+                    }
+                } else {
+                    JournalReadStatus::More
+                };
+                return Ok(batch);
             }
             let entry: JournalEntry = serde_json::from_slice(&line).map_err(|error| {
                 StorageError::InvalidData(format!(
                     "journal byte {}: {error}",
-                    checkpoint.byte_offset
+                    batch.next.byte_offset
                 ))
             })?;
-            if Some(entry.sequence) != checkpoint.sequence.checked_add(1) {
+            if Some(entry.sequence) != batch.next.sequence.checked_add(1) {
                 return Err(StorageError::InvalidData(format!(
                     "journal byte {} has nonconsecutive sequence {} after {}",
-                    checkpoint.byte_offset, entry.sequence, checkpoint.sequence
+                    batch.next.byte_offset, entry.sequence, batch.next.sequence
                 )));
             }
-            checkpoint.sequence = entry.sequence;
-            checkpoint.byte_offset += bytes as u64;
-            entries.push(entry);
+            batch.next.sequence = entry.sequence;
+            batch.next.byte_offset += bytes as u64;
+            batch.entries.push(entry);
         }
-        if checkpoint != snapshot {
+        if batch.next.byte_offset == target.byte_offset {
+            if batch.next != target {
+                return Err(StorageError::InvalidData(
+                    "journal target sequence mismatch".into(),
+                ));
+            }
+        } else {
+            batch.status = JournalReadStatus::More;
+        }
+        Ok(batch)
+    }
+
+    /// Capture a sealed complete prefix and overlay it only when it all fits.
+    /// Deferred reads leave every journal entry available for publication and
+    /// let reports serve their saved snapshot with explicit backlog metadata.
+    pub fn read_tail(
+        &self,
+        after: JournalCheckpoint,
+        limits: JournalReadLimits,
+    ) -> Result<JournalTailRead> {
+        let target = self.checkpoint()?;
+        validate_read(after, target, limits)?;
+        let pending_bytes = target.byte_offset - after.byte_offset;
+        let pending_entries = target.sequence - after.sequence;
+        if pending_bytes > limits.max_bytes || pending_entries > limits.max_entries as u64 {
+            return Ok(JournalTailRead::Deferred {
+                target,
+                pending_entries,
+                pending_bytes,
+            });
+        }
+        let batch = self.read_batch(after, target, limits)?;
+        if batch.status != JournalReadStatus::Complete {
             return Err(StorageError::InvalidData(
-                "journal snapshot changed during replay".into(),
+                "journal target sequence mismatch".into(),
             ));
         }
-        Ok((entries, checkpoint))
+        Ok(JournalTailRead::Complete(batch))
     }
 
     /// Replay only observation records.
@@ -284,6 +404,7 @@ impl UsageJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+        storage_file::protect_existing(&self.path)?;
         file.lock_shared()?;
         let length = file.metadata()?.len();
         let checkpoint = tail_checkpoint(&mut file, length)?;
@@ -293,6 +414,26 @@ impl UsageJournal {
     fn read_entries(&self) -> Result<Vec<JournalEntry>> {
         Ok(self.read_from(JournalCheckpoint::default())?.0)
     }
+}
+
+fn validate_read(
+    after: JournalCheckpoint,
+    target: JournalCheckpoint,
+    limits: JournalReadLimits,
+) -> Result<()> {
+    if limits.max_bytes == 0
+        || limits.max_entries == 0
+        || (after.sequence == 0) != (after.byte_offset == 0)
+        || (target.sequence == 0) != (target.byte_offset == 0)
+        || after.sequence > target.sequence
+        || after.byte_offset > target.byte_offset
+        || (after.sequence == target.sequence) != (after.byte_offset == target.byte_offset)
+    {
+        return Err(StorageError::InvalidData(
+            "invalid journal read limits or checkpoint".into(),
+        ));
+    }
+    Ok(())
 }
 
 struct SnapshotReader(File);

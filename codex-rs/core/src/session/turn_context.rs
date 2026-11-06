@@ -383,8 +383,8 @@ pub struct TurnContext {
 }
 
 /// Selects which preparation is needed when building a turn context.
-#[derive(Debug)]
-enum TurnContextBuildMode {
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TurnContextBuildMode {
     /// Resolves and stores model/multi-agent metadata and performs normal skill discovery.
     /// Used for execution and initial context creation.
     Full,
@@ -1275,6 +1275,20 @@ impl Session {
         let primary_turn_environment = turn_environments.primary();
         let per_turn_config =
             self.build_per_turn_config(&session_configuration, turn_environments.local_selection());
+        let turn_auth = self.select_turn_auth(&per_turn_config, build_mode).await;
+        let turn_auth_manager = turn_auth
+            .lease
+            .as_ref()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+        let turn_provider = if turn_auth.lease.is_some() {
+            codex_model_provider::create_model_provider(
+                session_configuration.provider.info().clone(),
+                Some(Arc::clone(&turn_auth_manager)),
+            )
+        } else {
+            session_configuration.provider.clone()
+        };
         // Legacy turn consumers still refer to the primary executor's repository.
         let cwd = primary_turn_environment
             .and_then(|environment| environment.cwd().to_abs_path().ok())
@@ -1347,9 +1361,9 @@ impl Session {
             self.thread_id(),
             self.session_id(),
             Arc::clone(&self.services.granted_permissions_by_environment_id),
-            Some(Arc::clone(&self.services.auth_manager)),
+            Some(turn_auth_manager),
             &self.services.session_telemetry,
-            session_configuration.provider.clone(),
+            turn_provider,
             &session_configuration,
             multi_agent_version,
             per_turn_config,
@@ -1371,6 +1385,8 @@ impl Session {
             skills_snapshot,
         );
         turn_context.code_mode_available = self.services.code_mode_service.is_available();
+        turn_context.install_turn_auth(self, turn_auth);
+        turn_context.install_usage_capture(self);
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.active_host_plugin_identities = Some(
             plugin_outcome

@@ -22,8 +22,9 @@ use super::migration::migrate_legacy_auth_with_store;
 use super::migration::registry_for;
 use super::*;
 use crate::auth::storage::AuthStorage;
+use crate::auth::storage::AuthStorageNamespace;
 use crate::auth::storage::PersistentAuthBackendKind;
-use crate::auth::storage::create_auth_storage_with_store;
+use crate::auth::storage::create_auth_storage_with_store_and_namespace;
 use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_jwt_claims;
 
@@ -64,6 +65,7 @@ fn chatgpt_auth(marker: &str, email: &str) -> AuthDotJson {
             access_token: format!("{marker}-access"),
             refresh_token: format!("{marker}-refresh"),
             account_id: Some(format!("{marker}-account")),
+            ..TokenData::default()
         }),
         last_refresh: Some(Utc::now()),
         agent_identity: None,
@@ -97,11 +99,12 @@ fn legacy_storage(
     mode: AuthCredentialsStoreMode,
     keyring: &MockKeyringStore,
 ) -> Arc<AuthStorage> {
-    create_auth_storage_with_store(
+    create_auth_storage_with_store_and_namespace(
         codex_home.to_path_buf(),
         mode,
         Arc::new(keyring.clone()),
         AuthKeyringBackendKind::Direct,
+        AuthStorageNamespace::LegacyV0,
     )
 }
 
@@ -193,6 +196,7 @@ fn profile_auth_replacement_updates_registry_identity_atomically() {
         plan_type: None,
         enabled: true,
         priority: 0,
+        credit_usage_enabled: false,
         created_at: Utc::now(),
         last_used_at: None,
         note: None,
@@ -261,6 +265,7 @@ fn duplicate_service_identity_rejects_profile_auth_before_credential_mutation() 
         plan_type: None,
         enabled: true,
         priority: 0,
+        credit_usage_enabled: false,
         created_at: Utc::now(),
         last_used_at: None,
         note: None,
@@ -275,6 +280,7 @@ fn duplicate_service_identity_rejects_profile_auth_before_credential_mutation() 
         plan_type: None,
         enabled: true,
         priority: 1,
+        credit_usage_enabled: false,
         created_at: Utc::now(),
         last_used_at: None,
         note: None,
@@ -607,10 +613,10 @@ fn keyring_migration_resume_accepts_only_supported_priority_registries() {
             continue;
         }
 
-        assert!(matches!(
-            outcome,
-            Ok(LegacyAuthMigrationOutcome::Migrated { .. })
-        ));
+        assert!(
+            matches!(outcome, Ok(LegacyAuthMigrationOutcome::Migrated { .. })),
+            "resume stage {resume_stage:?}, priority {priority}: {outcome:?}"
+        );
         assert_eq!(legacy.load().expect("load deleted legacy keyring"), None);
         assert_eq!(profile.load().expect("load profile keyring"), Some(auth));
         assert_eq!(

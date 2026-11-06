@@ -304,6 +304,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let mut shared = shared.into_inner();
     shared.take_auto_review_config_overrides(&mut config_overrides);
     let SharedCliOptions {
+        account,
         images,
         model: model_cli_arg,
         oss,
@@ -590,6 +591,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     };
 
     let overrides = ConfigOverrides {
+        process_account: account,
         model,
         review_model: None,
         // Default to never ask for approvals in headless mode. Rebuild below if

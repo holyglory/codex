@@ -8,6 +8,7 @@ use codex_app_server_protocol::AccountRoutingOverride;
 use codex_backend_client::AccountEntry;
 use codex_config::ConfigLoadError;
 use codex_http_client::NetworkPolicyDenied;
+use codex_login::AuthManager;
 use codex_login::RefreshTokenError;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
@@ -185,6 +186,18 @@ fn workspace_config_load_reason(error: &io::Error) -> String {
 }
 
 impl WorkspaceRoutingResolver for AccountRequestProcessor {
+    fn for_auth_manager(
+        self: Arc<Self>,
+        manager: Weak<AuthManager>,
+    ) -> Option<Arc<dyn WorkspaceRoutingResolver>> {
+        Some(Arc::new(ProfileWorkspaceRoutingResolver {
+            owner: Arc::downgrade(&self),
+            manager,
+            routing: Arc::new(Mutex::new(/*t*/ None)),
+            fetches: Arc::new(Mutex::new(HashMap::new())),
+        }))
+    }
+
     fn resolve(
         &self,
         request: WorkspaceRoutingRequest,
@@ -207,6 +220,36 @@ impl WorkspaceRoutingResolver for AccountRequestProcessor {
                         error,
                     ),
                 })
+        })
+    }
+}
+
+struct ProfileWorkspaceRoutingResolver {
+    owner: Weak<AccountRequestProcessor>,
+    manager: Weak<AuthManager>,
+    routing: Arc<Mutex<Option<CachedWorkspaceRouting>>>,
+    fetches: Arc<Mutex<WorkspaceRoutingFetches>>,
+}
+
+impl WorkspaceRoutingResolver for ProfileWorkspaceRoutingResolver {
+    fn resolve(
+        &self,
+        request: WorkspaceRoutingRequest,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Option<WorkspaceRouting>>> + Send + '_>> {
+        Box::pin(async move {
+            let owner = self
+                .owner
+                .upgrade()
+                .ok_or_else(|| io::Error::other("workspace routing owner is unavailable"))?;
+            let manager = self
+                .manager
+                .upgrade()
+                .ok_or_else(|| io::Error::other("account profile is unavailable"))?;
+            let mut processor = owner.as_ref().clone();
+            processor.auth_manager = manager;
+            processor.workspace_routing = Arc::clone(&self.routing);
+            processor.workspace_routing_fetches = Arc::clone(&self.fetches);
+            processor.resolve(request).await
         })
     }
 }
@@ -259,6 +302,21 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if self.auth_manager.local_profile_id().is_none()
+            && let Some(router) = self.thread_manager.profile_auth_router()
+        {
+            let lease = router
+                .lease_for_operation()
+                .await
+                .map_err(super::super::account_profile_processor::router_error)?;
+            if lease.is_profile_scoped() {
+                let mut scoped = self.clone();
+                scoped.auth_manager = Arc::clone(lease.auth_manager());
+                scoped.workspace_routing = Arc::new(Mutex::new(/*t*/ None));
+                scoped.workspace_routing_fetches = Arc::new(Mutex::new(HashMap::new()));
+                return Box::pin(scoped.get_account(params)).await;
+            }
+        }
         self.refresh_token_if_requested(params.refresh_token).await;
         let read = self
             .read_account(/*request*/ None)

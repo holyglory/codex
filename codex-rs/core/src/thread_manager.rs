@@ -485,6 +485,9 @@ pub(crate) struct ThreadManagerState {
     agent_control_factory: Option<AgentControlFactory>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    profile_auth_router: Option<codex_login::SharedProfileAuthRouter>,
+    _usage_publisher: Option<codex_usage::UsagePublisherRuntime>,
+    usage_capture: Option<crate::usage_capture::UsageCaptureRuntime>,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
     starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<AtomicBool>>>,
@@ -619,6 +622,11 @@ impl ThreadManager {
         external_time_provider: Option<Arc<dyn TimeProvider>>,
     ) -> Self {
         let codex_home = config.codex_home.clone();
+        let usage_capture = crate::usage_capture::UsageCaptureRuntime::new(codex_home.as_path());
+        let extensions = usage_capture.instrument_extensions(extensions);
+        let usage_publisher = codex_usage::UsagePublisherRuntime::start(codex_home.to_path_buf())
+            .map_err(|_| tracing::warn!("local usage publisher is unavailable"))
+            .ok();
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
@@ -656,6 +664,21 @@ impl ThreadManager {
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
                 models_manager,
+                profile_auth_router: Some(match config.process_account.as_ref() {
+                    Some(account) => codex_login::SharedProfileAuthRouter::new_pinned(
+                        config.auth_config(),
+                        account.clone(),
+                        crate::router_external_auth_state(config),
+                        Arc::clone(&auth_manager),
+                    ),
+                    None => codex_login::SharedProfileAuthRouter::new_with_external_auth(
+                        config.auth_config(),
+                        crate::router_external_auth_state(config),
+                        Arc::clone(&auth_manager),
+                    ),
+                }),
+                _usage_publisher: usage_publisher,
+                usage_capture: Some(usage_capture),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -725,6 +748,23 @@ impl ThreadManager {
             .code_mode_session_provider
             .sample_process_metrics()
             .await
+    }
+
+    /// Install one managed-profile router shared by management and inference.
+    pub fn with_profile_auth_router(
+        mut self,
+        router: codex_login::SharedProfileAuthRouter,
+    ) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("profile router must be installed before the manager is shared");
+        };
+        state.profile_auth_router = Some(router);
+        self
+    }
+
+    /// Return the router shared by profile management and inference in this process.
+    pub fn profile_auth_router(&self) -> Option<codex_login::SharedProfileAuthRouter> {
+        self.state.profile_auth_router.clone()
     }
 
     /// Replaces the process-wide provider before this manager is shared with threads.
@@ -857,6 +897,9 @@ impl ThreadManager {
                 agent_control_factory: None,
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
+                profile_auth_router: None,
+                _usage_publisher: None,
+                usage_capture: None,
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -2512,6 +2555,12 @@ impl ThreadManagerState {
                 .get::<codex_extension_api::IsolatedSessionExtensions<Config>>()
                 .map(|extensions| Arc::clone(&extensions.0))
                 .unwrap_or_else(empty_extension_registry);
+            let extensions = self
+                .usage_capture
+                .as_ref()
+                .map_or(Arc::clone(&extensions), |capture| {
+                    capture.instrument_extensions(extensions)
+                });
             let mcp_manager = McpManager::new_with_extensions(
                 Arc::clone(&self.plugins_manager),
                 Arc::clone(&extensions),
@@ -2539,6 +2588,9 @@ impl ThreadManagerState {
         } else {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile
         };
+        if let Some(router) = &self.profile_auth_router {
+            thread_extension_init.insert(router.clone());
+        }
         let spawn_result = Session::spawn(SessionSpawnArgs {
             attached_thread,
             startup,

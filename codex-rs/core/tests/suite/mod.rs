@@ -39,6 +39,7 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestBinaryDispatchGuard> = {
 mod abort_lifecycle;
 #[cfg(not(target_os = "windows"))]
 mod abort_tasks;
+mod account_profiles;
 mod additional_context;
 #[path = "agent_control_tests.rs"]
 mod agent_control;
@@ -250,6 +251,7 @@ mod unified_exec_process_events;
 mod unified_exec_stdin_approval;
 mod unified_exec_stdin_review_size;
 mod unstable_features_warning;
+mod usage_activity;
 mod user_notification;
 mod user_shell_cmd;
 mod view_image;

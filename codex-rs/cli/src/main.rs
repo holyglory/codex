@@ -576,6 +576,9 @@ struct LogoutCommand {
 
 #[derive(Debug, Parser)]
 struct AppServerCommand {
+    /// Pin this app-server process to a local account alias or ID.
+    #[arg(long, value_name = "ALIAS_OR_ID")]
+    account: Option<String>,
     #[command(flatten)]
     startup_config: codex_app_server::StartupConfigArgs,
 
@@ -1250,6 +1253,7 @@ async fn cli_main(
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
+                account,
                 startup_config,
                 cloud_skills_snapshot,
                 subcommand,
@@ -1301,6 +1305,7 @@ async fn cli_main(
                         let _ = codex_app_server_daemon::maintain_stderr_log();
                     }
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
+                        process_account: account.or_else(|| interactive.account.clone()),
                         cloud_skills_snapshot,
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,

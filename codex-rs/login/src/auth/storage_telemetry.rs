@@ -2,6 +2,7 @@
 
 use super::AuthDotJson;
 use super::AuthStorageBackend;
+use super::PersistentAuthBackendKind;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_otel::auth_storage::AuthStorageOriginator;
@@ -108,5 +109,17 @@ impl AuthStorageBackend for ObservedStorage {
         let result = self.inner.delete();
         telemetry.record_delete_attempt(store, &result);
         result
+    }
+
+    fn repair_durability(&self) -> std::io::Result<()> {
+        self.inner.repair_durability()
+    }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        self.inner.backend_kind()
+    }
+
+    fn resolved_backend_kind(&self) -> std::io::Result<Option<PersistentAuthBackendKind>> {
+        self.inner.resolved_backend_kind()
     }
 }

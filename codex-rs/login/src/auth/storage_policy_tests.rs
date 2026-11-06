@@ -49,11 +49,11 @@ fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> a
                 "cleanup_failed",
                 AuthCredentialsStoreMode::Auto,
                 "save",
-                storage_telemetry::keyring_store(kind).as_ref(),
-                "success",
-                "success",
-                "none",
-                "none",
+                "file",
+                "error",
+                "error",
+                "secure_error",
+                "other",
             ),
             (
                 "success",
@@ -70,10 +70,10 @@ fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> a
                 AuthCredentialsStoreMode::Keyring,
                 "save",
                 storage_telemetry::keyring_store(kind).as_ref(),
-                "success",
-                "success",
+                "error",
+                "error",
                 "none",
-                "none",
+                "other",
             ),
             (
                 "denied",
@@ -167,7 +167,14 @@ fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> a
                     assert_eq!(result?, Some(auth.clone()));
                 }
             } else {
-                storage.save(&auth)?;
+                let result = storage.save(&auth);
+                if outcome == "error" {
+                    assert!(result.is_err(), "{kind:?} {mode:?} {scenario}");
+                    // A secure write is incomplete until its plaintext fallback is removed.
+                    assert!(get_auth_file(home.path()).is_dir());
+                } else {
+                    result?;
+                }
             }
             let store_mode = match mode {
                 AuthCredentialsStoreMode::Auto => "auto",
@@ -191,12 +198,14 @@ fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> a
                 ("storage_phase".into(), "policy".into()),
                 ("originator".into(), "none".into()),
             ]);
-            if secure == "success" {
+            if scenario == "success" || scenario == "cleanup_failed" {
                 let mut cleanup_tags = tags.clone();
                 cleanup_tags.extend([
                     ("actual_store".into(), "file".into()),
                     ("operation".into(), "cleanup".into()),
                     ("secure_outcome".into(), "not_attempted".into()),
+                    ("fallback_reason".into(), "none".into()),
+                    ("secure_error".into(), "none".into()),
                     (
                         "outcome".into(),
                         if scenario == "cleanup_failed" {
@@ -249,6 +258,7 @@ fn auto_auth_storage_load_prefers_keyring_value() -> anyhow::Result<()> {
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
     let keyring_auth = auth_with_prefix("keyring");
     seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &keyring_auth)?;
@@ -258,6 +268,11 @@ fn auto_auth_storage_load_prefers_keyring_value() -> anyhow::Result<()> {
 
     let loaded = storage.load()?;
     assert_eq!(loaded, Some(keyring_auth));
+    assert_eq!(storage.backend_kind(), PersistentAuthBackendKind::Secrets);
+    assert_eq!(
+        storage.resolved_backend_kind()?,
+        Some(PersistentAuthBackendKind::Secrets)
+    );
     Ok(())
 }
 
@@ -269,6 +284,7 @@ fn auto_auth_storage_load_uses_file_when_keyring_empty() -> anyhow::Result<()> {
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
 
     let expected = auth_with_prefix("file-only");
@@ -276,6 +292,11 @@ fn auto_auth_storage_load_uses_file_when_keyring_empty() -> anyhow::Result<()> {
 
     let loaded = storage.load()?;
     assert_eq!(loaded, Some(expected));
+    assert_eq!(storage.backend_kind(), PersistentAuthBackendKind::Secrets);
+    assert_eq!(
+        storage.resolved_backend_kind()?,
+        Some(PersistentAuthBackendKind::File)
+    );
     Ok(())
 }
 
@@ -287,6 +308,7 @@ fn auto_auth_storage_load_falls_back_when_keyring_errors() -> anyhow::Result<()>
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
     let key = compute_keyring_account(codex_home.path(), LocalSecretsNamespace::CodexAuth);
 
@@ -366,6 +388,7 @@ fn auto_auth_storage_save_prefers_keyring() -> anyhow::Result<()> {
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
     let stale = auth_with_prefix("stale");
     storage.file_storage.save(&stale)?;
@@ -385,6 +408,7 @@ fn auto_auth_storage_save_falls_back_when_keyring_errors() -> anyhow::Result<()>
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
     let key = compute_keyring_account(codex_home.path(), LocalSecretsNamespace::CodexAuth);
     mock_keyring.set_error(&key, KeyringError::Invalid("error".into(), "save".into()));
@@ -417,6 +441,7 @@ fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthKeyringBackendKind::Secrets,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth = auth_with_prefix("to-delete");
     let auth_file = seed_secrets_backend_and_fallback_auth_file_for_delete(
@@ -444,6 +469,7 @@ fn direct_keyring_auth_storage_saves_legacy_keyring_entry() -> anyhow::Result<()
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth_file = get_auth_file(codex_home.path());
     std::fs::write(&auth_file, "stale")?;
@@ -473,6 +499,7 @@ fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> any
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth_file = get_auth_file(codex_home.path());
     std::fs::write(&auth_file, "stale")?;

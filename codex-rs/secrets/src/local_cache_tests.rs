@@ -13,6 +13,7 @@ fn cached_reads_check_file_presence_key_rotation_and_keyring_errors() -> Result<
     for namespace in [
         LocalSecretsNamespace::ManagedSecrets,
         LocalSecretsNamespace::CodexAuth,
+        LocalSecretsNamespace::CodexProfileAuthV1,
     ] {
         let home = tempfile::tempdir()?;
         let keyring = Arc::new(MockKeyringStore::default());

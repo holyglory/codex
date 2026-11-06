@@ -460,6 +460,12 @@ impl AppServerSession {
         self.client.platform_os()
     }
 
+    pub(crate) fn multi_account_capability(
+        &self,
+    ) -> Option<&codex_app_server_protocol::MultiAccountCapability> {
+        self.client.multi_account_capability()
+    }
+
     pub(crate) fn new(
         backend_id: crate::backend_id::BackendId,
         client: AppServerClient,

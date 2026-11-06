@@ -3249,6 +3249,7 @@ dependencies = [
  "base64 0.22.1",
  "bm25",
  "chrono",
+ "codex-account-registry",
  "codex-agent-graph-store",
  "codex-agent-message-board-client",
  "codex-agent-message-board-extension",
@@ -3259,6 +3260,7 @@ dependencies = [
  "codex-apply-patch",
  "codex-async-utils",
  "codex-attachment-store",
+ "codex-backend-client",
  "codex-client",
  "codex-code-mode",
  "codex-config",
@@ -5488,12 +5490,14 @@ dependencies = [
  "arrow-array 60.1.0",
  "arrow-schema 60.1.0",
  "bytes",
+ "codex-private-storage",
  "duckdb",
  "parquet",
  "pretty_assertions",
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

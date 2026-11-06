@@ -584,6 +584,7 @@ fn verify_registry(
     .contains(&stored_account.priority);
     let stored_account_without_priority = AccountMetadata {
         priority: expected_account.priority,
+        credit_usage_enabled: false,
         ..stored_account.clone()
     };
     if registry.default_account_id.as_ref() != Some(target)
@@ -618,6 +619,7 @@ pub(super) fn registry_for(
         plan_type,
         enabled: true,
         priority: DEFAULT_ACCOUNT_PRIORITY,
+        credit_usage_enabled: false,
         created_at: journal.started_at(),
         last_used_at: None,
         note: None,

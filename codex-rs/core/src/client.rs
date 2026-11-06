@@ -32,6 +32,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[path = "client_account_routing.rs"]
+mod account_routing;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -221,7 +223,8 @@ struct ModelClientState {
     output_token_replay_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    disable_websockets: AtomicBool,
+    disable_websockets: Arc<AtomicBool>,
+    cached_profile_client: StdMutex<Option<ModelClient>>,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
     /// Last full tool list used for sampling, retained across turns and connection resets.
@@ -296,6 +299,7 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    _auth_lease: Option<Arc<codex_login::AuthManagerLease>>,
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_policy: PromptCacheKey,
     session_id_override: Option<String>,
@@ -303,7 +307,7 @@ pub struct ModelClient {
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
     restored_history: bool,
-    request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
+    pub(crate) request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
@@ -630,12 +634,14 @@ impl ModelClient {
                 output_token_replay_enabled,
                 include_attestation,
                 attestation_provider,
-                disable_websockets: AtomicBool::new(false),
+                disable_websockets: Arc::new(AtomicBool::new(false)),
+                cached_profile_client: StdMutex::new(/*t*/ None),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
             }),
             agent_identity_policy,
+            _auth_lease: None,
             prompt_cache_key_policy: PromptCacheKey::default(),
             session_id_override: None,
             codex_responses_headers: None,

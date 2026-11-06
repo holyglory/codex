@@ -34,6 +34,7 @@ fn account(id: AccountId, alias: &str, priority: u32) -> AccountMetadata {
         plan_type: None,
         enabled: true,
         priority,
+        credit_usage_enabled: false,
         created_at: timestamp(),
         last_used_at: None,
         note: None,
@@ -105,6 +106,26 @@ fn registry_parses_the_versioned_metadata_schema() {
 
     assert_eq!(parsed, expected);
     assert_eq!(parsed.validate(), Ok(()));
+
+    let legacy = serde_json::to_value(&parsed).expect("serialize legacy registry");
+    assert_eq!(
+        legacy,
+        serde_json::from_str::<serde_json::Value>(json).expect("legacy registry JSON")
+    );
+    for enabled in [false, true] {
+        let mut saved = legacy.clone();
+        saved["accounts"][0]["creditUsageEnabled"] = enabled.into();
+        let restored: AccountRegistry =
+            serde_json::from_value(saved).expect("restore saved credit permission");
+        let mut expected = expected.clone();
+        expected.accounts[0].credit_usage_enabled = enabled;
+        assert_eq!(restored, expected);
+        let encoded = serde_json::to_value(&restored).expect("serialize credit permission");
+        assert_eq!(
+            encoded["accounts"][0].get("creditUsageEnabled").cloned(),
+            enabled.then_some(serde_json::Value::Bool(true))
+        );
+    }
 }
 
 #[test]

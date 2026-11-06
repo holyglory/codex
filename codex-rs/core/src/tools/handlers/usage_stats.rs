@@ -11,9 +11,11 @@ use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use codex_usage::RecordCursor;
+use codex_usage::RecordKind;
 use codex_usage::TimeRange;
 use codex_usage::UsageFilter;
-use codex_usage::UsageStore;
+use codex_usage::UsageReader;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,12 +23,16 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod presentation;
+mod snapshots;
+mod spec;
+
 const TOOL_NAME: &str = "usage_stats";
 const MAX_OUTPUT_BYTES: usize = 16 * 1_024;
 
 pub struct UsageStatsHandler;
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum UsageStatsAction {
     Summary,
@@ -39,7 +45,7 @@ enum UsageStatsAction {
     Details,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum UsageStatsScope {
     All,
@@ -48,7 +54,7 @@ enum UsageStatsScope {
     Repository,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct UsageStatsArgs {
     action: UsageStatsAction,
@@ -72,6 +78,7 @@ struct UsageStatsArgs {
 struct UsageStatsContext {
     codex_home: PathBuf,
     thread_id: String,
+    cwd: PathBuf,
 }
 
 impl UsageStatsContext {
@@ -79,6 +86,7 @@ impl UsageStatsContext {
         Ok(Self {
             codex_home: invocation.turn.config.codex_home.to_path_buf(),
             thread_id: invocation.session.thread_id().to_string(),
+            cwd: invocation.turn.config.cwd.to_path_buf(),
         })
     }
 }
@@ -116,7 +124,7 @@ impl ToolExecutor<ToolInvocation> for UsageStatsHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        usage_stats_spec()
+        spec::usage_stats_spec()
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -130,8 +138,10 @@ impl ToolExecutor<ToolInvocation> for UsageStatsHandler {
             let args: UsageStatsArgs = serde_json::from_str(arguments)
                 .map_err(|_| tool_error("usage_stats arguments are invalid"))?;
             let context = UsageStatsContext::from_invocation(&invocation)?;
-            let mut store = UsageStore::open(&context.codex_home).map_err(|_| storage_error())?;
-            let value = execute(&mut store, &context, args)?;
+            let value =
+                tokio::task::spawn_blocking(move || snapshots::execute_request(&context, args))
+                    .await
+                    .map_err(|_| storage_error())??;
             Ok(boxed_tool_output(bounded_output(value)?))
         })
     }
@@ -148,14 +158,14 @@ fn bounded_output(value: Value) -> Result<UsageStatsOutput, FunctionCallError> {
 }
 
 fn execute(
-    store: &mut UsageStore,
+    store: &UsageReader,
     context: &UsageStatsContext,
     args: UsageStatsArgs,
 ) -> Result<Value, FunctionCallError> {
-    let start = args.from_at_ms.map_or(i64::MIN, |value| value / 1_000);
-    let end = args.to_at_ms.map_or(i64::MAX, |value| value / 1_000);
-    let range =
-        TimeRange::new(start, end).map_err(|_| tool_error("usage_stats time range is invalid"))?;
+    let start = args.from_at_ms.unwrap_or(i64::MIN);
+    let end = args.to_at_ms.unwrap_or(i64::MAX);
+    let range = TimeRange::from_millis(start, end)
+        .map_err(|_| tool_error("usage_stats time range is invalid"))?;
     // Only summary has a current-chat default. List/detail actions are global
     // unless they carry an explicit thread, repository, or account filter.
     let scope = if matches!(args.action, UsageStatsAction::Summary) {
@@ -165,10 +175,30 @@ fn execute(
     };
     let mut filter = UsageFilter::default();
     if let Some(account) = args.account.as_deref() {
-        filter = filter.for_account(account);
+        let id = if let Ok(id) = account.parse::<codex_account_registry::AccountId>() {
+            id.to_string()
+        } else {
+            let registry = codex_account_registry::RegistryStore::new(&context.codex_home)
+                .read()
+                .map_err(|_| tool_error("account registry is unavailable"))?;
+            registry
+                .accounts
+                .iter()
+                .find(|profile| profile.alias.as_str() == account)
+                .map(|profile| profile.id.to_string())
+                .ok_or_else(|| tool_error("unknown account alias"))?
+        };
+        filter = filter.for_account(id);
     }
+    let current_repository = || {
+        crate::usage_identity::repository_id(&context.cwd)
+            .ok_or_else(|| tool_error("current directory is not a recognized Git repository"))
+    };
     match scope {
-        UsageStatsScope::All | UsageStatsScope::CurrentRepository => {}
+        UsageStatsScope::All => {}
+        UsageStatsScope::CurrentRepository => {
+            filter = filter.for_repository(current_repository()?);
+        }
         UsageStatsScope::CurrentChat => {
             filter = filter.for_thread(context.thread_id.clone());
         }
@@ -177,11 +207,19 @@ fn execute(
                 .repository
                 .as_deref()
                 .ok_or_else(|| tool_error("repository is required for repository scope"))?;
-            filter = filter.for_repository(repository);
+            filter = filter.for_repository(if repository == "current" {
+                current_repository()?
+            } else {
+                repository.to_string()
+            });
         }
     }
     if let Some(repository) = args.repository.as_deref() {
-        filter = filter.for_repository(repository);
+        filter = filter.for_repository(if repository == "current" {
+            current_repository()?
+        } else {
+            repository.to_string()
+        });
     }
     if let Some(thread_id) = args.thread_id.as_deref() {
         filter = filter.for_thread(if thread_id == "current" {
@@ -190,156 +228,115 @@ fn execute(
             thread_id.to_string()
         });
     }
-    let records = matches!(args.action, UsageStatsAction::Summary)
-        .then(Vec::new)
-        .unwrap_or_else(|| store.query(range, &filter));
-    let totals = store.totals(range, &filter);
     let limit = usize::try_from(args.limit.unwrap_or(50))
         .map_err(|_| tool_error("limit must be between 1 and 50"))?;
     if !(1..=50).contains(&limit) {
         return Err(tool_error("limit must be between 1 and 50"));
     }
     let metadata = snapshot_metadata(store);
-
-    match args.action {
-        UsageStatsAction::Summary => Ok(with_metadata(
-            json!({
-                "schemaVersion": 1,
-                "kind": "usageSummary",
-                "inputTokens": totals.input_tokens,
-                "cachedInputTokens": totals.cached_input_tokens,
-                "outputTokens": totals.output_tokens,
-                "reasoningOutputTokens": totals.reasoning_output_tokens,
-                "records": totals.records,
-                "scope": scope_name(scope),
-            }),
-            &metadata,
-        )),
-        UsageStatsAction::Events => {
-            let (page, cursor) = page_records(&records, limit, &args);
-            let data = page.into_iter().map(event_json).collect::<Vec<_>>();
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "usageEvents",
-                    "data": data,
-                    "nextCursor": cursor,
-                }),
-                &metadata,
-            ))
+    let value = match args.action {
+        UsageStatsAction::Summary => {
+            let mut summary = store.summary(range, &filter).map_err(|_| storage_error())?;
+            summary["scope"] = json!(scope_name(scope));
+            summary
         }
-        UsageStatsAction::Details => {
-            let (page, cursor) = page_records(&records, limit, &args);
-            let data = page.into_iter().map(detail_json).collect::<Vec<_>>();
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "usageDetails",
-                    "detailKind": args.detail.as_deref().unwrap_or("tokens"),
-                    "data": data,
-                    "nextCursor": cursor,
-                }),
-                &metadata,
-            ))
-        }
-        UsageStatsAction::Repositories => Ok(with_metadata(
-            json!({
-                "schemaVersion": 1,
-                "kind": "usageRepositories",
-                "data": repository_rows(&records, limit),
-                "nextCursor": Value::Null,
-            }),
-            &metadata,
-        )),
-        UsageStatsAction::Tools => {
-            let tool_records = records
-                .iter()
-                .filter(|record| record.tool.is_some())
-                .cloned()
-                .collect::<Vec<_>>();
-            let (page, cursor) = page_records(&tool_records, limit, &args);
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "usageTools",
-                    "data": page.into_iter().map(tool_json).collect::<Vec<_>>(),
-                    "nextCursor": cursor,
-                }),
-                &metadata,
-            ))
-        }
-        UsageStatsAction::Activities => {
-            let activity_records = records
-                .iter()
-                .filter(|record| record.activity.is_some())
-                .cloned()
-                .collect::<Vec<_>>();
-            let (page, cursor) = page_records(&activity_records, limit, &args);
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "usageActivities",
-                    "data": page.into_iter().map(activity_json).collect::<Vec<_>>(),
-                    "nextCursor": cursor,
-                }),
-                &metadata,
-            ))
+        UsageStatsAction::Repositories => {
+            let mut rows = store
+                .repositories(range, &filter, args.cursor_id.as_deref(), limit)
+                .map_err(|_| storage_error())?;
+            let has_more = rows.len() > limit;
+            rows.truncate(limit);
+            let cursor = if has_more {
+                rows.last().map(|row| json!({"id": row.id, "sortValue": 0}))
+            } else {
+                None
+            };
+            let data = rows.into_iter().map(|row| json!({
+                "repositoryId": row.id,
+                "createdAtMs": row.first_observed_at_ms,
+                "updatedAtMs": row.last_observed_at_ms,
+                "records": row.totals.records,
+                "inputTokens": row.totals.input_tokens, "outputTokens": row.totals.output_tokens,
+            })).collect::<Vec<_>>();
+            json!({"schemaVersion": 1, "kind": "usageRepositories", "data": data, "nextCursor": cursor})
         }
         UsageStatsAction::TaskTreeSummary => {
-            let root = args.root_thread_id.as_deref().unwrap_or(&context.thread_id);
-            let mut groups = BTreeMap::<String, Vec<&codex_usage::UsageRecord>>::new();
-            for record in &records {
-                if let Some(thread_id) = record.thread_id.as_deref()
-                    && (root == "current" && thread_id == context.thread_id
-                        || root != "current" && thread_id == root)
-                {
-                    groups
-                        .entry(thread_id.to_string())
-                        .or_default()
-                        .push(record);
-                }
-            }
-            let data = groups
-                .into_iter()
-                .map(|(thread_id, records)| {
-                    let totals = records.iter().fold(
-                        codex_usage::UsageTotals::default(),
-                        |mut totals, record| {
-                            totals.add_assign(&record.totals());
-                            totals
-                        },
-                    );
-                    json!({"threadId": thread_id, "records": totals.records, "inputTokens": totals.input_tokens, "outputTokens": totals.output_tokens})
-                })
+            let root = args
+                .root_thread_id
+                .as_deref()
+                .filter(|id| *id != "current")
+                .unwrap_or(&context.thread_id);
+            let include_descendants = args.include_descendants.unwrap_or(true);
+            let scope = if include_descendants {
+                codex_usage::ThreadLineageScope::Descendants
+            } else {
+                codex_usage::ThreadLineageScope::RootOnly
+            };
+            let threads = store
+                .thread_scope(root, scope)
+                .map_err(|_| storage_error())?;
+            let totals = store
+                .totals(range, &filter.for_threads(threads.iter().cloned()))
+                .map_err(|_| storage_error())?;
+            let after = args.cursor_id.as_deref();
+            let mut page = threads
+                .iter()
+                .filter(|id| after.is_none_or(|after| id.as_str() > after))
+                .take(limit + 1)
+                .cloned()
                 .collect::<Vec<_>>();
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "taskTreeSummary",
-                    "rootThreadId": root,
-                    "data": data,
-                }),
-                &metadata,
-            ))
+            let has_more = page.len() > limit;
+            page.truncate(limit);
+            let cursor = if has_more {
+                page.last().map(|id| json!({"id": id, "sortValue": 0}))
+            } else {
+                None
+            };
+            json!({
+                "schemaVersion": 1, "kind": "taskTreeSummary", "rootThreadId": root,
+                "includeDescendants": include_descendants, "counts": {"threads": threads.len()},
+                "threadIds": page, "nextCursor": cursor,
+                "data": [{"threadId": root, "records": totals.records,
+                    "inputTokens": totals.input_tokens, "outputTokens": totals.output_tokens}],
+            })
         }
         UsageStatsAction::PerformanceReview => {
-            let (page, cursor) = page_records(&records, limit, &args);
-            let data = page.into_iter().map(review_json).collect::<Vec<_>>();
-            Ok(with_metadata(
-                json!({
-                    "schemaVersion": 1,
-                    "kind": "performanceReview",
-                    "data": data,
-                    "nextCursor": cursor,
-                    "includeDescendants": args.include_descendants.unwrap_or(false),
-                "agentId": args.agent_id,
-                "outcomeCursor": args.outcome_cursor,
-                "outcomeLimit": args.outcome_limit.unwrap_or(8),
-                }),
-                &metadata,
-            ))
+            if args.outcome_cursor.is_some() {
+                return Err(tool_error(
+                    "performance review cursor is expired or unavailable; request a new first page",
+                ));
+            }
+            let outcome_limit = args.outcome_limit.unwrap_or(8);
+            if !(1..=50).contains(&outcome_limit) {
+                return Err(tool_error("outcome_limit must be between 1 and 50"));
+            }
+            if args.include_descendants.unwrap_or(false)
+                && let Some(root) = filter.thread_id.as_deref()
+            {
+                let threads = store
+                    .thread_scope(root, codex_usage::ThreadLineageScope::Descendants)
+                    .map_err(|_| storage_error())?;
+                filter = filter.for_threads(threads);
+            }
+            let mut report = store
+                .performance_review(range, &filter)
+                .map_err(|_| storage_error())?;
+            report["includeDescendants"] = json!(args.include_descendants.unwrap_or(false));
+            report
         }
-    }
+        UsageStatsAction::Events
+        | UsageStatsAction::Details
+        | UsageStatsAction::Tools
+        | UsageStatsAction::Activities => {
+            if args.agent_id.is_some() {
+                return Err(tool_error(
+                    "agent identity has not been captured for this report; use thread_id",
+                ));
+            }
+            presentation::record_page(store, range, &filter, &args, limit)?
+        }
+    };
+    Ok(with_metadata(value, &metadata))
 }
 
 fn scope_name(scope: UsageStatsScope) -> &'static str {
@@ -358,44 +355,23 @@ fn with_metadata(mut value: Value, metadata: &serde_json::Map<String, Value>) ->
     value
 }
 
-fn page_records<'a>(
-    records: &'a [codex_usage::UsageRecord],
-    limit: usize,
-    args: &UsageStatsArgs,
-) -> (Vec<&'a codex_usage::UsageRecord>, Value) {
-    let after = args.cursor_sort_value.zip(args.cursor_id.as_deref());
-    let mut filtered = records.iter().filter(|record| {
-        after.is_none_or(|(timestamp, id)| {
-            let current = (record.observed_at.saturating_mul(1_000), record.id.as_str());
-            current > (timestamp, id)
-        })
-    });
-    let mut page = Vec::with_capacity(limit);
-    for _ in 0..limit {
-        let Some(record) = filtered.next() else {
-            return (page, Value::Null);
-        };
-        page.push(record);
-    }
-    if filtered.next().is_none() {
-        return (page, Value::Null);
-    }
-    let cursor = page.last().map(|record| {
-        json!({
-            "sortValue": record.observed_at.saturating_mul(1_000),
-            "id": record.id,
-        })
-    });
-    (page, cursor.map_or(Value::Null, |value| value))
-}
-
 fn record_fields(record: &codex_usage::UsageRecord) -> Value {
     json!({
         "id": record.id,
-        "observedAtMs": record.observed_at.saturating_mul(1_000),
+        "observedAtMs": record.effective_observed_at_ms(),
         "accountId": record.account_id,
         "operationId": record.operation_id,
         "threadId": record.thread_id,
+        "parentThreadId": record.parent_thread_id,
+        "turnId": record.turn_id,
+        "responseId": record.response_id,
+        "outcome": record.outcome,
+        "durationMs": record.duration_ms,
+        "attemptNumber": record.attempt_number,
+        "providerTotalTokens": record.provider_total_tokens,
+        "cacheWriteInputTokens": record.cache_write_input_tokens,
+        "missingObservations": record.missing_observations,
+        "reworkOfOperationId": record.rework_of_operation_id,
         "repositoryId": record.repository_id,
         "model": record.model,
         "tool": record.tool,
@@ -404,8 +380,8 @@ fn record_fields(record: &codex_usage::UsageRecord) -> Value {
         "classification": record.classification,
         "event": record.event,
         "coverage": record.coverage,
-        "startedAtMs": record.started_at.map(|value| value.saturating_mul(1_000)),
-        "endedAtMs": record.ended_at.map(|value| value.saturating_mul(1_000)),
+        "startedAtMs": record.effective_started_at_ms(),
+        "endedAtMs": record.effective_ended_at_ms(),
         "inputTokens": record.input_tokens,
         "cachedInputTokens": record.cached_input_tokens,
         "outputTokens": record.output_tokens,
@@ -413,61 +389,7 @@ fn record_fields(record: &codex_usage::UsageRecord) -> Value {
     })
 }
 
-fn event_json(record: &codex_usage::UsageRecord) -> Value {
-    record_fields(record)
-}
-
-fn detail_json(record: &codex_usage::UsageRecord) -> Value {
-    record_fields(record)
-}
-
-fn tool_json(record: &codex_usage::UsageRecord) -> Value {
-    record_fields(record)
-}
-
-fn activity_json(record: &codex_usage::UsageRecord) -> Value {
-    record_fields(record)
-}
-
-fn review_json(record: &codex_usage::UsageRecord) -> Value {
-    record_fields(record)
-}
-
-fn repository_rows(records: &[codex_usage::UsageRecord], limit: usize) -> Vec<Value> {
-    let mut groups = BTreeMap::<String, (i64, i64, codex_usage::UsageTotals)>::new();
-    for record in records {
-        let Some(repository) = record.repository_id.as_deref() else {
-            continue;
-        };
-        let entry = groups.entry(repository.to_string()).or_insert_with(|| {
-            (
-                record.observed_at,
-                record.observed_at,
-                codex_usage::UsageTotals::default(),
-            )
-        });
-        entry.0 = entry.0.min(record.observed_at);
-        entry.1 = entry.1.max(record.observed_at);
-        entry.2.add_assign(&record.totals());
-    }
-    groups
-        .into_iter()
-        .take(limit)
-        .map(|(id, (created, updated, totals))| {
-            json!({
-                "id": id,
-                "label": id,
-                "createdAtMs": created.saturating_mul(1_000),
-                "updatedAtMs": updated.saturating_mul(1_000),
-                "records": totals.records,
-                "inputTokens": totals.input_tokens,
-                "outputTokens": totals.output_tokens,
-            })
-        })
-        .collect()
-}
-
-fn snapshot_metadata(store: &UsageStore) -> serde_json::Map<String, Value> {
+fn snapshot_metadata(store: &UsageReader) -> serde_json::Map<String, Value> {
     let manifest = store.manifest();
     serde_json::Map::from_iter([
         (
@@ -475,9 +397,14 @@ fn snapshot_metadata(store: &UsageStore) -> serde_json::Map<String, Value> {
             json!(manifest.snapshot_generation),
         ),
         ("watermarkAtMs".to_string(), json!(manifest.watermark_at_ms)),
+        ("pendingEntries".to_string(), json!(store.pending_entries())),
+        (
+            "journalWatermark".to_string(),
+            json!(store.journal_watermark()),
+        ),
         (
             "freshness".to_string(),
-            serde_json::to_value(manifest.freshness).unwrap_or_else(|_| json!("unknown")),
+            serde_json::to_value(store.freshness()).unwrap_or_else(|_| json!("unknown")),
         ),
         (
             "pendingCorrections".to_string(),
@@ -490,131 +417,6 @@ impl CoreToolRuntime for UsageStatsHandler {
     fn is_builtin_control_tool(&self) -> bool {
         true
     }
-}
-
-fn usage_stats_spec() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "action".to_string(),
-            JsonSchema::string_enum(
-                vec![
-                    json!("summary"),
-                    json!("task_tree_summary"),
-                    json!("performance_review"),
-                    json!("repositories"),
-                    json!("tools"),
-                    json!("activities"),
-                    json!("events"),
-                    json!("details"),
-                ],
-                Some("Report or paged detail to read.".to_string()),
-            ),
-        ),
-        (
-            "scope".to_string(),
-            JsonSchema::string_enum(
-                vec![
-                    json!("all"),
-                    json!("current_chat"),
-                    json!("current_repository"),
-                    json!("repository"),
-                ],
-                Some("For summary only; defaults to current_chat.".to_string()),
-            ),
-        ),
-        (
-            "repository".to_string(),
-            JsonSchema::string(Some(
-                "Repository id, unique safe label, or current.".to_string(),
-            )),
-        ),
-        (
-            "account".to_string(),
-            JsonSchema::string(Some(
-                "Safe local account alias or local account reference for summary filtering."
-                    .to_string(),
-            )),
-        ),
-        (
-            "thread_id".to_string(),
-            JsonSchema::string(Some(
-                "Thread id or current for details or performance_review.".to_string(),
-            )),
-        ),
-        (
-            "root_thread_id".to_string(),
-            JsonSchema::string(Some(
-                "Root task for task_tree_summary; defaults to current.".to_string(),
-            )),
-        ),
-        (
-            "include_descendants".to_string(),
-            JsonSchema::boolean(Some(
-                "Include recorded descendants: task_tree_summary defaults to true; thread-scoped performance_review defaults to false. Set true for daily task reviews that include delegated work."
-                    .to_string(),
-            )),
-        ),
-        (
-            "outcome_cursor".to_string(),
-            JsonSchema::string(Some("For performance_review, continue its fixed outcome snapshot; expired cursors require a new first page.".to_string())),
-        ),
-        (
-            "outcome_limit".to_string(),
-            JsonSchema::number(Some("For performance_review, outcome rows per page, 1–50 (default 8), subject to the response byte limit.".to_string())),
-        ),
-        (
-            "agent_id".to_string(),
-            JsonSchema::string(Some("Agent id for activity filtering.".to_string())),
-        ),
-        (
-            "detail".to_string(),
-            JsonSchema::string_enum(
-                vec![
-                    json!("operations"),
-                    json!("model_requests"),
-                    json!("tokens"),
-                    json!("tools"),
-                    json!("events"),
-                ],
-                Some("Record family for details.".to_string()),
-            ),
-        ),
-        (
-            "from_at_ms".to_string(),
-            JsonSchema::number(Some("Inclusive UTC Unix milliseconds.".to_string())),
-        ),
-        (
-            "to_at_ms".to_string(),
-            JsonSchema::number(Some("Exclusive UTC Unix milliseconds.".to_string())),
-        ),
-        (
-            "limit".to_string(),
-            JsonSchema::number(Some(
-                "Detail/summary page size, 1–50. Summary totals repeat across pages.".to_string(),
-            )),
-        ),
-        (
-            "cursor_sort_value".to_string(),
-            JsonSchema::number(Some("Sort value from the returned nextCursor.".to_string())),
-        ),
-        (
-            "cursor_id".to_string(),
-            JsonSchema::string(Some("Identifier from the returned nextCursor.".to_string())),
-        ),
-    ]);
-    ToolSpec::Function(ResponsesApiTool {
-        name: TOOL_NAME.to_string(),
-        description: "Read the private, content-free local usage collector. Summaries retain totals and paginate detail when needed; task_tree_summary includes recorded descendants. Details paginate every approved entity, model/tool attempt, token observation, approval, attribution, classification, coverage, wait, lifecycle, repository-evidence, and taxonomy field while omitting OS PIDs. This tool never returns prompts, output, source, commands, payloads, credentials, email, raw paths/remotes, or service/workspace identifiers. Use usage_activity correct_classification for an append-only enum correction."
-            .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["action".to_string()]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-    })
 }
 
 fn tool_error(message: &str) -> FunctionCallError {

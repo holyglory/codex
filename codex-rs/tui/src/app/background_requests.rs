@@ -186,11 +186,12 @@ impl App {
         request: AccountProfilesRequest,
     ) {
         let request_handle = app_server.request_handle();
+        let account_capability = app_server.multi_account_capability().cloned();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let result = match tokio::time::timeout(
                 ACCOUNT_PROFILE_FETCH_TIMEOUT,
-                fetch_account_profiles(request_handle, request.clone()),
+                fetch_account_profiles(request_handle, request.clone(), account_capability),
             )
             .await
             {
@@ -855,7 +856,15 @@ fn classify_account_profiles_error(error: &str) -> AccountProfilesError {
 async fn fetch_account_profiles(
     request_handle: AppServerRequestHandle,
     request: AccountProfilesRequest,
+    capability: Option<codex_app_server_protocol::MultiAccountCapability>,
 ) -> Result<AccountProfilesResponse> {
+    if !crate::chatwidget::account_profiles_request_supported(capability.as_ref(), &request) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "account profile action is unsupported by this server",
+        )
+        .into());
+    }
     let request_id = RequestId::String(format!("account-profile-{}", Uuid::new_v4()));
     match request {
         AccountProfilesRequest::List { cursor, .. } => {
@@ -889,16 +898,23 @@ async fn fetch_account_profiles(
             }
             let auto_request_id =
                 RequestId::String(format!("account-auto-selection-{}", Uuid::new_v4()));
-            let auto_selection = request_handle
-                .request_typed::<AccountAutoSelectionReadResponse>(
-                    ClientRequest::AccountAutoSelectionRead {
-                        request_id: auto_request_id,
-                        params: AccountAutoSelectionReadParams {},
-                    },
-                )
-                .await
-                .ok()
-                .map(|response| response.auto_selection);
+            let auto_selection = if capability
+                .as_ref()
+                .is_some_and(|capability| capability.supports_auto_selection)
+            {
+                request_handle
+                    .request_typed::<AccountAutoSelectionReadResponse>(
+                        ClientRequest::AccountAutoSelectionRead {
+                            request_id: auto_request_id,
+                            params: AccountAutoSelectionReadParams {},
+                        },
+                    )
+                    .await
+                    .ok()
+                    .map(|response| response.auto_selection)
+            } else {
+                None
+            };
             Ok(AccountProfilesResponse::List(AccountProfilesListData {
                 profiles: response.data,
                 next_cursor: response.next_cursor,

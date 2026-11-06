@@ -461,6 +461,7 @@ fn secrets_keyring_auth_storage_load_returns_deserialized_auth() -> anyhow::Resu
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let expected = AuthDotJson {
         auth_mode: Some(AuthMode::ApiKey),
@@ -497,6 +498,7 @@ fn direct_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Resu
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth = auth_with_prefix("direct-delete");
     storage.save(&auth)?;
@@ -570,6 +572,7 @@ fn secrets_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Res
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth = auth_with_prefix("to-delete");
     let auth_file = seed_secrets_backend_and_fallback_auth_file_for_delete(
@@ -597,12 +600,14 @@ fn secrets_keyring_auth_storage_delete_removes_legacy_direct_keyring_entry() -> 
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     direct_storage.save(&auth_with_prefix("legacy-direct"))?;
     let storage = SecretsKeyringAuthStorage::new(
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
         AuthCredentialsStoreMode::Keyring,
+        AuthStorageNamespace::LegacyV0,
     );
     let auth = auth_with_prefix("to-delete");
     let auth_file = seed_secrets_backend_and_fallback_auth_file_for_delete(
@@ -632,3 +637,6 @@ mod policy;
 
 #[path = "storage_error_tests.rs"]
 mod errors;
+
+#[path = "storage_namespace_tests.rs"]
+mod namespaces;

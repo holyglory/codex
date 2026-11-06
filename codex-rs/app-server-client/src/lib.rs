@@ -54,6 +54,7 @@ use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
 use codex_app_server_protocol::ServerNotification;
@@ -339,6 +340,7 @@ enum ClientCommand {
 /// callers aligned with app-server behavior while still avoiding a process
 /// boundary.
 pub struct InProcessAppServerClient {
+    multi_account: Option<MultiAccountCapability>,
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::UnboundedReceiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
@@ -371,6 +373,9 @@ impl InProcessAppServerClient {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let multi_account = handle
+            .initialize_response()
+            .and_then(|response| response.multi_account.clone());
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
@@ -475,6 +480,7 @@ impl InProcessAppServerClient {
         });
 
         Ok(Self {
+            multi_account,
             command_tx,
             event_rx,
             worker_handle,
@@ -589,6 +595,7 @@ impl InProcessAppServerClient {
     /// avoid leaking background tasks in embedding callers.
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
+            multi_account: _,
             command_tx,
             event_rx,
             worker_handle,
@@ -770,6 +777,17 @@ impl AppServerClient {
         }
     }
 
+    /// Version-two profile features advertised by this connection's app server.
+    /// Missing, malformed and unsupported capability versions remain unavailable.
+    pub fn multi_account_capability(&self) -> Option<&MultiAccountCapability> {
+        let capability = match self {
+            Self::InProcess(client) => client.multi_account.as_ref(),
+            Self::Remote(client) => client.multi_account_capability(),
+            Self::Cloud(_) => None,
+        };
+        capability.filter(|capability| capability.version == 2)
+    }
+
     pub fn codex_home(&self, local_codex_home: &AbsolutePathBuf) -> Option<AppServerPath> {
         match self {
             Self::InProcess(_) => Some(AppServerPath::from_app_server(
@@ -943,8 +961,18 @@ mod tests {
         session_source: SessionSource,
         channel_capacity: usize,
     ) -> TestClient {
+        start_test_client_with_config(session_source, channel_capacity, |_| {}).await
+    }
+
+    async fn start_test_client_with_config(
+        session_source: SessionSource,
+        channel_capacity: usize,
+        configure: impl FnOnce(&mut Config),
+    ) -> TestClient {
         let codex_home = TempDir::new().expect("temp dir");
-        let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
+        let mut config = build_test_config_for_codex_home(codex_home.path()).await;
+        configure(&mut config);
+        let config = Arc::new(config);
         let state_db = init_state_db(config.as_ref())
             .await
             .expect("state db should initialize for in-process test");
@@ -1242,6 +1270,14 @@ mod tests {
         } = start_test_client(SessionSource::Exec).await;
         let client = AppServerClient::InProcess(client);
         assert_eq!(
+            client.multi_account_capability(),
+            Some(&MultiAccountCapability {
+                version: 2,
+                supports_managed_login: true,
+                supports_auto_selection: true,
+            })
+        );
+        assert_eq!(
             (client.platform_family(), client.platform_os()),
             (Some(std::env::consts::FAMILY), Some(std::env::consts::OS))
         );
@@ -1451,6 +1487,97 @@ mod tests {
                 (client.platform_family(), client.platform_os()),
                 (family, os)
             );
+            client.shutdown().await.expect("shutdown should complete");
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_account_capability_comes_from_initialize() {
+        for mode in [
+            codex_config::types::AuthCredentialsStoreMode::File,
+            codex_config::types::AuthCredentialsStoreMode::Ephemeral,
+        ] {
+            let TestClient {
+                _codex_home,
+                client,
+            } = start_test_client_with_config(
+                SessionSource::Exec,
+                DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+                move |config| config.cli_auth_credentials_store_mode = mode,
+            )
+            .await;
+            let client = AppServerClient::InProcess(client);
+            assert_eq!(
+                client.multi_account_capability().cloned(),
+                (mode != codex_config::types::AuthCredentialsStoreMode::Ephemeral).then_some(
+                    MultiAccountCapability {
+                        version: 2,
+                        supports_managed_login: true,
+                        supports_auto_selection: true,
+                    }
+                )
+            );
+            client.shutdown().await.expect("shutdown should complete");
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_account_capability_requires_a_valid_supported_advertisement() {
+        let full = MultiAccountCapability {
+            version: 2,
+            supports_managed_login: true,
+            supports_auto_selection: true,
+        };
+        let limited = MultiAccountCapability {
+            version: 2,
+            supports_managed_login: false,
+            supports_auto_selection: false,
+        };
+        for (advertised, expected) in [
+            (None, None),
+            (Some(serde_json::Value::Null), None),
+            (
+                Some(
+                    serde_json::json!({"version": 1, "supportsManagedLogin": true, "supportsAutoSelection": true}),
+                ),
+                None,
+            ),
+            (
+                Some(
+                    serde_json::json!({"version": 3, "supportsManagedLogin": true, "supportsAutoSelection": true}),
+                ),
+                None,
+            ),
+            (
+                Some(
+                    serde_json::json!({"version": 2, "supportsManagedLogin": "true", "supportsAutoSelection": true}),
+                ),
+                None,
+            ),
+            (
+                Some(serde_json::to_value(&full).expect("capability")),
+                Some(full),
+            ),
+            (
+                Some(serde_json::to_value(&limited).expect("capability")),
+                Some(limited),
+            ),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                let mut metadata = serde_json::json!({});
+                if let Some(capability) = advertised {
+                    metadata["multiAccount"] = capability;
+                }
+                expect_remote_initialize_with_metadata(&mut websocket, metadata).await;
+                websocket.close(None).await.expect("close should succeed");
+            })
+            .await;
+            let client = AppServerClient::Remote(
+                RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+                    .await
+                    .expect("remote connection"),
+            );
+            assert_eq!(client.multi_account_capability().cloned(), expected);
             client.shutdown().await.expect("shutdown should complete");
         }
     }
@@ -2144,6 +2271,7 @@ mod tests {
         drop(event_tx);
 
         let mut client = InProcessAppServerClient {
+            multi_account: None,
             command_tx,
             event_rx,
             worker_handle,
@@ -2251,6 +2379,7 @@ mod tests {
             let _ = response_tx.send(Ok(()));
         });
         let client = InProcessAppServerClient {
+            multi_account: None,
             command_tx,
             event_rx,
             worker_handle,

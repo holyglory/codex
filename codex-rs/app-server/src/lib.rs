@@ -483,6 +483,8 @@ pub enum PluginStartupTasks {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
+    /// Invocation-only local profile pin.
+    pub process_account: Option<String>,
     /// Optional host-owned frozen cloud skill catalog and resources, loaded once at startup.
     pub cloud_skills_snapshot: Option<std::path::PathBuf>,
     pub code_mode_host_transport: CodeModeHostTransport,
@@ -496,6 +498,7 @@ impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
             cloud_skills_snapshot: None,
+            process_account: None,
             code_mode_host_transport: CodeModeHostTransport::Local,
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
@@ -574,7 +577,7 @@ pub async fn run_main_with_transport_options(
         .await?;
     let mut config_warnings = Vec::new();
     let mut plugin_startup_config = PluginStartupConfig::Current;
-    let config = match startup.config {
+    let mut config = match startup.config {
         Ok(config) => config,
         Err(err) if is_unsupported_untrusted_approval_policy_error(&err) => {
             return Err(err);
@@ -595,6 +598,7 @@ pub async fn run_main_with_transport_options(
             })?
         }
     };
+    config.process_account = runtime_options.process_account.clone();
     config.validate_windows_mxc_requirement()?;
     config.auth_config().validate()?;
     let auth_manager =

@@ -10,6 +10,7 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use super::AccountManagementError;
+use super::ManagedAccountMetadataMutation;
 use super::ManagedAccountUpdate;
 use super::ProfileAuthStorage;
 use super::read_managed_accounts;
@@ -262,5 +263,79 @@ fn priority_mutations_honor_generation_and_preserve_idempotence() {
     assert_eq!(
         unchanged.snapshot.generation,
         normalized.snapshot.generation
+    );
+}
+
+#[test]
+fn credit_permission_changes_are_generation_checked_and_idempotent() {
+    let (_home, config) = fixture();
+    let initial = read_managed_accounts(&config).expect("initial snapshot");
+    let enabled = update_managed_account(
+        &config,
+        ManagedAccountUpdate::SetCreditUsage {
+            account: "alpha".into(),
+            enabled: true,
+        },
+        initial.generation,
+    )
+    .expect("enable credit permission");
+    let mut expected = initial.clone();
+    expected.generation += 1;
+    expected.accounts[1].credit_usage_enabled = true;
+    let account_id = Some(initial.accounts[1].account_id.clone());
+    assert_eq!(
+        enabled,
+        ManagedAccountMetadataMutation {
+            snapshot: expected.clone(),
+            account_id: account_id.clone(),
+            changed: true
+        }
+    );
+    assert_eq!(
+        update_managed_account(
+            &config,
+            ManagedAccountUpdate::SetCreditUsage {
+                account: "alpha".into(),
+                enabled: false
+            },
+            initial.generation,
+        ),
+        Err(AccountManagementError::GenerationConflict)
+    );
+    let unchanged = update_managed_account(
+        &config,
+        ManagedAccountUpdate::SetCreditUsage {
+            account: "alpha".into(),
+            enabled: true,
+        },
+        expected.generation,
+    )
+    .expect("idempotent credit permission");
+    assert_eq!(
+        unchanged,
+        ManagedAccountMetadataMutation {
+            snapshot: expected.clone(),
+            account_id: account_id.clone(),
+            changed: false
+        }
+    );
+    let disabled = update_managed_account(
+        &config,
+        ManagedAccountUpdate::SetCreditUsage {
+            account: "alpha".into(),
+            enabled: false,
+        },
+        expected.generation,
+    )
+    .expect("disable credit permission");
+    expected.accounts[1].credit_usage_enabled = false;
+    expected.generation += 1;
+    assert_eq!(
+        disabled,
+        ManagedAccountMetadataMutation {
+            snapshot: expected,
+            account_id,
+            changed: true
+        }
     );
 }

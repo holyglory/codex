@@ -161,7 +161,7 @@ impl ChatWidget {
             pending_rate_limit_reset_hint: None,
             available_rate_limit_reset_credits: None,
             next_rate_limit_reset_request_id: 0,
-            account_profiles_supported: false,
+            account_profiles_capability: None,
             next_account_profiles_request_id: 0,
             pending_account_profiles_request: None,
             account_profiles: Vec::new(),

@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
 use std::fs::{self};
 use std::io::Write;
 use std::path::Path;
@@ -29,6 +28,7 @@ use crate::segment::ParquetSegmentCodec;
 use crate::segment::SegmentCodec;
 use crate::segment::UsageCorrectionSegment;
 use crate::segment::UsageSegment;
+use crate::storage_file;
 
 /// Directory name reserved for the local usage-v2 storage layout.
 pub const USAGE_DIRECTORY_NAME: &str = "usage-v2";
@@ -57,7 +57,7 @@ impl UsageStore {
     /// Open a store at an already-resolved `usage-v2` directory.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        fs::create_dir_all(root.join(SEGMENTS_DIRECTORY_NAME))?;
+        storage_file::ensure_usage_directory(&root)?;
         let journal = UsageJournal::new(root.join(JOURNAL_FILE_NAME));
         let manifest_store = ManifestStore::new(root.join(MANIFEST_FILE_NAME));
         let mut manifest = manifest_store.load()?;
@@ -155,6 +155,7 @@ impl UsageStore {
             && self.memory.tail().is_empty()
             && self.memory.pending_corrections().is_empty()
             && filter.model.is_none()
+            && filter.thread_ids.is_none()
         {
             if let Some(account) = filter.account_id.as_deref()
                 && filter.thread_id.is_none()
@@ -214,12 +215,7 @@ impl UsageStore {
     pub fn materialize_snapshot(&mut self, freshness: Freshness) -> Result<UsageManifest> {
         // Only publishers share this lock. Journal writers and readers never
         // acquire it, so report publication cannot stall event capture.
-        let publisher_lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(self.root.join(".snapshot.lock"))?;
+        let publisher_lock = storage_file::open_read_write(&self.root.join(".snapshot.lock"))?;
         publisher_lock.lock()?;
         if self.manifest_store.load()?.snapshot_generation != self.manifest.snapshot_generation {
             *self = Self::open_at(&self.root)?;
@@ -301,6 +297,21 @@ impl UsageStore {
         let mut manifest = self.manifest.clone();
         manifest.mark_snapshot(watermark, freshness);
         manifest.journal_byte_offset = checkpoint.byte_offset;
+        // The compatibility materializer rebuilds summaries from raw records.
+        // Its eager view does not maintain the publisher's membership sidecar.
+        manifest.membership_file = None;
+        manifest.membership_files.clear();
+        manifest.review_projection_file = None;
+        manifest.review_counts.clear();
+        manifest.id_index_file = None;
+        if manifest.summaries_include_corrections || !manifest.applied_correction_ids.is_empty() {
+            manifest.snapshot_totals = UsageTotals::default();
+            manifest.account_totals.clear();
+            manifest.thread_totals.clear();
+            manifest.repository_totals.clear();
+        }
+        manifest.summaries_include_corrections = false;
+        manifest.applied_correction_ids.clear();
         let summaries_initialized = manifest.snapshot_totals.records != 0
             || !manifest.account_totals.is_empty()
             || !manifest.repository_totals.is_empty()
@@ -356,6 +367,7 @@ impl UsageStore {
 
 fn needs_duckdb_query(range: TimeRange, filter: &UsageFilter) -> bool {
     range != TimeRange::all()
+        || filter.thread_ids.is_some()
         || filter.model.is_some()
         || (filter.account_id.is_some() && filter.thread_id.is_some())
         || (filter.account_id.is_some() && filter.repository_id.is_some())
@@ -505,10 +517,7 @@ fn write_segment_file(root: &Path, file_name: &str, segment: &UsageSegment) -> R
     let temporary_path =
         segments_directory.join(format!(".{file_name}.tmp-{}", std::process::id()));
     let bytes = ParquetSegmentCodec.encode(segment)?;
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary_path)?;
+    let mut file = storage_file::create_new(&temporary_path)?;
     file.write_all(&bytes)?;
     file.flush()?;
     file.sync_all()?;
@@ -533,10 +542,7 @@ fn write_correction_file(
     let temporary_path =
         segments_directory.join(format!(".{file_name}.tmp-{}", std::process::id()));
     let bytes = ParquetCorrectionSegmentCodec.encode_corrections(segment)?;
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary_path)?;
+    let mut file = storage_file::create_new(&temporary_path)?;
     file.write_all(&bytes)?;
     file.flush()?;
     file.sync_all()?;

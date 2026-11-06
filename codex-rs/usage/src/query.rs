@@ -112,7 +112,9 @@ impl UsageTail {
     pub fn query(&self, range: TimeRange, filter: &UsageFilter) -> Vec<UsageRecord> {
         self.records
             .iter()
-            .filter(|record| range.contains(record.observed_at) && filter.matches(record))
+            .filter(|record| {
+                range.contains_millis(record.effective_observed_at_ms()) && filter.matches(record)
+            })
             .cloned()
             .collect()
     }
@@ -200,8 +202,8 @@ impl InMemoryUsageStore {
         }
         let mut records: Vec<_> = by_id.into_values().collect();
         records.sort_by(|left, right| {
-            left.observed_at
-                .cmp(&right.observed_at)
+            left.effective_observed_at_ms()
+                .cmp(&right.effective_observed_at_ms())
                 .then_with(|| left.id.cmp(&right.id))
         });
         records

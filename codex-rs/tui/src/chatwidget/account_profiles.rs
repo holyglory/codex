@@ -111,11 +111,6 @@ pub(crate) enum AccountProfilesError {
 }
 
 impl ChatWidget {
-    pub(crate) fn set_account_profiles_supported(&mut self, supported: bool) {
-        self.account_profiles_supported = supported;
-        self.bottom_pane.set_account_command_enabled(supported);
-    }
-
     pub(crate) fn refresh_account_profiles_after_login(&mut self, success: bool) {
         self.refresh_account_profiles_if_idle(Some(if success {
             "Account sign-in completed.".to_string()
@@ -129,7 +124,7 @@ impl ChatWidget {
     }
 
     fn refresh_account_profiles_if_idle(&mut self, notice: Option<String>) {
-        if self.account_profiles_supported
+        if self.account_profiles_supported()
             && self.pending_account_profiles_request.is_none()
             && self
                 .bottom_pane
@@ -148,7 +143,7 @@ impl ChatWidget {
     }
 
     pub(super) fn open_account_command(&mut self, args: &str) {
-        if !self.account_profiles_supported {
+        if !self.account_profiles_supported() {
             self.add_error_message("Account profiles are unavailable on this server.".to_string());
             return;
         }
@@ -195,6 +190,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_account_profiles_request(&mut self, request: AccountProfilesRequest) {
+        if !account_profiles_request_supported(self.account_profiles_capability(), &request) {
+            self.add_error_message(
+                "This account action is unavailable on this server.".to_string(),
+            );
+            return;
+        }
         let request_id = self.next_account_profiles_request_id;
         self.next_account_profiles_request_id =
             self.next_account_profiles_request_id.wrapping_add(1);
@@ -445,6 +446,9 @@ impl ChatWidget {
             .collect::<Vec<_>>();
         items.push(SelectionItem {
             name: "Add account".to_string(),
+            is_disabled: !self.account_profiles_managed_login_supported(),
+            disabled_reason: (!self.account_profiles_managed_login_supported())
+                .then(|| "Unavailable on this server".to_string()),
             actions: vec![Box::new(|tx| {
                 tx.send(AppEvent::OpenAccountAliasPrompt {
                     value: None,
@@ -457,6 +461,9 @@ impl ChatWidget {
         let auto_selection = data.auto_selection;
         items.push(SelectionItem {
             name: "Automatic selection".to_string(),
+            is_disabled: !self.account_profiles_auto_selection_supported(),
+            disabled_reason: (!self.account_profiles_auto_selection_supported())
+                .then(|| "Unavailable on this server".to_string()),
             description: Some(auto_selection.as_ref().map_or_else(
                 || "Status unavailable".to_string(),
                 |auto_selection| {
@@ -700,6 +707,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn show_account_login_choice(&mut self, alias: String) {
+        if !self.account_profiles_managed_login_supported() {
+            self.add_error_message(
+                "This account action is unavailable on this server.".to_string(),
+            );
+            return;
+        }
         let browser_alias = alias.clone();
         let device_alias = alias.clone();
         self.bottom_pane.show_selection_view(SelectionViewParams {

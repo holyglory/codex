@@ -14,6 +14,9 @@ use std::str::FromStr;
 #[path = "priority_tests.rs"]
 mod priority_tests;
 
+#[path = "credit_tests.rs"]
+mod credit_tests;
+
 fn account(alias: &str, priority: u32) -> AccountMetadata {
     account_with_mode(alias, priority, AuthMode::Chatgpt)
 }

@@ -195,6 +195,23 @@ fn durable_store_replays_tail_and_materialized_segments_after_restart() {
     assert_eq!(restarted.manifest().snapshot_generation, 1);
     assert_eq!(restarted.manifest().watermark, 3);
     assert_eq!(restarted.manifest().freshness, Freshness::Fresh);
+    codex_private_storage::verify_private_directory(restarted.root())
+        .expect("private recovered store");
+    codex_private_storage::verify_private_directory(&restarted.root().join("segments"))
+        .expect("private recovered segments");
+    for file in ["events.jsonl", "manifest.json", ".snapshot.lock"] {
+        codex_private_storage::verify_private_file(&restarted.root().join(file))
+            .expect("private recovered metadata");
+    }
+    for file in restarted
+        .manifest()
+        .segment_files
+        .iter()
+        .chain(&restarted.manifest().correction_files)
+    {
+        codex_private_storage::verify_private_file(&restarted.root().join("segments").join(file))
+            .expect("private recovered Parquet");
+    }
     assert_eq!(
         restarted.query(TimeRange::all(), &UsageFilter::default()),
         vec![first_record, second_record]
@@ -256,14 +273,26 @@ fn materialization_reuses_untouched_hour_segments() {
 fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
     let directory = tempdir().expect("temporary directory");
     let mut store = UsageStore::open(directory.path()).expect("open store");
-    store
-        .append_record(
-            record("one", 3_605, 8, 1)
-                .with_account("account-a")
-                .with_thread("thread-a")
-                .with_repository("repo-a"),
-        )
-        .expect("append one");
+    let mut expected = record("one", 3_605, 8, 1)
+        .with_account("account-a")
+        .with_thread("thread-a")
+        .with_repository("repo-a");
+    expected.parent_thread_id = Some("parent".to_string());
+    expected.turn_id = Some("turn-a".to_string());
+    expected.response_id = Some("response-a".to_string());
+    expected.outcome = Some(UsageOutcome::Completed);
+    expected.duration_ms = Some(42);
+    expected.attempt_number = Some(2);
+    expected.provider_total_tokens = Some(9);
+    expected.cache_write_input_tokens = Some(3);
+    expected.missing_observations = Some(4);
+    expected.rework_of_operation_id = Some("previous-model-request".to_string());
+    expected.observed_at_ms = Some(3_605_123);
+    expected.started_at = Some(3_605);
+    expected.started_at_ms = Some(3_605_081);
+    expected.ended_at = Some(3_605);
+    expected.ended_at_ms = Some(3_605_123);
+    store.append_record(expected.clone()).expect("append one");
     store
         .materialize_snapshot(Freshness::Fresh)
         .expect("materialize");
@@ -316,38 +345,61 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
                 &UsageFilter::default().for_repository("repo-a"),
             )
             .expect("duckdb snapshot rows"),
-        vec![
-            record("one", 3_605, 8, 1)
-                .with_account("account-a")
-                .with_thread("thread-a")
-                .with_repository("repo-a")
-        ]
+        vec![expected.clone()]
     );
-}
-
-#[test]
-#[ignore = "large acceptance fixture; run explicitly with --ignored"]
-fn synthetic_volume_fixture_covers_rebase_acceptance_scale() {
-    let directory = tempdir().expect("temporary directory");
-    let mut store = UsageStore::open(directory.path()).expect("open store");
-    for index in 0..3_000_000_u32 {
-        store
-            .append_record(
-                UsageRecord::new(format!("operation-{index}"), i64::from(index), 10, 5)
-                    .with_account(format!("account-{}", index % 8))
-                    .with_thread(format!("thread-{}", index % 256))
-                    .with_repository(format!("repository-{}", index % 16)),
-            )
-            .expect("append synthetic record");
-    }
-    store
-        .materialize_snapshot(Freshness::Fresh)
-        .expect("materialize synthetic fixture");
+    let segment = UsageSegment::from_records(vec![expected.clone()]).expect("timed segment");
+    let encoded = ParquetSegmentCodec
+        .encode(&segment)
+        .expect("encode timed segment");
     assert_eq!(
-        store
-            .totals(TimeRange::all(), &UsageFilter::default())
-            .records,
-        3_000_000
+        ParquetSegmentCodec
+            .decode(&encoded)
+            .expect("decode timed segment"),
+        segment
+    );
+    let mut batches = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::from(encoded),
+    )
+    .expect("read current schema")
+    .build()
+    .expect("read current rows");
+    let batch = batches.next().expect("timed batch").expect("decode batch");
+    let legacy = batch
+        .project(&(0..batch.num_columns() - 3).collect::<Vec<_>>())
+        .expect("legacy seconds schema");
+    let mut legacy_bytes = Vec::new();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(
+        &mut legacy_bytes,
+        legacy.schema(),
+        /*props*/ None,
+    )
+    .expect("legacy writer");
+    writer.write(&legacy).expect("legacy batch");
+    writer.close().expect("close legacy Parquet");
+    expected.observed_at_ms = None;
+    expected.started_at_ms = None;
+    expected.ended_at_ms = None;
+    assert_eq!(
+        ParquetSegmentCodec
+            .decode(&legacy_bytes)
+            .expect("legacy decode")
+            .records(),
+        &[expected.clone()]
+    );
+    let name = "legacy-seconds.parquet".to_string();
+    std::fs::write(store.root().join("segments").join(&name), legacy_bytes)
+        .expect("legacy fixture");
+    assert_eq!(
+        DuckDbSnapshot
+            .query(
+                &store.root().join("segments"),
+                &[name],
+                TimeRange::from_millis(/*start_ms*/ 3_605_000, /*end_ms*/ 3_605_001)
+                    .expect("legacy ms range"),
+                &UsageFilter::default()
+            )
+            .expect("legacy SQL fallback"),
+        vec![expected]
     );
 }
 
@@ -430,5 +482,171 @@ fn stale_publishers_reconcile_new_generation_and_journal_only_corrections() {
             reasoning_output_tokens: 0,
             records: 3,
         }
+    );
+}
+
+#[test]
+fn snapshot_reader_pins_rows_and_applies_late_corrections_without_full_replay() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut writer = UsageStore::open(directory.path()).expect("writer");
+    let first = UsageRecord::new_millis(
+        "z-first", /*observed_at_ms*/ 1_100, /*input_tokens*/ 10,
+        /*output_tokens*/ 2,
+    )
+    .with_thread("thread's id");
+    let second = UsageRecord::new_millis(
+        "a-second", /*observed_at_ms*/ 1_900, /*input_tokens*/ 20,
+        /*output_tokens*/ 3,
+    )
+    .with_thread("thread's id");
+    writer.append_record(first.clone()).expect("first");
+    writer
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("publish");
+    let pinned = UsageReader::open(directory.path()).expect("pinned reader");
+    writer.append_record(second.clone()).expect("second");
+    writer
+        .append_correction(UsageCorrection::new(
+            "correction",
+            "z-first",
+            3,
+            -2,
+            1,
+            "late fact",
+        ))
+        .expect("correction");
+    let current = UsageReader::open(directory.path()).expect("current reader");
+    let filter = UsageFilter::default().for_thread("thread's id");
+    let subsecond = TimeRange::from_millis(/*start_ms*/ 1_100, /*end_ms*/ 1_900)
+        .expect("half-open milliseconds");
+    assert_eq!(
+        current
+            .page(
+                subsecond,
+                &filter,
+                RecordKind::All,
+                /*after*/ None,
+                /*limit*/ 10
+            )
+            .expect("subsecond observations")
+            .records,
+        vec![first.clone()]
+    );
+    assert_eq!(
+        current
+            .totals(subsecond, &filter)
+            .expect("subsecond corrected totals"),
+        UsageTotals {
+            input_tokens: 8,
+            output_tokens: 3,
+            records: 1,
+            ..UsageTotals::default()
+        }
+    );
+    assert_eq!(
+        pinned
+            .totals(TimeRange::all(), &filter)
+            .expect("pinned totals"),
+        first.totals()
+    );
+    assert_eq!(
+        current
+            .totals(TimeRange::all(), &filter)
+            .expect("current totals"),
+        UsageTotals {
+            input_tokens: 28,
+            output_tokens: 6,
+            records: 2,
+            ..UsageTotals::default()
+        }
+    );
+    let first_page = current
+        .page(
+            TimeRange::all(),
+            &filter,
+            RecordKind::All,
+            /*after*/ None,
+            /*limit*/ 1,
+        )
+        .expect("first page");
+    assert_eq!(first_page.records, vec![first]);
+    assert_eq!(
+        first_page.next,
+        Some(RecordCursor::from_millis(
+            /*observed_at_ms*/ 1_100, "z-first"
+        ))
+    );
+    let second_page = current
+        .page(
+            TimeRange::all(),
+            &filter,
+            RecordKind::All,
+            first_page.next.as_ref(),
+            /*limit*/ 1,
+        )
+        .expect("second page");
+    assert_eq!(second_page.records, vec![second]);
+    assert!(second_page.next.is_none());
+}
+
+#[test]
+fn snapshot_reader_does_not_decode_historical_segments_or_hide_query_errors() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut writer = UsageStore::open(directory.path()).expect("writer");
+    let record = UsageRecord::new("record", 1, 10, 2).with_thread("thread");
+    writer.append_record(record.clone()).expect("record");
+    let manifest = writer
+        .materialize_snapshot(Freshness::Fresh)
+        .expect("publish");
+    std::fs::write(
+        writer
+            .root()
+            .join("segments")
+            .join(&manifest.segment_files[0]),
+        b"corrupt parquet",
+    )
+    .expect("corrupt fixture");
+    let reader = UsageReader::open(directory.path()).expect("metadata-only open");
+    assert_eq!(
+        reader
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("precomputed totals"),
+        record.totals()
+    );
+    assert!(
+        reader
+            .page(
+                TimeRange::all(),
+                &UsageFilter::default(),
+                RecordKind::All,
+                /*after*/ None,
+                /*limit*/ 1
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn snapshot_reader_serves_consistent_snapshot_while_large_tail_awaits_publication() {
+    let directory = tempfile::tempdir().expect("directory");
+    let writer = UsageStore::open(directory.path()).expect("writer");
+    writer
+        .journal()
+        .append_batch(
+            (0..5000)
+                .map(|id| JournalPayload::Record(UsageRecord::new(id.to_string(), 1, 1, 1)))
+                .collect(),
+        )
+        .expect("append backlog");
+    let reader = UsageReader::open(directory.path()).expect("bounded open");
+    assert_eq!(
+        (reader.pending_entries(), reader.freshness()),
+        (5000, Freshness::Stale)
+    );
+    assert_eq!(
+        reader
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("published totals"),
+        UsageTotals::default()
     );
 }

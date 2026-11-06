@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,9 +16,11 @@ use crate::model::Freshness;
 use crate::model::JournalSequence;
 use crate::model::SnapshotGeneration;
 use crate::model::UsageTotals;
+use crate::review_counts::ReviewCounts;
+use crate::storage_file;
 
 /// Current on-disk manifest schema version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 2;
+pub const MANIFEST_FORMAT_VERSION: u32 = 3;
 
 /// Metadata describing the materialized usage snapshot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,6 +42,13 @@ pub struct UsageManifest {
     /// Correction ids observed in the journal but not yet folded into a snapshot.
     #[serde(default)]
     pub pending_corrections: Vec<String>,
+    /// Correction ids already folded into all precomputed summary dimensions.
+    #[serde(default)]
+    pub applied_correction_ids: BTreeSet<String>,
+    /// Whether precomputed summaries include every resolvable correction.
+    /// False conservatively requires readers to query correction sidecars.
+    #[serde(default)]
+    pub summaries_include_corrections: bool,
     /// Immutable segment file names referenced by this snapshot generation.
     ///
     /// Names are relative to the dedicated usage segment directory. Keeping
@@ -47,6 +56,25 @@ pub struct UsageManifest {
     /// crash between segment publication and manifest replacement.
     #[serde(default)]
     pub segment_files: Vec<String>,
+    /// Complete immutable dimension/hour membership index, relative to segments.
+    /// None preserves safe query fallback for manifests without an index.
+    #[serde(default)]
+    pub membership_file: Option<String>,
+    /// Immutable membership fragments used after cumulative indexes outgrow the
+    /// bounded publication rewrite threshold.
+    #[serde(default)]
+    pub membership_files: Vec<String>,
+    /// Immutable explicit child/parent relationships, relative to segments.
+    /// Readers open this index only when descendant traversal is requested.
+    #[serde(default)]
+    pub lineage_file: Option<String>,
+    /// Immutable exact record-id runs used for bounded publisher deduplication.
+    #[serde(default)]
+    pub id_index_file: Option<String>,
+    /// Immutable bounded operation state and indexed observation projections.
+    /// None means review coverage has not been published for this generation.
+    #[serde(default)]
+    pub review_projection_file: Option<String>,
     /// Mergeable global totals for the immutable snapshot.
     #[serde(default)]
     pub snapshot_totals: UsageTotals,
@@ -62,6 +90,9 @@ pub struct UsageManifest {
     /// Mergeable immutable totals grouped by thread identity.
     #[serde(default)]
     pub thread_totals: BTreeMap<String, UsageTotals>,
+    /// Compact operation counts for all-time single-dimension summaries.
+    #[serde(default)]
+    pub review_counts: BTreeMap<String, ReviewCounts>,
     /// Unix timestamp when this manifest was last changed.
     pub updated_at: i64,
 }
@@ -76,12 +107,20 @@ impl Default for UsageManifest {
             watermark_at_ms: 0,
             freshness: Freshness::Unknown,
             pending_corrections: Vec::new(),
+            applied_correction_ids: BTreeSet::new(),
+            summaries_include_corrections: false,
             segment_files: Vec::new(),
+            membership_file: None,
+            membership_files: Vec::new(),
+            lineage_file: None,
+            id_index_file: None,
+            review_projection_file: None,
             snapshot_totals: UsageTotals::default(),
             correction_files: Vec::new(),
             account_totals: BTreeMap::new(),
             repository_totals: BTreeMap::new(),
             thread_totals: BTreeMap::new(),
+            review_counts: BTreeMap::new(),
             updated_at: 0,
         }
     }
@@ -153,6 +192,7 @@ impl ManifestStore {
         if !self.path.exists() {
             return Ok(UsageManifest::default());
         }
+        storage_file::protect_existing(&self.path)?;
         let contents = fs::read_to_string(&self.path)?;
         let manifest = serde_json::from_str(&contents)?;
         Ok(manifest)
@@ -160,21 +200,15 @@ impl ManifestStore {
 
     /// Atomically write one manifest generation.
     pub fn save(&self, manifest: &UsageManifest) -> Result<()> {
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)?;
+        if self.path.exists() {
+            storage_file::protect_existing(&self.path)?;
         }
-
         let mut encoded = serde_json::to_vec_pretty(manifest)?;
         encoded.push(b'\n');
         let temporary =
             self.path
                 .with_extension(format!("tmp-{}-{}", std::process::id(), unix_now_nanos()));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)?;
+        let mut file = storage_file::create_new(&temporary)?;
         file.write_all(&encoded)?;
         file.flush()?;
         file.sync_all()?;
@@ -184,9 +218,13 @@ impl ManifestStore {
             return Err(StorageError::Io(error));
         }
         #[cfg(unix)]
-        if let Some(parent) = self.path.parent() {
-            fs::File::open(parent)?.sync_all()?;
-        }
+        fs::File::open(
+            self.path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )?
+        .sync_all()?;
         Ok(())
     }
 }

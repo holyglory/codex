@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -28,6 +29,52 @@ pub enum Freshness {
     Stale,
 }
 
+/// Observed terminal state of an operation; absence means no terminal fact yet.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageOutcome {
+    /// The operation completed successfully.
+    Completed,
+    /// The operation reported failure.
+    Failed,
+    /// Admission or policy prevented execution.
+    Blocked,
+    /// Cancellation stopped the operation.
+    Cancelled,
+    /// Execution ended without an observed complete result.
+    Incomplete,
+}
+
+impl UsageOutcome {
+    /// Stable content-free representation used by columnar facts and reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Cancelled => "cancelled",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+impl std::str::FromStr for UsageOutcome {
+    type Err = StorageError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "blocked" => Ok(Self::Blocked),
+            "cancelled" => Ok(Self::Cancelled),
+            "incomplete" => Ok(Self::Incomplete),
+            _ => Err(StorageError::InvalidData(
+                "unsupported usage outcome".into(),
+            )),
+        }
+    }
+}
+
 /// One usage observation stored in the journal and hourly segments.
 ///
 /// Token values are unsigned because observations describe work that happened.
@@ -39,6 +86,9 @@ pub struct UsageRecord {
     pub id: String,
     /// Unix timestamp in seconds at which the observation was made.
     pub observed_at: i64,
+    /// Exact Unix millisecond observation time, when supplied by the producer.
+    #[serde(default)]
+    pub observed_at_ms: Option<i64>,
     /// Optional account or profile identity supplied by the producer.
     #[serde(default)]
     pub account_id: Option<String>,
@@ -75,9 +125,15 @@ pub struct UsageRecord {
     /// Optional operation start timestamp in Unix seconds.
     #[serde(default)]
     pub started_at: Option<i64>,
+    /// Exact Unix millisecond start time, when supplied by the producer.
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
     /// Optional operation completion timestamp in Unix seconds.
     #[serde(default)]
     pub ended_at: Option<i64>,
+    /// Exact Unix millisecond completion time, when supplied by the producer.
+    #[serde(default)]
+    pub ended_at_ms: Option<i64>,
     /// Number of input tokens in the observation.
     pub input_tokens: u64,
     /// Number of cached input tokens in the observation.
@@ -86,6 +142,36 @@ pub struct UsageRecord {
     pub output_tokens: u64,
     /// Number of reasoning output tokens in the observation.
     pub reasoning_output_tokens: u64,
+    /// Trusted parent thread recorded by the runtime graph.
+    #[serde(default)]
+    pub parent_thread_id: Option<String>,
+    /// Turn owning the observation.
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    /// Provider response identity linking request and token observations.
+    #[serde(default)]
+    pub response_id: Option<String>,
+    /// Observed terminal outcome, without provider or tool result content.
+    #[serde(default)]
+    pub outcome: Option<UsageOutcome>,
+    /// Measured elapsed execution time, excluding inferred durations.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Actual transport attempt number when supplied by the runtime.
+    #[serde(default)]
+    pub attempt_number: Option<u64>,
+    /// Provider-reported total, without summing potentially overlapping components.
+    #[serde(default)]
+    pub provider_total_tokens: Option<u64>,
+    /// Provider-reported cache-write input tokens when available.
+    #[serde(default)]
+    pub cache_write_input_tokens: Option<u64>,
+    /// Count of observations lost before durable capture, for explicit coverage gaps.
+    #[serde(default)]
+    pub missing_observations: Option<u64>,
+    /// Prior model operation named by an explicit redo declaration.
+    #[serde(default)]
+    pub rework_of_operation_id: Option<String>,
 }
 
 impl UsageRecord {
@@ -99,6 +185,7 @@ impl UsageRecord {
         Self {
             id: id.into(),
             observed_at,
+            observed_at_ms: None,
             account_id: None,
             operation_id: None,
             thread_id: None,
@@ -111,12 +198,59 @@ impl UsageRecord {
             event: None,
             coverage: None,
             started_at: None,
+            started_at_ms: None,
             ended_at: None,
+            ended_at_ms: None,
             input_tokens,
             cached_input_tokens: 0,
             output_tokens,
             reasoning_output_tokens: 0,
+            parent_thread_id: None,
+            turn_id: None,
+            response_id: None,
+            outcome: None,
+            duration_ms: None,
+            attempt_number: None,
+            provider_total_tokens: None,
+            cache_write_input_tokens: None,
+            missing_observations: None,
+            rework_of_operation_id: None,
         }
+    }
+
+    /// Construct an observation from one exact UTC millisecond timestamp.
+    pub fn new_millis(
+        id: impl Into<String>,
+        observed_at_ms: i64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        let mut record = Self::new(
+            id,
+            observed_at_ms.div_euclid(1_000),
+            input_tokens,
+            output_tokens,
+        );
+        record.observed_at_ms = Some(observed_at_ms);
+        record
+    }
+
+    /// Read exact observation time, with a saturating fallback for legacy seconds.
+    pub fn effective_observed_at_ms(&self) -> i64 {
+        self.observed_at_ms
+            .unwrap_or_else(|| self.observed_at.saturating_mul(1_000))
+    }
+
+    /// Read exact start time, with a saturating fallback for legacy seconds.
+    pub fn effective_started_at_ms(&self) -> Option<i64> {
+        self.started_at_ms
+            .or_else(|| self.started_at.map(|value| value.saturating_mul(1_000)))
+    }
+
+    /// Read exact completion time, with a saturating fallback for legacy seconds.
+    pub fn effective_ended_at_ms(&self) -> Option<i64> {
+        self.ended_at_ms
+            .or_else(|| self.ended_at.map(|value| value.saturating_mul(1_000)))
     }
 
     /// Attach an account/profile identity to the observation.
@@ -236,6 +370,8 @@ pub struct UsageFilter {
     pub account_id: Option<String>,
     /// Restrict results to one thread identity.
     pub thread_id: Option<String>,
+    /// Restrict results to an explicit thread tree; an empty set matches nothing.
+    pub thread_ids: Option<BTreeSet<String>>,
     /// Restrict results to one repository identity.
     pub repository_id: Option<String>,
     /// Restrict results to one model/provider label.
@@ -252,6 +388,12 @@ impl UsageFilter {
                 .thread_id
                 .as_ref()
                 .is_none_or(|thread| record.thread_id.as_ref() == Some(thread))
+            && self.thread_ids.as_ref().is_none_or(|threads| {
+                record
+                    .thread_id
+                    .as_ref()
+                    .is_some_and(|thread| threads.contains(thread))
+            })
             && self
                 .repository_id
                 .as_ref()
@@ -271,6 +413,14 @@ impl UsageFilter {
     /// Set a thread restriction.
     pub fn for_thread(mut self, thread_id: impl Into<String>) -> Self {
         self.thread_id = Some(thread_id.into());
+        self.thread_ids = None;
+        self
+    }
+
+    /// Restrict results to the exact known thread set, replacing a single-thread filter.
+    pub fn for_threads(mut self, thread_ids: impl IntoIterator<Item = String>) -> Self {
+        self.thread_id = None;
+        self.thread_ids = Some(thread_ids.into_iter().collect());
         self
     }
 
@@ -287,37 +437,75 @@ impl UsageFilter {
     }
 }
 
-/// Half-open Unix timestamp range used by query primitives.
+/// Half-open exact Unix millisecond range used by query primitives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimeRange {
-    /// Inclusive start timestamp.
-    pub start: i64,
-    /// Exclusive end timestamp.
-    pub end: i64,
+    start_ms: i64,
+    end_ms: i64,
 }
 
 impl TimeRange {
-    /// Build a range, rejecting inverted bounds.
+    /// Build a range from legacy seconds, rejecting inverted bounds.
     pub fn new(start: i64, end: i64) -> Result<Self> {
         if end < start {
             return Err(StorageError::InvalidData(format!(
                 "time range end {end} precedes start {start}"
             )));
         }
-        Ok(Self { start, end })
+        Self::from_millis(start.saturating_mul(1_000), end.saturating_mul(1_000))
+    }
+
+    /// Build an exact millisecond range with inclusive start and exclusive end.
+    pub fn from_millis(start_ms: i64, end_ms: i64) -> Result<Self> {
+        if end_ms < start_ms {
+            return Err(StorageError::InvalidData(
+                "time range end precedes start".into(),
+            ));
+        }
+        Ok(Self { start_ms, end_ms })
+    }
+
+    /// Inclusive exact UTC millisecond bound.
+    pub const fn start_ms(self) -> i64 {
+        self.start_ms
+    }
+
+    /// Exclusive exact UTC millisecond bound.
+    pub const fn end_ms(self) -> i64 {
+        self.end_ms
+    }
+
+    /// Conservative seconds bounds for pruning hourly files, never row filtering.
+    pub fn coarse_seconds(self) -> (i64, i64) {
+        let start = if self.start_ms == i64::MIN {
+            i64::MIN
+        } else {
+            self.start_ms.div_euclid(1_000)
+        };
+        let end = if self.end_ms == i64::MAX {
+            i64::MAX
+        } else {
+            self.end_ms.div_euclid(1_000) + i64::from(self.end_ms.rem_euclid(1_000) != 0)
+        };
+        (start, end)
     }
 
     /// Build an unbounded range for callers that need the full local snapshot.
     pub const fn all() -> Self {
         Self {
-            start: i64::MIN,
-            end: i64::MAX,
+            start_ms: i64::MIN,
+            end_ms: i64::MAX,
         }
     }
 
-    /// Return whether a timestamp falls inside this half-open range.
+    /// Return whether a legacy seconds timestamp falls inside this range.
     pub fn contains(self, timestamp: i64) -> bool {
-        timestamp >= self.start && timestamp < self.end
+        self.contains_millis(timestamp.saturating_mul(1_000))
+    }
+
+    /// Return whether an exact millisecond timestamp falls inside this range.
+    pub fn contains_millis(self, timestamp_ms: i64) -> bool {
+        timestamp_ms >= self.start_ms && timestamp_ms < self.end_ms
     }
 }
 

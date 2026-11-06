@@ -7,6 +7,12 @@ impl ChatWidget {
         value: Option<String>,
         error: Option<String>,
     ) {
+        if !self.account_profiles_managed_login_supported() {
+            self.add_error_message(
+                "This account action is unavailable on this server.".to_string(),
+            );
+            return;
+        }
         let tx = self.app_event_tx.clone();
         self.bottom_pane.show_text_prompt(CustomPromptView::new(
             "Add account".to_string(),
