@@ -513,9 +513,13 @@ fn snapshot_reader_pins_rows_and_applies_late_corrections_without_full_replay() 
     )
     .with_thread("thread's id");
     writer.append_record(first.clone()).expect("first");
-    writer
-        .materialize_snapshot(Freshness::Fresh)
-        .expect("publish");
+    UsagePublisher::open_at(writer.root())
+        .expect("independent publisher")
+        .publish_batch(JournalReadLimits {
+            max_bytes: 8 * 1024 * 1024,
+            max_entries: 4096,
+        })
+        .expect("publish with production identity index");
     let pinned = UsageReader::open(directory.path()).expect("pinned reader");
     writer.append_record(second.clone()).expect("second");
     writer

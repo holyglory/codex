@@ -48,10 +48,11 @@ impl UsageReader {
         let token_counts = query_rows::<Value>(
             &query.connection,
             &format!(
-                "SELECT count(*)::UBIGINT observations, \
-             count(*) FILTER (WHERE provider_total_tokens IS NULL)::UBIGINT unknown_totals, \
+                "SELECT COALESCE(sum(COALESCE(observation_count, 1)),0)::UBIGINT observations, \
+             COALESCE(sum(CASE WHEN provider_total_unknowns IS NOT NULL THEN provider_total_unknowns \
+                              WHEN provider_total_tokens IS NULL THEN COALESCE(observation_count,1) ELSE 0 END),0)::UBIGINT unknown_totals, \
              COALESCE(sum(provider_total_tokens),0)::UBIGINT provider_total, \
-             count(*) FILTER (WHERE coverage IS DISTINCT FROM 'recorded')::UBIGINT incomplete \
+             COALESCE(sum(CASE WHEN coverage IS DISTINCT FROM 'recorded' THEN COALESCE(observation_count,1) ELSE 0 END),0)::UBIGINT incomplete \
              FROM ({}) WHERE {token_predicate}",
                 query.contributions
             ),
@@ -59,17 +60,27 @@ impl UsageReader {
         )?
         .remove(0);
         let mut tokens = Vec::new();
-        for (category, column) in [
-            ("total_tokens", "provider_total_tokens"),
-            ("input_tokens", "input_tokens"),
-            ("cached_input_tokens", "cached_input_tokens"),
-            ("output_tokens", "output_tokens"),
-            ("reasoning_output_tokens", "reasoning_output_tokens"),
-            ("cache_write_input_tokens", "cache_write_input_tokens"),
+        for (category, column, unknown_column) in [
+            (
+                "total_tokens",
+                "provider_total_tokens",
+                "provider_total_unknowns",
+            ),
+            ("input_tokens", "input_tokens", "NULL"),
+            ("cached_input_tokens", "cached_input_tokens", "NULL"),
+            ("output_tokens", "output_tokens", "NULL"),
+            ("reasoning_output_tokens", "reasoning_output_tokens", "NULL"),
+            (
+                "cache_write_input_tokens",
+                "cache_write_input_tokens",
+                "cache_write_unknowns",
+            ),
         ] {
             let (measured, observations, unknown): (i64, u64, u64) = query.connection.query_row(&format!(
-                "SELECT COALESCE(sum({column}),0)::BIGINT, count(*)::UBIGINT, \
-                 count(*) FILTER (WHERE {column} IS NULL)::UBIGINT FROM ({}) WHERE {token_predicate}", query.contributions
+                "SELECT COALESCE(sum({column}),0)::BIGINT, \
+                 COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT, \
+                 COALESCE(sum(CASE WHEN {column} IS NULL THEN COALESCE({unknown_column}, observation_count, 1) ELSE 0 END),0)::UBIGINT \
+                 FROM ({}) WHERE {token_predicate}", query.contributions
             ), [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(query_error)?;
             tokens.push(json!({"category": category, "provenance": "provider_reported",
                 "measuredTokens": measured, "exactTokens": (unknown == 0 && observations > 0).then_some(measured),
@@ -87,7 +98,8 @@ impl UsageReader {
                     COALESCE(c.activity,o.activity,f.activity,'unknown') activity, \
                     COALESCE(c.classification,o.classification,f.classification,'unknown') provenance, \
                     COALESCE(sum(f.provider_total_tokens),0)::UBIGINT \"measuredTokens\", \
-                    count(*) FILTER (WHERE f.provider_total_tokens IS NULL)::UBIGINT \"unknownObservations\" \
+                    COALESCE(sum(CASE WHEN f.provider_total_unknowns IS NOT NULL THEN f.provider_total_unknowns \
+                                      WHEN f.provider_total_tokens IS NULL THEN COALESCE(f.observation_count,1) ELSE 0 END),0)::UBIGINT \"unknownObservations\" \
              FROM attributed f LEFT JOIN ({ops}) o ON f.linked_operation = o.operation_id \
              LEFT JOIN selected_classifications c ON COALESCE(f.linked_operation,f.operation_id) = c.operation_id \
              WHERE f.event = 'token_observation' OR f.provider_total_tokens IS NOT NULL \
@@ -100,9 +112,10 @@ impl UsageReader {
         let gaps = query_rows::<Value>(
             &query.connection,
             &format!(
-                "SELECT COALESCE(coverage,'unknown') state, count(*)::UBIGINT count, \
-             COALESCE(sum(missing_observations),0)::UBIGINT \"missingObservations\" \
-             FROM ({}) WHERE event = 'coverage_gap' OR missing_observations IS NOT NULL GROUP BY state ORDER BY state",
+                "SELECT COALESCE(coverage,'unknown') state, \
+             COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT count, \
+             COALESCE(sum(COALESCE(missing_observations_sum, missing_observations, 0)),0)::UBIGINT \"missingObservations\" \
+             FROM ({}) WHERE event = 'coverage_gap' OR missing_observations IS NOT NULL OR missing_observations_sum IS NOT NULL GROUP BY state ORDER BY state",
                 query.contributions
             ),
             32,
@@ -144,6 +157,9 @@ impl UsageReader {
             || self.pending_entries() != 0
             || !gaps.is_empty()
             || self.manifest.retired_observations != 0
+            || self.manifest.retired_review_operations != 0
+            || self.manifest.retired_review_contributions != 0
+            || self.manifest.unapplied_retention_corrections != 0
         {
             "partial"
         } else if total_operations == 0 && observed_tokens == 0 {
@@ -169,7 +185,9 @@ impl UsageReader {
                 "rawTokenObservations":observed_tokens,"deduplicatedTokenObservations":observed_tokens,
                 "unknownTokenObservations":token_counts["unknown_totals"],"incompleteTokenObservations":token_counts["incomplete"],
                 "conflictingTokenObservations":Value::Null,"coverageEvents":gaps,"collectionCompleteness":completeness,
-                "projectionCompleteFromSequence":query.complete_from_sequence,"criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"unobserved"},
+                "projectionCompleteFromSequence":query.complete_from_sequence,
+                "unappliedCorrectionsAfterRetention":self.manifest.unapplied_retention_corrections,
+                "criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"unobserved"},
             "workBindings":{"references":[],"boundOperations":0,"unknownOperations":total_operations,"basis":"unobserved"},
             "outcomes":{"schemaVersion":1,"coverage":"unobserved","totals":effort,"attributed":Value::Null,"unattributed":effort,
                 "unattributedReasons":{"work_binding_unobserved":total_operations},"rows":[],"totalRows":0,"nextCursor":Value::Null,

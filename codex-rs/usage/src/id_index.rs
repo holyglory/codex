@@ -54,6 +54,9 @@ pub struct RecordIdEntry {
 pub struct IdRunDescriptor {
     pub data_file: String,
     pub fence_file: String,
+    /// Optional immutable routing hint. Invalid hints fall back to exact probes.
+    #[serde(default)]
+    pub bloom_file: Option<String>,
     pub level: u8,
     pub entry_count: u64,
     pub fence_count: u64,
@@ -164,6 +167,15 @@ fn lookup_ids_with_hash(
         by_hash.entry(hash_id(id)).or_default().push(id);
     }
     for run in &descriptor.runs {
+        let bloom = crate::id_index_bloom::load(root, run);
+        let candidates = by_hash
+            .keys()
+            .copied()
+            .filter(|hash| bloom.as_ref().is_none_or(|hint| hint.might_contain(*hash)))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
         let path = data_path(root, &run.data_file)?;
         let fence_path = data_path(root, &run.fence_file)?;
         storage_file::protect_existing(&path)?;
@@ -171,9 +183,9 @@ fn lookup_ids_with_hash(
         let mut data = File::open(path)?;
         let fences = read_fences(&fence_path, run)?;
         let mut pages = BTreeMap::<u64, Vec<u64>>::new();
-        for hash in by_hash.keys() {
-            if let Some(offset) = candidate_offset(&fences, *hash) {
-                pages.entry(offset).or_default().push(*hash);
+        for hash in candidates {
+            if let Some(offset) = candidate_offset(&fences, hash) {
+                pages.entry(offset).or_default().push(hash);
             }
         }
         for (offset, hashes) in pages {
@@ -317,7 +329,7 @@ pub(crate) fn write_run(
     }
     let data_file = format!("record-id-run-{stamp}-l{level}.bin");
     let fence_file = format!("record-id-fence-{stamp}-l{level}.bin");
-    let mut writer = RunWriter::new(root, &data_file, &fence_file, level)?;
+    let mut writer = RunWriter::new(root, &data_file, &fence_file, level, entries.len() as u64)?;
     for entry in entries {
         writer.push(entry)?;
     }

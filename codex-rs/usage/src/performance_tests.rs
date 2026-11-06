@@ -561,6 +561,87 @@ fn fresh_process_recovery_helper() {
     );
 }
 
+#[test]
+#[ignore = "query profiling against a retained, fully published synthetic fixture"]
+fn retained_scale_snapshot_queries() {
+    let artifact = PathBuf::from(
+        std::env::var_os("CODEX_USAGE_SCALE_REUSE_ARTIFACT")
+            .expect("set CODEX_USAGE_SCALE_REUSE_ARTIFACT to a retained synthetic fixture"),
+    );
+    let mut expected: fixture::Expectations = serde_json::from_slice(
+        &fs::read(artifact.join("expectations.json")).expect("independent fixture oracle"),
+    )
+    .expect("fixture expectations");
+    let root = artifact.join("codex-home").join(USAGE_DIRECTORY_NAME);
+    let warm = UsageReader::open_at(&root).expect("pin existing snapshot without republishing");
+    let head = UsageJournal::new(root.join("events.jsonl"))
+        .checkpoint()
+        .expect("captured frontier");
+    assert_eq!(
+        warm.manifest().watermark,
+        head.sequence,
+        "fixture must already be fully published"
+    );
+    expected.global.records = head.sequence;
+    expected.global_counts = recovery_counts(&expected.global_counts, head.sequence);
+    let mut failures = Vec::new();
+    let queries = report_measurements(&root, &warm, &expected, &mut failures);
+    let filter = UsageFilter::default().for_repository(fixture::review_repository());
+    let start = Instant::now();
+    let prepared = crate::report_query::ReportQuery::new(&warm, fixture::review_range(), &filter)
+        .expect("prepare finite review");
+    let preparation_ms = milliseconds(start.elapsed());
+    let start = Instant::now();
+    let operations: u64 = prepared
+        .connection
+        .query_row(
+            &format!("SELECT count(*) FROM ({})", prepared.operations),
+            [],
+            |row| row.get(0),
+        )
+        .expect("aggregate selected operations");
+    let operation_scan_ms = milliseconds(start.elapsed());
+    let start = Instant::now();
+    let contributions: u64 = prepared
+        .connection
+        .query_row(
+            &format!("SELECT count(*) FROM ({})", prepared.contributions),
+            [],
+            |row| row.get(0),
+        )
+        .expect("aggregate selected observations");
+    let observation_scan_ms = milliseconds(start.elapsed());
+    assert_eq!(
+        UsageJournal::new(root.join("events.jsonl"))
+            .checkpoint()
+            .expect("unchanged capture"),
+        head
+    );
+    let receipt = json!({"kind":"retainedFixtureQueryProfile","snapshotGeneration":warm.manifest().snapshot_generation,
+        "watermark":head.sequence,"queries":queries,"preparationMs":preparation_ms,
+        "operationScanMs":operation_scan_ms,"observationScanMs":observation_scan_ms,
+        "selectedOperations":operations,"selectedObservations":contributions,"failures":failures});
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("timestamp")
+        .as_nanos();
+    let receipt_path = artifact.join(format!("query-profile-{}-{stamp}.json", std::process::id()));
+    fs::write(
+        &receipt_path,
+        serde_json::to_vec_pretty(&receipt).expect("profile receipt"),
+    )
+    .expect("retain profile evidence");
+    eprintln!(
+        "usage-scale {}",
+        json!({"stage":"retained-query-profile","receipt":receipt_path,"failedChecks":failures.len()})
+    );
+    assert!(
+        failures.is_empty(),
+        "retained fixture query targets failed; inspect {}",
+        receipt_path.display()
+    );
+}
+
 fn published_counts(root: &Path, manifest: &UsageManifest) -> Result<ReviewCounts> {
     let descriptor = load_review_projection(root, manifest)?
         .ok_or_else(|| StorageError::InvalidData("missing operation projection".into()))?;

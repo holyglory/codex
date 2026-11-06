@@ -62,6 +62,16 @@ pub struct UsageManifest {
     /// Number of observations retained as aggregate values only.
     #[serde(default)]
     pub retired_observations: u64,
+    /// Monotonic admission frontier for unresolved row-level corrections.
+    #[serde(default)]
+    pub correction_retention_cutoff_at_ms: Option<i64>,
+    /// Corrections whose original detail is unavailable. These are consumed,
+    /// never presented as successfully applied adjustments.
+    #[serde(default)]
+    pub expired_correction_ids: BTreeSet<String>,
+    /// Cumulative coverage gaps from corrections after detail retirement.
+    #[serde(default)]
+    pub unapplied_retention_corrections: u64,
     /// Background scan position; never used to select foreground report data.
     #[serde(default)]
     pub retention_scan_offset: usize,
@@ -102,6 +112,20 @@ pub struct UsageManifest {
     /// Latest observed activity per chat, used for startup warming and retention.
     #[serde(default)]
     pub thread_last_activity_at_ms: BTreeMap<String, i64>,
+    /// Raw segment to review-contribution fragments, allowing retirement to
+    /// touch only the immutable review files owned by that segment.
+    #[serde(default)]
+    pub review_segment_contributions: BTreeMap<String, Vec<String>>,
+    /// Admission frontier for review detail retirement.
+    #[serde(default)]
+    pub review_retention_cutoff_at_ms: Option<i64>,
+    /// Counts of review detail facts retained only as aggregates.
+    #[serde(default)]
+    pub retired_review_operations: u64,
+    #[serde(default)]
+    pub retired_review_contributions: u64,
+    #[serde(default)]
+    pub retired_review_classifications: u64,
     /// Compact operation counts for all-time single-dimension summaries.
     #[serde(default)]
     pub review_counts: BTreeMap<String, ReviewCounts>,
@@ -128,6 +152,9 @@ impl Default for UsageManifest {
             segment_files: Vec::new(),
             token_rollup_files: Vec::new(),
             retired_observations: 0,
+            correction_retention_cutoff_at_ms: None,
+            expired_correction_ids: BTreeSet::new(),
+            unapplied_retention_corrections: 0,
             retention_scan_offset: 0,
             membership_file: None,
             membership_files: Vec::new(),
@@ -140,6 +167,11 @@ impl Default for UsageManifest {
             repository_totals: BTreeMap::new(),
             thread_totals: BTreeMap::new(),
             thread_last_activity_at_ms: BTreeMap::new(),
+            review_segment_contributions: BTreeMap::new(),
+            review_retention_cutoff_at_ms: None,
+            retired_review_operations: 0,
+            retired_review_contributions: 0,
+            retired_review_classifications: 0,
             review_counts: BTreeMap::new(),
             review_counts_watermark: None,
             updated_at: 0,

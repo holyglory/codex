@@ -84,6 +84,7 @@ pub enum IdCompactionProgress {
 /// A merge job owns only one decoded head per input plus its output writer.
 /// It never acquires the publisher snapshot lock.
 pub struct IdCompactionJob {
+    _pin: crate::reclamation::SnapshotPin,
     _root: std::path::PathBuf,
     _plan: IdCompactionPlan,
     readers: Vec<RunReader>,
@@ -97,6 +98,7 @@ impl IdCompactionJob {
     /// Open input readers and create private orphan-safe output files. No
     /// metadata pointer changes until [`install_id_compaction`] is called.
     pub fn start(root: &Path, plan: IdCompactionPlan, stamp: &str) -> Result<Self> {
+        let pin = crate::reclamation::SnapshotPin::acquire(root)?;
         if plan.inputs.is_empty() || plan.inputs.len() > MAX_COMPACTION_INPUTS {
             return Err(invalid("invalid record-id compaction input count"));
         }
@@ -107,8 +109,19 @@ impl IdCompactionJob {
             .collect::<Result<Vec<_>>>()?;
         let data_file = format!("record-id-compact-{stamp}-l{}.bin", plan.output_level);
         let fence_file = format!("record-id-compact-fence-{stamp}-l{}.bin", plan.output_level);
-        let writer = RunWriter::new(root, &data_file, &fence_file, plan.output_level)?;
+        let estimated_entries = plan
+            .inputs
+            .iter()
+            .fold(0_u64, |total, run| total.saturating_add(run.entry_count));
+        let writer = RunWriter::new(
+            root,
+            &data_file,
+            &fence_file,
+            plan.output_level,
+            estimated_entries,
+        )?;
         Ok(Self {
+            _pin: pin,
             _root: root.to_path_buf(),
             heads: vec![None; readers.len()],
             readers,

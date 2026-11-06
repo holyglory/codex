@@ -90,6 +90,27 @@ pub struct ReviewProjectionDescriptor {
     /// One compact membership index for foreground finite-window selection.
     #[serde(default)]
     pub membership_index_file: Option<String>,
+    /// Weighted operation summaries replacing operation detail after its
+    /// retention horizon. Detail partitions remain the only source for
+    /// operation pages; reports may merge these rows for finite aggregates.
+    #[serde(default)]
+    pub operation_rollup_files: Vec<String>,
+    /// Weighted contribution summaries replacing immutable observation
+    /// fragments after their retention horizon.
+    #[serde(default)]
+    pub contribution_rollup_files: Vec<String>,
+    /// Monotonic review-detail retirement cutoff, in observation milliseconds.
+    #[serde(default)]
+    pub review_retention_cutoff_at_ms: Option<i64>,
+    /// Number of canonical operation and contribution rows represented by
+    /// retained rollups. These are coverage metadata, never all-time counts.
+    #[serde(default)]
+    pub retired_operation_rows: u64,
+    #[serde(default)]
+    pub retired_contribution_rows: u64,
+    /// Bounded partition cursor for background retirement work.
+    #[serde(default)]
+    pub retention_scan_offset: usize,
 }
 
 const BLOOM_BITS_PER_OPERATION: usize = 8;
@@ -183,6 +204,12 @@ pub(crate) fn publish_review_projection(
             classification_files: Vec::new(),
             dimension_partitions: BTreeMap::new(),
             membership_index_file: None,
+            operation_rollup_files: Vec::new(),
+            contribution_rollup_files: Vec::new(),
+            review_retention_cutoff_at_ms: None,
+            retired_operation_rows: 0,
+            retired_contribution_rows: 0,
+            retention_scan_offset: 0,
         });
     if descriptor.watermark != prior || next.sequence < prior.sequence {
         return Err(invalid("review projection and manifest frontiers disagree"));
@@ -598,6 +625,13 @@ fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProje
         segment_path(root, file)?;
     }
     if let Some(file) = &descriptor.membership_index_file {
+        segment_path(root, file)?;
+    }
+    for file in descriptor
+        .operation_rollup_files
+        .iter()
+        .chain(&descriptor.contribution_rollup_files)
+    {
         segment_path(root, file)?;
     }
     Ok(descriptor)

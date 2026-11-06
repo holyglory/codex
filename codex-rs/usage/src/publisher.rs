@@ -133,7 +133,7 @@ impl UsagePublisher {
                 },
             )?;
             let lookup = lookup_ids(&self.root, &descriptor, &requested_ids)?;
-            if lookup.complete_from_sequence <= manifest.watermark.saturating_add(1) {
+            if lookup.complete_from_sequence == 1 {
                 lookup
                     .found
                     .into_iter()
@@ -167,6 +167,16 @@ impl UsagePublisher {
         records.retain(|id, _| !existing.contains_key(id));
         let records = records.into_values().collect::<Vec<_>>();
         let index_candidates = records.clone();
+        let prior_contribution_files =
+            crate::review_projection::load_review_projection(&self.root, &manifest)?
+                .map(|descriptor| {
+                    descriptor
+                        .contribution_fragments
+                        .into_iter()
+                        .map(|fragment| fragment.file)
+                        .collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
         let (review_file, review_counts) = publish_review_projection(
             &self.root,
             &manifest,
@@ -178,6 +188,19 @@ impl UsagePublisher {
         manifest.review_projection_file = Some(review_file);
         manifest.review_counts = review_counts;
         manifest.review_counts_watermark = Some(batch.next.sequence);
+        let new_contribution_files =
+            crate::review_projection::load_review_projection(&self.root, &manifest)?
+                .map(|descriptor| {
+                    descriptor
+                        .contribution_fragments
+                        .into_iter()
+                        .filter_map(|fragment| {
+                            (!prior_contribution_files.contains(&fragment.file))
+                                .then_some(fragment.file)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
         let mut touched = BTreeMap::<i64, Vec<UsageRecord>>::new();
         let mut lineage = Vec::new();
         for (_, record) in records {
@@ -235,10 +258,17 @@ impl UsagePublisher {
                 }
             }
             manifest.segment_files.push(file.clone());
+            if !new_contribution_files.is_empty() {
+                manifest
+                    .review_segment_contributions
+                    .entry(file.clone())
+                    .or_default()
+                    .extend(new_contribution_files.iter().cloned());
+            }
             segment_by_hour.insert(hour, file);
         }
         if !index_candidates.is_empty() {
-            let previous = manifest
+            let mut previous = manifest
                 .id_index_file
                 .as_deref()
                 .map(|file| {
@@ -252,6 +282,38 @@ impl UsagePublisher {
                     )
                 })
                 .transpose()?;
+            if previous.is_none()
+                && manifest.snapshot_totals.records > index_candidates.len() as u64
+            {
+                previous = Some(crate::missing_id_index(JournalCheckpoint {
+                    sequence: manifest.watermark,
+                    byte_offset: manifest.journal_byte_offset,
+                }));
+            }
+            if let Some(index) = &previous
+                && let Some(plan) = crate::id_index_compaction::plan_id_compaction(index)
+            {
+                // Only the background publisher pays compaction cost. Capture
+                // and reports keep using the current immutable generation.
+                let mut job = crate::id_index_compaction::IdCompactionJob::start(
+                    &self.root,
+                    plan.clone(),
+                    &stamp,
+                )?;
+                let output = loop {
+                    if let crate::id_index_compaction::IdCompactionProgress::Finished(output) =
+                        job.step(/*max_entries*/ 16_384)?
+                    {
+                        break output;
+                    }
+                };
+                previous = Some(
+                    crate::id_index_compaction::install_id_compaction(
+                        &self.root, index, &plan, output, &stamp,
+                    )?
+                    .descriptor,
+                );
+            }
             let entries = index_candidates
                 .iter()
                 .filter_map(|(sequence, record)| {
@@ -288,6 +350,7 @@ impl UsagePublisher {
         for correction in corrections.into_values() {
             if seen.contains(&correction.id)
                 || manifest.applied_correction_ids.contains(&correction.id)
+                || manifest.expired_correction_ids.contains(&correction.id)
                 || manifest.pending_corrections.contains(&correction.id)
             {
                 continue;
@@ -329,8 +392,27 @@ impl UsagePublisher {
             .into_iter()
             .map(|correction| (correction.id.clone(), correction))
             .collect();
+        let missing_targets = corrections
+            .values()
+            .filter(|correction| !identities.contains_key(&correction.record_id))
+            .map(|correction| correction.record_id.clone())
+            .collect::<BTreeSet<_>>();
+        let retired_targets = if manifest.retired_observations != 0
+            && !missing_targets.is_empty()
+            && let Some(file) = manifest.id_index_file.as_deref()
+        {
+            let index = load_id_index(&self.root, Some(file), batch.next)?;
+            lookup_ids(&self.root, &index, &missing_targets)?
+                .found
+                .into_keys()
+                .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
         for id in pending {
-            if manifest.applied_correction_ids.contains(&id) {
+            if manifest.applied_correction_ids.contains(&id)
+                || manifest.expired_correction_ids.contains(&id)
+            {
                 continue;
             }
             let correction = corrections.remove(&id).ok_or_else(|| {
@@ -347,6 +429,19 @@ impl UsagePublisher {
                         .or_insert(at_ms);
                 }
                 manifest.applied_correction_ids.insert(id);
+            } else if retired_targets.contains(&correction.record_id)
+                || manifest
+                    .correction_retention_cutoff_at_ms
+                    .is_some_and(|cutoff| correction.observed_at.saturating_mul(1_000) < cutoff)
+            {
+                if manifest.expired_correction_ids.insert(id) {
+                    manifest.unapplied_retention_corrections = manifest
+                        .unapplied_retention_corrections
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            StorageError::InvalidData("expired correction count overflow".into())
+                        })?;
+                }
             } else {
                 // Rotate unresolved targets so they cannot starve later resolvable IDs.
                 manifest.pending_corrections.push(id);

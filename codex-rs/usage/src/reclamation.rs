@@ -55,6 +55,7 @@ pub(crate) fn reclaim(root: &Path) -> Result<Reclamation> {
         return Ok(Reclamation::default());
     }
     let retained = retained_files(root, &manifest)?;
+    let scan_started = std::time::SystemTime::now();
     let mut result = Reclamation::default();
     for entry in std::fs::read_dir(root.join("segments"))? {
         let entry = entry?;
@@ -63,6 +64,11 @@ pub(crate) fn reclaim(root: &Path) -> Result<Reclamation> {
             continue;
         };
         if entry.file_type()?.is_file()
+            && entry
+                .metadata()?
+                .created()
+                .ok()
+                .is_none_or(|created| created <= scan_started)
             && !retained.contains(name)
             && [
                 "segment-",
@@ -112,12 +118,15 @@ fn retained_files(root: &Path, manifest: &UsageManifest) -> Result<BTreeSet<Stri
         for run in index.runs {
             files.insert(run.data_file);
             files.insert(run.fence_file);
+            files.extend(run.bloom_file);
         }
     }
     if let Some(review) = crate::review_projection::load_review_projection_shared(root, manifest)? {
         files.extend(review.counts_file.iter().cloned());
         files.extend(review.classification_files.iter().cloned());
         files.extend(review.membership_index_file.iter().cloned());
+        files.extend(review.operation_rollup_files.iter().cloned());
+        files.extend(review.contribution_rollup_files.iter().cloned());
         for partition in &review.partitions {
             files.insert(partition.file.clone());
             files.insert(partition.operation_index_file.clone());

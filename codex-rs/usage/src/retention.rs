@@ -48,12 +48,25 @@ pub(crate) fn maintain(root: &Path, policy: RetentionPolicy, now_ms: i64) -> Res
     policy.validate()?;
     let started = std::time::Instant::now();
     for _ in 0..64 {
-        if !crate::token_rollup::compact_one(root, policy, now_ms)?
-            || started.elapsed() >= std::time::Duration::from_secs(10)
-        {
+        let raw_progress = crate::token_rollup::compact_one(root, policy, now_ms)?;
+        let mode = if raw_progress {
+            crate::rollup_compaction::MergeMode::FullBatch
+        } else {
+            crate::rollup_compaction::MergeMode::Available
+        };
+        let merged = crate::rollup_compaction::compact_one(root, policy, now_ms, mode)?;
+        if (!raw_progress && !merged) || started.elapsed() >= std::time::Duration::from_secs(10) {
             break;
         }
     }
+    // Scan progress can continue without retiring a row. Still service smaller
+    // rollup sets and newly inactive chats once per maintenance invocation.
+    crate::rollup_compaction::compact_one(
+        root,
+        policy,
+        now_ms,
+        crate::rollup_compaction::MergeMode::Available,
+    )?;
     crate::reclamation::reclaim(root)?;
     Ok(())
 }

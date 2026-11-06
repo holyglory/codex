@@ -21,7 +21,7 @@ use crate::reader_query::quoted;
 use crate::review_storage::segment_path;
 use crate::storage_file;
 
-const DIMENSIONS: &[&str] = &[
+pub(crate) const DIMENSIONS: &[&str] = &[
     "account_id",
     "thread_id",
     "repository_id",
@@ -50,7 +50,31 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
     }
     let store = ManifestStore::new(root.join("manifest.json"));
     let mut manifest = store.load()?;
+    let cutoff = policy.raw_cutoff(now_ms);
+    let cutoff_changed = manifest
+        .correction_retention_cutoff_at_ms
+        .is_none_or(|previous| cutoff > previous);
+    if cutoff_changed {
+        manifest.correction_retention_cutoff_at_ms = Some(cutoff);
+    }
+    let review_changed = crate::review_retention::retire(
+        root,
+        &mut manifest,
+        cutoff,
+        policy.inactive_cutoff(now_ms),
+        &format!(
+            "review-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ),
+    )?;
     if manifest.snapshot_generation == 0 || manifest.segment_files.is_empty() {
+        if cutoff_changed || review_changed {
+            store.save(&manifest)?;
+        }
         return Ok(false);
     }
     let connection = Connection::open_in_memory().map_err(query_error)?;
@@ -72,6 +96,10 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
     );
     let directory = root.join("segments");
     let corrections = parquet_source(&directory, &manifest.correction_files, CORRECTION_COLUMNS)?;
+    let corrections = format!(
+        "SELECT * FROM ({corrections}) WHERE {}",
+        crate::reader_query::eligible_corrections(&manifest)
+    );
     if !manifest.pending_corrections.is_empty() {
         let pending = manifest
             .pending_corrections
@@ -107,8 +135,11 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
         }
     }
     let Some((file, source)) = selected else {
-        manifest.retention_scan_offset = (scan_start + scan_count) % count;
-        store.save(&manifest)?;
+        let next_offset = (scan_start + scan_count) % count;
+        if cutoff_changed || review_changed || manifest.retention_scan_offset != next_offset {
+            manifest.retention_scan_offset = next_offset;
+            store.save(&manifest)?;
+        }
         return Ok(scan_count < count);
     };
     let stamp = format!(
@@ -143,11 +174,26 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
         .map(|column| format!("r.{column}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let token_predicate = format!(
+        "r.event = 'token_observation' OR r.provider_total_tokens IS NOT NULL OR {}",
+        TOKENS
+            .iter()
+            .map(|column| format!("r.{column}::HUGEINT + COALESCE(c.{column}_delta,0) <> 0"))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    );
     let query = format!(
         "SELECT CASE WHEN {inactive} THEN NULL ELSE \
          effective_at_ms::HUGEINT - ((effective_at_ms::HUGEINT % 3600000 + 3600000) % 3600000) END AS hour_at_ms, \
          {dimensions}, min(effective_at_ms) AS first_at_ms, max(effective_at_ms) AS last_at_ms, \
-         count(*)::UBIGINT AS records, {token_sums} FROM retention_rows r LEFT JOIN \
+         count(*)::UBIGINT AS records, {token_sums}, \
+         count(*) FILTER (WHERE {token_predicate})::UBIGINT AS token_observations, \
+         sum(r.provider_total_tokens::HUGEINT)::BIGINT AS provider_total_tokens, \
+         count(*) FILTER (WHERE ({token_predicate}) AND r.provider_total_tokens IS NULL)::UBIGINT AS provider_total_unknowns, \
+         sum(r.cache_write_input_tokens::HUGEINT)::BIGINT AS cache_write_input_tokens, \
+         count(*) FILTER (WHERE ({token_predicate}) AND r.cache_write_input_tokens IS NULL)::UBIGINT AS cache_write_unknowns, \
+         sum(r.missing_observations::HUGEINT)::UBIGINT AS missing_observations \
+         FROM retention_rows r LEFT JOIN \
          (SELECT record_id, {deltas} FROM ({corrections}) GROUP BY record_id) c \
          ON r.id = c.record_id GROUP BY ALL"
     );
@@ -276,7 +322,12 @@ pub(crate) fn source(
     ))
 }
 
-fn write_query(connection: &Connection, root: &Path, file: &str, query: &str) -> Result<()> {
+pub(crate) fn write_query(
+    connection: &Connection,
+    root: &Path,
+    file: &str,
+    query: &str,
+) -> Result<()> {
     let path = segment_path(root, file)?;
     let target = quoted(&path.to_string_lossy());
     connection

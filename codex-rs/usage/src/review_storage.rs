@@ -49,7 +49,10 @@ pub(crate) const CONTRIBUTION_COLUMNS: &[(&str, DataType)] = columns![
     phase:Utf8, activity:Utf8, classification:Utf8, input_tokens:UInt64,
     cached_input_tokens:UInt64, output_tokens:UInt64, reasoning_output_tokens:UInt64,
     provider_total_tokens:UInt64, cache_write_input_tokens:UInt64,
-    missing_observations:UInt64, attempt_number:UInt64, rework_of_operation_id:Utf8,
+    missing_observations:UInt64, observation_count:UInt64,
+    provider_total_unknowns:UInt64, cache_write_unknowns:UInt64,
+    missing_observations_sum:UInt64, attempt_number:UInt64,
+    rework_of_operation_id:Utf8,
 ];
 pub(crate) const CLASSIFICATION_COLUMNS: &[(&str, DataType)] = columns![
     record_id:Utf8, operation_id:Utf8, source_sequence:UInt64, observed_at_ms:Int64,
@@ -189,4 +192,23 @@ pub(crate) fn quoted(value: &str) -> String {
 
 pub(crate) fn query_error(error: duckdb::Error) -> StorageError {
     StorageError::Columnar(format!("DuckDB review query failed: {error}"))
+}
+
+/// Write one bounded DuckDB query to an immutable review Parquet file.
+/// Retention uses this for weighted contribution aggregates so dropping detail
+/// fragments never drops token or coverage totals.
+pub(crate) fn write_query(
+    connection: &Connection,
+    root: &Path,
+    file: &str,
+    query: &str,
+) -> Result<()> {
+    let path = segment_path(root, file)?;
+    connection
+        .execute_batch(&format!(
+            "COPY ({query}) TO {} (FORMAT PARQUET, COMPRESSION ZSTD)",
+            quoted(&path.to_string_lossy())
+        ))
+        .map_err(query_error)?;
+    storage_file::finish_generated(&path)
 }

@@ -180,6 +180,23 @@ pub struct ReviewContribution {
     pub provider_total_tokens: Option<u64>,
     pub cache_write_input_tokens: Option<u64>,
     pub missing_observations: Option<u64>,
+    /// Number of original observations represented by this row. Current
+    /// publication fragments use one; retained review rollups carry a larger
+    /// weighted value so report queries never mistake an aggregate row for a
+    /// single observation.
+    #[serde(default)]
+    pub observation_count: Option<u64>,
+    /// Number of represented observations without a provider total. This is
+    /// populated only by retained rollups; current facts derive it from the
+    /// nullable provider value.
+    #[serde(default)]
+    pub provider_total_unknowns: Option<u64>,
+    /// Number of represented observations without a cache-write total.
+    #[serde(default)]
+    pub cache_write_unknowns: Option<u64>,
+    /// Sum of represented missing-observation markers.
+    #[serde(default)]
+    pub missing_observations_sum: Option<u64>,
     pub attempt_number: Option<u64>,
     pub rework_of_operation_id: Option<String>,
 }
@@ -209,6 +226,10 @@ impl ReviewContribution {
             provider_total_tokens: fact.provider_total_tokens,
             cache_write_input_tokens: fact.cache_write_input_tokens,
             missing_observations: fact.missing_observations,
+            observation_count: Some(1),
+            provider_total_unknowns: None,
+            cache_write_unknowns: None,
+            missing_observations_sum: None,
             attempt_number: fact.attempt_number,
             rework_of_operation_id: fact.rework_of_operation_id.clone(),
         }

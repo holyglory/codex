@@ -11,6 +11,7 @@ use crate::UsageFilter;
 use crate::UsageReader;
 use crate::reader_query::CORRECTION_COLUMNS;
 use crate::reader_query::RECORD_COLUMNS;
+use crate::reader_query::empty_source;
 use crate::reader_query::matching_files;
 use crate::reader_query::milliseconds_expression;
 use crate::reader_query::parquet_source;
@@ -51,19 +52,25 @@ impl ReportQuery {
         let mut operation_files = Vec::new();
         let mut contribution_files = Vec::new();
         let mut classification_files = Vec::new();
-        let hourly_contribution_source =
-            if reader.manifest.correction_files.is_empty() && reader.corrections.is_empty() {
-                hourly_contribution_source(&connection, reader, range, filter)?
-            } else {
-                None
-            };
+        let hourly_contribution_source = if reader.manifest.correction_files.is_empty()
+            && reader.corrections.is_empty()
+            && reader.manifest.review_retention_cutoff_at_ms.is_none()
+        {
+            hourly_contribution_source(&connection, reader, range, filter)?
+        } else {
+            None
+        };
         let mut complete_from_sequence = reader.manifest.watermark.saturating_add(1);
         if let Some(descriptor) = &descriptor {
             complete_from_sequence = descriptor.complete_from_sequence;
+            if descriptor.review_retention_cutoff_at_ms.is_some() {
+                complete_from_sequence = complete_from_sequence.max(2);
+            }
             operation_files = select_review_files(&reader.root, descriptor, range, filter)?;
             if hourly_contribution_source.is_none() {
                 contribution_files =
                     select_review_contribution_files(&reader.root, descriptor, range, filter)?;
+                contribution_files.extend(descriptor.contribution_rollup_files.iter().cloned());
             }
             classification_files.clone_from(&descriptor.classification_files);
         }
@@ -109,13 +116,20 @@ impl ReportQuery {
                 });
             }
         }
-        let operation_source = parquet_source(&directory, &operation_files, &operation_columns)?;
+        let operation_source = if operation_files.is_empty() {
+            empty_source(&operation_columns)
+        } else {
+            parquet_source(&directory, &operation_files, &operation_columns)?
+        };
         let operation_tail = values_source(
             &states.into_values().collect::<Vec<_>>(),
             &operation_columns,
         )?;
-        let classification_source =
-            parquet_source(&directory, &classification_files, &classification_columns)?;
+        let classification_source = if classification_files.is_empty() {
+            empty_source(&classification_columns)
+        } else {
+            parquet_source(&directory, &classification_files, &classification_columns)?
+        };
         let classification_tail = values_source(&classifications, &classification_columns)?;
         let classifications = format!(
             "SELECT * FROM ({classification_source} UNION ALL {classification_tail}) \
@@ -137,22 +151,29 @@ impl ReportQuery {
             range.start_ms(),
             range.start_ms()
         );
-        let contribution_source = hourly_contribution_source.unwrap_or(parquet_source(
-            &directory,
-            &contribution_files,
-            &contribution_columns,
-        )?);
+        let contribution_source =
+            hourly_contribution_source.unwrap_or(if contribution_files.is_empty() {
+                empty_source(&contribution_columns)
+            } else {
+                parquet_source(&directory, &contribution_files, &contribution_columns)?
+            });
         let contribution_tail = values_source(&contributions, &contribution_columns)?;
-        let correction_source = parquet_source(
-            &directory,
-            &reader.manifest.correction_files,
-            CORRECTION_COLUMNS,
-        )?;
+        let correction_source = if reader.manifest.correction_files.is_empty() {
+            empty_source(CORRECTION_COLUMNS)
+        } else {
+            parquet_source(
+                &directory,
+                &reader.manifest.correction_files,
+                CORRECTION_COLUMNS,
+            )?
+        };
         let correction_tail = values_source(&reader.corrections, CORRECTION_COLUMNS)?;
+        let eligible = crate::reader_query::eligible_corrections(&reader.manifest);
         let contributions = format!(
             "WITH facts AS (SELECT * FROM ({contribution_source} UNION ALL {contribution_tail}) \
              QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY source_sequence) = 1), \
              corrections AS (SELECT * FROM ({correction_source} UNION ALL {correction_tail}) \
+             WHERE {eligible} \
              QUALIFY row_number() OVER (PARTITION BY id ORDER BY observed_at) = 1), \
              deltas AS (SELECT record_id, SUM(input_tokens_delta) i, SUM(cached_input_tokens_delta) c, \
                        SUM(output_tokens_delta) o, SUM(reasoning_output_tokens_delta) r FROM corrections GROUP BY record_id) \
@@ -333,10 +354,8 @@ pub(crate) fn canonical_tail<'a>(
     reader: &'a UsageReader,
     _connection: &Connection,
 ) -> Result<Vec<&'a crate::UsageRecord>> {
-    // The reader tail starts strictly after its pinned journal watermark, and
-    // open_at already deduplicates repeated IDs inside that bounded tail. Do
-    // not reopen historical runs for this path; the exact-ID index is for
-    // publisher deduplication and does not belong on foreground summaries.
+    // Opening the reader has already reconciled this bounded tail against the
+    // immutable exact-ID index. Reuse that result across every report action.
     let mut tail = reader.records.iter().collect::<Vec<_>>();
     tail.sort_by_key(|row| reader.record_sequences[&row.id]);
     Ok(tail)

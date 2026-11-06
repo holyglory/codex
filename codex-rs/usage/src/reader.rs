@@ -150,7 +150,8 @@ impl UsageReader {
         let mut records = Vec::new();
         let mut record_sequences = std::collections::BTreeMap::new();
         let mut corrections = Vec::new();
-        let (pending_entries, freshness, journal_watermark) = match tail {
+        let mut correction_ids = std::collections::BTreeSet::new();
+        let (mut pending_entries, mut freshness, mut journal_watermark) = match tail {
             JournalTailRead::Complete(batch) => {
                 for entry in batch.entries {
                     match entry.payload {
@@ -160,7 +161,15 @@ impl UsageReader {
                                 records.push(record);
                             }
                         }
-                        JournalPayload::Correction(correction) => corrections.push(correction),
+                        JournalPayload::Correction(correction) => {
+                            if !manifest.applied_correction_ids.contains(&correction.id)
+                                && !manifest.pending_corrections.contains(&correction.id)
+                                && !manifest.expired_correction_ids.contains(&correction.id)
+                                && correction_ids.insert(correction.id.clone())
+                            {
+                                corrections.push(correction);
+                            }
+                        }
                     }
                 }
                 let freshness = if manifest.pending_corrections.is_empty() {
@@ -174,6 +183,48 @@ impl UsageReader {
                 pending_entries, ..
             } => (pending_entries, Freshness::Stale, manifest.watermark),
         };
+        if !records.is_empty() && manifest.snapshot_totals.records != 0 {
+            // A sequence after the snapshot can still repeat an older record
+            // id. Bound both fence bytes and page routing before accepting a
+            // foreground overlay. Larger work belongs to the publisher.
+            let ids = record_sequences.keys().cloned().collect();
+            let canonical = crate::load_id_index(&root, manifest.id_index_file.as_deref(), after)
+                .ok()
+                .filter(|index| {
+                    index.complete_from_sequence == 1
+                        && record_sequences.len().saturating_mul(index.runs.len()) <= 256
+                        && index
+                            .runs
+                            .iter()
+                            .try_fold(0u64, |bytes, run| {
+                                bytes.checked_add(run.fence_count.checked_mul(16)?)
+                            })
+                            .is_some_and(|bytes| bytes <= 8 * 1024 * 1024)
+                })
+                .and_then(|index| crate::lookup_ids(&root, &index, &ids).ok());
+            if let Some(canonical) = canonical {
+                records.retain(|record| !canonical.found.contains_key(&record.id));
+                record_sequences.retain(|id, _| !canonical.found.contains_key(id));
+            } else {
+                pending_entries = journal_watermark.saturating_sub(manifest.watermark);
+                journal_watermark = manifest.watermark;
+                freshness = Freshness::Stale;
+                records.clear();
+                record_sequences.clear();
+                corrections.clear();
+            }
+        }
+        if !corrections.is_empty() && manifest.retired_observations != 0 {
+            // The publisher resolves whether a correction's target has been
+            // retired. Preserve one consistent prefix until that decision is
+            // published instead of adjusting only some aggregate dimensions.
+            pending_entries = journal_watermark.saturating_sub(manifest.watermark);
+            journal_watermark = manifest.watermark;
+            freshness = Freshness::Stale;
+            records.clear();
+            record_sequences.clear();
+            corrections.clear();
+        }
         Ok(Self {
             _pin: pin,
             root,
@@ -224,6 +275,9 @@ impl UsageReader {
     }
 
     /// Read mergeable totals without decoding historical observations in Rust.
+    /// Historical windows include only aggregate buckets wholly contained in
+    /// the window. Summary/tool responses expose partial retention coverage;
+    /// all-time queries retain every aggregate regardless of bucket width.
     pub fn totals(&self, range: TimeRange, filter: &UsageFilter) -> Result<UsageTotals> {
         if range == TimeRange::all()
             && self.corrections.is_empty()

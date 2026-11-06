@@ -15,6 +15,7 @@ use crate::id_index::MAX_ID_ENTRY_BYTES;
 use crate::id_index::RecordIdEntry;
 use crate::id_index::data_path;
 use crate::id_index::id_hash;
+use crate::id_index_bloom::Bloom;
 use crate::storage_file;
 
 const DATA_MAGIC: &[u8; 8] = b"CIDX1RUN";
@@ -22,6 +23,8 @@ const FENCE_MAGIC: &[u8; 8] = b"CIDX1FEN";
 const FRAME_HEADER_BYTES: usize = 4;
 
 pub(crate) struct RunWriter {
+    root: PathBuf,
+    bloom: Option<Bloom>,
     data_path: PathBuf,
     fence_path: PathBuf,
     data: File,
@@ -36,7 +39,13 @@ pub(crate) struct RunWriter {
 }
 
 impl RunWriter {
-    pub(crate) fn new(root: &Path, data_file: &str, fence_file: &str, level: u8) -> Result<Self> {
+    pub(crate) fn new(
+        root: &Path,
+        data_file: &str,
+        fence_file: &str,
+        level: u8,
+        estimated_entries: u64,
+    ) -> Result<Self> {
         let data_file_path = data_path(root, data_file)?;
         let fence_file_path = data_path(root, fence_file)?;
         let mut data = storage_file::create_new(&data_file_path)?;
@@ -44,6 +53,8 @@ impl RunWriter {
         data.write_all(DATA_MAGIC)?;
         fence.write_all(FENCE_MAGIC)?;
         Ok(Self {
+            root: root.to_path_buf(),
+            bloom: Bloom::new(estimated_entries),
             data_path: data_file_path,
             fence_path: fence_file_path,
             data,
@@ -83,6 +94,9 @@ impl RunWriter {
         }
         self.data.write_all(&(encoded.len() as u32).to_le_bytes())?;
         self.data.write_all(&encoded)?;
+        if let Some(bloom) = &mut self.bloom {
+            bloom.insert(hash);
+        }
         self.count += 1;
         self.min_hash = self.min_hash.min(hash);
         self.max_hash = self.max_hash.max(hash);
@@ -100,7 +114,6 @@ impl RunWriter {
         drop(self.fence);
         storage_file::finish_generated(&self.data_path)?;
         storage_file::finish_generated(&self.fence_path)?;
-        sync_parent(&self.data_path)?;
         let data_file = self
             .data_path
             .file_name()
@@ -114,9 +127,15 @@ impl RunWriter {
             .ok_or_else(|| invalid("record-id fence path has no file name"))?
             .to_string();
         let data_bytes = std::fs::metadata(&self.data_path)?.len();
+        // Failure to produce an optional hint must not invalidate exact data.
+        let bloom_file = self
+            .bloom
+            .and_then(|bloom| bloom.write(&self.root, &data_file, self.count).ok());
+        sync_parent(&self.data_path)?;
         Ok(IdRunDescriptor {
             data_file,
             fence_file,
+            bloom_file,
             level: self.level,
             entry_count: self.count,
             fence_count: self.fences,

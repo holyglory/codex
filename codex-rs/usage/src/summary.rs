@@ -99,7 +99,12 @@ impl UsageReader {
                 {"outcome":"blocked","count":counts.tool_blocked},{"outcome":"cancelled","count":counts.tool_cancelled},
                 {"outcome":"incomplete","count":counts.tool_incomplete}]},
             "coverage":{"operationState":if complete_from == 1 {"recorded"}else{"partial"},
-                "tokenTotals": if range == TimeRange::all() || self.manifest.retired_observations == 0 {"recorded"} else {"partial_retention"},
+                "tokenTotals": if self.manifest.unapplied_retention_corrections != 0
+                    || (range != TimeRange::all() && self.manifest.retired_observations != 0) {"partial_retention"} else {"recorded"},
+                "unappliedCorrectionsAfterRetention": self.manifest.unapplied_retention_corrections,
+                "reviewDetail": if self.manifest.review_retention_cutoff_at_ms.is_some() {"partial_retention"} else {"recorded"},
+                "retiredReviewOperations": self.manifest.retired_review_operations,
+                "retiredReviewContributions": self.manifest.retired_review_contributions,
                 "projectionCompleteFromSequence":complete_from,"unobservedFamilies":["approvals","processes","agents","waits","work_bindings"]},
             "formulas":{"tokens":"Input and output are disjoint components. Cached input and reasoning output are subsets; do not add them again.",
                 "counts":"Operations count canonical tool/model lifecycles, not the number of journal observations."}

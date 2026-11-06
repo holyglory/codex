@@ -233,7 +233,7 @@ fn execute(
     if !(1..=50).contains(&limit) {
         return Err(tool_error("limit must be between 1 and 50"));
     }
-    let metadata = snapshot_metadata(store);
+    let metadata = snapshot_metadata(store, range);
     let value = match args.action {
         UsageStatsAction::Summary => {
             let mut summary = store.summary(range, &filter).map_err(|_| storage_error())?;
@@ -389,7 +389,7 @@ fn record_fields(record: &codex_usage::UsageRecord) -> Value {
     })
 }
 
-fn snapshot_metadata(store: &UsageReader) -> serde_json::Map<String, Value> {
+fn snapshot_metadata(store: &UsageReader, range: TimeRange) -> serde_json::Map<String, Value> {
     let manifest = store.manifest();
     serde_json::Map::from_iter([
         (
@@ -401,6 +401,13 @@ fn snapshot_metadata(store: &UsageReader) -> serde_json::Map<String, Value> {
             "retention".to_string(),
             json!({
                 "rolledUpObservations": manifest.retired_observations,
+                "unappliedCorrections": manifest.unapplied_retention_corrections,
+            "retiredReviewOperations": manifest.retired_review_operations,
+            "retiredReviewContributions": manifest.retired_review_contributions,
+                "totalsCoverage": if manifest.unapplied_retention_corrections != 0
+                    || (range != TimeRange::all() && manifest.retired_observations != 0) {
+                    "partial_retention"
+                } else { "recorded" },
                 "historicalWindowCoverage": if manifest.retired_observations == 0 {
                     "rawObservations"
                 } else { "wholeAggregateBuckets" },

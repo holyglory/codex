@@ -132,8 +132,10 @@ impl SnapshotQuery {
             CORRECTION_COLUMNS,
         )?;
         let correction_tail = values_source(&reader.corrections, CORRECTION_COLUMNS)?;
+        let eligible = eligible_corrections(&reader.manifest);
         let corrections = format!(
             "SELECT * FROM ({correction_segments} UNION ALL {correction_tail}) \
+             WHERE {eligible} \
              QUALIFY row_number() OVER (PARTITION BY id ORDER BY observed_at) = 1"
         );
         Ok(Self {
@@ -314,6 +316,22 @@ impl SnapshotQuery {
             .map_err(query_error)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(query_error)
+    }
+}
+
+pub(crate) fn eligible_corrections(manifest: &crate::UsageManifest) -> String {
+    if manifest.expired_correction_ids.is_empty() {
+        "true".into()
+    } else {
+        format!(
+            "id NOT IN ({})",
+            manifest
+                .expired_correction_ids
+                .iter()
+                .map(|id| quoted(id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 

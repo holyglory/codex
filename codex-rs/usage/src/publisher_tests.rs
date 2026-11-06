@@ -372,6 +372,65 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
             records: 2
         }
     );
+    journal
+        .append_correction(UsageCorrection::new(
+            "expired-adjustment",
+            "inactive",
+            12 * DAY + 2,
+            /*input_tokens_delta*/ -3,
+            /*output_tokens_delta*/ 0,
+            "after detail retention",
+        ))
+        .expect("capture correction after retirement");
+    let waiting = UsageReader::open_at(&root).expect("pin before correction disposition");
+    assert_eq!(
+        (waiting.freshness(), waiting.pending_entries()),
+        (Freshness::Stale, 1)
+    );
+    let expired = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("record expired correction coverage");
+    assert!(expired.pending_corrections.is_empty());
+    assert_eq!(expired.unapplied_retention_corrections, 1);
+    let final_reader = UsageReader::open_at(&root).expect("read explicit coverage");
+    let summary = final_reader
+        .summary(TimeRange::all(), &chat)
+        .expect("retained chat summary");
+    assert_eq!(
+        (
+            &summary["inputTokens"],
+            &summary["coverage"]["tokenTotals"],
+            &summary["coverage"]["unappliedCorrectionsAfterRetention"]
+        ),
+        (
+            &serde_json::json!(27),
+            &serde_json::json!("partial_retention"),
+            &serde_json::json!(1)
+        )
+    );
+    journal
+        .append_correction(UsageCorrection::new(
+            "expired-adjustment",
+            "inactive",
+            12 * DAY + 3,
+            /*input_tokens_delta*/ -300,
+            /*output_tokens_delta*/ 0,
+            "duplicate expired id",
+        ))
+        .expect("capture duplicate correction");
+    let duplicate = UsageReader::open_at(&root).expect("ignore known expired id in foreground");
+    assert_eq!(
+        duplicate
+            .summary(TimeRange::all(), &chat)
+            .expect("same canonical summary"),
+        summary
+    );
+    let settled = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("settle duplicate without increasing gap count");
+    assert_eq!(settled.unapplied_retention_corrections, 1);
 }
 
 #[test]
@@ -524,6 +583,27 @@ fn stale_publishers_preserve_first_ids_pinned_fragments_and_exact_membership() {
             ),
         ])
         .expect("late records and duplicate");
+    let overlay = UsageReader::open_at(root).expect("canonical unpublished overlay");
+    assert_eq!(
+        overlay
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("do not recount published id before publication"),
+        UsageTotals {
+            input_tokens: 14,
+            output_tokens: 3,
+            records: 3,
+            ..UsageTotals::default()
+        }
+    );
+    assert_eq!(
+        overlay
+            .totals(
+                TimeRange::all(),
+                &UsageFilter::default().for_account("ignored-duplicate")
+            )
+            .expect("duplicate cannot introduce another account"),
+        UsageTotals::default()
+    );
     let latest = first
         .publish_batch(limits())
         .expect("incremental publication");
@@ -581,6 +661,55 @@ fn stale_publishers_preserve_first_ids_pinned_fragments_and_exact_membership() {
         )
         .expect("index rows");
     assert_eq!(count, 3);
+    journal
+        .append_batch(
+            (0..100)
+                .map(|index| {
+                    JournalPayload::Record(record(
+                        &format!("bounded-{index}"),
+                        /*at*/ 20_000,
+                        /*input*/ 1,
+                    ))
+                })
+                .collect(),
+        )
+        .expect("capture beyond the foreground identity-routing budget");
+    let deferred = UsageReader::open_at(root).expect("serve a consistent published snapshot");
+    assert_eq!(
+        (deferred.freshness(), deferred.pending_entries()),
+        (Freshness::Stale, 100)
+    );
+    assert_eq!(
+        deferred
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("saved totals"),
+        UsageTotals {
+            input_tokens: 14,
+            output_tokens: 3,
+            records: 3,
+            ..UsageTotals::default()
+        }
+    );
+    first.publish_batch(limits()).expect("first catch-up batch");
+    first
+        .publish_batch(limits())
+        .expect("second catch-up batch");
+    let caught_up = UsageReader::open_at(root).expect("caught-up reader");
+    assert_eq!(
+        (caught_up.freshness(), caught_up.pending_entries()),
+        (Freshness::Fresh, 0)
+    );
+    assert_eq!(
+        caught_up
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("complete totals"),
+        UsageTotals {
+            input_tokens: 114,
+            output_tokens: 103,
+            records: 103,
+            ..UsageTotals::default()
+        }
+    );
 }
 
 #[test]
@@ -745,7 +874,7 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
     let journal = UsageJournal::new(root.join("events.jsonl"));
     journal
         .append_batch(
-            (0..24)
+            (0..270)
                 .map(|index| {
                     JournalPayload::Record(record(
                         &format!("record-{index}"),
@@ -764,14 +893,14 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
             std::thread::spawn(move || {
                 let mut publisher = UsagePublisher::open_at(root).expect("publisher");
                 barrier.wait();
-                for _ in 0..24 {
+                for _ in 0..270 {
                     let manifest = publisher
                         .publish_batch(JournalReadLimits {
-                            max_entries: 3,
+                            max_entries: 1,
                             ..limits()
                         })
                         .expect("concurrent publication");
-                    if manifest.watermark == 24 {
+                    if manifest.watermark == 270 {
                         return;
                     }
                 }
@@ -782,15 +911,38 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
     for publisher in publishers {
         publisher.join().expect("publisher exited");
     }
-    let reader = UsageReader::open_at(root).expect("published reader");
+    let reader = UsageReader::open_at(&root).expect("published reader");
+    let index = load_id_index(
+        &root,
+        reader.manifest().id_index_file.as_deref(),
+        JournalCheckpoint {
+            sequence: reader.manifest().watermark,
+            byte_offset: reader.manifest().journal_byte_offset,
+        },
+    )
+    .expect("restarted identity index");
+    assert!(index.runs.len() < crate::id_index::MAX_ID_RUNS);
+    assert_eq!(
+        lookup_ids(
+            &root,
+            &index,
+            &BTreeSet::from(["record-0".to_string(), "record-269".to_string()])
+        )
+        .expect("identities survive automatic compaction")
+        .found
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["record-0".to_string(), "record-269".to_string()])
+    );
     assert_eq!(
         reader
             .totals(TimeRange::all(), &UsageFilter::default())
             .expect("concurrent summary"),
         UsageTotals {
-            input_tokens: 24,
-            output_tokens: 24,
-            records: 24,
+            input_tokens: 270,
+            output_tokens: 270,
+            records: 270,
             ..UsageTotals::default()
         }
     );
