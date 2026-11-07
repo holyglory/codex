@@ -334,17 +334,20 @@ pub(crate) fn publish_review_projection(
             .iter()
             .flat_map(|row| {
                 [
-                    row.account_id.as_deref().map(|id| format!("account:{id}")),
-                    row.thread_id.as_deref().map(|id| format!("thread:{id}")),
-                    row.repository_id
-                        .as_deref()
-                        .map(|id| format!("repository:{id}")),
-                    row.model.as_deref().map(|id| format!("model:{id}")),
+                    ("account", row.account_id.as_deref()),
+                    ("thread", row.thread_id.as_deref()),
+                    ("repository", row.repository_id.as_deref()),
+                    ("model", row.model.as_deref()),
                 ]
                 .into_iter()
-                .flatten()
+                .filter_map(|(kind, id)| id.map(|id| (kind, id)))
             })
-            .collect::<BTreeSet<_>>();
+            // Borrow repeated labels until deduplication, then own only the
+            // unique keys before sorting the operation rows below.
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|(kind, id)| format!("{kind}:{id}"))
+            .collect::<Vec<_>>();
         counts.replace_operations(&before, &rows)?;
         rows.sort_by(|a, b| {
             (&a.repository_id, a.started_at_ms, &a.operation_id).cmp(&(

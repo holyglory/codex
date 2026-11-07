@@ -78,7 +78,7 @@ pub(crate) fn write_membership<'a>(
     segment_file: &str,
     intervals: impl IntoIterator<Item = IndexedInterval<'a>>,
 ) -> Result<ReviewIntervalBounds> {
-    let mut memberships = BTreeMap::<(String, String), ReviewIntervalBounds>::new();
+    let mut memberships = BTreeMap::<(&str, &str), ReviewIntervalBounds>::new();
     for interval in intervals {
         for (kind, id) in [
             ("all", Some("")),
@@ -89,21 +89,18 @@ pub(crate) fn write_membership<'a>(
         ] {
             if let Some(id) = id {
                 memberships
-                    .entry((kind.to_string(), id.to_string()))
+                    .entry((kind, id))
                     .or_default()
                     .include(interval.start, interval.end);
             }
         }
     }
-    let bounds = memberships
-        .get(&("all".to_string(), String::new()))
-        .cloned()
-        .unwrap_or_default();
+    let bounds = memberships.get(&("all", "")).cloned().unwrap_or_default();
     let rows = memberships
         .into_iter()
         .map(|((dimension_kind, dimension_id), bounds)| Membership {
-            dimension_kind,
-            dimension_id,
+            dimension_kind: dimension_kind.to_string(),
+            dimension_id: dimension_id.to_string(),
             segment_file: segment_file.to_string(),
             bounds,
         })
