@@ -51,27 +51,41 @@ async fn negotiates_after_early_packet_loss_and_slow_tcp_connect() {
 async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
     for tcp in [false, true] {
         timeout(Duration::from_secs(/*secs*/ 30), async {
+            // Match the production peer's candidate policy while binding the
+            // fixture peer to exactly one real interface on this machine.
+            let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
+            let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
+            let local_ip = offer
+                .sdp
+                .lines()
+                .filter_map(|line| line.strip_prefix("a=candidate:"))
+                .filter_map(|candidate| rtc::ice::candidate::unmarshal_candidate(candidate).ok())
+                .find_map(|candidate| {
+                    candidate
+                        .address()
+                        .parse::<std::net::Ipv4Addr>()
+                        .ok()
+                        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+                })
+                .expect("the production offer must advertise a usable IPv4 interface");
             let (sender, mut channels) = mpsc::channel(/*buffer*/ 1);
             let gathered = Arc::new(Notify::new());
             let mut settings = webrtc::peer_connection::SettingEngine::default();
             settings.set_lite(/*lite*/ true);
-            settings.set_include_loopback_candidate(/*allow_loopback*/ true);
             let (media, mut remote_audio) = crate::audio_track::AudioTrack::new().unwrap();
             let builder = PeerConnectionBuilder::new()
                 .with_media_engine(media)
                 .with_setting_engine(settings)
                 .with_handler(Arc::new(RemoteEvents(sender, gathered.clone())));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["127.0.0.1:0"])
+                builder.with_tcp_addrs(vec![format!("{local_ip}:0")])
             } else {
-                builder.with_udp_addrs(vec!["127.0.0.1:0"])
+                builder.with_udp_addrs(vec![format!("{local_ip}:0")])
             }
             .build()
             .await
             .unwrap();
             remote.add_track(remote_audio.track.clone()).await.unwrap();
-            let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
-            let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
             remote.set_remote_description(offer).await.unwrap();
             let answer = remote.create_answer(/*options*/ None).await.unwrap();
             remote.set_local_description(answer).await.unwrap();
@@ -84,10 +98,11 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 .collect();
             // Normal generated UDP/TCP answers still connect at the admission boundary.
             assert!(!candidates.is_empty() && candidates.len() <= MAX_REMOTE_CANDIDATES);
+            let candidate_ip = format!(" {local_ip} ");
             assert!(
                 candidates
                     .iter()
-                    .all(|candidate| candidate.contains(" 127.0.0.1 "))
+                    .all(|candidate| candidate.contains(&candidate_ip))
             );
             for _ in candidates.len()..MAX_REMOTE_CANDIDATES {
                 answer.push_str(&format!("{}\r\n", candidates[0]));
@@ -96,7 +111,7 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 .apply_answer(answer)
                 .await
                 .unwrap_or_else(|error| panic!("tcp={tcp}: {error}"));
-            assert_eq!(outcome, super::AnswerOutcome::Ready);
+            assert_eq!(outcome, super::AnswerOutcome::Ready, "tcp={tcp}");
             let channel = channels.recv().await.unwrap();
             assert_eq!(
                 (

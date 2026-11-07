@@ -11,6 +11,15 @@ shift
 test -d "$cxm_test_scratch"
 test "$cxm_test_scratch" != /
 
+# Match dirs::home_dir: a nonempty HOME wins over the Unix account home.
+# Hide only ambient user skill roots, preserving Cargo/toolchain/runtime data.
+cxm_test_host_home=$(python3 -c 'import os, pwd; print(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)')
+case "$cxm_test_host_home" in
+  /*) ;;
+  *) echo 'Test user home must be absolute' >&2; exit 2 ;;
+esac
+cxm_test_agents_root="${cxm_test_host_home%/}/.agents"
+
 # Preserve the governed PATH, toolchain, library inputs, cache paths, V8 pair,
 # network access and product sandbox flags. Tests can still set their own env.
 exec /usr/bin/bwrap \
@@ -20,6 +29,8 @@ exec /usr/bin/bwrap \
   --setenv TMPDIR /tmp \
   --tmpfs /etc/codex \
   --remount-ro /etc/codex \
+  --tmpfs "$cxm_test_agents_root" \
+  --remount-ro "$cxm_test_agents_root" \
   --dev-bind /dev /dev \
   --proc /proc \
   --unsetenv OPENAI_API_KEY \

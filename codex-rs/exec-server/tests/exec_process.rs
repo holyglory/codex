@@ -331,6 +331,28 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         runtime_path_entry.display(),
         profile_path_entry.display(),
     );
+    let sandbox = if use_sandbox {
+        let mut sandbox_policy = PermissionProfile::read_only().file_system_sandbox_policy();
+        // Permit only the counters used to prove startup ran once. Keep the
+        // same sandbox for both commands because it is part of the cache key.
+        for name in ["captures", "tool-captures"] {
+            let path = home.path().join(name);
+            std::fs::write(&path, "")?;
+            sandbox_policy.entries.push(FileSystemSandboxEntry::new(
+                PathUri::from_host_native_path(path)?.into(),
+                FileSystemAccessMode::Write,
+            ));
+        }
+        Some(FileSystemSandboxContext::from_permission_profile(
+            PermissionProfile::from_runtime_permissions(
+                &sandbox_policy,
+                NetworkSandboxPolicy::Enabled,
+            ),
+            cwd.clone(),
+        ))
+    } else {
+        None
+    };
 
     for attempt in 0..2 {
         let started = context
@@ -352,12 +374,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 tty,
                 pipe_stdin: false,
                 arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
-                sandbox: (use_sandbox && attempt == 0).then(|| {
-                    FileSystemSandboxContext::from_permission_profile(
-                        PermissionProfile::read_only(),
-                        cwd.clone(),
-                    )
-                }),
+                sandbox: sandbox.clone(),
                 enforce_managed_network: false,
                 managed_network: None,
                 network_proxy: None,

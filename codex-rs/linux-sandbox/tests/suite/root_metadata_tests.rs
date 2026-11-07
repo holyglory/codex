@@ -54,7 +54,13 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
         policy
             .entries
             .push(path_entry(denied, FileSystemAccessMode::Deny));
-        policy.for_approved_command(&context)
+        let mut policy = policy.for_approved_command(&context);
+        // Match the fixture's read-only system mount so the approved command
+        // cannot replace the installation used to launch the nested sandbox.
+        policy
+            .entries
+            .push(path_entry("/usr", FileSystemAccessMode::Read));
+        policy
     };
     let run = |policy: &FileSystemSandboxPolicy,
                private_mount: &str,
