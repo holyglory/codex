@@ -149,3 +149,9 @@ retries = 0
 # runtime's 100 ms grace period; keep competing tests outside that interval.
 filter = 'package(codex-core) & binary(=all) & test(=suite::turn_phase_trace::steer_joins_existing_turn_without_extending_sampling::interrupt_enabled)'
 threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This 3000x2000 MCP image crosses synchronous decode/resize work before the
+# next turn completes; competing tests can exhaust its unchanged event wait.
+filter = 'package(codex-core) & binary(=all) & test(=suite::rmcp_client::stdio_image_responses_resize_large_image)'
+threads-required = "num-test-threads"
