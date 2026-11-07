@@ -42,14 +42,26 @@ const TOKENS: &[&str] = &[
 ];
 
 pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> Result<bool> {
+    let review_changed = crate::review_retention::maintain(
+        root,
+        policy.raw_cutoff(now_ms),
+        policy.inactive_cutoff(now_ms),
+    )?;
     let lock = storage_file::open_read_write(&root.join(".snapshot.lock"))?;
     match lock.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(false),
+        Err(TryLockError::WouldBlock) => return Ok(review_changed),
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
     let store = ManifestStore::new(root.join("manifest.json"));
     let mut manifest = store.load()?;
+    if crate::UsageJournal::new(root.join("events.jsonl"))
+        .checkpoint()?
+        .sequence
+        != manifest.watermark
+    {
+        return Ok(review_changed);
+    }
     let cutoff = policy.raw_cutoff(now_ms);
     let cutoff_changed = manifest
         .correction_retention_cutoff_at_ms
@@ -57,25 +69,11 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
     if cutoff_changed {
         manifest.correction_retention_cutoff_at_ms = Some(cutoff);
     }
-    let review_changed = crate::review_retention::retire(
-        root,
-        &mut manifest,
-        cutoff,
-        policy.inactive_cutoff(now_ms),
-        &format!(
-            "review-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ),
-    )?;
     if manifest.snapshot_generation == 0 || manifest.segment_files.is_empty() {
         if cutoff_changed || review_changed {
             store.save(&manifest)?;
         }
-        return Ok(false);
+        return Ok(review_changed);
     }
     let connection = Connection::open_in_memory().map_err(query_error)?;
     let inactive = manifest
@@ -140,7 +138,7 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
             manifest.retention_scan_offset = next_offset;
             store.save(&manifest)?;
         }
-        return Ok(scan_count < count);
+        return Ok(review_changed || scan_count < count);
     };
     let stamp = format!(
         "{}_{}",
@@ -252,6 +250,14 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
     }
     manifest.membership_file = None;
     manifest.membership_files = rewritten;
+    let contributions = manifest.review_segment_contributions.remove(&file);
+    if let Some(replacement) = &replacement
+        && let Some(contributions) = contributions
+    {
+        manifest
+            .review_segment_contributions
+            .insert(replacement.clone(), contributions);
+    }
     manifest.segment_files.retain(|existing| existing != &file);
     manifest.segment_files.extend(replacement);
     manifest.token_rollup_files.push(rollup);
@@ -262,6 +268,21 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
             crate::StorageError::InvalidData("retired observation count overflow".into())
         })?;
     manifest.mark_snapshot(manifest.watermark, manifest.freshness);
+    // Capture remains independent during Parquet work. Only installation needs
+    // the writer barrier, so an earlier durable correction cannot lose its target.
+    let writer = storage_file::open_read_write(&root.join("events.lock"))?;
+    match writer.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Ok(review_changed),
+        Err(TryLockError::Error(error)) => return Err(error.into()),
+    }
+    if crate::UsageJournal::new(root.join("events.jsonl"))
+        .checkpoint()?
+        .sequence
+        != manifest.watermark
+    {
+        return Ok(review_changed);
+    }
     #[cfg(unix)]
     std::fs::File::open(&directory)?.sync_all()?;
     store.save(&manifest)?;

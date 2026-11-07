@@ -8,6 +8,8 @@
 //! mergeable totals without opening the retired SQLite report database.
 
 mod capture;
+mod correction_retention;
+mod detail_retention;
 mod duckdb_snapshot;
 mod error;
 mod id_index;
@@ -26,9 +28,11 @@ mod reader;
 mod reader_query;
 mod reclamation;
 mod report;
+mod report_facets;
 mod report_page;
 mod report_query;
 mod retention;
+mod review_aggregate;
 mod review_counts;
 mod review_index;
 mod review_projection;

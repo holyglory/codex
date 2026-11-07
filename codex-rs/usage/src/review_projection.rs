@@ -111,12 +111,16 @@ pub struct ReviewProjectionDescriptor {
     /// Bounded partition cursor for background retirement work.
     #[serde(default)]
     pub retention_scan_offset: usize,
+    /// Remaining positions in the frozen scan cycle. New publication batches
+    /// cannot extend a cycle and keep older detail from being revisited.
+    #[serde(default)]
+    pub retention_scan_remaining: usize,
 }
 
 const BLOOM_BITS_PER_OPERATION: usize = 8;
 const BLOOM_HASHES: usize = 4;
 
-fn operation_bloom(rows: &[ReviewOperation]) -> Vec<u64> {
+pub(crate) fn operation_bloom(rows: &[ReviewOperation]) -> Vec<u64> {
     let bits = (rows.len().max(1) * BLOOM_BITS_PER_OPERATION).next_power_of_two();
     let mut bloom = vec![0; bits.div_ceil(64)];
     for row in rows {
@@ -210,6 +214,7 @@ pub(crate) fn publish_review_projection(
             retired_operation_rows: 0,
             retired_contribution_rows: 0,
             retention_scan_offset: 0,
+            retention_scan_remaining: 0,
         });
     if descriptor.watermark != prior || next.sequence < prior.sequence {
         return Err(invalid("review projection and manifest frontiers disagree"));

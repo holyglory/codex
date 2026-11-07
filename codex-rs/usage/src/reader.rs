@@ -151,17 +151,31 @@ impl UsageReader {
         let mut record_sequences = std::collections::BTreeMap::new();
         let mut corrections = Vec::new();
         let mut correction_ids = std::collections::BTreeSet::new();
+        let mut expired_tail = false;
         let (mut pending_entries, mut freshness, mut journal_watermark) = match tail {
             JournalTailRead::Complete(batch) => {
                 for entry in batch.entries {
                     match entry.payload {
                         JournalPayload::Record(record) => {
+                            if manifest
+                                .raw_admission_cutoff_at_ms
+                                .is_some_and(|cutoff| record.effective_observed_at_ms() < cutoff)
+                            {
+                                expired_tail = true;
+                                continue;
+                            }
                             if !record_sequences.contains_key(&record.id) {
                                 record_sequences.insert(record.id.clone(), entry.sequence);
                                 records.push(record);
                             }
                         }
                         JournalPayload::Correction(correction) => {
+                            if manifest.raw_admission_cutoff_at_ms.is_some_and(|cutoff| {
+                                correction.observed_at.saturating_mul(1_000) < cutoff
+                            }) {
+                                expired_tail = true;
+                                continue;
+                            }
                             if !manifest.applied_correction_ids.contains(&correction.id)
                                 && !manifest.pending_corrections.contains(&correction.id)
                                 && !manifest.expired_correction_ids.contains(&correction.id)
@@ -214,7 +228,7 @@ impl UsageReader {
                 corrections.clear();
             }
         }
-        if !corrections.is_empty() && manifest.retired_observations != 0 {
+        if expired_tail || (!corrections.is_empty() && manifest.retired_observations != 0) {
             // The publisher resolves whether a correction's target has been
             // retired. Preserve one consistent prefix until that decision is
             // published instead of adjusting only some aggregate dimensions.

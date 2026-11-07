@@ -33,6 +33,7 @@ use crate::review_storage::OPERATION_COLUMNS;
 pub(crate) struct ReportQuery {
     pub(crate) connection: Connection,
     pub(crate) operations: String,
+    pub(crate) operation_statistics: String,
     pub(crate) contributions: String,
     pub(crate) complete_from_sequence: u64,
 }
@@ -63,9 +64,6 @@ impl ReportQuery {
         let mut complete_from_sequence = reader.manifest.watermark.saturating_add(1);
         if let Some(descriptor) = &descriptor {
             complete_from_sequence = descriptor.complete_from_sequence;
-            if descriptor.review_retention_cutoff_at_ms.is_some() {
-                complete_from_sequence = complete_from_sequence.max(2);
-            }
             operation_files = select_review_files(&reader.root, descriptor, range, filter)?;
             if hourly_contribution_source.is_none() {
                 contribution_files =
@@ -187,11 +185,19 @@ impl ReportQuery {
             range.start_ms(),
             range.end_ms()
         );
+        let operation_statistics = crate::review_aggregate::statistics_source(
+            &reader.root,
+            descriptor.as_deref(),
+            "SELECT * FROM selected_operations",
+            range,
+            filter,
+        )?;
         // Materializing only the selected indexed slice avoids repeating Parquet
         // reads for the small aggregate and detail queries that form one report.
         connection
             .execute_batch(&format!(
                 "CREATE TEMP TABLE selected_operations AS {operations}; \
+             CREATE TEMP TABLE selected_operation_statistics AS {operation_statistics}; \
              CREATE TEMP TABLE selected_contributions AS {contributions}; \
              CREATE TEMP TABLE selected_classifications AS {classifications};"
             ))
@@ -199,6 +205,7 @@ impl ReportQuery {
         Ok(Self {
             connection,
             operations: "SELECT * FROM selected_operations".into(),
+            operation_statistics: "SELECT * FROM selected_operation_statistics".into(),
             contributions: "SELECT * FROM selected_contributions".into(),
             complete_from_sequence,
         })
@@ -257,6 +264,10 @@ fn hourly_contribution_source(
         "provider_total_tokens".into(),
         "cache_write_input_tokens".into(),
         "missing_observations".into(),
+        "NULL::UBIGINT observation_count".into(),
+        "NULL::UBIGINT provider_total_unknowns".into(),
+        "NULL::UBIGINT cache_write_unknowns".into(),
+        "NULL::UBIGINT missing_observations_sum".into(),
         "attempt_number".into(),
         "rework_of_operation_id".into(),
     ]
@@ -332,7 +343,9 @@ pub(crate) fn dimension_predicate(filter: &UsageFilter) -> String {
     }
 }
 
-fn sql_columns(columns: &'static [(&str, DataType)]) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn sql_columns(
+    columns: &'static [(&str, DataType)],
+) -> Vec<(&'static str, &'static str)> {
     columns
         .iter()
         .map(|(name, kind)| {

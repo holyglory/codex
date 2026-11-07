@@ -44,9 +44,22 @@ impl RetentionPolicy {
     }
 }
 
-pub(crate) fn maintain(root: &Path, policy: RetentionPolicy, now_ms: i64) -> Result<()> {
+/// The existing retention worker keeps bounded rewrites across maintenance wakes.
+#[derive(Default)]
+pub(crate) struct Maintenance {
+    detail: crate::detail_retention::Maintenance,
+    corrections: crate::correction_retention::Maintenance,
+}
+
+pub(crate) fn maintain(
+    root: &Path,
+    policy: RetentionPolicy,
+    now_ms: i64,
+    maintenance: &mut Maintenance,
+) -> Result<()> {
     policy.validate()?;
     let started = std::time::Instant::now();
+    maintenance.detail.advance_admission(root, policy, now_ms)?;
     for _ in 0..64 {
         let raw_progress = crate::token_rollup::compact_one(root, policy, now_ms)?;
         let mode = if raw_progress {
@@ -67,6 +80,23 @@ pub(crate) fn maintain(root: &Path, policy: RetentionPolicy, now_ms: i64) -> Res
         now_ms,
         crate::rollup_compaction::MergeMode::Available,
     )?;
+    let mut scan_corrections = true;
+    for _ in 0..64 {
+        let id_progress = maintenance
+            .detail
+            .step_index(root, /*max_entries*/ 16_384)?;
+        let corrected = if scan_corrections {
+            maintenance.corrections.step(root)?
+        } else {
+            false
+        };
+        // Cursor-only scans and protected sidecars never keep the work loop
+        // alive, including while an independent ID rewrite yields more steps.
+        scan_corrections = corrected;
+        if (!id_progress && !corrected) || started.elapsed() >= std::time::Duration::from_secs(10) {
+            break;
+        }
+    }
     crate::reclamation::reclaim(root)?;
     Ok(())
 }

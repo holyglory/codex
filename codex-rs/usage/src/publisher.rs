@@ -165,6 +165,16 @@ impl UsagePublisher {
             )?
         };
         records.retain(|id, _| !existing.contains_key(id));
+        if let Some(cutoff) = manifest.raw_admission_cutoff_at_ms {
+            let before = records.len();
+            records.retain(|_, (_, record)| record.effective_observed_at_ms() >= cutoff);
+            manifest.unapplied_retention_records = manifest
+                .unapplied_retention_records
+                .checked_add((before - records.len()) as u64)
+                .ok_or_else(|| {
+                    StorageError::InvalidData("expired observation count overflow".into())
+                })?;
+        }
         let records = records.into_values().collect::<Vec<_>>();
         let index_candidates = records.clone();
         let prior_contribution_files =
@@ -357,6 +367,18 @@ impl UsagePublisher {
                 || manifest.expired_correction_ids.contains(&correction.id)
                 || manifest.pending_corrections.contains(&correction.id)
             {
+                continue;
+            }
+            if manifest
+                .raw_admission_cutoff_at_ms
+                .is_some_and(|cutoff| correction.observed_at.saturating_mul(1_000) < cutoff)
+            {
+                manifest.unapplied_retention_corrections = manifest
+                    .unapplied_retention_corrections
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        StorageError::InvalidData("expired correction count overflow".into())
+                    })?;
                 continue;
             }
             manifest.add_pending_correction(correction.id.clone());

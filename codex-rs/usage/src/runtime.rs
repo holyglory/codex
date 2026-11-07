@@ -75,13 +75,21 @@ impl UsagePublisherRuntime {
         std::thread::Builder::new()
             .name("codex-usage-retention".into())
             .spawn(move || {
+                let mut retention_maintenance = crate::retention::Maintenance::default();
                 while maintain.recv().is_ok() {
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis()
                         .min(i64::MAX as u128) as i64;
-                    if crate::retention::maintain(&maintenance_root, policy, now_ms).is_err() {
+                    if crate::retention::maintain(
+                        &maintenance_root,
+                        policy,
+                        now_ms,
+                        &mut retention_maintenance,
+                    )
+                    .is_err()
+                    {
                         tracing::debug!("usage retention deferred after failure");
                     }
                 }
