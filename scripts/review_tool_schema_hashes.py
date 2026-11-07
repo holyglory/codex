@@ -53,7 +53,8 @@ def mappings(current, previous, label="catalog"):
             None,
         )
         if old is not None:
-            result.extend(mappings(tool, old, f"{tool['type']}/{tool['name']}"))
+            child_label = f"{tool.get('type', '')}/{tool.get('name', '')}"
+            result.extend(mappings(tool, old, child_label))
     return result
 
 
