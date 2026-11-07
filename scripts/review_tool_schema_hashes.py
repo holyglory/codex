@@ -8,6 +8,9 @@ import json
 from pathlib import Path
 import re
 
+from tool_schema_catalog_review import reconstruct_catalog
+from tool_schema_catalog_review import review_body
+
 MAX_BYTES = 2 * 1024 * 1024
 MAX_FILES = 256
 
@@ -101,6 +104,7 @@ def main():
     contract = load_bounded(args.evidence_dir / "contract.json")
     contract_hash = fingerprint(contract)
     transitions = {}
+    catalogs = {}
     evidence_receipts = []
     for path in paths:
         evidence = load_bounded(path)
@@ -109,6 +113,16 @@ def main():
             or evidence.get("contractHash") != contract_hash
         ):
             raise ValueError("schema evidence contract mismatch")
+        if (
+            reconstruct_catalog(evidence["current"], contract)
+            != evidence["reconstructed"]
+        ):
+            raise ValueError("reconstruction changes fields outside the approved tools")
+        old_hash = fingerprint(evidence["reconstructed"])
+        pair = (evidence["reconstructed"], evidence["current"])
+        if old_hash in catalogs and catalogs[old_hash] != pair:
+            raise ValueError("one old catalog has conflicting exact preimages")
+        catalogs[old_hash] = pair
         expected = mappings(evidence["current"], evidence["reconstructed"])
         if expected != evidence["mappings"]:
             raise ValueError(
@@ -138,46 +152,13 @@ def main():
             raise ValueError("snapshot candidate exceeds review limit")
         before = original.read_text()
         after = candidate.read_text()
-        revised = []
-        file_used = {}
         original_header, original_metadata, before_lines = snapshot_parts(before)
         _, candidate_metadata, after_lines = snapshot_parts(after)
         if original_metadata != candidate_metadata:
             raise ValueError(f"candidate changes snapshot metadata: {candidate.name}")
-        if len(before_lines) != len(after_lines):
-            raise ValueError(
-                f"candidate changes snapshot body structure: {candidate.name}"
-            )
-        for line, candidate_line in zip(before_lines, after_lines):
-            if line == candidate_line:
-                revised.append(line)
-                continue
-            label = None
-            if re.search(r"(?:^|:)additional_tools/", line) or re.match(
-                r"\s+tools \(", line
-            ):
-                label = "catalog"
-            elif "namespace/functions; hash=" in line:
-                label = "namespace/functions"
-            elif "custom/exec" in line and "hash=" in line:
-                label = "custom/exec"
-
-            def replace(match):
-                key = label, match[1]
-                new = transitions.get(key)
-                if new is None:
-                    return match[0]
-                file_used[key] = file_used.get(key, 0) + 1
-                return f"hash={new}"
-
-            revised.append(
-                re.sub(r"hash=([a-f0-9]{16})", replace, line) if label else line
-            )
-        reconstructed = "".join(revised)
-        if reconstructed != "".join(after_lines):
-            raise ValueError(
-                f"candidate has changes beyond evidenced fingerprints: {candidate.name}"
-            )
+        reconstructed, file_used = review_body(
+            before_lines, after_lines, catalogs, fingerprint
+        )
         if not file_used:
             continue
         relative = original.relative_to(repository).as_posix()
@@ -210,6 +191,7 @@ def main():
             for (label, old), count in sorted(used.items())
         ],
         "evidence": evidence_receipts,
+        "toolInventoryRule": "Require complete exact schema-rendered catalogs; reject unproved delta inventories.",
         "candidateMetadataRule": "Preserve original headers; ignore only assertion_line when comparing candidates.",
     }
     manifest_path = patch_output.with_suffix(".evidence.json")
