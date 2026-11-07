@@ -246,18 +246,17 @@ def main() -> int:
     binary_digest = digest(binary)
     source = source_contract(options.source_root.resolve(strict=True))
     reference = None
+    reference_digest = None
     if options.mode == "compare":
         if options.reference is None:
             parser.error("compare requires --reference")
+        reference_digest = digest(options.reference)
         reference = json.loads(options.reference.read_text())
-        if (
-            not reference["sourceCompatible"]
-            or reference["matrixDigest"] != signature
-            or reference["sourceContract"] != source
-        ):
-            parser.error(
-                "reference is unapproved source drift, a different matrix, or a changed source contract"
-            )
+        if not reference["sourceCompatible"] or reference["matrixDigest"] != signature:
+            parser.error("reference is unapproved or uses a different matrix")
+        # A reimplementation is expected to change source files. Compare its
+        # exact behavior with the frozen reference; retain both identities and
+        # still reject either input changing while this comparison runs.
         retained = {row["case"] for row in reference["rows"]}
         if not options.group and not options.case:
             selected = [
@@ -305,10 +304,14 @@ def main() -> int:
         mismatches.append("binary identity changed while running")
     if source_contract(options.source_root.resolve(strict=True)) != source:
         mismatches.append("named source contract changed while running")
+    if reference_digest is not None and digest(options.reference) != reference_digest:
+        mismatches.append("reference identity changed while running")
     artifact = {
         "schemaVersion": 1,
         "mode": options.mode,
         "sourceContract": source,
+        "referenceSha256": reference_digest,
+        "referenceSourceContract": reference["sourceContract"] if reference else None,
         "binary": {"path": str(binary), "sha256": binary_digest},
         "matrixDigest": signature,
         "sourceCompatible": not mismatches,
@@ -328,3 +331,7 @@ def main() -> int:
         )
     )
     return int(bool(mismatches))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
