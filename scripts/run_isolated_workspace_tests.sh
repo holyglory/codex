@@ -11,6 +11,19 @@ shift
 test -d "$cxm_test_scratch"
 test "$cxm_test_scratch" != /
 
+# A previous invocation may have left repository markers in shared scratch.
+# Give this invocation an empty /tmp so ancestry discovery sees only its fixtures.
+cxm_test_invocation=$(mktemp -d -- "$cxm_test_scratch/invocation.XXXXXXXX")
+cxm_test_cleanup() {
+  local cxm_test_exit=$?
+  if (( cxm_test_exit == 0 )); then
+    rm -rf -- "$cxm_test_invocation"
+  else
+    printf 'Retained failed test scratch: %s\n' "$cxm_test_invocation" >&2
+  fi
+}
+trap cxm_test_cleanup EXIT
+
 # Match dirs::home_dir: a nonempty HOME wins over the Unix account home.
 # Hide only ambient user skill roots, preserving Cargo/toolchain/runtime data.
 cxm_test_host_home=$(python3 -c 'import os, pwd; print(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)')
@@ -22,10 +35,10 @@ cxm_test_agents_root="${cxm_test_host_home%/}/.agents"
 
 # Preserve the governed PATH, toolchain, library inputs, cache paths, V8 pair,
 # network access and product sandbox flags. Tests can still set their own env.
-exec /usr/bin/bwrap \
+/usr/bin/bwrap \
   --unshare-user \
   --bind / / \
-  --bind "$cxm_test_scratch" /tmp \
+  --bind "$cxm_test_invocation" /tmp \
   --setenv TMPDIR /tmp \
   --tmpfs /etc/codex \
   --remount-ro /etc/codex \
