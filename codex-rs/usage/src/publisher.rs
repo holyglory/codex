@@ -188,19 +188,23 @@ impl UsagePublisher {
         manifest.review_projection_file = Some(review_file);
         manifest.review_counts = review_counts;
         manifest.review_counts_watermark = Some(batch.next.sequence);
-        let new_contribution_files =
-            crate::review_projection::load_review_projection(&self.root, &manifest)?
-                .map(|descriptor| {
-                    descriptor
-                        .contribution_fragments
-                        .into_iter()
-                        .filter_map(|fragment| {
-                            (!prior_contribution_files.contains(&fragment.file))
-                                .then_some(fragment.file)
-                        })
-                        .collect::<Vec<_>>()
+        let mut published_projection_manifest = manifest.clone();
+        published_projection_manifest.watermark = batch.next.sequence;
+        published_projection_manifest.journal_byte_offset = batch.next.byte_offset;
+        let new_contribution_files = crate::review_projection::load_review_projection(
+            &self.root,
+            &published_projection_manifest,
+        )?
+        .map(|descriptor| {
+            descriptor
+                .contribution_fragments
+                .into_iter()
+                .filter_map(|fragment| {
+                    (!prior_contribution_files.contains(&fragment.file)).then_some(fragment.file)
                 })
-                .unwrap_or_default();
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
         let mut touched = BTreeMap::<i64, Vec<UsageRecord>>::new();
         let mut lineage = Vec::new();
         for (_, record) in records {
