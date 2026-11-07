@@ -573,6 +573,41 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
     )
     .expect("indexed canonical operation lookup");
     assert_eq!(rows, all_operations(root, &first));
+    // Bloom hints route each id independently, but cannot replace exact
+    // identity lookup when hints are absent or produce a false positive.
+    for legacy in [false, true] {
+        let mut routed = second.clone();
+        for partition in &mut routed.partitions {
+            if legacy {
+                partition.operation_id_bloom.clear();
+            } else {
+                partition.operation_id_bloom.fill(u64::MAX);
+            }
+        }
+        let requested = vec![
+            "first-partition".into(),
+            "second-partition".into(),
+            "not-yet-captured".into(),
+        ];
+        let partitions = routed
+            .partitions
+            .into_iter()
+            .map(|partition| (partition.partition, partition))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            find_addresses(
+                root,
+                &partitions,
+                requested,
+                &Connection::open_in_memory().expect("connection")
+            )
+            .expect("exact lookup survives legacy or saturated hints"),
+            BTreeMap::from([
+                ("first-partition".into(), 1),
+                ("second-partition".into(), REVIEW_PARTITION_SIZE + 2),
+            ])
+        );
+    }
     assert_eq!(
         select_review_files(
             root,
