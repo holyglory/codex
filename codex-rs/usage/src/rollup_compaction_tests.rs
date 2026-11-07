@@ -97,9 +97,22 @@ fn seed_rollups(root: &Path) -> crate::UsageManifest {
     for _ in 0..10 {
         assert!(crate::token_rollup::compact_one(root, hourly, NOW).expect("hourly rollup"));
     }
-    ManifestStore::new(root.join("manifest.json"))
-        .load()
-        .expect("manifest")
+    let store = ManifestStore::new(root.join("manifest.json"));
+    let before_review = store.load().expect("raw retirement manifest");
+    assert!(
+        crate::review_retention::maintain(
+            root,
+            hourly.raw_cutoff(NOW),
+            hourly.inactive_cutoff(NOW),
+        )
+        .expect("retire the review rows released by the final raw rollup")
+    );
+    let retained = store.load().expect("manifest");
+    assert_eq!(
+        retained.snapshot_generation,
+        before_review.snapshot_generation + 1
+    );
+    retained
 }
 
 fn buckets(root: &Path) -> Vec<Bucket> {
@@ -153,24 +166,29 @@ fn merge_is_bounded_and_keeps_pinned_buckets_and_counters() {
         .expect("ten fragments");
     assert_eq!(job.inputs, before.token_rollup_files[..8]);
     let output = job.output.clone();
-    let metadata_policy = RetentionPolicy {
-        raw_retention_days: 100,
-        ..hourly
-    };
     assert!(
-        !crate::token_rollup::compact_one(&root, metadata_policy, NOW + DAY * 1_000)
+        !crate::token_rollup::compact_one(&root, hourly, NOW + DAY * 1_000)
             .expect("advance correction admission metadata without retiring recent raw data")
     );
+    let store = ManifestStore::new(root.join("manifest.json"));
+    let mut expected = store.load().expect("independently advanced metadata");
+    assert_eq!(
+        (
+            expected.snapshot_generation,
+            expected.correction_retention_cutoff_at_ms,
+            expected.review_retention_cutoff_at_ms,
+        ),
+        (
+            before.snapshot_generation,
+            Some(6 * DAY * 1_000),
+            Some(6 * DAY * 1_000),
+        )
+    );
     assert!(job.install().expect("install merge"));
-    let after = ManifestStore::new(root.join("manifest.json"))
-        .load()
-        .expect("new manifest");
-    let mut expected = before.clone();
+    let after = store.load().expect("new manifest");
     expected.token_rollup_files = before.token_rollup_files[8..].to_vec();
     expected.token_rollup_files.push(output);
     expected.snapshot_generation += 1;
-    expected.correction_retention_cutoff_at_ms =
-        Some(metadata_policy.raw_cutoff(NOW + DAY * 1_000));
     expected.watermark_at_ms = after.watermark_at_ms;
     expected.updated_at = after.updated_at;
     assert_eq!(after, expected);
@@ -225,7 +243,9 @@ fn maintenance_collapses_inactive_buckets_and_keeps_resumed_chat_totals() {
         .publish_batch(limits())
         .expect("publish recent raw hours");
     let original = buckets(&root);
-    crate::retention::maintain(&root, policy(), NOW).expect("drain rollup fragments");
+    let mut maintenance = crate::retention::Maintenance::default();
+    crate::retention::maintain(&root, policy(), NOW, &mut maintenance)
+        .expect("drain rollup fragments");
     let manifest = ManifestStore::new(root.join("manifest.json"))
         .load()
         .expect("manifest");
@@ -364,6 +384,37 @@ fn racing_publication_keeps_current_inputs_and_pins_unpublished_output() {
             .iter()
             .all(|file| root.join("segments").join(file).exists())
     );
+    let expected = UsageReader::open_at(&root)
+        .expect("read before reclamation race")
+        .totals(TimeRange::all(), &UsageFilter::default())
+        .expect("retained totals");
+    let abandoned = root.join("segments/rollup-abandoned-before-reclamation.parquet");
+    std::fs::write(&abandoned, b"interrupted immutable output").expect("old orphan");
+    let reclamation = crate::reclamation::ReclamationPlan::prepare(&root)
+        .expect("collect candidates before admitting workers")
+        .expect("no previous pins");
+    let job = RollupCompactionJob::prepare(&root, policy(), NOW, MergeMode::Available)
+        .expect("prepare after reader admission reopens")
+        .expect("fragments");
+    let output = root.join("segments").join(&job.output);
+    let bytes = std::fs::read(&output).expect("new pinned output");
+    let reclaimed = reclamation
+        .reclaim()
+        .expect("delete only admitted candidates");
+    assert!(reclaimed.files_removed > 0);
+    assert!(!abandoned.exists());
+    assert_eq!(
+        std::fs::read(&output).expect("new output survives reclamation"),
+        bytes
+    );
+    assert!(job.install().expect("publish surviving output"));
+    assert_eq!(
+        UsageReader::open_at(&root)
+            .expect("reopen published merge")
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("same retained totals"),
+        expected
+    );
 }
 
 #[test]
@@ -386,6 +437,11 @@ fn correction_cutoff_advances_without_raw_data_and_never_regresses() {
         expected.correction_retention_cutoff_at_ms = Some(
             expected
                 .correction_retention_cutoff_at_ms
+                .map_or(cutoff, |prior| prior.max(cutoff)),
+        );
+        expected.review_retention_cutoff_at_ms = Some(
+            expected
+                .review_retention_cutoff_at_ms
                 .map_or(cutoff, |prior| prior.max(cutoff)),
         );
         assert_eq!(store.load().expect("admission metadata"), expected);

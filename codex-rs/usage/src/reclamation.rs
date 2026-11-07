@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::fs::TryLockError;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::JournalCheckpoint;
 use crate::ManifestStore;
@@ -33,67 +34,93 @@ pub(crate) struct Reclamation {
 
 /// Maintenance never waits for an active publisher or a pinned report.
 pub(crate) fn reclaim(root: &Path) -> Result<Reclamation> {
-    let publisher = storage_file::open_read_write(&root.join(".snapshot.lock"))?;
-    match publisher.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(Reclamation::default()),
-        Err(TryLockError::Error(error)) => return Err(error.into()),
+    match ReclamationPlan::prepare(root)? {
+        Some(plan) => plan.reclaim(),
+        None => Ok(Reclamation::default()),
     }
-    let readers = storage_file::open_read_write(&root.join(".readers.lock"))?;
-    match readers.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(Reclamation::default()),
-        Err(TryLockError::Error(error)) => return Err(error.into()),
-    }
-    let manifest = ManifestStore::new(root.join("manifest.json"))
-        .load_shared()?
-        .value;
-    // No previous reader exists and the publisher lock prevents changes to the
-    // manifest. New readers now pin the same retained files and logical frontier.
-    drop(readers);
-    if manifest.snapshot_generation == 0 {
-        return Ok(Reclamation::default());
-    }
-    let retained = retained_files(root, &manifest)?;
-    let scan_started = std::time::SystemTime::now();
-    let mut result = Reclamation::default();
-    for entry in std::fs::read_dir(root.join("segments"))? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if entry.file_type()?.is_file()
-            && entry
-                .metadata()?
-                .created()
-                .ok()
-                .is_none_or(|created| created <= scan_started)
-            && !retained.contains(name)
-            && [
-                "segment-",
-                "correction-",
-                "membership-",
-                "lineage-",
-                "record-id-",
-                "review-",
-                "rollup-",
-            ]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        {
-            std::fs::remove_file(entry.path())?;
-            result.files_removed += 1;
+}
+
+/// A closed set of candidates collected before off-lock workers can acquire a
+/// new snapshot pin. Publication stays locked until deletion has finished.
+pub(crate) struct ReclamationPlan {
+    _publisher: File,
+    root: PathBuf,
+    checkpoint: JournalCheckpoint,
+    candidates: Vec<std::fs::DirEntry>,
+    retained: BTreeSet<String>,
+}
+
+impl ReclamationPlan {
+    pub(crate) fn prepare(root: &Path) -> Result<Option<Self>> {
+        let publisher = storage_file::open_read_write(&root.join(".snapshot.lock"))?;
+        match publisher.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
         }
+        let readers = storage_file::open_read_write(&root.join(".readers.lock"))?;
+        match readers.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+        let manifest = ManifestStore::new(root.join("manifest.json"))
+            .load_shared()?
+            .value;
+        if manifest.snapshot_generation == 0 {
+            return Ok(None);
+        }
+        // Every immutable producer holds the publisher lock or a snapshot pin.
+        // Collect names while both admission paths are closed, then let new
+        // readers and workers proceed during sidecar reads and deletion. Their
+        // unique output names cannot belong to this completed directory list.
+        let candidates =
+            std::fs::read_dir(root.join("segments"))?.collect::<std::io::Result<Vec<_>>>()?;
+        drop(readers);
+        let retained = retained_files(root, &manifest)?;
+        Ok(Some(Self {
+            _publisher: publisher,
+            root: root.to_path_buf(),
+            checkpoint: JournalCheckpoint {
+                sequence: manifest.watermark,
+                byte_offset: manifest.journal_byte_offset,
+            },
+            candidates,
+            retained,
+        }))
     }
-    result.journal_rotated = crate::journal_rotation::rotate_prefix(
-        &root.join("events.jsonl"),
-        JournalCheckpoint {
-            sequence: manifest.watermark,
-            byte_offset: manifest.journal_byte_offset,
-        },
-    )?;
-    Ok(result)
+
+    pub(crate) fn reclaim(self) -> Result<Reclamation> {
+        let mut result = Reclamation::default();
+        for entry in self.candidates {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if entry.file_type()?.is_file()
+                && !self.retained.contains(name)
+                && [
+                    "segment-",
+                    "correction-",
+                    "membership-",
+                    "lineage-",
+                    "record-id-",
+                    "review-",
+                    "rollup-",
+                ]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            {
+                std::fs::remove_file(entry.path())?;
+                result.files_removed += 1;
+            }
+        }
+        result.journal_rotated = crate::journal_rotation::rotate_prefix(
+            &self.root.join("events.jsonl"),
+            self.checkpoint,
+        )?;
+        Ok(result)
+    }
 }
 
 fn retained_files(root: &Path, manifest: &UsageManifest) -> Result<BTreeSet<String>> {
