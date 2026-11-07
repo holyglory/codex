@@ -227,6 +227,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     }
     let context = create_process_context(use_remote).await?;
     let home = TempDir::new()?;
+    let counters = home.path().join("counters");
+    std::fs::create_dir(&counters)?;
     let cwd = PathUri::from_host_native_path(home.path())?;
     let (shell_path, profile_name) = match shell_name {
         "bash" if automatic_startup => ("/bin/bash", ".bash-env"),
@@ -244,7 +246,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     let wc = profile_path_entry.join("wc");
     codex_utils_cargo_bin::write_executable(
         &wc,
-        "#!/bin/sh\nprintf x >> \"$HOME/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
+        "#!/bin/sh\nprintf x >> \"$HOME/counters/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
     )?;
     let posix_shell = matches!(shell_name, "sh" | "bash-sh");
     let padding = if !use_remote && !tty && shell_name == "bash" {
@@ -263,7 +265,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     std::fs::write(
         &profile_path,
         format!(
-            "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
+            "printf x >> \"$HOME/counters/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
         ),
     )?;
     if shell_name == "zsh" && automatic_startup {
@@ -333,16 +335,12 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     );
     let sandbox = if use_sandbox {
         let mut sandbox_policy = PermissionProfile::read_only().file_system_sandbox_policy();
-        // Permit only the counters used to prove startup ran once. Keep the
-        // same sandbox for both commands because it is part of the cache key.
-        for name in ["captures", "tool-captures"] {
-            let path = home.path().join(name);
-            std::fs::write(&path, "")?;
-            sandbox_policy.entries.push(FileSystemSandboxEntry::new(
-                PathUri::from_host_native_path(path)?.into(),
-                FileSystemAccessMode::Write,
-            ));
-        }
+        // Permit only the directory of counters used to prove startup ran once.
+        // Keep the same sandbox for both commands because it is part of the cache key.
+        sandbox_policy.entries.push(FileSystemSandboxEntry::new(
+            PathUri::from_host_native_path(&counters)?.into(),
+            FileSystemAccessMode::Write,
+        ));
         Some(FileSystemSandboxContext::from_permission_profile(
             PermissionProfile::from_runtime_permissions(
                 &sandbox_policy,
@@ -388,8 +386,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         );
     }
 
-    assert_eq!(std::fs::read_to_string(home.path().join("captures"))?, "x");
-    assert!(!std::fs::read(home.path().join("tool-captures"))?.is_empty());
+    assert_eq!(std::fs::read_to_string(counters.join("captures"))?, "x");
+    assert!(!std::fs::read(counters.join("tool-captures"))?.is_empty());
     if let Some(server) = context._server {
         assert!(!server.codex_home().join("shell_snapshots").exists());
     }
