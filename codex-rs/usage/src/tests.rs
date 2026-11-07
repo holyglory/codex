@@ -300,6 +300,13 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
     expected.cache_write_input_tokens = Some(3);
     expected.missing_observations = Some(4);
     expected.rework_of_operation_id = Some("previous-model-request".to_string());
+    expected.process_id = Some("opaque-process".to_string());
+    expected.agent_id = Some("thread-a".to_string());
+    expected.approval_decision = Some(UsageApprovalDecision::ApprovedForSession);
+    expected.approval_source = Some(UsageApprovalSource::SessionCache);
+    expected.taxonomy_version = Some(1);
+    expected.heartbeat_count = Some(3);
+    expected.retry_of_operation_id = Some("previous-attempt".to_string());
     expected.observed_at_ms = Some(3_605_123);
     expected.started_at = Some(3_605);
     expected.started_at_ms = Some(3_605_081);
@@ -378,7 +385,25 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
     .expect("read current rows");
     let batch = batches.next().expect("timed batch").expect("decode batch");
     let legacy = batch
-        .project(&(0..batch.num_columns() - 3).collect::<Vec<_>>())
+        .project(
+            &(0..batch.num_columns())
+                .filter(|index| {
+                    !matches!(
+                        batch.schema().field(*index).name().as_str(),
+                        "observed_at_ms"
+                            | "started_at_ms"
+                            | "ended_at_ms"
+                            | "process_id"
+                            | "agent_id"
+                            | "approval_decision"
+                            | "approval_source"
+                            | "taxonomy_version"
+                            | "heartbeat_count"
+                            | "retry_of_operation_id"
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
         .expect("legacy seconds schema");
     let mut legacy_bytes = Vec::new();
     let mut writer = parquet::arrow::ArrowWriter::try_new(
@@ -389,6 +414,13 @@ fn materialized_dimension_totals_are_mergeable_without_scanning_rows() {
     .expect("legacy writer");
     writer.write(&legacy).expect("legacy batch");
     writer.close().expect("close legacy Parquet");
+    expected.process_id = None;
+    expected.agent_id = None;
+    expected.approval_decision = None;
+    expected.approval_source = None;
+    expected.taxonomy_version = None;
+    expected.heartbeat_count = None;
+    expected.retry_of_operation_id = None;
     expected.observed_at_ms = None;
     expected.started_at_ms = None;
     expected.ended_at_ms = None;

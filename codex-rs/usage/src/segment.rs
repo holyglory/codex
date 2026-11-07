@@ -385,6 +385,63 @@ impl SegmentCodec for ParquetSegmentCodec {
                         .map(|record| record.ended_at_ms)
                         .collect::<Vec<_>>(),
                 )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.process_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.agent_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| {
+                            record
+                                .approval_decision
+                                .map(crate::UsageApprovalDecision::as_str)
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| {
+                            record
+                                .approval_source
+                                .map(crate::UsageApprovalSource::as_str)
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.taxonomy_version)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.heartbeat_count)
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.retry_of_operation_id.as_deref())
+                        .collect::<Vec<_>>(),
+                )),
             ],
         )
         .map_err(columnar_error)?;
@@ -404,6 +461,11 @@ impl SegmentCodec for ParquetSegmentCodec {
             .set_column_dictionary_enabled(ColumnPath::from("classification"), true)
             .set_column_dictionary_enabled(ColumnPath::from("event"), true)
             .set_column_dictionary_enabled(ColumnPath::from("coverage"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("process_id"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("agent_id"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("approval_decision"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("approval_source"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("retry_of_operation_id"), true)
             .build();
         let mut writer =
             ArrowWriter::try_new(&mut bytes, schema, Some(properties)).map_err(columnar_error)?;
@@ -458,6 +520,14 @@ impl SegmentCodec for ParquetSegmentCodec {
             let observed_at_ms = optional_column::<Int64Array>(&batch, "observed_at_ms")?;
             let started_at_ms = optional_column::<Int64Array>(&batch, "started_at_ms")?;
             let ended_at_ms = optional_column::<Int64Array>(&batch, "ended_at_ms")?;
+            let process_id = optional_column::<StringArray>(&batch, "process_id")?;
+            let agent_id = optional_column::<StringArray>(&batch, "agent_id")?;
+            let approval_decision = optional_column::<StringArray>(&batch, "approval_decision")?;
+            let approval_source = optional_column::<StringArray>(&batch, "approval_source")?;
+            let taxonomy_version = optional_column::<UInt64Array>(&batch, "taxonomy_version")?;
+            let heartbeat_count = optional_column::<UInt64Array>(&batch, "heartbeat_count")?;
+            let retry_of_operation_id =
+                optional_column::<StringArray>(&batch, "retry_of_operation_id")?;
             for index in 0..batch.num_rows() {
                 let current_hour = hours.value(index);
                 if hour_start
@@ -521,6 +591,29 @@ impl SegmentCodec for ParquetSegmentCodec {
                         .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
                     ended_at_ms: ended_at_ms
                         .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
+                    process_id: process_id.and_then(|column| {
+                        (!column.is_null(index)).then(|| column.value(index).to_string())
+                    }),
+                    agent_id: agent_id.and_then(|column| {
+                        (!column.is_null(index)).then(|| column.value(index).to_string())
+                    }),
+                    approval_decision: approval_decision
+                        .and_then(|column| {
+                            (!column.is_null(index)).then(|| column.value(index).parse())
+                        })
+                        .transpose()?,
+                    approval_source: approval_source
+                        .and_then(|column| {
+                            (!column.is_null(index)).then(|| column.value(index).parse())
+                        })
+                        .transpose()?,
+                    taxonomy_version: taxonomy_version
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
+                    heartbeat_count: heartbeat_count
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
+                    retry_of_operation_id: retry_of_operation_id.and_then(|column| {
+                        (!column.is_null(index)).then(|| column.value(index).to_string())
+                    }),
                 });
             }
         }
@@ -770,6 +863,17 @@ fn parquet_schema() -> Arc<Schema> {
         Field::new("observed_at_ms", DataType::Int64, /*nullable*/ true),
         Field::new("started_at_ms", DataType::Int64, /*nullable*/ true),
         Field::new("ended_at_ms", DataType::Int64, /*nullable*/ true),
+        Field::new("process_id", DataType::Utf8, /*nullable*/ true),
+        Field::new("agent_id", DataType::Utf8, /*nullable*/ true),
+        Field::new("approval_decision", DataType::Utf8, /*nullable*/ true),
+        Field::new("approval_source", DataType::Utf8, /*nullable*/ true),
+        Field::new("taxonomy_version", DataType::UInt64, /*nullable*/ true),
+        Field::new("heartbeat_count", DataType::UInt64, /*nullable*/ true),
+        Field::new(
+            "retry_of_operation_id",
+            DataType::Utf8,
+            /*nullable*/ true,
+        ),
     ]))
 }
 

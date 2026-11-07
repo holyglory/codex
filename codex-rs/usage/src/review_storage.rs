@@ -38,6 +38,7 @@ pub(crate) const OPERATION_COLUMNS: &[(&str, DataType)] = columns![
     account_id:Utf8, thread_id:Utf8, repository_id:Utf8, turn_id:Utf8,
     model:Utf8, tool:Utf8, response_id:Utf8, phase:Utf8, activity:Utf8,
     classification:Utf8, coverage:Utf8, attempt_number:UInt64, rework_of_operation_id:Utf8,
+    process_id:Utf8, agent_id:Utf8, retry_of_operation_id:Utf8,
 ];
 pub(crate) const OPERATION_INDEX_COLUMNS: &[(&str, DataType)] = columns![
     operation_id:Utf8, first_sequence:UInt64,

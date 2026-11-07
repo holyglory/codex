@@ -75,6 +75,21 @@ impl DuckDbSnapshot {
                 observed_at_ms: row.get(29).map_err(duckdb_error)?,
                 started_at_ms: row.get(30).map_err(duckdb_error)?,
                 ended_at_ms: row.get(31).map_err(duckdb_error)?,
+                process_id: row.get(32).map_err(duckdb_error)?,
+                agent_id: row.get(33).map_err(duckdb_error)?,
+                approval_decision: row
+                    .get::<_, Option<String>>(34)
+                    .map_err(duckdb_error)?
+                    .map(|value| value.parse())
+                    .transpose()?,
+                approval_source: row
+                    .get::<_, Option<String>>(35)
+                    .map_err(duckdb_error)?
+                    .map(|value| value.parse())
+                    .transpose()?,
+                taxonomy_version: row.get(36).map_err(duckdb_error)?,
+                heartbeat_count: row.get(37).map_err(duckdb_error)?,
+                retry_of_operation_id: row.get(38).map_err(duckdb_error)?,
             });
         }
         Ok(records)

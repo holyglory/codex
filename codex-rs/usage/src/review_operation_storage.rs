@@ -78,6 +78,9 @@ pub(crate) fn write_operation_rows(
         column!(StringArray, |row| row.coverage.as_deref()),
         column!(UInt64Array, |row| row.attempt_number),
         column!(StringArray, |row| row.rework_of_operation_id.as_deref()),
+        column!(StringArray, |row| row.process_id.as_deref()),
+        column!(StringArray, |row| row.agent_id.as_deref()),
+        column!(StringArray, |row| row.retry_of_operation_id.as_deref()),
     ];
     let fields = OPERATION_COLUMNS
         .iter()

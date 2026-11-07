@@ -172,6 +172,27 @@ pub struct UsageRecord {
     /// Prior model operation named by an explicit redo declaration.
     #[serde(default)]
     pub rework_of_operation_id: Option<String>,
+    /// Opaque runtime process identity; never an operating-system PID.
+    #[serde(default)]
+    pub process_id: Option<String>,
+    /// Runtime agent session identity, equal to its owning thread UUID.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Observed approval result without request or rejection content.
+    #[serde(default)]
+    pub approval_decision: Option<crate::UsageApprovalDecision>,
+    /// Actual approval result source; absent when no reviewer supplied a result.
+    #[serde(default)]
+    pub approval_source: Option<crate::UsageApprovalSource>,
+    /// Registered phase/activity mapping version.
+    #[serde(default)]
+    pub taxonomy_version: Option<u64>,
+    /// Explicit heartbeats observed within an activity span.
+    #[serde(default)]
+    pub heartbeat_count: Option<u64>,
+    /// Prior operation retried by the transport/runtime, distinct from an explicit redo.
+    #[serde(default)]
+    pub retry_of_operation_id: Option<String>,
 }
 
 impl UsageRecord {
@@ -215,6 +236,13 @@ impl UsageRecord {
             cache_write_input_tokens: None,
             missing_observations: None,
             rework_of_operation_id: None,
+            process_id: None,
+            agent_id: None,
+            approval_decision: None,
+            approval_source: None,
+            taxonomy_version: None,
+            heartbeat_count: None,
+            retry_of_operation_id: None,
         }
     }
 

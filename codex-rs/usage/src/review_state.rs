@@ -50,6 +50,15 @@ pub struct ReviewOperation {
     pub coverage: Option<String>,
     pub attempt_number: Option<u64>,
     pub rework_of_operation_id: Option<String>,
+    /// Opaque runtime process identity, absent from pre-extension records.
+    #[serde(default)]
+    pub process_id: Option<String>,
+    /// Runtime agent session, equal to the owning thread UUID.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Actual runtime/transport retry predecessor, distinct from an explicit redo.
+    #[serde(default)]
+    pub retry_of_operation_id: Option<String>,
 }
 
 impl ReviewOperation {
@@ -85,6 +94,9 @@ impl ReviewOperation {
             coverage: None,
             attempt_number: None,
             rework_of_operation_id: None,
+            process_id: None,
+            agent_id: None,
+            retry_of_operation_id: None,
         };
         state.merge(sequence, record)?;
         Ok(state)
@@ -100,6 +112,12 @@ impl ReviewOperation {
             return Err(invalid("operation update precedes its first accepted fact"));
         }
         for (field, incoming) in [
+            (&mut self.process_id, &record.process_id),
+            (&mut self.agent_id, &record.agent_id),
+            (
+                &mut self.retry_of_operation_id,
+                &record.retry_of_operation_id,
+            ),
             (&mut self.account_id, &record.account_id),
             (&mut self.thread_id, &record.thread_id),
             (&mut self.repository_id, &record.repository_id),

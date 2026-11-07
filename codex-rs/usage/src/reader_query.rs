@@ -47,6 +47,13 @@ pub(crate) const RECORD_COLUMNS: &[(&str, &str)] = &[
     ("observed_at_ms", "BIGINT"),
     ("started_at_ms", "BIGINT"),
     ("ended_at_ms", "BIGINT"),
+    ("process_id", "VARCHAR"),
+    ("agent_id", "VARCHAR"),
+    ("approval_decision", "VARCHAR"),
+    ("approval_source", "VARCHAR"),
+    ("taxonomy_version", "UBIGINT"),
+    ("heartbeat_count", "UBIGINT"),
+    ("retry_of_operation_id", "VARCHAR"),
 ];
 pub(crate) const CORRECTION_COLUMNS: &[(&str, &str)] = &[
     ("id", "VARCHAR"),
@@ -254,6 +261,21 @@ impl SnapshotQuery {
                     observed_at_ms: row.get(29)?,
                     started_at_ms: row.get(30)?,
                     ended_at_ms: row.get(31)?,
+                    process_id: row.get(32)?,
+                    agent_id: row.get(33)?,
+                    approval_decision: row
+                        .get::<_, Option<String>>(34)?
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|_| duckdb::Error::InvalidQuery)?,
+                    approval_source: row
+                        .get::<_, Option<String>>(35)?
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|_| duckdb::Error::InvalidQuery)?,
+                    taxonomy_version: row.get(36)?,
+                    heartbeat_count: row.get(37)?,
+                    retry_of_operation_id: row.get(38)?,
                 })
             })
             .map_err(query_error)?;
@@ -458,7 +480,17 @@ pub(crate) fn parquet_source(
         .filter(|(name, _)| {
             matches!(
                 *name,
-                "observed_at_ms" | "started_at_ms" | "ended_at_ms" | "rework_of_operation_id"
+                "observed_at_ms"
+                    | "started_at_ms"
+                    | "ended_at_ms"
+                    | "rework_of_operation_id"
+                    | "process_id"
+                    | "agent_id"
+                    | "approval_decision"
+                    | "approval_source"
+                    | "taxonomy_version"
+                    | "heartbeat_count"
+                    | "retry_of_operation_id"
             )
         })
         .collect::<Vec<_>>();

@@ -245,6 +245,9 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
             coverage: Some("recorded".into()),
             attempt_number: Some(2),
             rework_of_operation_id: Some("previous-operation".into()),
+            process_id: None,
+            agent_id: None,
+            retry_of_operation_id: None,
         }]
     );
     assert_eq!(closed.partitions[0].open_operations, 0);
