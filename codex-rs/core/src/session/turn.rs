@@ -1812,9 +1812,10 @@ async fn run_sampling_request(
             base_instructions.clone(),
             incremental_tools,
         );
-        let responses_metadata = sess
+        let mut responses_metadata = sess
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
             .await;
+        responses_metadata.request_store = Some(Arc::clone(&retry_state.request_store));
         if crate::guardian::is_basic_session_source(&turn_context.session_source) {
             crate::guardian::prepare_guardian_prompt(
                 &sess,

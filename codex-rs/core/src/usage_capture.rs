@@ -6,6 +6,7 @@ mod approval;
 mod entities;
 mod lifecycle;
 mod model;
+mod model_transport;
 mod sink;
 
 use crate::client::ModelClient;
@@ -34,6 +35,7 @@ pub(crate) use activity_taxonomy::Phase;
 pub(crate) use activity_taxonomy::Relation;
 pub(crate) use approval::ApprovalObservation;
 pub(crate) use entities::annotate_record;
+pub(crate) use model_transport::retry_wait;
 pub(crate) use sink::Persistence;
 
 struct ThreadLineage {

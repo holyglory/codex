@@ -295,6 +295,7 @@ async fn run_compact_task_inner_impl(
     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
     // request tracking) survives retries within this compact turn.
     let mut client_session = turn_context.model_client(&sess)?.new_session();
+    let request_store = Arc::new(codex_extension_api::ExtensionData::new("local_compaction"));
     let compaction_response = loop {
         // Clone is required because of the loop
         let mut turn_input = history
@@ -325,9 +326,10 @@ async fn run_compact_task_inner_impl(
             cyber_access_program: turn_context.cyber_access_program,
             ..Default::default()
         };
-        let responses_metadata = sess
+        let mut responses_metadata = sess
             .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
             .await;
+        responses_metadata.request_store = Some(Arc::clone(&request_store));
         let attempt_result = drain_to_completed(
             &sess,
             turn_context.as_ref(),
@@ -382,7 +384,11 @@ async fn run_compact_task_inner_impl(
                         e,
                     )
                     .await;
+                    let wait = crate::usage_capture::retry_wait(&request_store, "compaction_retry");
                     tokio::time::sleep(delay).await;
+                    if let Some(wait) = wait {
+                        wait.finish(codex_usage::UsageOutcome::Completed);
+                    }
                     continue;
                 } else {
                     return Err(e);

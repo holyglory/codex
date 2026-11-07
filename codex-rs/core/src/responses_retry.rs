@@ -2,6 +2,7 @@
 //! Content-filter guidance is recorded for sampling requests before retry decisions.
 //! Server advice controls timing without extending configured retry limits.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::client::ModelClientSession;
@@ -30,6 +31,7 @@ pub(crate) enum ResponsesStreamRequest {
 }
 
 pub(crate) struct ResponsesStreamRetryState {
+    pub(crate) request_store: Arc<codex_extension_api::ExtensionData>,
     retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
@@ -38,6 +40,7 @@ pub(crate) struct ResponsesStreamRetryState {
 impl Default for ResponsesStreamRetryState {
     fn default() -> Self {
         Self {
+            request_store: Arc::new(codex_extension_api::ExtensionData::new("model_retry_chain")),
             retries: 0,
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
@@ -111,7 +114,11 @@ pub(crate) async fn handle_response_stream_error(
             .await;
         retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
         codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
+        let wait = crate::usage_capture::retry_wait(&retry_state.request_store, "stream_retry");
         tokio::time::sleep(retry_delay).await;
+        if let Some(wait) = wait {
+            wait.finish(codex_usage::UsageOutcome::Completed);
+        }
         retry_state.connection_retry_delay = retry_delay
             .saturating_mul(2)
             .min(MAX_CONNECTION_RETRY_DELAY);
@@ -126,7 +133,11 @@ pub(crate) async fn handle_response_stream_error(
     {
         // Changing transport must not bypass the server's retry deadline.
         if let Some(retry_after) = retry_after {
+            let wait = crate::usage_capture::retry_wait(&retry_state.request_store, "stream_retry");
             tokio::time::sleep_until(retry_after.deadline()).await;
+            if let Some(wait) = wait {
+                wait.finish(codex_usage::UsageOutcome::Completed);
+            }
         }
         sess.send_event(
             turn_context,
@@ -163,7 +174,11 @@ pub(crate) async fn handle_response_stream_error(
         let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
+        let wait = crate::usage_capture::retry_wait(&retry_state.request_store, "stream_retry");
         tokio::time::sleep_until(retry_at).await;
+        if let Some(wait) = wait {
+            wait.finish(codex_usage::UsageOutcome::Completed);
+        }
         return Ok(());
     }
 

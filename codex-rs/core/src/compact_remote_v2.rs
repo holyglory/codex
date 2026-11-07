@@ -290,6 +290,10 @@ async fn run_remote_compaction_request_v2(
     responses_metadata: &CodexResponsesMetadata,
     transport: CompactionRequestTransport<'_>,
 ) -> CodexResult<RemoteCompactionV2Output> {
+    let mut retry_state = ResponsesStreamRetryState::default();
+    let mut responses_metadata = responses_metadata.clone();
+    responses_metadata.request_store = Some(Arc::clone(&retry_state.request_store));
+    let responses_metadata = &responses_metadata;
     let turn_context = &step_context.turn;
     let client_session = match transport {
         CompactionRequestTransport::Background(turn_state, auth_owner_generation) => {
@@ -328,7 +332,6 @@ async fn run_remote_compaction_request_v2(
         .info()
         .stream_max_retries()
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
-    let mut retry_state = ResponsesStreamRetryState::default();
     loop {
         let result = match client_session
             .stream(
