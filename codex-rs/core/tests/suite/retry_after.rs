@@ -14,6 +14,8 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
+use codex_usage::UsageJournal;
+use codex_usage::UsageOutcome;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
@@ -293,7 +295,7 @@ async fn responses_http_uses_retry_after() -> Result<()> {
                 .set_body_json(json!({ "error": { "code": "server_is_overloaded" } })),
             responses::sse_response(responses::sse(vec![
                 responses::ev_response_created("recovered"),
-                responses::ev_completed("recovered"),
+                responses::ev_completed_with_tokens("recovered", 31),
             ])),
         ],
     )
@@ -338,6 +340,106 @@ async fn responses_http_uses_retry_after() -> Result<()> {
         telemetry.events.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     );
+    let followup = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("new-request"),
+            responses::ev_completed("new-request"),
+        ]),
+    )
+    .await;
+    test.submit_turn("start a separate logical request").await?;
+    test.codex.shutdown_and_wait().await?;
+    let facts = UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let attempts = facts
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("model_request_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        attempts.len(),
+        response_mock.requests().len() + followup.requests().len()
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|fact| (
+                fact.attempt_number,
+                fact.outcome,
+                fact.response_id.as_deref(),
+                fact.retry_of_operation_id.as_deref(),
+                fact.rework_of_operation_id.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some(1), Some(UsageOutcome::Failed), None, None, None),
+            (
+                Some(2),
+                Some(UsageOutcome::Failed),
+                None,
+                attempts[0].operation_id.as_deref(),
+                None
+            ),
+            (
+                Some(3),
+                Some(UsageOutcome::Completed),
+                Some("recovered"),
+                attempts[1].operation_id.as_deref(),
+                None
+            ),
+            (
+                Some(1),
+                Some(UsageOutcome::Completed),
+                Some("new-request"),
+                None,
+                None
+            ),
+        ]
+    );
+    assert_eq!(
+        facts
+            .iter()
+            .filter(|fact| fact.response_id.as_deref() == Some("recovered")
+                && fact.provider_total_tokens == Some(31))
+            .count(),
+        1
+    );
+    let waits = facts
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("retry_wait_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        waits
+            .iter()
+            .map(|fact| (
+                fact.tool.as_deref(),
+                fact.outcome,
+                fact.retry_of_operation_id.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Some("http_retry"),
+                Some(UsageOutcome::Completed),
+                attempts[0].operation_id.as_deref()
+            ),
+            (
+                Some("stream_retry"),
+                Some(UsageOutcome::Completed),
+                attempts[1].operation_id.as_deref()
+            ),
+        ]
+    );
+    for (wait, pair) in waits.iter().zip(attempts.windows(2)) {
+        assert!(wait.duration_ms.is_some_and(|duration| duration > 0));
+        assert!(wait.started_at_ms >= pair[0].ended_at_ms);
+        assert!(wait.ended_at_ms <= pair[1].started_at_ms);
+    }
     Ok(())
 }
 
@@ -2235,3 +2337,7 @@ async fn websocket_overload_without_retry_after_is_terminal() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "retry_after_usage_tests.rs"]
+mod usage_tests;
