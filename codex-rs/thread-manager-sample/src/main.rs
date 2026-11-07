@@ -236,6 +236,7 @@ async fn new_config(
         .clone();
 
     let mut config = Config {
+        process_account: None,
         application_network_policy: Default::default(),
         application_auth_route_config: Some(auth_config.auth_route_config.clone()),
         config_layer_stack,
