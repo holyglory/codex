@@ -94,7 +94,7 @@ pub(crate) fn lookup<'a, T: ExactIdEntry>(
                             {
                                 if previous != current {
                                     return Err(invalid(
-                                        "conflicting exact-id facts at one sequence",
+                                        "conflicting record-id facts at one sequence",
                                     ));
                                 }
                             }
