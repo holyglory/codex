@@ -8,8 +8,6 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -21,7 +19,6 @@ use crate::JournalCheckpoint;
 use crate::Result;
 use crate::StorageError;
 use crate::id_index_run::RunWriter;
-use crate::id_index_run::next_frame;
 use crate::storage_file;
 
 /// Version of the stable id-routing hash. Changing it requires a new index.
@@ -32,6 +29,9 @@ pub const MAX_ID_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const ID_FENCE_STRIDE: u32 = 64;
 /// Maximum number of immutable runs a foreground lookup will route across.
 pub const MAX_ID_RUNS: usize = 256;
+#[path = "exact_id_lookup.rs"]
+pub(crate) mod exact_id_lookup;
+
 const FENCE_MAGIC: &[u8; 8] = b"CIDX1FEN";
 const FENCE_BYTES: u64 = 16;
 const MAX_FENCE_BYTES: u64 = 16 * 1024 * 1024;
@@ -163,84 +163,11 @@ fn lookup_ids_with_hash(
     ids: &BTreeSet<String>,
     hash_id: impl Fn(&str) -> u64,
 ) -> Result<IdLookup> {
-    #[cfg(test)]
-    let mut profile = crate::performance_tests::RecoveryProfile::new("record-id-lookup");
     validate_descriptor(root, descriptor)?;
-    if ids.is_empty() {
-        return Ok(IdLookup {
-            found: BTreeMap::new(),
-            watermark: descriptor.watermark,
-            complete_from_sequence: descriptor.complete_from_sequence,
-        });
-    }
-    let mut found = BTreeMap::<String, RecordIdEntry>::new();
-    let mut by_hash = BTreeMap::<u64, Vec<&str>>::new();
-    for id in ids {
-        by_hash.entry(hash_id(id)).or_default().push(id);
-    }
-    for run in &descriptor.runs {
-        let bloom = crate::id_index_bloom::load(root, run);
-        #[cfg(test)]
-        profile.mark("bloom-read");
-        let candidates = by_hash
-            .keys()
-            .copied()
-            .filter(|hash| bloom.as_ref().is_none_or(|hint| hint.might_contain(*hash)))
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            continue;
-        }
-        let path = data_path(root, &run.data_file)?;
-        let fence_path = data_path(root, &run.fence_file)?;
-        storage_file::protect_existing(&path)?;
-        storage_file::protect_existing(&fence_path)?;
-        let mut data = BufReader::with_capacity(/*capacity*/ 64 * 1024, File::open(path)?);
-        let fences = read_fences(&fence_path, run)?;
-        #[cfg(test)]
-        profile.mark("fence-read");
-        let mut pages = BTreeMap::<u64, Vec<u64>>::new();
-        for hash in candidates {
-            if let Some(offset) = candidate_offset(&fences, hash) {
-                pages.entry(offset).or_default().push(hash);
-            }
-        }
-        for (offset, hashes) in pages {
-            if offset < 8 || offset >= run.data_bytes {
-                return Err(invalid("record-id fence points outside its run"));
-            }
-            data.seek(SeekFrom::Start(offset))?;
-            let mut entry = next_frame(&mut data)?;
-            for hash in hashes {
-                while let Some(current) = entry.as_ref() {
-                    let current_hash = hash_id(&current.id);
-                    if current_hash > hash {
-                        break;
-                    }
-                    if current_hash == hash && by_hash[&hash].contains(&current.id.as_str()) {
-                        match found.get(&current.id) {
-                            Some(previous) if previous.first_sequence < current.first_sequence => {}
-                            Some(previous) if previous.first_sequence == current.first_sequence => {
-                                if previous != current {
-                                    return Err(invalid(
-                                        "conflicting record-id facts at one sequence",
-                                    ));
-                                }
-                            }
-                            _ => {
-                                found.insert(current.id.clone(), current.clone());
-                            }
-                        }
-                    }
-                    entry = next_frame(&mut data)?;
-                }
-                if entry.is_none() {
-                    break;
-                }
-            }
-        }
-        #[cfg(test)]
-        profile.mark("exact-page-probes");
-    }
+    let found = exact_id_lookup::lookup(
+        root, &descriptor.runs, ids, hash_id,
+        exact_id_lookup::Duplicates::Earliest, |_| Ok(true),
+    )?;
     Ok(IdLookup {
         found,
         watermark: descriptor.watermark,
@@ -437,24 +364,30 @@ pub(crate) fn validate_descriptor(root: &Path, descriptor: &IdIndexDescriptor) -
     {
         return Err(invalid("unsupported record-id index descriptor"));
     }
-    if descriptor.runs.len() > MAX_ID_RUNS {
-        return Err(invalid("record-id index has too many foreground runs"));
+    validate_runs(root, descriptor.runs.iter())
+}
+
+pub(crate) fn validate_runs<'a>(
+    root: &Path,
+    runs: impl ExactSizeIterator<Item = &'a IdRunDescriptor>,
+) -> Result<()> {
+    if runs.len() > MAX_ID_RUNS {
+        return Err(invalid("exact-id index has too many foreground runs"));
     }
-    let mut previous = None;
-    for run in &descriptor.runs {
+    let mut files = BTreeSet::new();
+    for run in runs {
         if run.entry_count == 0
             || run.fence_count == 0
             || run.fence_count != run.entry_count.div_ceil(u64::from(ID_FENCE_STRIDE))
             || run.min_hash > run.max_hash
             || run.min_sequence == 0
             || run.min_sequence > run.max_sequence
-            || previous.is_some_and(|seen: &str| seen == run.data_file)
+            || !files.insert(run.data_file.as_str())
         {
             return Err(invalid("invalid record-id index run metadata"));
         }
         data_path(root, &run.data_file)?;
         data_path(root, &run.fence_file)?;
-        previous = Some(run.data_file.as_str());
     }
     Ok(())
 }

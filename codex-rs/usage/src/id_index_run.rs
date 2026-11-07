@@ -20,6 +20,20 @@ use crate::id_index::id_hash;
 use crate::id_index_bloom::Bloom;
 use crate::storage_file;
 
+/// Payloads share exact run I/O while their owners define coverage and retention.
+/// The routing hash is never identity; implementations expose the complete ID.
+pub(crate) trait ExactIdEntry: serde::Serialize + serde::de::DeserializeOwned + Clone + Eq {
+    const LOOKUP_PROFILE_COMPONENT: &'static str;
+    fn id(&self) -> &str;
+    fn first_sequence(&self) -> u64;
+}
+
+impl ExactIdEntry for RecordIdEntry {
+    const LOOKUP_PROFILE_COMPONENT: &'static str = "record-id-lookup";
+    fn id(&self) -> &str { &self.id }
+    fn first_sequence(&self) -> u64 { self.first_sequence }
+}
+
 const DATA_MAGIC: &[u8; 8] = b"CIDX1RUN";
 const FENCE_MAGIC: &[u8; 8] = b"CIDX1FEN";
 const FRAME_HEADER_BYTES: usize = 4;
@@ -72,7 +86,7 @@ impl RunWriter {
     }
 
     pub(crate) fn push(&mut self, entry: &RecordIdEntry) -> Result<()> {
-        self.push_with_hash(entry, id_hash(&entry.id))
+        self.push_entry(entry)
     }
 
     #[cfg(test)]
@@ -80,7 +94,11 @@ impl RunWriter {
         self.push_with_hash(entry, hash)
     }
 
-    fn push_with_hash(&mut self, entry: &RecordIdEntry, hash: u64) -> Result<()> {
+    pub(crate) fn push_entry<T: ExactIdEntry>(&mut self, entry: &T) -> Result<()> {
+        self.push_with_hash(entry, id_hash(entry.id()))
+    }
+
+    fn push_with_hash<T: ExactIdEntry>(&mut self, entry: &T, hash: u64) -> Result<()> {
         let encoded = serde_json::to_vec(entry)?;
         if encoded.is_empty()
             || encoded.len() > MAX_ID_ENTRY_BYTES
@@ -102,8 +120,8 @@ impl RunWriter {
         self.count += 1;
         self.min_hash = self.min_hash.min(hash);
         self.max_hash = self.max_hash.max(hash);
-        self.min_sequence = self.min_sequence.min(entry.first_sequence);
-        self.max_sequence = self.max_sequence.max(entry.first_sequence);
+        self.min_sequence = self.min_sequence.min(entry.first_sequence());
+        self.max_sequence = self.max_sequence.max(entry.first_sequence());
         Ok(())
     }
 
@@ -169,11 +187,15 @@ impl RunReader {
     }
 
     pub(crate) fn next(&mut self) -> Result<Option<RecordIdEntry>> {
+        self.next_entry()
+    }
+
+    pub(crate) fn next_entry<T: ExactIdEntry>(&mut self) -> Result<Option<T>> {
         next_frame(&mut self.file)
     }
 }
 
-pub(crate) fn next_frame(file: &mut (impl Read + Seek)) -> Result<Option<RecordIdEntry>> {
+pub(crate) fn next_frame<T: ExactIdEntry>(file: &mut (impl Read + Seek)) -> Result<Option<T>> {
     let mut length = [0; FRAME_HEADER_BYTES];
     // One byte distinguishes a clean EOF from a partial frame header. Seek
     // only at EOF, so buffered exact probes need no per-frame position call.
