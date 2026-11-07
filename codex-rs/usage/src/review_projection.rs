@@ -38,10 +38,6 @@ use crate::review_storage::write_json;
 use crate::review_storage::write_rows;
 use crate::storage_file;
 
-#[path = "review_operation_lookup.rs"]
-mod operation_lookup;
-use operation_lookup::find_addresses;
-
 /// One current bounded operation partition; replaced files remain pinned by
 /// previous descriptors. Bounds cover every row, including unknown endpoints.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -534,6 +530,77 @@ pub(crate) fn publish_review_projection(
 struct OperationAddress {
     operation_id: String,
     first_sequence: u64,
+}
+
+fn find_addresses(
+    root: &Path,
+    partitions: &BTreeMap<u64, ReviewPartition>,
+    ids: Vec<String>,
+    connection: &Connection,
+) -> Result<BTreeMap<String, u64>> {
+    #[cfg(test)]
+    let mut profile = crate::performance_tests::RecoveryProfile::new("operation-addresses");
+    if ids.is_empty() || partitions.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    // Every partition probes the same bounded batch. Hash each requested ID
+    // once rather than rehashing its bytes for every historical partition.
+    let hashes = ids.iter().map(|id| id_hash(id)).collect::<Vec<_>>();
+    let candidate_partitions = partitions
+        .values()
+        .filter(|partition| {
+            partition.operation_id_bloom.is_empty()
+                || hashes
+                    .iter()
+                    .any(|hash| bloom_maybe_contains(&partition.operation_id_bloom, *hash))
+        })
+        .collect::<Vec<_>>();
+    #[cfg(test)]
+    {
+        profile.mark("bloom-partition-routing");
+        if std::env::var_os("CODEX_USAGE_SCALE_PROFILE_RECOVERY").is_some() {
+            eprintln!(
+                "usage-recovery-profile {}",
+                serde_json::json!({"component":"operation-addresses","stage":"selection",
+                    "requestedIds":ids.len(),"candidatePartitions":candidate_partitions.len(),
+                    "totalPartitions":partitions.len()})
+            );
+        }
+    }
+    if candidate_partitions.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let source = parquet_source(
+        root,
+        &candidate_partitions
+            .iter()
+            .map(|p| p.operation_index_file.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let candidates = ids
+        .iter()
+        .map(|id| quoted(id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rows = query_rows::<OperationAddress>(
+        connection,
+        &format!(
+            "SELECT operation_id, first_sequence FROM {source} WHERE operation_id IN ({candidates})"
+        ),
+        ids.len(),
+    )?;
+    #[cfg(test)]
+    profile.mark("exact-index-query");
+    let mut found = BTreeMap::new();
+    for row in rows {
+        if row.first_sequence == 0
+            || !partitions.contains_key(&((row.first_sequence - 1) / REVIEW_PARTITION_SIZE))
+            || found.insert(row.operation_id, row.first_sequence).is_some()
+        {
+            return Err(invalid("conflicting current operation addresses"));
+        }
+    }
+    Ok(found)
 }
 
 /// Lookup only the requested canonical states. Id indexes choose current
