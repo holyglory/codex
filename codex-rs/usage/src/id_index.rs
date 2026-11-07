@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -193,7 +194,7 @@ fn lookup_ids_with_hash(
         let fence_path = data_path(root, &run.fence_file)?;
         storage_file::protect_existing(&path)?;
         storage_file::protect_existing(&fence_path)?;
-        let mut data = File::open(path)?;
+        let mut data = BufReader::with_capacity(/*capacity*/ 64 * 1024, File::open(path)?);
         let fences = read_fences(&fence_path, run)?;
         #[cfg(test)]
         profile.mark("fence-read");
@@ -354,7 +355,7 @@ pub(crate) fn write_run(
 }
 
 fn read_fences(path: &Path, run: &IdRunDescriptor) -> Result<Vec<(u64, u64)>> {
-    let mut file = File::open(path)?;
+    let file = File::open(path)?;
     let expected_bytes = 8_u64
         .checked_add(run.fence_count.saturating_mul(FENCE_BYTES))
         .ok_or_else(|| invalid("record-id fence size overflow"))?;
@@ -368,6 +369,7 @@ fn read_fences(path: &Path, run: &IdRunDescriptor) -> Result<Vec<(u64, u64)>> {
             "record-id fence exceeds its bounded metadata limit",
         ));
     }
+    let mut file = BufReader::new(file);
     let mut magic = [0; 8];
     file.read_exact(&mut magic)?;
     if &magic != FENCE_MAGIC {

@@ -137,12 +137,11 @@ fn bloom_insert(bloom: &mut [u64], id: &str) {
     }
 }
 
-fn bloom_maybe_contains(bloom: &[u64], id: &str) -> bool {
+fn bloom_maybe_contains(bloom: &[u64], hash: u64) -> bool {
     if bloom.is_empty() {
         return true;
     }
     let bits = bloom.len() * 64;
-    let hash = id_hash(id);
     bloom_hashes(hash, bits)
         .into_iter()
         .all(|index| bloom[index / 64] & (1u64 << (index % 64)) != 0)
@@ -288,9 +287,12 @@ pub(crate) fn publish_review_projection(
             / REVIEW_PARTITION_SIZE;
         affected.entry(partition).or_default().extend(facts);
     }
+    let mut replaced_operation_files = Vec::new();
+    let mut changed_membership_files = Vec::new();
     for (partition, mut facts) in affected {
         let mut states = BTreeMap::<String, ReviewOperation>::new();
         if let Some(previous) = partitions.get(&partition) {
+            replaced_operation_files.push(previous.file.clone());
             let source = parquet_source(root, std::slice::from_ref(&previous.file))?;
             for state in query_rows::<ReviewOperation>(
                 connection,
@@ -384,6 +386,7 @@ pub(crate) fn publish_review_projection(
                 end: row.ended_at_ms,
             }),
         )?;
+        changed_membership_files.push(membership_file.clone());
         partitions.insert(
             partition,
             ReviewPartition {
@@ -415,20 +418,46 @@ pub(crate) fn publish_review_projection(
         values.sort_unstable();
         values.dedup();
     }
-    if !descriptor.partitions.is_empty() {
+    if !descriptor.partitions.is_empty()
+        && (!changed_membership_files.is_empty() || descriptor.membership_index_file.is_none())
+    {
         let membership_index_file = format!("review-membership-index-{stamp}.parquet");
-        let membership_source = parquet_source(
-            root,
-            &descriptor
-                .partitions
-                .iter()
-                .map(|partition| partition.membership_file.clone())
-                .collect::<Vec<_>>(),
-        )?;
+        let membership_source = if let Some(previous) = &descriptor.membership_index_file {
+            // Replace only the changed partitions in the already consolidated
+            // index. Opening every historical membership fragment makes even
+            // a small startup batch pay for the entire operation history.
+            let previous = parquet_source(root, std::slice::from_ref(previous))?;
+            let additions = parquet_source(root, &changed_membership_files)?;
+            let retained = if replaced_operation_files.is_empty() {
+                format!("SELECT * FROM {previous}")
+            } else {
+                let replaced = replaced_operation_files
+                    .iter()
+                    .map(|file| quoted(file))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("SELECT * FROM {previous} WHERE segment_file NOT IN ({replaced})")
+            };
+            format!("{retained} UNION ALL SELECT * FROM {additions}")
+        } else {
+            // Older snapshots and retention-invalidated indexes are rebuilt
+            // from the complete set of current partition memberships once.
+            format!(
+                "SELECT * FROM {}",
+                parquet_source(
+                    root,
+                    &descriptor
+                        .partitions
+                        .iter()
+                        .map(|partition| partition.membership_file.clone())
+                        .collect::<Vec<_>>(),
+                )?
+            )
+        };
         let membership_path = segment_path(root, &membership_index_file)?;
         connection
             .execute_batch(&format!(
-                "COPY (SELECT * FROM {membership_source}) TO {} (FORMAT PARQUET, COMPRESSION ZSTD)",
+                "COPY ({membership_source}) TO {} (FORMAT PARQUET, COMPRESSION ZSTD)",
                 quoted(&membership_path.to_string_lossy())
             ))
             .map_err(crate::review_storage::query_error)?;
@@ -509,18 +538,35 @@ fn find_addresses(
     ids: Vec<String>,
     connection: &Connection,
 ) -> Result<BTreeMap<String, u64>> {
+    #[cfg(test)]
+    let mut profile = crate::performance_tests::RecoveryProfile::new("operation-addresses");
     if ids.is_empty() || partitions.is_empty() {
         return Ok(BTreeMap::new());
     }
+    // Every partition probes the same bounded batch. Hash each requested ID
+    // once rather than rehashing its bytes for every historical partition.
+    let hashes = ids.iter().map(|id| id_hash(id)).collect::<Vec<_>>();
     let candidate_partitions = partitions
         .values()
         .filter(|partition| {
             partition.operation_id_bloom.is_empty()
-                || ids
+                || hashes
                     .iter()
-                    .any(|id| bloom_maybe_contains(&partition.operation_id_bloom, id))
+                    .any(|hash| bloom_maybe_contains(&partition.operation_id_bloom, *hash))
         })
         .collect::<Vec<_>>();
+    #[cfg(test)]
+    {
+        profile.mark("bloom-partition-routing");
+        if std::env::var_os("CODEX_USAGE_SCALE_PROFILE_RECOVERY").is_some() {
+            eprintln!(
+                "usage-recovery-profile {}",
+                serde_json::json!({"component":"operation-addresses","stage":"selection",
+                    "requestedIds":ids.len(),"candidatePartitions":candidate_partitions.len(),
+                    "totalPartitions":partitions.len()})
+            );
+        }
+    }
     if candidate_partitions.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -543,6 +589,8 @@ fn find_addresses(
         ),
         ids.len(),
     )?;
+    #[cfg(test)]
+    profile.mark("exact-index-query");
     let mut found = BTreeMap::new();
     for row in rows {
         if row.first_sequence == 0

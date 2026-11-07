@@ -295,6 +295,10 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         .expect("publish append-only classification");
     let corrected = descriptor(root, &corrected);
     assert_eq!(corrected.partitions, closed.partitions);
+    assert_eq!(
+        corrected.membership_index_file,
+        closed.membership_index_file
+    );
     let classifications =
         parquet_source(root, &corrected.classification_files).expect("all classification files");
     let rows: Vec<ReviewClassification> = query_rows(
@@ -483,6 +487,14 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
         })
         .expect("first bounded partition");
     let first = descriptor(root, &first);
+    // Subsequent publication must reuse the consolidated index for unchanged
+    // partitions, rather than reopening their individual membership fragments.
+    let first_membership = root
+        .join("segments")
+        .join(&first.partitions[0].membership_file);
+    let unavailable_membership = first_membership.with_extension("unavailable");
+    fs::rename(&first_membership, &unavailable_membership)
+        .expect("make unrelated fragment unavailable");
     let mut unrelated = started("second-partition", "tool", /*at_ms*/ 6_000);
     unrelated.repository_id = Some("repository-b".into());
     unrelated.thread_id = Some("thread-b".into());
@@ -492,6 +504,8 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
     let second = publisher
         .publish_batch(limits())
         .expect("only new partition added");
+    fs::rename(&unavailable_membership, &first_membership)
+        .expect("restore unrelated fragment for pinned readers");
     assert_eq!(second.review_counts_watermark, Some(second.watermark));
     assert_eq!(
         crate::UsageReader::open_at(root)

@@ -1,8 +1,10 @@
 //! Framed immutable record-id run I/O.
 use std::fs::File;
+use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -150,14 +152,14 @@ impl RunWriter {
 }
 
 pub(crate) struct RunReader {
-    file: File,
+    file: BufReader<File>,
 }
 
 impl RunReader {
     pub(crate) fn open(root: &Path, run: &IdRunDescriptor) -> Result<Self> {
         let path = data_path(root, &run.data_file)?;
         storage_file::protect_existing(&path)?;
-        let mut file = File::open(path)?;
+        let mut file = BufReader::with_capacity(/*capacity*/ 64 * 1024, File::open(path)?);
         let mut magic = [0; 8];
         file.read_exact(&mut magic)?;
         if &magic != DATA_MAGIC {
@@ -171,16 +173,24 @@ impl RunReader {
     }
 }
 
-pub(crate) fn next_frame(file: &mut File) -> Result<Option<RecordIdEntry>> {
+pub(crate) fn next_frame(file: &mut (impl Read + Seek)) -> Result<Option<RecordIdEntry>> {
     let mut length = [0; FRAME_HEADER_BYTES];
-    let start = file.stream_position()?;
-    match file.read_exact(&mut length) {
+    // One byte distinguishes a clean EOF from a partial frame header. Seek
+    // only at EOF, so buffered exact probes need no per-frame position call.
+    match file.read_exact(&mut length[..1]) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
-            let length = file.metadata()?.len();
-            if start == length {
+            let position = file.stream_position()?;
+            if position == file.seek(SeekFrom::End(0))? {
                 return Ok(None);
             }
+            return Err(invalid("record-id run has a truncated frame"));
+        }
+        Err(error) => return Err(StorageError::Io(error)),
+    }
+    match file.read_exact(&mut length[1..]) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
             return Err(invalid("record-id run has a truncated frame"));
         }
         Err(error) => return Err(StorageError::Io(error)),
