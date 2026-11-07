@@ -16,13 +16,16 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=5bcf2507be0b7e83):
+        - namespace/functions; hash=6c2763357ee3bc09
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
@@ -45,13 +48,16 @@ Settings:
 ## Window 2 (after request 3: input diverged at item 02)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=5bcf2507be0b7e83):
+        - namespace/functions; hash=6c2763357ee3bc09
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9

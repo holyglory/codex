@@ -16,8 +16,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=30feffe01b108a65):
-        - namespace/functions; hash=dfb4b8684addc20d
+00:additional_tools/developer (2; hash=9b58d00cd00caa9a):
+        - namespace/functions; hash=c0a4d450fae4d630
           - custom/exec
           - function/wait
           - function/exec_command
@@ -25,6 +25,9 @@ Settings:
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining
+          - function/usage_stats
+          - function/usage_activity
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
@@ -53,8 +56,8 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 03)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=30feffe01b108a65):
-        - namespace/functions; hash=dfb4b8684addc20d
+00:additional_tools/developer (2; hash=9b58d00cd00caa9a):
+        - namespace/functions; hash=c0a4d450fae4d630
           - custom/exec
           - function/wait
           - function/exec_command
@@ -62,6 +65,9 @@ Settings: same as window 1
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining
+          - function/usage_stats
+          - function/usage_activity
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
