@@ -73,45 +73,77 @@ pub(super) fn review_range() -> TimeRange {
     .expect("finite review range")
 }
 
+// Match the scattered UUID v4 identities used by runtime capture. The odd
+// multiplications and xor-shifts form a bijection on u64; its entire output is
+// retained in the first and last eight hex digits, outside the UUID marker
+// bits. Distinct ordinals therefore cannot collide. Each baseline round owns
+// ordinals 16*round through 16*round+15; recovery starts after that namespace.
+fn scattered_id(ordinal: u64) -> String {
+    let mut value = ordinal.wrapping_add(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+    value ^= value >> 31;
+    let high = (value >> 32) as u32;
+    let low = value as u32;
+    let middle = value.rotate_left(29).wrapping_mul(0x9e3779b97f4a7c15);
+    let second = middle & 0xffff;
+    let third = ((middle >> 16) & 0x0fff) | 0x4000;
+    let fourth = ((middle >> 32) & 0x3fff) | 0x8000;
+    let fifth = (middle >> 48) & 0xffff;
+    format!("{high:08x}-{second:04x}-{third:04x}-{fourth:04x}-{fifth:04x}{low:08x}")
+}
+
 pub(super) fn round_records(round: u64) -> [UsageRecord; 15] {
     std::array::from_fn(|position| {
         let kind = ORDER[position];
         let base_ms = START_MS + (round * 250) as i64;
         let observed_at_ms = base_ms + (position * 10) as i64;
-        let response = format!("response-{round:07}");
+        let response = scattered_id(round * 16 + 11);
         let (id, operation, event, input, output) = match kind {
-            Kind::ToolStarted { slot } => (
-                format!("tool-{round:07}-{slot}:started"),
-                format!("tool-{round:07}-{slot}"),
-                "tool_started",
-                0,
-                0,
-            ),
-            Kind::ToolFinished { slot } => (
-                format!("tool-{round:07}-{slot}:finished"),
-                format!("tool-{round:07}-{slot}"),
-                "tool_finished",
-                0,
-                0,
-            ),
-            Kind::RequestStarted => (
-                format!("request-{round:07}:started"),
-                format!("request-{round:07}"),
-                "model_request_started",
-                0,
-                0,
-            ),
-            Kind::RequestFinished => (
-                format!("request-{round:07}:finished"),
-                format!("request-{round:07}"),
-                "model_request_finished",
-                0,
-                0,
-            ),
+            Kind::ToolStarted { slot } => {
+                let operation = scattered_id(round * 16 + slot);
+                (
+                    format!("{operation}:started"),
+                    operation,
+                    "tool_started",
+                    0,
+                    0,
+                )
+            }
+            Kind::ToolFinished { slot } => {
+                let operation = scattered_id(round * 16 + slot);
+                (
+                    format!("{operation}:finished"),
+                    operation,
+                    "tool_finished",
+                    0,
+                    0,
+                )
+            }
+            Kind::RequestStarted => {
+                let operation = scattered_id(round * 16 + 3);
+                (
+                    format!("{operation}:started"),
+                    operation,
+                    "model_request_started",
+                    0,
+                    0,
+                )
+            }
+            Kind::RequestFinished => {
+                let operation = scattered_id(round * 16 + 3);
+                (
+                    format!("{operation}:finished"),
+                    operation,
+                    "model_request_finished",
+                    0,
+                    0,
+                )
+            }
             Kind::Tokens { slot } => {
                 let observation = round * 7 + slot;
                 (
-                    format!("token-{round:07}-{slot}"),
+                    scattered_id(round * 16 + 4 + slot),
                     response.clone(),
                     "token_observation",
                     32 + observation % 17,
@@ -181,13 +213,14 @@ pub(super) fn round_records(round: u64) -> [UsageRecord; 15] {
 /// real concurrent durable capture without changing the planned token sums.
 pub(super) fn live_record(index: u64) -> UsageRecord {
     let timestamp_ms = START_MS + ((ROUNDS + index) * 250) as i64 + 10_000;
+    let operation = scattered_id(ROUNDS * 16 + index);
     let mut record = UsageRecord::new_millis(
-        format!("live-operation-{index:08}:finished"),
+        format!("{operation}:finished"),
         timestamp_ms,
         /*input_tokens*/ 0,
         /*output_tokens*/ 0,
     )
-    .with_operation(format!("live-operation-{index:08}"))
+    .with_operation(operation)
     .with_account("benchmark-live-account")
     .with_thread("benchmark-live-thread")
     .with_repository("benchmark-live-repository")
@@ -263,10 +296,10 @@ impl Expectations {
                 expected.finite_token_observations += 7;
                 if expected.first_operation_ids.len() < 50 {
                     expected.first_operation_ids.extend([
-                        format!("tool-{round:07}-0"),
-                        format!("request-{round:07}"),
-                        format!("tool-{round:07}-1"),
-                        format!("tool-{round:07}-2"),
+                        scattered_id(round * 16),
+                        scattered_id(round * 16 + 3),
+                        scattered_id(round * 16 + 1),
+                        scattered_id(round * 16 + 2),
                     ]);
                 }
             }
