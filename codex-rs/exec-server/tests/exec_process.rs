@@ -1021,9 +1021,10 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
         CaptureFailure::Exit(code) => format!("exit {code}"),
         CaptureFailure::Cancel | CaptureFailure::Timeout => "wait".to_string(),
     };
+    let capture_trace = "case ${BASH_EXECUTION_STRING-} in *CODEX_SNAPSHOT_SOURCE*) printf capture;; *) printf replay;; esac >> \"$HOME/capture-trace\"\nprintf '|%s\\n' \"$-\" >> \"$HOME/capture-trace\"\n";
     std::fs::write(
         home.path().join(profile_name),
-        format!("printf x >> \"$HOME/captures\"\n{startup_child}{finish}\n"),
+        format!("printf x >> \"$HOME/captures\"\n{capture_trace}{startup_child}{finish}\n"),
     )?;
     let policy = ExecEnvPolicy {
         inherit: ShellEnvironmentPolicyInherit::All,
@@ -1121,7 +1122,9 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
 
     std::fs::write(
         home.path().join(profile_name),
-        "printf x >> \"$HOME/captures\"\nprofile_helper() { printf recovered; }\n",
+        format!(
+            "printf x >> \"$HOME/captures\"\n{capture_trace}profile_helper() {{ printf recovered; }}\n"
+        ),
     )?;
     let (expected_output, expected_captures) = if failures_before_repair == 3 {
         ("original", "xxx")
@@ -1138,7 +1141,12 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
     }
     assert_eq!(
         std::fs::read_to_string(home.path().join("captures"))?,
-        expected_captures
+        expected_captures,
+        "capture phases: {}",
+        std::fs::read_to_string(home.path().join("capture-trace"))?
+            .chars()
+            .take(2048)
+            .collect::<String>()
     );
     Ok(())
 }

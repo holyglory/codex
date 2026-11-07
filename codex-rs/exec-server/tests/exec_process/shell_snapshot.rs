@@ -144,7 +144,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
         "${(%):-%x}"
     };
     let source_check = if deny_fd_path {
-        String::new()
+        "if (: </dev/fd/0) 2>/dev/null; then return 42; fi; ".to_string()
     } else {
         format!("case \"{source}\" in /dev/fd/*) ;; *) return 42 ;; esac; ")
     };
@@ -182,8 +182,15 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
             FileSystemAccessMode::Write,
         ));
         if deny_fd_path {
+            // Linux exposes /dev/fd as a symlink into procfs. Mask its backing
+            // filesystem so the fixture does not ask bwrap to mount on a symlink.
+            let denied_path = if cfg!(target_os = "linux") {
+                "/proc"
+            } else {
+                "/dev/fd"
+            };
             policy.entries.push(FileSystemSandboxEntry::new(
-                PathUri::from_host_native_path("/dev/fd")?.into(),
+                PathUri::from_host_native_path(denied_path)?.into(),
                 FileSystemAccessMode::Deny,
             ));
         } else {
