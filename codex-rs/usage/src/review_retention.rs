@@ -27,7 +27,6 @@ use crate::review_storage::query_rows;
 use crate::review_storage::quoted;
 use crate::review_storage::write_json;
 use crate::review_storage::write_query;
-use crate::review_storage::write_rows;
 use crate::storage_file;
 
 const MAX_ROLLUP_INPUTS: usize = 8;
