@@ -342,7 +342,8 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
     assert_eq!(published.freshness(), Freshness::Fresh);
     assert_eq!(published.pending_entries(), 0);
     assert!(!published.manifest().segment_files.is_empty());
-    let totals_through = |watermark| -> Result<UsageTotals> {
+    let current_thread = test.session_configured.session_id.to_string();
+    let totals_through = |watermark| -> Result<(UsageTotals, UsageTotals)> {
         let mut by_id = std::collections::BTreeMap::new();
         for entry in journal.read_after(/*sequence*/ 0)? {
             if entry.sequence > watermark {
@@ -352,16 +353,19 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
                 by_id.entry(record.id.clone()).or_insert(record);
             }
         }
-        Ok(by_id
-            .values()
-            .fold(UsageTotals::default(), |mut totals, record| {
-                totals.add_assign(&record.totals());
-                totals
-            }))
+        let mut all = UsageTotals::default();
+        let mut chat = UsageTotals::default();
+        for record in by_id.values() {
+            all.add_assign(&record.totals());
+            if record.thread_id.as_deref() == Some(current_thread.as_str()) {
+                chat.add_assign(&record.totals());
+            }
+        }
+        Ok((all, chat))
     };
     assert_eq!(
         published.totals(TimeRange::all(), &UsageFilter::default())?,
-        totals_through(published.journal_watermark())?
+        totals_through(published.journal_watermark())?.0
     );
 
     test.submit_turn("Report this chat's usage.").await?;
@@ -402,7 +406,7 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
         .as_i64()
         .expect("snapshot timestamp");
     assert!(watermark_at_ms >= published.manifest().watermark_at_ms);
-    let observed = totals_through(report_watermark)?;
+    let (_, observed) = totals_through(report_watermark)?;
     let mut token_report = report.clone();
     for field in ["counts", "tools", "coverage", "formulas"] {
         token_report
