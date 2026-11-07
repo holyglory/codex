@@ -3,7 +3,7 @@ use super::CaptureContext;
 use super::TurnCapture;
 use super::bounded_label;
 use crate::session::turn_context::TurnContext;
-use crate::tools::approvals::ApprovalResolutionSource;
+use crate::tools::ApprovalResolutionSource;
 use codex_protocol::protocol::NetworkPolicyRuleAction;
 use codex_protocol::protocol::ReviewDecision;
 use codex_usage::UsageApprovalDecision;
