@@ -252,7 +252,8 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 collect_process_output_from_events(started.process).await?;
             assert!(
                 output.ends_with(&format!("restored:input-{index}")),
-                "{output:?}"
+                "{output:?}; stderr(first 2048 chars)={:?}; status={status:?}; closed={closed}",
+                errors.chars().take(2048).collect::<String>()
             );
             if shell == "zsh" {
                 assert!(
