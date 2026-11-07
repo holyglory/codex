@@ -10,6 +10,8 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::state::SessionServices;
+use crate::tools::approvals::ApprovalResolution;
+use crate::tools::approvals::ApprovalResolutionSource;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::network_approval::NetworkApprovalSpec;
 use codex_file_system::FileSystemSandboxContext;
@@ -63,7 +65,7 @@ impl ApprovalStore {
     }
 }
 
-/// Takes a vector of approval keys and returns a ReviewDecision.
+/// Takes approval keys and returns the decision with its actual reviewer/cache source.
 /// There will be one key in most cases, but apply_patch can modify multiple files at once.
 ///
 /// - If all keys are already approved for session, we skip prompting.
@@ -75,7 +77,7 @@ pub(crate) async fn with_cached_approval<K, F, Fut>(
     tool_name: &str,
     keys: Vec<K>,
     fetch: F,
-) -> ReviewDecision
+) -> ApprovalResolution
 where
     K: Serialize,
     F: FnOnce() -> Fut,
@@ -83,7 +85,11 @@ where
 {
     // To be defensive here, don't bother with checking the cache if keys are empty.
     if keys.is_empty() {
-        return fetch().await;
+        return ApprovalResolution {
+            decision: fetch().await,
+            source: ApprovalResolutionSource::User,
+            cancellation_reason: None,
+        };
     }
 
     let already_approved = {
@@ -93,7 +99,11 @@ where
     };
 
     if already_approved {
-        return ReviewDecision::ApprovedForSession;
+        return ApprovalResolution {
+            decision: ReviewDecision::ApprovedForSession,
+            source: ApprovalResolutionSource::SessionCache,
+            cancellation_reason: None,
+        };
     }
 
     let decision = fetch().await;
@@ -114,7 +124,11 @@ where
         }
     }
 
-    decision
+    ApprovalResolution {
+        decision,
+        source: ApprovalResolutionSource::User,
+        cancellation_reason: None,
+    }
 }
 
 #[derive(Clone, Debug, Default)]

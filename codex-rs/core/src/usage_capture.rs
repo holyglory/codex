@@ -2,6 +2,7 @@
 
 mod activity;
 mod activity_taxonomy;
+mod approval;
 mod entities;
 mod lifecycle;
 mod model;
@@ -31,6 +32,7 @@ pub(crate) use activity::apply_activity;
 pub(crate) use activity_taxonomy::Activity;
 pub(crate) use activity_taxonomy::Phase;
 pub(crate) use activity_taxonomy::Relation;
+pub(crate) use approval::ApprovalObservation;
 pub(crate) use entities::annotate_record;
 pub(crate) use sink::Persistence;
 

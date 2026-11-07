@@ -2253,6 +2253,61 @@ async fn approving_apply_patch_for_session_skips_future_prompts_for_same_file() 
     }
 
     assert!(fs::read_to_string(&path)?.contains("after"));
+    test.codex.shutdown_and_wait().await?;
+    let facts = codex_usage::UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let approvals = facts
+        .iter()
+        .filter(|fact| {
+            fact.event
+                .as_deref()
+                .is_some_and(|event| event.starts_with("tool_approval_"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        approvals
+            .iter()
+            .map(|fact| (
+                fact.event.as_deref(),
+                fact.approval_decision,
+                fact.approval_source,
+                fact.operation_id.is_some(),
+                fact.duration_ms.is_some()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("tool_approval_requested"), None, None, true, false),
+            (
+                Some("tool_approval_resolved"),
+                Some(codex_usage::UsageApprovalDecision::ApprovedForSession),
+                Some(codex_usage::UsageApprovalSource::User),
+                true,
+                true
+            ),
+            (Some("tool_approval_requested"), None, None, true, false),
+            (
+                Some("tool_approval_bypassed"),
+                Some(codex_usage::UsageApprovalDecision::ApprovedForSession),
+                Some(codex_usage::UsageApprovalSource::SessionCache),
+                true,
+                true
+            ),
+        ]
+    );
+    assert!(
+        approvals
+            .iter()
+            .all(|fact| fact.process_id.is_some() && fact.agent_id == fact.thread_id)
+    );
+    let captured = serde_json::to_string(&approvals)?;
+    assert!(!captured.contains(&patch_path));
+    assert!(!captured.contains("before") && !captured.contains("after"));
+
     let _ = fs::remove_file(path);
 
     Ok(())
@@ -4696,6 +4751,33 @@ allow_local_binding = true
         })
         .await?;
     wait_for_completion(&test).await;
+    test.codex.shutdown_and_wait().await?;
+    let facts = codex_usage::UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let denials = facts
+        .iter()
+        .filter(|fact| {
+            fact.event.as_deref() == Some("tool_approval_resolved")
+                && fact.approval_decision == Some(codex_usage::UsageApprovalDecision::Denied)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        denials.len(),
+        1,
+        "only the outer network owner observes final denial"
+    );
+    assert!(denials[0].operation_id.is_some());
+    assert!(denials[0].duration_ms.is_some() && denials[0].ended_at_ms.is_some());
+    assert_eq!(
+        denials[0].approval_source, None,
+        "final error conversion does not invent a reviewer source"
+    );
+    assert!(!serde_json::to_string(&facts)?.contains(&network_context.host));
 
     Ok(())
 }

@@ -485,7 +485,13 @@ impl ToolOrchestrator {
                 // Guardian verdict only covers the authority of the reviewed action.
                 let retry_preapproved = matches!(
                     initial_approval_source,
-                    Some(ApprovalResolutionSource::User | ApprovalResolutionSource::Hook)
+                    Some(
+                        ApprovalResolutionSource::User
+                            | ApprovalResolutionSource::Hook
+                            | ApprovalResolutionSource::SessionCache
+                            | ApprovalResolutionSource::Preapproved
+                            | ApprovalResolutionSource::Policy
+                    )
                 );
                 let bypass_retry_approval = !strict_auto_review
                     && tool.should_bypass_approval(approval_policy, retry_preapproved)

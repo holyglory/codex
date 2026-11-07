@@ -56,7 +56,12 @@ impl McpCallMetricOutcome {
             error_code: Some("cancelled".to_string()),
             approval_source: Some(match source {
                 Some(ApprovalResolutionSource::Guardian) => "guardian",
-                Some(ApprovalResolutionSource::User) => "user",
+                Some(
+                    ApprovalResolutionSource::User
+                    | ApprovalResolutionSource::SessionCache
+                    | ApprovalResolutionSource::Preapproved
+                    | ApprovalResolutionSource::Policy,
+                ) => "user",
                 Some(ApprovalResolutionSource::Hook) => "hook",
                 None => "unknown",
             }),
