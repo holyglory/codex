@@ -287,6 +287,22 @@ fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() 
     )
     .expect("no hourly resurrection");
     assert_eq!(rows, idle_rows);
+    // The same explicit ID may reappear after its earlier canonical row retired.
+    // Raw observation IDs stay distinct and the original reader remains pinned.
+    let mut reappeared = started("old", 12 * DAY + 2, "active");
+    reappeared.id = "old:resumed:started".into();
+    UsageJournal::new(root.join("events.jsonl")).append_record(reappeared.clone()).expect("new incarnation");
+    let latest = publish(&root);
+    let reappeared_descriptor = descriptor(&root);
+    let ids = BTreeSet::from(["old".to_string()]);
+    assert_eq!(load_review_operations(&root, &reappeared_descriptor, &ids, &connection).expect("new live incarnation"),
+        vec![crate::ReviewOperation::from_fact(latest.watermark, &reappeared).expect("new first sequence")]);
+    let original = load_review_projection(&root, &initial).expect("pinned metadata").expect("original projection");
+    let old_rows = load_review_operations(&root, &original, &ids, &connection).expect("pinned old incarnation");
+    assert_eq!((old_rows[0].first_sequence, old_rows[0].terminal_observed), (1, true));
+    assert_eq!(crate::review_counts::read_review_counts(&root, &reappeared_descriptor,
+        &crate::review_counts::ReviewCountScope::Global).expect("all-time count unchanged by index").operations, 5);
+
 }
 
 #[test]
