@@ -125,12 +125,12 @@ impl Maintenance {
 
 fn select_inputs(index: &OperationIdIndex, revision: u64) -> Option<Vec<OperationIdRun>> {
     if index.runs.len() > ID_COMPACTION_TRIGGER {
-        for level in index
+        let mut levels = index
             .runs
             .iter()
             .map(|entry| entry.run.level)
-            .collect::<std::collections::BTreeSet<_>>()
-        {
+            .collect::<std::collections::BTreeSet<_>>();
+        while let Some(level) = levels.pop_first() {
             let inputs = index
                 .runs
                 .iter()

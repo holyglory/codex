@@ -87,7 +87,7 @@ fn streaming_merge_preserves_appended_runs_and_pinned_reader_files() {
         (
             merged.watermark.sequence,
             merged.runs.len(),
-            current.review_counts.clone()
+            current.review_counts
         ),
         (appended.watermark, 2, appended.review_counts)
     );
