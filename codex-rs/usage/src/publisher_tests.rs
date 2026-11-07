@@ -276,7 +276,8 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
         inactive_chat_days: 2,
     };
     for _ in 0..4 {
-        crate::retention::maintain(&root, policy, 12 * DAY * 1_000).expect("background retention");
+        crate::retention::maintain(&root, policy, 12 * DAY * 1_000, &mut Default::default())
+            .expect("background retention");
     }
     let retained = UsageReader::open_at(&root).expect("restart after retention");
     assert_eq!(retained.manifest().retired_observations, 2);
@@ -302,6 +303,38 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
     assert_eq!(
         retained_ids,
         BTreeSet::from(["orphan".to_string(), "recent".to_string()])
+    );
+    let index = crate::load_id_index(
+        &root,
+        retained.manifest().id_index_file.as_deref(),
+        crate::JournalCheckpoint {
+            sequence: retained.manifest().watermark,
+            byte_offset: retained.manifest().journal_byte_offset,
+        },
+    )
+    .expect("retained replay index");
+    assert_eq!(
+        crate::lookup_ids(
+            &root,
+            &index,
+            &BTreeSet::from(["old".to_string(), "inactive".to_string()]),
+        )
+        .expect("only raw-horizon identities remain")
+        .found
+        .into_keys()
+        .collect::<Vec<_>>(),
+        vec!["inactive".to_string()]
+    );
+    journal
+        .append_record(record("inactive", 9 * DAY, /*input*/ 20))
+        .expect("replay an inactive chat within raw horizon");
+    assert_eq!(
+        UsagePublisher::open_at(&root)
+            .expect("publisher")
+            .publish_batch(limits())
+            .expect("deduplicate younger inactive detail")
+            .snapshot_totals,
+        expected
     );
     assert_eq!(
         pinned
@@ -431,6 +464,357 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
         .publish_batch(limits())
         .expect("settle duplicate without increasing gap count");
     assert_eq!(settled.unapplied_retention_corrections, 1);
+}
+
+#[test]
+fn detail_retirement_removes_exact_ids_and_corrections_without_recounting_replays() {
+    const DAY: i64 = 86_400;
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let old = record("old", DAY, /*input*/ 10);
+    let correction = UsageCorrection::new(
+        "adjust-old",
+        "old",
+        2 * DAY,
+        /*input_tokens_delta*/ 5,
+        /*output_tokens_delta*/ 0,
+        "provider adjustment",
+    );
+    journal
+        .append_batch(vec![
+            JournalPayload::Record(old.clone()),
+            JournalPayload::Correction(correction.clone()),
+        ])
+        .expect("capture old corrected observation");
+    let initial = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("publish corrected totals");
+    crate::retention::maintain(
+        &root,
+        crate::RetentionPolicy::default(),
+        12 * DAY * 1_000,
+        &mut Default::default(),
+    )
+    .expect("retire expired detail and identities");
+    let retired = UsageReader::open_at(&root).expect("reopen aggregate-only history");
+    assert_eq!(
+        retired
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("corrected lifetime total"),
+        initial.snapshot_totals
+    );
+    assert!(retired.manifest().segment_files.is_empty());
+    assert!(retired.manifest().correction_files.is_empty());
+    assert!(retired.manifest().applied_correction_ids.is_empty());
+    assert!(retired.manifest().expired_correction_ids.is_empty());
+    let index = crate::load_id_index(
+        &root,
+        retired.manifest().id_index_file.as_deref(),
+        crate::JournalCheckpoint {
+            sequence: retired.manifest().watermark,
+            byte_offset: retired.manifest().journal_byte_offset,
+        },
+    )
+    .expect("reopen empty replay index");
+    assert!(index.runs.is_empty());
+    drop(retired);
+    journal
+        .append_batch(vec![
+            JournalPayload::Record(old),
+            JournalPayload::Correction(correction),
+        ])
+        .expect("replay expired observations after restart");
+    let waiting = UsageReader::open_at(&root).expect("do not overlay retired replays");
+    assert_eq!(
+        (waiting.freshness(), waiting.pending_entries()),
+        (Freshness::Stale, 2)
+    );
+    assert_eq!(
+        waiting
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("unchanged before replay disposition"),
+        initial.snapshot_totals
+    );
+    drop(waiting);
+    let settled = UsagePublisher::open_at(&root)
+        .expect("restarted publisher")
+        .publish_batch(limits())
+        .expect("consume expired replay attempts");
+    assert_eq!(
+        (
+            settled.snapshot_totals,
+            settled.unapplied_retention_records,
+            settled.unapplied_retention_corrections,
+            settled.correction_files,
+            settled.pending_corrections,
+        ),
+        (initial.snapshot_totals, 1, 1, vec![], vec![])
+    );
+    journal
+        .append_record(record("resumed", 12 * DAY + 1, /*input*/ 7))
+        .expect("resume the retired chat");
+    let resumed = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("accept new observation after retirement");
+    assert_eq!(resumed.snapshot_totals.input_tokens, 22);
+    assert_eq!(resumed.snapshot_totals.records, 2);
+    journal
+        .append_correction(UsageCorrection::new(
+            "late-unknown-target",
+            "old",
+            12 * DAY + 2,
+            /*input_tokens_delta*/ -3,
+            /*output_tokens_delta*/ 0,
+            "target identity is outside the retained window",
+        ))
+        .expect("capture a correction whose opaque target may be retired or delayed");
+    let pending = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("retain unresolved target through the correction window");
+    assert_eq!(pending.pending_corrections, vec!["late-unknown-target"]);
+    crate::retention::maintain(
+        &root,
+        crate::RetentionPolicy::default(),
+        20 * DAY * 1_000,
+        &mut Default::default(),
+    )
+    .expect("expire unresolved correction detail after its horizon");
+    let settled = UsageReader::open_at(&root).expect("reopen explicit expired-target coverage");
+    assert!(settled.manifest().pending_corrections.is_empty());
+    assert!(settled.manifest().correction_files.is_empty());
+    assert_eq!(settled.manifest().unapplied_retention_corrections, 2);
+    assert_eq!(
+        settled
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("unapplyable adjustment leaves retained totals unchanged"),
+        resumed.snapshot_totals
+    );
+}
+
+#[test]
+fn retention_waits_for_captured_backlog_and_a_short_journal_writer_barrier() {
+    const DAY: i64 = 86_400;
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal
+        .append_record(record("old", DAY, /*input*/ 10))
+        .expect("capture observation");
+    let initial = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("publish target before downtime");
+    let writer =
+        crate::storage_file::open_read_write(&root.join("events.lock")).expect("capture barrier");
+    writer.lock().expect("hold capture barrier");
+    assert!(
+        !crate::detail_retention::Maintenance::default()
+            .advance_admission(&root, crate::RetentionPolicy::default(), 12 * DAY * 1_000,)
+            .expect("cleanup must not install while capture owns its barrier")
+    );
+    drop(writer);
+    journal
+        .append_batch(vec![
+            JournalPayload::Record(record("delayed", 2 * DAY, /*input*/ 20)),
+            JournalPayload::Correction(UsageCorrection::new(
+                "delayed-adjustment",
+                "old",
+                2 * DAY,
+                /*input_tokens_delta*/ 5,
+                /*output_tokens_delta*/ 0,
+                "captured before admission advances",
+            )),
+        ])
+        .expect("durable backlog after downtime");
+    crate::retention::maintain(
+        &root,
+        crate::RetentionPolicy::default(),
+        12 * DAY * 1_000,
+        &mut Default::default(),
+    )
+    .expect("defer retirement while durable backlog exists");
+    let deferred = crate::ManifestStore::new(root.join("manifest.json"))
+        .load()
+        .expect("read unchanged snapshot");
+    assert_eq!(deferred.raw_admission_cutoff_at_ms, None);
+    assert_eq!(deferred.segment_files, initial.segment_files);
+    let caught_up = UsagePublisher::open_at(&root)
+        .expect("restarted publisher")
+        .publish_batch(limits())
+        .expect("process durable backlog before advancing admission");
+    assert_eq!(caught_up.snapshot_totals.input_tokens, 35);
+    assert_eq!(caught_up.unapplied_retention_records, 0);
+    assert_eq!(caught_up.unapplied_retention_corrections, 0);
+    crate::retention::maintain(
+        &root,
+        crate::RetentionPolicy::default(),
+        12 * DAY * 1_000,
+        &mut Default::default(),
+    )
+    .expect("retire after backlog has been incorporated");
+    assert_eq!(
+        UsageReader::open_at(&root)
+            .expect("restart after cleanup")
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("backlog remains represented in aggregates"),
+        caught_up.snapshot_totals
+    );
+}
+
+#[test]
+fn recent_correction_scans_persist_cursor_without_advancing_snapshot_or_spinning() {
+    const DAY: i64 = 86_400;
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal
+        .append_record(record("recent", 11 * DAY, /*input*/ 1))
+        .expect("capture target");
+    UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("publish target");
+    for index in 0..65 {
+        journal
+            .append_correction(UsageCorrection::new(
+                format!("adjust-{index}"),
+                "recent",
+                11 * DAY + index,
+                /*input_tokens_delta*/ 1,
+                /*output_tokens_delta*/ 0,
+                "recent provider adjustment",
+            ))
+            .expect("capture separate correction fragment");
+        UsagePublisher::open_at(&root)
+            .expect("publisher")
+            .publish_batch(limits())
+            .expect("publish correction fragment");
+    }
+    crate::detail_retention::Maintenance::default()
+        .advance_admission(&root, crate::RetentionPolicy::default(), 12 * DAY * 1_000)
+        .expect("publish admission frontier");
+    let store = crate::ManifestStore::new(root.join("manifest.json"));
+    let before = store.load().expect("before metadata scan");
+    assert_eq!(before.correction_files.len(), 65);
+    assert!(
+        !crate::correction_retention::Maintenance::default()
+            .step(&root)
+            .expect("scan recent metadata only")
+    );
+    let after = store.load().expect("persisted scan position");
+    let mut expected = before;
+    expected.correction_retention_scan_offset = 32;
+    assert_eq!(after, expected);
+    crate::retention::maintain(
+        &root,
+        crate::RetentionPolicy::default(),
+        12 * DAY * 1_000,
+        &mut Default::default(),
+    )
+    .expect("one bounded correction scan despite independent ID work");
+    let after = store.load().expect("after maintenance");
+    assert_eq!(after.correction_retention_scan_offset, 64);
+    assert_eq!(after.snapshot_totals.input_tokens, 66);
+}
+
+#[test]
+fn bounded_id_retirement_preserves_progress_new_runs_and_unpublished_capture() {
+    const DAY: i64 = 86_400;
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal
+        .append_batch(
+            (0..20)
+                .map(|index| {
+                    JournalPayload::Record(record(&format!("old-{index}"), DAY, /*input*/ 1))
+                })
+                .collect(),
+        )
+        .expect("capture old ID run");
+    let initial = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("publish old run");
+    let mut maintenance = crate::detail_retention::Maintenance::default();
+    maintenance
+        .advance_admission(&root, crate::RetentionPolicy::default(), 12 * DAY * 1_000)
+        .expect("advance short admission barrier");
+    assert!(
+        maintenance
+            .step_index(&root, /*max_entries*/ 2)
+            .expect("yield bounded first step")
+    );
+    assert_eq!(
+        crate::ManifestStore::new(root.join("manifest.json"))
+            .load()
+            .expect("rewrite not installed yet")
+            .id_index_file,
+        initial.id_index_file
+    );
+    journal
+        .append_record(record("recent", 12 * DAY, /*input*/ 7))
+        .expect("capture while rewrite is suspended");
+    let published = UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(limits())
+        .expect("append a newer ID run");
+    for _ in 0..9 {
+        assert!(
+            maintenance
+                .step_index(&root, /*max_entries*/ 2)
+                .expect("resume same old run")
+        );
+    }
+    journal
+        .append_record(record("tail", 12 * DAY + 1, /*input*/ 3))
+        .expect("capture before rewrite install");
+    assert!(
+        maintenance
+            .step_index(&root, /*max_entries*/ 2)
+            .expect("install despite newer publication and capture")
+    );
+    let settled = crate::ManifestStore::new(root.join("manifest.json"))
+        .load()
+        .expect("new index metadata");
+    assert_eq!(
+        (settled.watermark, settled.snapshot_totals),
+        (published.watermark, published.snapshot_totals)
+    );
+    let index = crate::load_id_index(
+        &root,
+        settled.id_index_file.as_deref(),
+        crate::JournalCheckpoint {
+            sequence: settled.watermark,
+            byte_offset: settled.journal_byte_offset,
+        },
+    )
+    .expect("index includes current journal frontier");
+    assert_eq!(
+        crate::lookup_ids(
+            &root,
+            &index,
+            &BTreeSet::from(["old-0".to_string(), "recent".to_string()]),
+        )
+        .expect("current run preserved, expired run removed")
+        .found
+        .into_keys()
+        .collect::<Vec<_>>(),
+        vec!["recent"]
+    );
+    assert_eq!(
+        UsagePublisher::open_at(&root)
+            .expect("publisher")
+            .publish_batch(limits())
+            .expect("publish waiting capture")
+            .snapshot_totals
+            .input_tokens,
+        30
+    );
 }
 
 #[test]
