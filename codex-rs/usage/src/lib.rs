@@ -24,6 +24,7 @@ mod manifest;
 mod metadata_cache;
 mod model;
 mod operation_id_index;
+mod operation_id_maintenance;
 mod publisher;
 mod query;
 mod reader;

@@ -49,6 +49,7 @@ impl RetentionPolicy {
 pub(crate) struct Maintenance {
     detail: crate::detail_retention::Maintenance,
     corrections: crate::correction_retention::Maintenance,
+    operations: crate::operation_id_maintenance::Maintenance,
 }
 
 pub(crate) fn maintain(
@@ -85,6 +86,7 @@ pub(crate) fn maintain(
         let id_progress = maintenance
             .detail
             .step_index(root, /*max_entries*/ 16_384)?;
+        let operation_progress = maintenance.operations.step(root, /*max_entries*/ 16_384)?;
         let corrected = if scan_corrections {
             maintenance.corrections.step(root)?
         } else {
@@ -93,7 +95,7 @@ pub(crate) fn maintain(
         // Cursor-only scans and protected sidecars never keep the work loop
         // alive, including while an independent ID rewrite yields more steps.
         scan_corrections = corrected;
-        if (!id_progress && !corrected) || started.elapsed() >= std::time::Duration::from_secs(10) {
+        if (!id_progress && !operation_progress && !corrected) || started.elapsed() >= std::time::Duration::from_secs(10) {
             break;
         }
     }
