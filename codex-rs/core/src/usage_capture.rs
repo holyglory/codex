@@ -2,6 +2,7 @@
 
 mod activity;
 mod activity_taxonomy;
+mod entities;
 mod lifecycle;
 mod model;
 mod sink;
@@ -17,6 +18,7 @@ use codex_protocol::ThreadId;
 use codex_usage::UsageOutcome;
 use codex_usage::UsageRecord;
 use sink::CaptureSink;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,6 +31,7 @@ pub(crate) use activity::apply_activity;
 pub(crate) use activity_taxonomy::Activity;
 pub(crate) use activity_taxonomy::Phase;
 pub(crate) use activity_taxonomy::Relation;
+pub(crate) use entities::annotate_record;
 pub(crate) use sink::Persistence;
 
 struct ThreadLineage {
@@ -59,6 +62,7 @@ struct CaptureContext {
     account_id: Option<String>,
     repository_id: Option<String>,
     activity: Arc<activity::ActivityState>,
+    tool_operations: Mutex<HashMap<String, String>>,
 }
 
 impl CaptureContext {
@@ -70,6 +74,9 @@ impl CaptureContext {
             /*output_tokens*/ 0,
         )
         .with_thread(self.thread_id.clone());
+        record.process_id = Some(entities::process_id());
+        record.agent_id = Some(self.thread_id.clone());
+        record.taxonomy_version = Some(codex_usage::USAGE_TAXONOMY_VERSION);
         record.parent_thread_id = self.parent_thread_id.clone();
         record.turn_id = self.turn_id.clone();
         record.account_id = self.account_id.clone();
@@ -83,7 +90,9 @@ impl CaptureContext {
 
 impl UsageCaptureRuntime {
     pub(crate) fn new(codex_home: &Path) -> Self {
-        Self(CaptureSink::new(codex_home))
+        let sink = CaptureSink::new(codex_home);
+        entities::register(&sink);
+        Self(sink)
     }
 
     pub(crate) fn instrument_extensions(
@@ -126,7 +135,9 @@ impl TurnContext {
             account_id: self.local_profile_id(),
             repository_id: crate::usage_identity::repository_id(self.config.cwd.as_path()),
             activity: Arc::clone(&thread.context.activity),
+            tool_operations: Mutex::default(),
         });
+        entities::repository_seen(&context);
         if let Ok(mut client) = self.model_client(session) {
             client
                 .request_contributors
@@ -149,6 +160,7 @@ pub(crate) struct Operation {
     response_id: Mutex<Option<String>>,
     finished: AtomicBool,
     drop_outcome: UsageOutcome,
+    call_id: Option<String>,
 }
 
 impl Operation {
@@ -172,10 +184,12 @@ impl Operation {
             response_id: Mutex::new(/*t*/ None),
             finished: AtomicBool::new(false),
             drop_outcome: UsageOutcome::Cancelled,
+            call_id: None,
         }
     }
 
     fn publish_started(&self) {
+        entities::repository_attribution(&self.context, &self.record);
         self.context.sink.submit(self.record.clone());
     }
 
@@ -199,6 +213,19 @@ impl Operation {
             )
         };
         operation.record.tool = Some(bounded_label(&name));
+        if invocation.call_id.len() <= 160 {
+            let mut operations = turn
+                .context
+                .tool_operations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if operations.len() < 256
+                && let Some(id) = operation.record.operation_id.as_ref()
+            {
+                operations.insert(invocation.call_id.clone(), id.clone());
+                operation.call_id = Some(invocation.call_id.clone());
+            }
+        }
         turn.context.activity.annotate(&mut operation.record);
         operation.publish_started();
         Some(operation)
@@ -207,6 +234,13 @@ impl Operation {
     pub(crate) fn finish(&self, outcome: UsageOutcome) {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
+        }
+        if let Some(call_id) = &self.call_id {
+            self.context
+                .tool_operations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(call_id);
         }
         let mut record = self.record.clone();
         if let Some(id) = &record.operation_id {

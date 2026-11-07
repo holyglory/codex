@@ -121,6 +121,43 @@ async fn declarations_activate_on_next_request_and_corrections_preserve_current_
             .all(|(index, record)| index == 4 || record.rework_of_operation_id.is_none())
     );
     assert_eq!(requests[0], &original);
+    let process = facts
+        .iter()
+        .find(|fact| fact.event.as_deref() == Some("process_observed"))
+        .context("observed runtime process")?;
+    let process_id = process.process_id.as_deref().context("opaque process ID")?;
+    uuid::Uuid::parse_str(process_id)?;
+    assert!(process.started_at_ms.is_none() && process.ended_at_ms.is_none());
+    assert!(
+        requests
+            .iter()
+            .all(|fact| fact.process_id.as_deref() == Some(process_id)
+                && fact.agent_id == fact.thread_id
+                && fact.taxonomy_version == Some(1))
+    );
+    let agent = facts
+        .iter()
+        .find(|fact| fact.event.as_deref() == Some("agent_started"))
+        .context("observed agent session")?;
+    assert_eq!(
+        (&agent.agent_id, &agent.thread_id),
+        (&requests[0].thread_id, &requests[0].thread_id)
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.event.as_deref() == Some("agent_stopped")
+                && fact.agent_id == agent.agent_id
+                && fact.started_at_ms == agent.started_at_ms
+                && fact.ended_at_ms.is_some())
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.event.as_deref() == Some("taxonomy_registered")
+                && fact.taxonomy_version == Some(1))
+    );
+
     let plans = facts
         .iter()
         .filter(|record| {

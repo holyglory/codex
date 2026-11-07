@@ -5321,6 +5321,7 @@ impl Session {
         if let Some(account_id) = account_id {
             usage_record = usage_record.with_account(account_id);
         }
+        crate::usage_capture::annotate_record(turn_context, &mut usage_record);
         usage_record.event = Some("token_observation".to_string());
         usage_record.classification = Some("provider_reported".to_string());
         usage_record.coverage = Some("recorded".to_string());

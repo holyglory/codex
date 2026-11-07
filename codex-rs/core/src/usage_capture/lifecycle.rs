@@ -3,6 +3,8 @@ use super::Operation;
 use super::ThreadCapture;
 use super::ThreadLineage;
 use super::TurnCapture;
+use super::entities;
+use super::entities::AgentLifecycle;
 use super::sink::CaptureSink;
 use crate::config::Config;
 use codex_extension_api::ExtensionFuture;
@@ -36,10 +38,12 @@ impl ThreadLifecycleContributor<Config> for CaptureLifecycle {
                     account_id: None,
                     repository_id: None,
                     activity: Arc::default(),
+                    tool_operations: Mutex::default(),
                 });
                 let operation =
                     Operation::start(Arc::clone(&context), "thread_started", "thread_stopped");
                 operation.publish_started();
+                entities::agent(&operation, AgentLifecycle::Started);
                 input.thread_store.insert(ThreadCapture {
                     context,
                     operation: Mutex::new(Some(operation)),
@@ -58,6 +62,7 @@ impl ThreadLifecycleContributor<Config> for CaptureLifecycle {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
                 {
+                    entities::agent(&operation, AgentLifecycle::Stopped);
                     operation.finish(UsageOutcome::Completed);
                 }
                 capture.context.sink.flush().await;
