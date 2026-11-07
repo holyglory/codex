@@ -60,6 +60,30 @@ def load_bounded(path):
     return json.loads(path.read_text())
 
 
+def snapshot_parts(text):
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        raise ValueError("snapshot metadata header is missing")
+    end = next(
+        (
+            index
+            for index in range(1, len(lines))
+            if lines[index].rstrip("\r\n") == "---"
+        ),
+        None,
+    )
+    if end is None:
+        raise ValueError("snapshot metadata header is unterminated")
+    # Insta may add or move this source location when emitting .snap.new.
+    # Preserve the original header; every other metadata field must match.
+    metadata = "".join(
+        line
+        for line in lines[1:end]
+        if not re.fullmatch(r"assertion_line: [1-9][0-9]*\r?\n", line)
+    )
+    return "".join(lines[: end + 1]), metadata, lines[end + 1 :]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir", required=True, type=Path)
@@ -116,10 +140,14 @@ def main():
         after = candidate.read_text()
         revised = []
         file_used = {}
-        before_lines = before.splitlines(keepends=True)
-        after_lines = after.splitlines(keepends=True)
+        original_header, original_metadata, before_lines = snapshot_parts(before)
+        _, candidate_metadata, after_lines = snapshot_parts(after)
+        if original_metadata != candidate_metadata:
+            raise ValueError(f"candidate changes snapshot metadata: {candidate.name}")
         if len(before_lines) != len(after_lines):
-            raise ValueError(f"candidate changes snapshot structure: {candidate.name}")
+            raise ValueError(
+                f"candidate changes snapshot body structure: {candidate.name}"
+            )
         for line, candidate_line in zip(before_lines, after_lines):
             if line == candidate_line:
                 revised.append(line)
@@ -146,7 +174,7 @@ def main():
                 re.sub(r"hash=([a-f0-9]{16})", replace, line) if label else line
             )
         reconstructed = "".join(revised)
-        if reconstructed != after:
+        if reconstructed != "".join(after_lines):
             raise ValueError(
                 f"candidate has changes beyond evidenced fingerprints: {candidate.name}"
             )
@@ -157,7 +185,7 @@ def main():
         changes.extend(
             difflib.unified_diff(
                 before.splitlines(True),
-                after.splitlines(True),
+                (original_header + reconstructed).splitlines(True),
                 fromfile=f"a/{relative}",
                 tofile=f"b/{relative}",
             )
@@ -182,6 +210,7 @@ def main():
             for (label, old), count in sorted(used.items())
         ],
         "evidence": evidence_receipts,
+        "candidateMetadataRule": "Preserve original headers; ignore only assertion_line when comparing candidates.",
     }
     manifest_path = patch_output.with_suffix(".evidence.json")
     with manifest_path.open("x") as output:
