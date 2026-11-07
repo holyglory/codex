@@ -28,6 +28,24 @@ path = "junit.xml"
 [profile.local]
 inherits = "default"
 
+[[profile.local.overrides]]
+# Large local payload/image cases and MCP matrices compete in full-workspace runs.
+# The parallel-tool case measures a 300ms handler pair within a 1600ms turn.
+# Reserve this runner before launch; retain fixture sizes, assertions and deadlines.
+filter = '''
+    package(codex-core) & (
+        test(=client::tool_metadata::tests::message_budget_removes_residual_values_and_markers_when_ordinary_input_fits) |
+        test(=compact::tests::local_compaction_retries_preserve_instructions_and_tool_metadata::metadata_enabled) |
+        test(=image_preparation::tests::detail_policies_apply_the_expected_budgets) |
+        test(=suite::code_mode::code_mode_excludes_mcp_servers_using_their_configured_identity) |
+        test(=suite::code_mode::mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure) |
+        test(=suite::compact_remote::remote_compact_v2_charges_retained_images_to_token_budget::default_trims_images) |
+        test(=suite::compact_remote::remote_compact_v2_charges_retained_images_to_token_budget::disabled_preserves_images) |
+        test(=suite::code_mode::code_mode_nested_tool_calls_can_run_in_parallel)
+    )
+'''
+threads-required = "num-test-threads"
+
 [test-groups.app_server_protocol_codegen]
 max-threads = 1
 
@@ -125,3 +143,9 @@ slow-timeout = { period = "45s", terminate-after = 2 }
 filter = 'package(codex-usage) & test(synthetic_scale_acceptance)'
 slow-timeout = { period = "8h", terminate-after = 1 }
 retries = 0
+
+[[profile.local.overrides]]
+# This critical-path assertion requires cancellation to settle within the
+# runtime's 100 ms grace period; keep competing tests outside that interval.
+filter = 'package(codex-core) & binary(=all) & test(=suite::turn_phase_trace::steer_joins_existing_turn_without_extending_sampling::interrupt_enabled)'
+threads-required = "num-test-threads"
