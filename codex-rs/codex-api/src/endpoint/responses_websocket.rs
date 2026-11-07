@@ -17,7 +17,9 @@ use crate::responses_headers::json_headers_to_http_headers;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
+use crate::telemetry::RequestAttemptGuard;
 use crate::telemetry::WebsocketTelemetry;
+use codex_client::RequestTelemetry;
 use codex_client::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RetryAfter;
@@ -245,17 +247,36 @@ impl ResponsesWebsocketConnection {
             .is_none_or(|stream| stream.pump_task.is_finished())
     }
 
+    /// Streams a request without an additional per-request transport observer.
+    pub async fn stream_request(
+        &self,
+        request: ResponsesWsRequest<'_>,
+        connection_reused: bool,
+        turn_state: Option<Arc<OnceLock<String>>>,
+    ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_with_telemetry(
+            request,
+            connection_reused,
+            turn_state,
+            /*request_telemetry*/ None,
+        )
+        .await
+    }
+
+    /// Observes an actual response-create send after serialization, connection locking and
+    /// cancellation checks. The observer does not see connection setup or interrupt messages.
     #[instrument(
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
         fields(transport = "responses_websocket", api.path = "/responses")
     )]
-    pub async fn stream_request(
+    pub async fn stream_request_with_telemetry(
         &self,
         request: ResponsesWsRequest<'_>,
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
+        request_telemetry: Option<Arc<dyn RequestTelemetry>>,
     ) -> Result<ResponseStream, ApiError> {
         let (tx_event, rx_event) =
             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
@@ -357,6 +378,7 @@ impl ResponsesWebsocketConnection {
                             request_text,
                             idle_timeout,
                             telemetry,
+                            request_telemetry,
                             turn_state.as_deref(),
                             &timing_log_context,
                             interrupt.clone(),
@@ -759,6 +781,7 @@ async fn run_websocket_response_stream(
     request_text: String,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
+    request_telemetry: Option<Arc<dyn RequestTelemetry>>,
     turn_state: Option<&OnceLock<String>>,
     timing_log_context: &ResponsesWebsocketTimingLogContext,
     interrupt: impl Future<Output = ResponseInterrupt> + Clone + Unpin,
@@ -773,14 +796,17 @@ async fn run_websocket_response_stream(
         // No request reached the backend, so this socket is still reusable.
         return Ok(());
     }
-    send_websocket_request(
+    let guard = RequestAttemptGuard::start(request_telemetry, /*attempt*/ 0);
+    let send_result = send_websocket_request(
         ws_stream,
         request_text,
         idle_timeout,
         telemetry.as_ref(),
         timing_log_context.connection_reused,
     )
-    .await?;
+    .await;
+    guard.finish();
+    send_result?;
 
     // A response owns its interrupt, and create must be sent before interrupt.
     let mut interrupt_request = interrupt.clone().fuse();

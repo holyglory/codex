@@ -195,6 +195,24 @@ impl FlakyTransport {
     }
 }
 
+#[derive(Default)]
+struct RequestStarts(Mutex<Vec<u64>>);
+
+impl codex_client::RequestTelemetry for RequestStarts {
+    fn on_request_start(&self, attempt: u64) {
+        self.0.lock().expect("request observations").push(attempt);
+    }
+
+    fn on_request(
+        &self,
+        _attempt: u64,
+        _status: Option<StatusCode>,
+        _error: Option<&TransportError>,
+        _duration: Duration,
+    ) {
+    }
+}
+
 #[derive(Clone)]
 struct FailsOnceAuth {
     attempts: Arc<Mutex<i64>>,
@@ -547,7 +565,9 @@ async fn streaming_client_retries_on_transient_auth_error() -> Result<()> {
     let mut provider = provider("openai");
     provider.retry.max_attempts = 2;
 
-    let client = ResponsesClient::new(transport, provider, Arc::new(auth.clone()));
+    let observed = Arc::new(RequestStarts::default());
+    let client = ResponsesClient::new(transport, provider, Arc::new(auth.clone()))
+        .with_telemetry(Some(observed.clone()), /*sse*/ None);
     let body = serde_json::json!({ "model": "gpt-test" });
     let _stream = client
         .stream(
@@ -560,6 +580,7 @@ async fn streaming_client_retries_on_transient_auth_error() -> Result<()> {
 
     assert_eq!(auth.attempts(), 2);
     assert_eq!(state.take_stream_requests().len(), 1);
+    assert_eq!(*observed.0.lock().expect("request observations"), vec![1]);
     Ok(())
 }
 
@@ -574,7 +595,9 @@ async fn streaming_client_does_not_retry_terminal_auth_errors() {
         let auth = FailsOnceAuth::new(error);
         let mut provider = provider("openai");
         provider.retry.max_attempts = 2;
-        let client = ResponsesClient::new(transport, provider, Arc::new(auth.clone()));
+        let observed = Arc::new(RequestStarts::default());
+        let client = ResponsesClient::new(transport, provider, Arc::new(auth.clone()))
+            .with_telemetry(Some(observed.clone()), /*sse*/ None);
         let error = client
             .stream(
                 serde_json::json!({ "model": "gpt-test" }),
@@ -596,6 +619,7 @@ async fn streaming_client_does_not_retry_terminal_auth_errors() {
         }
         assert_eq!(auth.attempts(), 1);
         assert!(state.take_stream_requests().is_empty());
+        assert!(observed.0.lock().expect("request observations").is_empty());
     }
 }
 

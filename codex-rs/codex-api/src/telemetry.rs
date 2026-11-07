@@ -5,7 +5,7 @@ use codex_client::Response;
 use codex_client::RetryPolicy;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
-use codex_client::run_with_retry;
+use codex_client::run_with_retry_and_telemetry;
 use http::StatusCode;
 use std::future::Future;
 use std::sync::Arc;
@@ -73,26 +73,65 @@ pub(crate) async fn run_with_request_telemetry<T, F, Fut>(
 ) -> Result<T, TransportError>
 where
     T: WithStatus,
-    F: Clone + Fn(Request) -> Fut,
+    F: Clone + Fn(Request, u64) -> Fut,
     Fut: Future<Output = Result<T, TransportError>>,
 {
     // Wraps `run_with_retry` to attach per-attempt request telemetry for both
     // unary and streaming HTTP calls.
-    run_with_retry(policy, make_request, move |req, attempt| {
-        let telemetry = telemetry.clone();
-        let send = send.clone();
-        async move {
-            let start = Instant::now();
-            let result = send(req).await;
-            if let Some(t) = telemetry.as_ref() {
-                let (status, err) = match &result {
-                    Ok(resp) => (Some(resp.status()), None),
-                    Err(err) => (http_status(err), Some(err)),
-                };
-                t.on_request(attempt, status, err, start.elapsed());
+    let retry_telemetry = telemetry.clone();
+    run_with_retry_and_telemetry(
+        policy,
+        make_request,
+        move |req, attempt| {
+            let telemetry = telemetry.clone();
+            let send = send.clone();
+            async move {
+                let start = Instant::now();
+                let result = send(req, attempt).await;
+                if let Some(t) = &telemetry {
+                    let (status, err) = match &result {
+                        Ok(resp) => (Some(resp.status()), None),
+                        Err(err) => (http_status(err), Some(err)),
+                    };
+                    t.on_request(attempt, status, err, start.elapsed());
+                }
+                result
             }
-            result
-        }
-    })
+        },
+        retry_telemetry,
+    )
     .await
+}
+
+/// Cancels only a transport that has actually started; authentication preflight stays separate.
+pub(crate) struct RequestAttemptGuard {
+    telemetry: Option<Arc<dyn RequestTelemetry>>,
+    attempt: u64,
+    start: Instant,
+}
+
+impl RequestAttemptGuard {
+    pub(crate) fn start(telemetry: Option<Arc<dyn RequestTelemetry>>, attempt: u64) -> Self {
+        let start = Instant::now();
+        if let Some(telemetry) = &telemetry {
+            telemetry.on_request_start(attempt);
+        }
+        Self {
+            telemetry,
+            attempt,
+            start,
+        }
+    }
+
+    pub(crate) fn finish(mut self) {
+        self.telemetry = None;
+    }
+}
+
+impl Drop for RequestAttemptGuard {
+    fn drop(&mut self) {
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.on_request_cancelled(self.attempt, self.start.elapsed());
+        }
+    }
 }
