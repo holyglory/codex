@@ -32,6 +32,7 @@ mod report;
 mod report_facets;
 mod report_page;
 mod report_query;
+mod report_retries;
 mod retention;
 mod review_aggregate;
 mod review_counts;

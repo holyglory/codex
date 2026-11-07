@@ -84,7 +84,7 @@ impl UsageReader {
                  COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='failed'),0)::UBIGINT tool_failed, \
                  COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='blocked'),0)::UBIGINT tool_blocked, \
                  COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='cancelled'),0)::UBIGINT tool_cancelled, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='incomplete'),0)::UBIGINT tool_incomplete FROM ({})", query.operation_statistics
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='incomplete'),0)::UBIGINT tool_incomplete FROM ({}) WHERE kind <> 'wait'", query.operation_statistics
             ), 1)?.remove(0)
         };
         let value = json!({
@@ -108,7 +108,7 @@ impl UsageReader {
                 "reviewDetail": if self.manifest.review_retention_cutoff_at_ms.is_some() {"partial_retention"} else {"recorded"},
                 "retiredReviewOperations": self.manifest.retired_review_operations,
                 "retiredReviewContributions": self.manifest.retired_review_contributions,
-                "projectionCompleteFromSequence":complete_from,"unobservedFamilies":["approvals","processes","agents","waits","work_bindings"]},
+                "projectionCompleteFromSequence":complete_from,"unobservedFamilies":["work_bindings"],"waits":"partial","observedWaitFamilies":["http_retry","stream_retry","compaction_retry"],"unobservedWaitFamilies":["user","agent","approval","websocket_connection","auth_refresh"]},
             "formulas":{"tokens":"Input and output are disjoint components. Cached input and reasoning output are subsets; do not add them again.",
                 "counts":"Operations count canonical tool/model lifecycles, not the number of journal observations."}
         });
@@ -247,6 +247,9 @@ fn effective_counts(
     state: &ReviewOperation,
     correction: Option<&ReviewClassification>,
 ) -> ReviewCounts {
+    if state.kind == crate::ReviewOperationKind::Wait {
+        return ReviewCounts::default();
+    }
     let mut counts = ReviewCounts::for_operation(state);
     if let Some(correction) = correction {
         counts.unclassified = u64::from(

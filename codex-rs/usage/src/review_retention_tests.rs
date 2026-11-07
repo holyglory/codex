@@ -626,3 +626,194 @@ fn large_publication_fragments_retire_without_a_partition_sized_decode_limit() {
         (count, 11 * DAY, count + 1)
     );
 }
+
+#[test]
+fn retry_waits_and_attempt_counts_survive_retention_without_inflating_execution() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let mut first = started("first-attempt", DAY, "retrying");
+    first.event = Some("model_request_started".into());
+    first.tool = None;
+    first.attempt_number = Some(1);
+    let mut first_finished = finished(&first);
+    first_finished.event = Some("model_request_finished".into());
+    first_finished.outcome = Some(UsageOutcome::Failed);
+    let mut wait = started("retry-timer", DAY + 1_000, "retrying");
+    wait.event = Some("retry_wait_started".into());
+    wait.tool = Some("http_retry".into());
+    wait.retry_of_operation_id = first.operation_id.clone();
+    let mut wait_finished = finished(&wait);
+    wait_finished.event = Some("retry_wait_finished".into());
+    let mut second = started("second-attempt", DAY + 2_000, "retrying");
+    second.event = Some("model_request_started".into());
+    second.tool = None;
+    second.attempt_number = Some(2);
+    second.retry_of_operation_id = first.operation_id.clone();
+    second.rework_of_operation_id = Some("prior-explicit-redo".into());
+    let mut second_finished = finished(&second);
+    second_finished.event = Some("model_request_finished".into());
+    second_finished.response_id = Some("recovered-response".into());
+    let mut usage = token("tokens", DAY + 3_000, "retrying", /*input*/ 10);
+    usage.response_id = second_finished.response_id.clone();
+    UsageJournal::new(root.join("events.jsonl"))
+        .append_batch(
+            [
+                first,
+                first_finished,
+                wait,
+                wait_finished,
+                second,
+                second_finished,
+                usage,
+            ]
+            .into_iter()
+            .map(JournalPayload::Record)
+            .collect(),
+        )
+        .expect("capture retry chain");
+    publish(&root);
+    let filter = UsageFilter::default();
+    let summary = UsageReader::open_at(&root)
+        .expect("reader")
+        .summary(TimeRange::all(), &filter)
+        .expect("cached summary counts");
+    assert_eq!(
+        (
+            &summary["counts"]["operations"],
+            &summary["counts"]["modelRequests"],
+            &summary["counts"]["tools"]
+        ),
+        (
+            &serde_json::json!(2),
+            &serde_json::json!(2),
+            &serde_json::json!(0)
+        )
+    );
+    let initial = UsageReader::open_at(&root)
+        .expect("reader")
+        .performance_review(TimeRange::all(), &filter)
+        .expect("retry report");
+    assert_eq!(
+        (
+            &initial["counts"]["operations"],
+            &initial["counts"]["model_requests"],
+            &initial["counts"]["interval_sum_ms"],
+            &initial["links"]["retryOperations"],
+            &initial["links"]["observedAttempts"],
+            &initial["links"]["reworkOperations"],
+        ),
+        (
+            &serde_json::json!(2),
+            &serde_json::json!(2),
+            &serde_json::json!(2_000),
+            &serde_json::json!(1),
+            &serde_json::json!(2),
+            &serde_json::json!(1)
+        )
+    );
+    assert_eq!(
+        initial["waits"],
+        serde_json::json!([
+            {"reason":"http_retry","outcome":"completed","count":1,"measuredWaitMs":1_000,"unknownIntervals":0}
+        ])
+    );
+    assert_eq!(
+        initial["outcomes"]["totals"]["recordedWaitMs"]["measured"],
+        serde_json::json!(1_000)
+    );
+    let clipped = UsageReader::open_at(&root)
+        .expect("reader")
+        .performance_review(
+            TimeRange::from_millis(DAY + 1_250, DAY + 1_750).expect("timer interval"),
+            &filter,
+        )
+        .expect("clipped retry wait");
+    assert_eq!(
+        (
+            &clipped["counts"]["operations"],
+            &clipped["counts"]["interval_sum_ms"],
+            &clipped["outcomes"]["totals"]["recordedWaitMs"]["measured"]
+        ),
+        (
+            &serde_json::json!(0),
+            &serde_json::json!(0),
+            &serde_json::json!(500)
+        )
+    );
+    let mut maintenance = Default::default();
+    for _ in 0..4 {
+        crate::retention::maintain(
+            &root,
+            RetentionPolicy {
+                raw_retention_days: 7,
+                inactive_chat_days: 2,
+            },
+            12 * DAY,
+            &mut maintenance,
+        )
+        .expect("retain operation statistics");
+    }
+    let retained_summary = UsageReader::open_at(&root)
+        .expect("reader")
+        .summary(TimeRange::all(), &filter)
+        .expect("retained cached counts");
+    assert_eq!(retained_summary["counts"], summary["counts"]);
+    let retained = UsageReader::open_at(&root)
+        .expect("retained reader")
+        .performance_review(TimeRange::all(), &filter)
+        .expect("retained retry report");
+    assert_eq!(retained["counts"], initial["counts"]);
+    assert_eq!(retained["waits"], initial["waits"]);
+    assert_eq!(retained["links"]["retryOperations"], serde_json::json!(1));
+    assert_eq!(retained["links"]["observedAttempts"], serde_json::json!(2));
+    assert_eq!(retained["links"]["sample"], serde_json::json!([]));
+    assert_eq!(retained["links"]["omittedOperations"], serde_json::json!(1));
+    assert_eq!(retained["coverage"]["waits"], serde_json::json!("partial"));
+    assert!(retained["outcomes"]["totals"]["recordedWaitMs"]["exact"].is_null());
+    // Retain a separate pre-extension Parquet fixture; never rewrite a published segment.
+    let connection = Connection::open_in_memory().expect("legacy fixture connection");
+    let mut legacy = descriptor(&root);
+    let source =
+        parquet_source(&root, &legacy.operation_rollup_files).expect("retained aggregates");
+    let legacy_rollup = "legacy-operation-rollup.parquet";
+    crate::review_storage::write_query(
+        &connection,
+        &root,
+        legacy_rollup,
+        &format!(
+            "SELECT * EXCLUDE (retry_operations,observed_attempts,linked_operations) FROM {source}"
+        ),
+    )
+    .expect("pre-extension aggregate columns");
+    legacy.operation_rollup_files = vec![legacy_rollup.into()];
+    let legacy_descriptor = "review-projection-legacy-fixture.json";
+    crate::review_storage::write_json(&root, legacy_descriptor, &legacy)
+        .expect("legacy descriptor");
+    let store = ManifestStore::new(root.join("manifest.json"));
+    let mut manifest = store.load().expect("manifest");
+    manifest.review_projection_file = Some(legacy_descriptor.into());
+    store
+        .save(&manifest)
+        .expect("select isolated legacy fixture");
+    let legacy_report = UsageReader::open_at(&root)
+        .expect("legacy reader")
+        .performance_review(TimeRange::all(), &filter)
+        .expect("legacy aggregates remain readable");
+    assert_eq!(
+        legacy_report["links"]["reworkOperations"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        legacy_report["links"]["omittedOperations"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        legacy_report["links"]["retryCoverage"],
+        serde_json::json!("unobserved")
+    );
+    assert_eq!(
+        legacy_report["links"]["unknownAttemptOperations"],
+        serde_json::json!(2)
+    );
+    assert!(legacy_report["links"]["retryOperations"].is_null());
+}

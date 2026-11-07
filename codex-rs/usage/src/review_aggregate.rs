@@ -30,6 +30,9 @@ const METRICS: &[&str] = &[
     "unknown_intervals",
     "unfinished",
     "rework_operations",
+    "retry_operations",
+    "observed_attempts",
+    "linked_operations",
 ];
 const COLUMNS: &[(&str, &str)] = &[
     ("bucket_at_ms", "BIGINT"),
@@ -49,6 +52,9 @@ const COLUMNS: &[(&str, &str)] = &[
     ("unknown_intervals", "UBIGINT"),
     ("unfinished", "UBIGINT"),
     ("rework_operations", "UBIGINT"),
+    ("retry_operations", "UBIGINT"),
+    ("observed_attempts", "UBIGINT"),
+    ("linked_operations", "UBIGINT"),
 ];
 
 pub(crate) const TOKEN_PREDICATE: &str = "event = 'token_observation' OR provider_total_tokens IS NOT NULL OR input_tokens <> 0 OR output_tokens <> 0 OR cached_input_tokens <> 0 OR reasoning_output_tokens <> 0";
@@ -162,7 +168,10 @@ pub(crate) fn merge_operation_rollups(
     if inputs.is_empty() {
         return Ok(false);
     }
-    let source = parquet_source(root, &inputs)?;
+    let source = format!(
+        "({})",
+        typed_source(&root.join("segments"), &inputs, COLUMNS)?
+    );
     let needs_conversion = inputs.len() > 1
         || connection
             .query_row(
@@ -203,7 +212,10 @@ pub(crate) fn detail_statistics(source: &str, range: TimeRange) -> String {
          ELSE 0 END::UBIGINT interval_sum_ms, \
          (started_at_ms IS NULL OR ended_at_ms IS NULL)::UBIGINT unknown_intervals, \
          (NOT terminal_observed)::UBIGINT unfinished, \
-         (rework_of_operation_id IS NOT NULL)::UBIGINT rework_operations FROM ({source})"
+         (kind <> 'wait' AND rework_of_operation_id IS NOT NULL)::UBIGINT rework_operations, \
+         (kind = 'model_request' AND retry_of_operation_id IS NOT NULL)::UBIGINT retry_operations, \
+         (kind = 'model_request' AND attempt_number IS NOT NULL)::UBIGINT observed_attempts, \
+         (kind <> 'wait' AND (retry_of_operation_id IS NOT NULL OR rework_of_operation_id IS NOT NULL))::UBIGINT linked_operations FROM ({source})"
     )
 }
 

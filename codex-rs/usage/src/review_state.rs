@@ -20,6 +20,8 @@ pub enum ReviewOperationKind {
     ModelRequest,
     /// A separately observed model connection warmup.
     ModelWarmup,
+    /// An observed retry timer, kept separate from execution intervals.
+    Wait,
 }
 
 /// Latest factual state of one operation, independent of observation-hour files.
@@ -275,6 +277,8 @@ pub(crate) fn lifecycle(record: &UsageRecord) -> Option<(ReviewOperationKind, bo
         "model_request_finished" => Some((ReviewOperationKind::ModelRequest, true)),
         "model_warmup_started" => Some((ReviewOperationKind::ModelWarmup, false)),
         "model_warmup_finished" => Some((ReviewOperationKind::ModelWarmup, true)),
+        "retry_wait_started" => Some((ReviewOperationKind::Wait, false)),
+        "retry_wait_finished" => Some((ReviewOperationKind::Wait, true)),
         _ => None,
     }
 }

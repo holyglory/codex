@@ -30,7 +30,7 @@ impl UsageReader {
              COALESCE(sum(unknown_intervals),0)::UBIGINT unknown_intervals, \
              COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
              COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT without_repository, \
-             COALESCE(sum(interval_sum_ms),0)::UBIGINT interval_sum_ms FROM ({})", query.operation_statistics
+             COALESCE(sum(interval_sum_ms),0)::UBIGINT interval_sum_ms FROM ({}) WHERE kind <> 'wait'", query.operation_statistics
         ), 1)?.remove(0);
         let operations = query_rows::<Value>(
             &query.connection,
@@ -38,7 +38,7 @@ impl UsageReader {
                 "SELECT kind category, \
              sum(operation_count)::UBIGINT count, COALESCE(sum(interval_sum_ms),0)::UBIGINT \"measuredIntervalSumMs\", \
              sum(unknown_intervals)::UBIGINT \"unknownIntervals\" \
-             FROM ({}) GROUP BY category ORDER BY category",
+             FROM ({}) WHERE kind <> 'wait' GROUP BY category ORDER BY category",
                 query.operation_statistics
             ),
             128,
@@ -50,7 +50,7 @@ impl UsageReader {
                  COALESCE(classification,'unknown') provenance, sum(operation_count)::UBIGINT count, \
                  sum(interval_sum_ms)::UBIGINT \"measuredIntervalSumMs\", \
                  sum(unknown_intervals)::UBIGINT \"unknownIntervals\" \
-                 FROM ({}) GROUP BY ALL ORDER BY phase,activity,provenance",
+                 FROM ({}) WHERE kind <> 'wait' GROUP BY ALL ORDER BY phase,activity,provenance",
                 query.operation_statistics
             ),
             &["phase", "activity", "provenance"],
@@ -142,16 +142,8 @@ impl UsageReader {
             ),
             32,
         )?;
-        let links = query_rows::<Value>(
-            &query.connection,
-            &format!(
-                "SELECT operation_id \"operationId\", started_at_ms \"startedAtMs\", \
-             NULL::VARCHAR \"retryOfOperationId\", rework_of_operation_id \"reworkOfOperationId\" \
-             FROM ({}) WHERE rework_of_operation_id IS NOT NULL ORDER BY started_at_ms,operation_id LIMIT 17",
-                query.operations
-            ),
-            17,
-        )?;
+        let retries = crate::report_retries::RetryEvidence::read(&query)?;
+        let links = &retries.links;
         let rework_operations: u64 = query
             .connection
             .query_row(
@@ -173,14 +165,18 @@ impl UsageReader {
         let detail_operations: u64 = query
             .connection
             .query_row(
-                &format!("SELECT count(*)::UBIGINT FROM ({})", query.operations),
+                &format!(
+                    "SELECT count(*)::UBIGINT FROM ({}) WHERE kind <> 'wait'",
+                    query.operations
+                ),
                 [],
                 |row| row.get(0),
             )
             .map_err(query_error)?;
         let retained_operations = total_operations.saturating_sub(detail_operations);
-        let omitted_rework_operations =
-            rework_operations.saturating_sub(links.len().min(16) as u64);
+        let omitted_link_operations = retries
+            .linked_operations
+            .saturating_sub(links.len().min(16) as u64);
         let unknown_intervals = operation_counts["unknown_intervals"]
             .as_u64()
             .unwrap_or_default();
@@ -196,7 +192,7 @@ impl UsageReader {
             || self.manifest.unapplied_retention_records != 0
         {
             "partial"
-        } else if total_operations == 0 && observed_tokens == 0 {
+        } else if total_operations == 0 && observed_tokens == 0 && retries.waits.is_empty() {
             "unobserved"
         } else {
             "recorded"
@@ -204,15 +200,26 @@ impl UsageReader {
         let measurement = json!({"measured": token_counts["provider_total"],
             "exact": if exact_token_window && observed_tokens > 0 && token_counts["unknown_totals"] == 0 { token_counts["provider_total"].clone() } else { Value::Null },
             "unknown": token_counts["unknown_totals"]});
-        let effort = json!({"operations": total_operations, "retryOperations": Value::Null, "reworkOperations": rework_operations,
+        let retry_operations =
+            (retries.attempts > 0 || retries.retries > 0).then_some(retries.retries);
+        let unknown_attempt_operations = operation_counts["model_requests"]
+            .as_u64()
+            .unwrap_or_default()
+            .saturating_sub(retries.attempts);
+        let retry_coverage = if retry_operations.is_some() {
+            "partial"
+        } else {
+            "unobserved"
+        };
+        let effort = json!({"operations": total_operations, "retryOperations": retry_operations, "reworkOperations": rework_operations,
             "providerTotalTokens": measurement, "activeAgentMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
             "elapsedExecutionMs": {"measured":operation_counts["interval_sum_ms"],"exact":Value::Null,"unknown":unknown_intervals},
-            "recordedWaitMs": {"measured":0,"exact":Value::Null,"unknown":total_operations}});
+            "recordedWaitMs": {"measured":retries.wait_ms,"exact":Value::Null,"unknown":Value::Null}});
         Ok(json!({
             "schemaVersion":1,"kind":"performanceReview", "window":{"fromAtMs":(start != i64::MIN).then_some(start),"toAtMs":(end != i64::MAX).then_some(end)},
             "tokens":tokens,"tokensByActivity":by_activity,"operations":operations,
-            "operationsByActivity":by_operation_activity,"tools":tools,"counts":operation_counts,"waits":[],
-            "links":{"retryOperations":Value::Null,"reworkOperations":rework_operations,"sample":links.into_iter().take(16).collect::<Vec<_>>(),"omittedOperations":omitted_rework_operations,"retryCoverage":"unobserved"},
+            "operationsByActivity":by_operation_activity,"tools":tools,"counts":operation_counts,"waits":retries.waits,
+            "links":{"retryOperations":retry_operations,"observedAttempts":retries.attempts,"unknownAttemptOperations":unknown_attempt_operations,"reworkOperations":rework_operations,"sample":links.iter().take(16).collect::<Vec<_>>(),"omittedOperations":omitted_link_operations,"retryCoverage":retry_coverage,"observedBoundaries":["responses_http_request","responses_websocket_request","http_retry_wait","stream_retry_wait","compaction_retry_wait"],"unobservedBoundaries":["websocket_connection","auth_refresh","non_responses_endpoints"]},
             "candidates":[],"diagnostics":{"longLivedDeclarations":{"thresholdMs":3600000,"count":Value::Null,"coverage":"unobserved"}},
             "coverage":{"rawOperations":detail_operations,"deduplicatedOperations":total_operations,"unknownOperationIntervals":unknown_intervals,
                 "retainedAggregateOperations":retained_operations,
@@ -227,14 +234,14 @@ impl UsageReader {
                 "projectionCompleteFromSequence":query.complete_from_sequence,
                 "unappliedCorrectionsAfterRetention":self.manifest.unapplied_retention_corrections,
                 "unappliedObservationsAfterRetention":self.manifest.unapplied_retention_records,
-                "criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"unobserved"},
+                "criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"partial"},
             "workBindings":{"references":[],"boundOperations":0,"unknownOperations":total_operations,"basis":"unobserved"},
             "outcomes":{"schemaVersion":1,"coverage":"unobserved","totals":effort,"attributed":Value::Null,"unattributed":effort,
                 "unattributedReasons":{"work_binding_unobserved":total_operations},"rows":[],"totalRows":0,"nextCursor":Value::Null,
                 "basis":"No outcome binding was captured; operation completion is not proof of a delivered outcome."},
             "evidence":{"action":"details","details":["operations","tokens","coverage","classifications"],"repository":filter.repository_id,
                 "thread_id":filter.thread_id,"from_at_ms":(start != i64::MIN).then_some(start),"to_at_ms":(end != i64::MAX).then_some(end),"limit":20},
-            "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available operation intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
+            "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available execution intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Retry waits are measured separately and excluded from execution counts and sums. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
         }))
     }
 }

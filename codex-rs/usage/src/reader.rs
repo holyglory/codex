@@ -59,12 +59,20 @@ pub enum RecordKind {
     Turns,
     /// Append-only declarations and classification corrections.
     Classifications,
+    /// Latest lifecycle snapshot of each activated activity span.
+    ActivitySpans,
     /// Explicit gaps in observation coverage.
     Coverage,
     /// Process/thread/turn/activity lifecycle facts.
     Lifecycle,
     /// Explicit repository identity or attribution observations.
     Repositories,
+    /// Opaque validated repository identities.
+    RepositoryIdentities,
+    /// Actual operation-to-repository observations, including unresolved attribution.
+    RepositoryAttributions,
+    /// Repository seen events, separate from identity and attribution rows.
+    RepositoryEvents,
     /// Tool approval observations when an approval producer is connected.
     Approvals,
     /// Process lifecycle observations without operating-system identifiers.

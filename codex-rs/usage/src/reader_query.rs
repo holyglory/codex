@@ -200,15 +200,46 @@ impl SnapshotQuery {
             RecordKind::Tokens => "event = 'token_observation' OR provider_total_tokens IS NOT NULL OR input_tokens <> 0 OR output_tokens <> 0".to_string(),
             RecordKind::Threads => "event IN ('thread_started','thread_stopped')".to_string(),
             RecordKind::Turns => "event IN ('turn_started','turn_finished')".to_string(),
-            RecordKind::Classifications => "event = 'classification_correction' OR starts_with(event,'activity_')".to_string(),
+            RecordKind::Classifications => "event = 'classification_correction' OR (starts_with(event,'activity_') AND NOT starts_with(event,'activity_span_'))".to_string(),
+            RecordKind::ActivitySpans => "starts_with(event,'activity_span_')".to_string(),
             RecordKind::Coverage => "event = 'coverage_gap' OR missing_observations IS NOT NULL".to_string(),
-            RecordKind::Lifecycle => "starts_with(event,'process_') OR starts_with(event,'thread_') OR starts_with(event,'turn_') OR starts_with(event,'agent_') OR starts_with(event,'activity_')".to_string(),
+            RecordKind::Lifecycle => "starts_with(event,'process_') OR starts_with(event,'thread_') OR starts_with(event,'turn_') OR starts_with(event,'agent_') OR starts_with(event,'activity_') OR starts_with(event,'retry_wait_')".to_string(),
             RecordKind::Repositories => "starts_with(event,'repository_')".to_string(),
-            RecordKind::Approvals => "event = 'tool_approval'".to_string(),
+            RecordKind::RepositoryIdentities => "event = 'repository_identity_observed'".to_string(),
+            RecordKind::RepositoryAttributions => "event = 'repository_attributed'".to_string(),
+            RecordKind::RepositoryEvents => "event = 'repository_seen'".to_string(),
+            RecordKind::Approvals => "event = 'tool_approval' OR starts_with(event,'tool_approval_')".to_string(),
             RecordKind::Processes => "starts_with(event,'process_')".to_string(),
             RecordKind::Agents => "starts_with(event,'agent_')".to_string(),
             RecordKind::Taxonomies => "event = 'taxonomy_registered'".to_string(),
         }];
+        // Select the latest entity/span state before applying the page cursor.
+        // Applying the cursor first would resurrect older snapshots on later pages.
+        let entity_key = match kind {
+            RecordKind::Processes => Some("process_id"),
+            RecordKind::Agents => Some("COALESCE(operation_id, agent_id)"),
+            RecordKind::ActivitySpans => Some("operation_id"),
+            RecordKind::RepositoryIdentities => Some("repository_id"),
+            RecordKind::Taxonomies => Some("taxonomy_version"),
+            RecordKind::All
+            | RecordKind::Tool
+            | RecordKind::Activity
+            | RecordKind::Tokens
+            | RecordKind::Threads
+            | RecordKind::Turns
+            | RecordKind::Classifications
+            | RecordKind::Coverage
+            | RecordKind::Lifecycle
+            | RecordKind::Repositories
+            | RecordKind::RepositoryAttributions
+            | RecordKind::RepositoryEvents
+            | RecordKind::Approvals => None,
+        };
+        let source = entity_key.map_or_else(|| self.source.clone(), |key| format!(
+            "SELECT * FROM ({}) WHERE ({}) QUALIFY row_number() OVER \
+             (PARTITION BY {key} ORDER BY effective_observed_at_ms DESC, effective_ended_at_ms DESC NULLS LAST, heartbeat_count DESC NULLS LAST, id DESC) = 1",
+            self.source, predicates[0]
+        ));
         if let Some(after) = after {
             predicates.push(format!(
                 "(effective_observed_at_ms, id) > ({}, {})",
@@ -218,7 +249,7 @@ impl SnapshotQuery {
         }
         let query = format!(
             "SELECT * FROM ({}) WHERE {} ORDER BY effective_observed_at_ms, id LIMIT {limit}",
-            self.source,
+            source,
             predicates
                 .iter()
                 .map(|predicate| format!("({predicate})"))
@@ -491,6 +522,9 @@ pub(crate) fn parquet_source(
                     | "taxonomy_version"
                     | "heartbeat_count"
                     | "retry_of_operation_id"
+                    | "retry_operations"
+                    | "observed_attempts"
+                    | "linked_operations"
             )
         })
         .collect::<Vec<_>>();

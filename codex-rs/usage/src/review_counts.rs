@@ -68,6 +68,9 @@ impl ReviewCounts {
     /// Count one operation whose phase/activity already include its latest
     /// explicit correction. Terminal facts count even when no start was seen.
     pub fn for_operation(operation: &ReviewOperation) -> Self {
+        if operation.kind == ReviewOperationKind::Wait {
+            return Self::default();
+        }
         let tool = operation.kind == ReviewOperationKind::Tool;
         Self {
             operations: 1,
@@ -351,6 +354,9 @@ impl<'a> ReviewCountsUpdate<'a> {
         classification: Option<&ReviewClassification>,
         sign: i64,
     ) -> Result<()> {
+        if state.kind == ReviewOperationKind::Wait {
+            return Ok(());
+        }
         let mut counts = ReviewCounts::for_operation(state);
         if let Some(classification) = classification {
             counts.unclassified = u64::from(

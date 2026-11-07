@@ -47,6 +47,7 @@ pub(crate) fn write_operation_rows(
             ReviewOperationKind::Tool => "tool",
             ReviewOperationKind::ModelRequest => "model_request",
             ReviewOperationKind::ModelWarmup => "model_warmup",
+            ReviewOperationKind::Wait => "wait",
         })),
         column!(UInt64Array, |row| Some(row.first_sequence)),
         column!(UInt64Array, |row| Some(row.source_sequence)),

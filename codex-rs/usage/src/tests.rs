@@ -178,6 +178,26 @@ fn in_memory_store_queries_snapshot_tail_and_corrections() {
 fn durable_store_replays_tail_and_materialized_segments_after_restart() {
     let directory = tempdir().expect("temporary directory");
     let first_record = record("first", 3_605, 8, 1).with_model("gpt");
+    let encoded = serde_json::to_value(&first_record).expect("content-free fact JSON");
+    for field in [
+        "process_id",
+        "agent_id",
+        "approval_decision",
+        "approval_source",
+        "taxonomy_version",
+        "heartbeat_count",
+        "retry_of_operation_id",
+    ] {
+        assert!(
+            encoded.get(field).is_none(),
+            "absent extension must not change legacy JSON"
+        );
+    }
+    assert_eq!(
+        serde_json::from_value::<UsageRecord>(encoded).expect("legacy default fields"),
+        first_record
+    );
+
     let second_record = record("second", 7_205, 4, 2).with_model("gpt");
     let correction = UsageCorrection::new("fix-second", "second", 7_250, -1, 1, "late billing");
 
