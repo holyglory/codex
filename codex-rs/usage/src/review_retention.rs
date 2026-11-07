@@ -16,11 +16,11 @@ use crate::UsageManifest;
 use crate::reclamation::SnapshotPin;
 use crate::review_index::IndexedInterval;
 use crate::review_index::write_membership;
+use crate::review_operation_storage::write_operation_rows;
 use crate::review_projection::load_review_projection;
 use crate::review_projection::operation_bloom;
 use crate::review_state::REVIEW_PARTITION_SIZE;
 use crate::review_state::ReviewOperation;
-use crate::review_storage::OPERATION_COLUMNS;
 use crate::review_storage::parquet_source;
 use crate::review_storage::query_error;
 use crate::review_storage::query_rows;
@@ -220,7 +220,7 @@ fn retire(
                 retained.operation_index_file =
                     format!("review-operation-index-retained-{stamp}.parquet");
                 retained.membership_file = format!("review-membership-retained-{stamp}.parquet");
-                write_rows(root, &retained.file, &rows, OPERATION_COLUMNS)?;
+                write_operation_rows(root, &retained.file, &rows)?;
                 let source = parquet_source(root, std::slice::from_ref(&retained.file))?;
                 write_query(
                     &connection,

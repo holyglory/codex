@@ -35,6 +35,7 @@ mod retention;
 mod review_aggregate;
 mod review_counts;
 mod review_index;
+mod review_operation_storage;
 mod review_projection;
 mod review_retention;
 mod review_state;

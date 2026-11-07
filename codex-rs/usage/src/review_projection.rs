@@ -20,6 +20,7 @@ use crate::review_counts::read_review_counts_map;
 use crate::review_index::IndexedInterval;
 use crate::review_index::ReviewIntervalBounds;
 use crate::review_index::write_membership;
+use crate::review_operation_storage::write_operation_rows;
 use crate::review_state::REVIEW_PARTITION_SIZE;
 use crate::review_state::ReviewClassification;
 use crate::review_state::ReviewContribution;
@@ -28,7 +29,6 @@ use crate::review_state::invalid;
 use crate::review_state::lifecycle;
 use crate::review_storage::CLASSIFICATION_COLUMNS;
 use crate::review_storage::CONTRIBUTION_COLUMNS;
-use crate::review_storage::OPERATION_COLUMNS;
 use crate::review_storage::OPERATION_INDEX_COLUMNS;
 use crate::review_storage::parquet_source;
 use crate::review_storage::query_rows;
@@ -355,7 +355,7 @@ pub(crate) fn publish_review_projection(
         });
         let file = format!("review-operation-{stamp}-{partition:020}.parquet");
         let membership_file = format!("review-membership-{stamp}-{partition:020}.parquet");
-        write_rows(root, &file, &rows, OPERATION_COLUMNS)?;
+        write_operation_rows(root, &file, &rows)?;
         let operation_index_file = if let Some(previous) = partitions.get(&partition)
             && previous.operation_count as usize == rows.len()
         {

@@ -128,7 +128,11 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
     let journal = UsageJournal::new(root.join("events.jsonl"));
     let mut publisher = UsagePublisher::open_at(root).expect("publisher");
     let mut stale = UsagePublisher::open_at(root).expect("independent publisher");
-    let start = started("model-op", "model_request", /*at_ms*/ 100);
+    let mut start = started("model-op", "model_request", /*at_ms*/ 100);
+    start.turn_id = Some("turn-a".into());
+    start.model = Some("model-a".into());
+    start.attempt_number = Some(2);
+    start.rework_of_operation_id = Some("previous-operation".into());
     journal.append_record(start.clone()).expect("capture start");
     let open_manifest = publisher
         .publish_batch(limits())
@@ -214,24 +218,34 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         vec![closed.partitions[0].file.clone()]
     );
     let current = all_operations(root, &closed);
-    assert_eq!(current.len(), 1);
     assert_eq!(
-        (
-            current[0].start_observed,
-            current[0].terminal_observed,
-            current[0].started_at_ms,
-            current[0].ended_at_ms,
-            current[0].duration_ms,
-            current[0].response_id.as_deref()
-        ),
-        (
-            true,
-            true,
-            Some(100),
-            Some(10_100),
-            Some(10_000),
-            Some("provider-response")
-        )
+        current,
+        vec![ReviewOperation {
+            operation_id: "model-op".into(),
+            kind: crate::ReviewOperationKind::ModelRequest,
+            first_sequence: 1,
+            source_sequence: 4,
+            observed_at_ms: 10_100,
+            start_observed: true,
+            terminal_observed: true,
+            started_at_ms: Some(100),
+            ended_at_ms: Some(10_100),
+            duration_ms: Some(10_000),
+            outcome: Some(UsageOutcome::Completed),
+            account_id: Some("account-a".into()),
+            thread_id: Some("thread-a".into()),
+            repository_id: Some("repository-a".into()),
+            turn_id: Some("turn-a".into()),
+            model: Some("model-a".into()),
+            tool: None,
+            response_id: Some("provider-response".into()),
+            phase: Some("implementation".into()),
+            activity: Some("coding".into()),
+            classification: Some("agent_declared".into()),
+            coverage: Some("recorded".into()),
+            attempt_number: Some(2),
+            rework_of_operation_id: Some("previous-operation".into()),
+        }]
     );
     assert_eq!(closed.partitions[0].open_operations, 0);
     for scope in [
