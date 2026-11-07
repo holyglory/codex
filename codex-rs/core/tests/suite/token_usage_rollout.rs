@@ -267,6 +267,12 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
                     "usage_stats",
                     &json!({"action": "summary", "scope": "current_chat"}).to_string(),
                 ),
+                ev_function_call(
+                    "usage-review-call",
+                    "usage_stats",
+                    &json!({"action":"performance_review", "thread_id":"current", "outcome_limit":1})
+                        .to_string(),
+                ),
                 json!({"type": "response.completed", "response": {"id": "usage-report"}}),
             ]),
             sse(vec![
@@ -365,6 +371,21 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
         .function_call_output_content_and_success("usage-call")
         .expect("exposed usage_stats output");
     let report: Value = serde_json::from_str(&content.expect("usage report JSON"))?;
+    let (content, success) = requests[2]
+        .function_call_output_content_and_success("usage-review-call")
+        .expect("performance review output");
+    assert_eq!(success, Some(true));
+    let review: Value = serde_json::from_str(&content.expect("review JSON"))?;
+    assert_eq!(review["kind"], json!("performanceReview"));
+    assert_eq!(
+        (
+            &review["outcomes"]["coverage"],
+            &review["outcomes"]["rows"],
+            &review["outcomes"]["totalRows"],
+            &review["outcomes"]["nextCursor"]
+        ),
+        (&json!("unobserved"), &json!([]), &json!(0), &Value::Null)
+    );
     let report_watermark = report["journalWatermark"]
         .as_u64()
         .expect("report watermark");

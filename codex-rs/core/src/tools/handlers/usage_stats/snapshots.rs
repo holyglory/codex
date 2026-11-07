@@ -19,6 +19,7 @@ struct Pinned {
     context: (PathBuf, String, PathBuf),
     query: Value,
     reader: Arc<UsageReader>,
+    review: Option<Arc<Value>>,
 }
 
 #[derive(Default)]
@@ -55,6 +56,32 @@ impl SnapshotCache {
         context: &UsageStatsContext,
         mut args: UsageStatsArgs,
     ) -> Result<Value, FunctionCallError> {
+        let is_review = matches!(args.action, UsageStatsAction::PerformanceReview);
+        let outcome_limit = usize::try_from(args.outcome_limit.unwrap_or(8))
+            .map_err(|_| tool_error("outcome_limit must be between 1 and 50"))?;
+        if is_review && !(1..=50).contains(&outcome_limit) {
+            return Err(tool_error("outcome_limit must be between 1 and 50"));
+        }
+        if is_review && (args.cursor_id.is_some() || args.cursor_sort_value.is_some()) {
+            return Err(tool_error(
+                "performance_review uses outcome_cursor for continuation",
+            ));
+        }
+        if args.outcome_cursor.is_some()
+            && (!is_review || args.cursor_id.is_some() || args.cursor_sort_value.is_some())
+        {
+            return Err(tool_error(
+                "outcome_cursor requires performance_review without an operation cursor",
+            ));
+        }
+        let outcome = args
+            .outcome_cursor
+            .as_deref()
+            .map(outcomes::cursor)
+            .transpose()?;
+        let outcome_offset = outcome
+            .as_ref()
+            .map_or(/*default*/ 0, |(_, offset)| *offset);
         let mut signature = serde_json::to_value(&args).map_err(|_| storage_error())?;
         let signature_fields = signature.as_object_mut().ok_or_else(storage_error)?;
         for field in [
@@ -82,7 +109,10 @@ impl SnapshotCache {
                 Ok::<_, FunctionCallError>((snapshot.to_string(), row.to_string()))
             })
             .transpose()?;
-        let (reader, snapshot) = if let Some((id, row)) = continuation {
+        let continuation = outcome
+            .map(|(id, _)| (id, None))
+            .or_else(|| continuation.map(|(id, row)| (id, Some(row))));
+        let (reader, retained_review, snapshot) = if let Some((id, row)) = continuation {
             let retained = self
                 .state
                 .entries
@@ -96,20 +126,47 @@ impl SnapshotCache {
             if entry.context != owner || entry.query != signature {
                 return Err(tool_error("usage cursor does not match this query"));
             }
-            args.cursor_id = Some(row);
-            (Arc::clone(&entry.reader), Some((id, entry.created)))
+            if args.outcome_cursor.is_some() && entry.review.is_none() {
+                return Err(tool_error("usage cursor does not match this query"));
+            }
+            args.cursor_id = row;
+            (
+                Arc::clone(&entry.reader),
+                entry.review.clone(),
+                Some((id, entry.created)),
+            )
         } else {
             (
                 Arc::new(UsageReader::open(&context.codex_home).map_err(|_| storage_error())?),
                 None,
+                None,
             )
         };
-        let mut value = execute(&reader, context, args)?;
-        if let Some(cursor) = value.get_mut("nextCursor").and_then(Value::as_object_mut)
-            && let Some(row) = cursor.get("id").and_then(Value::as_str).map(str::to_string)
+        let mut value = if let Some(report) = retained_review.as_deref() {
+            report.clone()
+        } else {
+            execute(&reader, context, args)?
+        };
+        let (id, created) =
+            snapshot.unwrap_or_else(|| (uuid::Uuid::new_v4().simple().to_string(), Instant::now()));
+        let review = if is_review {
+            let page = outcomes::page(&value, &id, outcome_offset, outcome_limit)?;
+            let report = retained_review.unwrap_or_else(|| Arc::new(value));
+            value = page;
+            Some(report)
+        } else {
+            None
+        };
+        let next_row = value
+            .get("nextCursor")
+            .and_then(|cursor| cursor.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if next_row.is_some()
+            || value
+                .pointer("/outcomes/nextCursor")
+                .is_some_and(Value::is_string)
         {
-            let (id, created) = snapshot
-                .unwrap_or_else(|| (uuid::Uuid::new_v4().simple().to_string(), Instant::now()));
             // An in-flight query retains its own Arc after cache expiry. Its
             // result remains consistent, but cannot renew the original lease.
             if created.elapsed() < self.state.lifetime {
@@ -148,13 +205,18 @@ impl SnapshotCache {
                         context: owner,
                         query: signature,
                         reader,
+                        review,
                     });
                 }
                 self.state.changed.notify_all();
             }
-            let remaining = self.state.lifetime.saturating_sub(created.elapsed());
-            cursor.insert("id".to_string(), json!(format!("{PREFIX}{id}:{row}")));
-            cursor.insert("expiresAfterMs".to_string(), json!(remaining.as_millis()));
+            if let Some(row) = next_row
+                && let Some(cursor) = value.get_mut("nextCursor").and_then(Value::as_object_mut)
+            {
+                let remaining = self.state.lifetime.saturating_sub(created.elapsed());
+                cursor.insert("id".to_string(), json!(format!("{PREFIX}{id}:{row}")));
+                cursor.insert("expiresAfterMs".to_string(), json!(remaining.as_millis()));
+            }
         }
         Ok(value)
     }

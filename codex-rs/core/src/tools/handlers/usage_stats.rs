@@ -23,6 +23,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod outcomes;
 mod presentation;
 mod snapshots;
 mod spec;
@@ -306,11 +307,6 @@ fn execute(
             })
         }
         UsageStatsAction::PerformanceReview => {
-            if args.outcome_cursor.is_some() {
-                return Err(tool_error(
-                    "performance review cursor is expired or unavailable; request a new first page",
-                ));
-            }
             let outcome_limit = args.outcome_limit.unwrap_or(8);
             if !(1..=50).contains(&outcome_limit) {
                 return Err(tool_error("outcome_limit must be between 1 and 50"));
