@@ -162,6 +162,8 @@ fn lookup_ids_with_hash(
     ids: &BTreeSet<String>,
     hash_id: impl Fn(&str) -> u64,
 ) -> Result<IdLookup> {
+    #[cfg(test)]
+    let mut profile = crate::performance_tests::RecoveryProfile::new("record-id-lookup");
     validate_descriptor(root, descriptor)?;
     if ids.is_empty() {
         return Ok(IdLookup {
@@ -177,6 +179,8 @@ fn lookup_ids_with_hash(
     }
     for run in &descriptor.runs {
         let bloom = crate::id_index_bloom::load(root, run);
+        #[cfg(test)]
+        profile.mark("bloom-read");
         let candidates = by_hash
             .keys()
             .copied()
@@ -191,6 +195,8 @@ fn lookup_ids_with_hash(
         storage_file::protect_existing(&fence_path)?;
         let mut data = File::open(path)?;
         let fences = read_fences(&fence_path, run)?;
+        #[cfg(test)]
+        profile.mark("fence-read");
         let mut pages = BTreeMap::<u64, Vec<u64>>::new();
         for hash in candidates {
             if let Some(offset) = candidate_offset(&fences, hash) {
@@ -231,6 +237,8 @@ fn lookup_ids_with_hash(
                 }
             }
         }
+        #[cfg(test)]
+        profile.mark("exact-page-probes");
     }
     Ok(IdLookup {
         found,

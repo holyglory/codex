@@ -34,6 +34,37 @@ const LIMITS: JournalReadLimits = JournalReadLimits {
 const RECOVERY_TAIL: u64 = 8_192;
 const HELPER: &str = "performance_tests::fresh_process_recovery_helper";
 
+pub(crate) struct RecoveryProfile {
+    component: &'static str,
+    started: Option<Instant>,
+    previous: Option<Instant>,
+}
+
+impl RecoveryProfile {
+    pub(crate) fn new(component: &'static str) -> Self {
+        let started =
+            std::env::var_os("CODEX_USAGE_SCALE_PROFILE_RECOVERY").map(|_| Instant::now());
+        Self {
+            component,
+            started,
+            previous: started,
+        }
+    }
+
+    pub(crate) fn mark(&mut self, stage: &str) {
+        if let (Some(started), Some(previous)) = (self.started, self.previous) {
+            let now = Instant::now();
+            eprintln!(
+                "usage-recovery-profile {}",
+                json!({"component":self.component,"stage":stage,
+                    "stageMs":milliseconds(now.duration_since(previous)),
+                    "totalMs":milliseconds(now.duration_since(started))})
+            );
+            self.previous = Some(now);
+        }
+    }
+}
+
 #[derive(Default, Serialize)]
 struct Publication {
     batches: u64,
@@ -554,6 +585,20 @@ fn fresh_process_recovery_helper() {
         && pending_entries == 0
         && elapsed < Duration::from_secs(2);
     fs::write(receipt_path, serde_json::to_vec_pretty(&json!({"fullRecoveryMs":milliseconds(elapsed),"head":head,"publishedWatermark":published.watermark,"publishedByteOffset":published.journal_byte_offset,"pendingEntries":pending_entries,"fullyRecovered":fully_recovered,"totals":actual,"operationCounts":counts,"exactTotalsMatch":totals_match,"exactOperationCountsMatch":counts_match,"manifestPolls":polls,"immediateSnapshot":{"openAndSummaryMs":milliseconds(immediate_elapsed),"watermark":immediate.manifest().watermark,"pendingEntries":immediate.pending_entries(),"summary":immediate_summary}})).expect("recovery JSON")).expect("recovery receipt");
+    // A failed timed attempt can still finish its diagnostic trace. Keep the
+    // original 2s result sealed above; this wait never changes acceptance.
+    if !fully_recovered && std::env::var_os("CODEX_USAGE_SCALE_PROFILE_RECOVERY").is_some() {
+        while published.watermark < head.sequence && started.elapsed() < Duration::from_secs(30) {
+            thread::sleep(Duration::from_millis(20));
+            published = manifests.load().expect("post-deadline diagnostic progress");
+        }
+        eprintln!(
+            "usage-recovery-profile {}",
+            json!({"component":"helper","stage":"post-deadline-drain",
+                "totalMs":milliseconds(started.elapsed()),"watermark":published.watermark,
+                "target":head.sequence})
+        );
+    }
     drop(runtime);
     assert!(
         fully_recovered,
@@ -638,6 +683,150 @@ fn retained_scale_snapshot_queries() {
     assert!(
         failures.is_empty(),
         "retained fixture query targets failed; inspect {}",
+        receipt_path.display()
+    );
+}
+
+#[test]
+#[ignore = "repeat fresh-process recovery against a retained synthetic fixture"]
+fn retained_scale_startup_recovery() {
+    let artifact = PathBuf::from(
+        std::env::var_os("CODEX_USAGE_SCALE_REUSE_ARTIFACT")
+            .expect("set CODEX_USAGE_SCALE_REUSE_ARTIFACT to a retained synthetic fixture"),
+    );
+    let expectation_path = artifact.join("expectations.json");
+    let expected: fixture::Expectations =
+        serde_json::from_slice(&fs::read(&expectation_path).expect("independent fixture oracle"))
+            .expect("fixture expectations");
+    let repetitions = std::env::var("CODEX_USAGE_SCALE_RECOVERY_REPETITIONS")
+        .map(|value| value.parse::<u32>().expect("integer repetition count"))
+        .unwrap_or(3);
+    assert!((1..=10).contains(&repetitions), "bounded repetition count");
+    let codex_home = artifact.join("codex-home");
+    let root = codex_home.join(USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("timestamp")
+        .as_nanos();
+    let profile = artifact.join(format!("startup-recovery-{}-{stamp}", std::process::id()));
+    fs::create_dir(&profile).expect("retain independent recovery evidence");
+    let mut attempts = Vec::new();
+    let mut failures = Vec::new();
+    for attempt in 0..repetitions {
+        let before = journal.checkpoint().expect("captured baseline frontier");
+        let reader = UsageReader::open_at(&root).expect("pin retained fixture");
+        assert_eq!(reader.manifest().watermark, before.sequence);
+        assert_eq!(reader.manifest().journal_byte_offset, before.byte_offset);
+        let mut wanted = expected.global.clone();
+        wanted.records = before.sequence;
+        assert_eq!(
+            reader
+                .totals(TimeRange::all(), &UsageFilter::default())
+                .expect("baseline exact totals"),
+            wanted
+        );
+        assert_eq!(
+            published_counts(&root, reader.manifest()).expect("baseline exact operation counts"),
+            recovery_counts(&expected.global_counts, before.sequence)
+        );
+        drop(reader);
+        // Live indices follow the acknowledged frontier, so repeated profiling
+        // cannot accidentally replay IDs from an earlier recovery attempt.
+        let first = before
+            .sequence
+            .checked_sub(fixture::FACTS)
+            .expect("full fixture baseline");
+        journal
+            .append_batch(
+                (first..first + RECOVERY_TAIL)
+                    .map(|index| JournalPayload::Record(fixture::live_record(index)))
+                    .collect::<Vec<_>>(),
+            )
+            .expect("capture unique unpublished recovery tail");
+        let head = journal.checkpoint().expect("recovery target");
+        assert_eq!(head.sequence, before.sequence + RECOVERY_TAIL);
+        let recovery_path = profile.join(format!("attempt-{attempt}.json"));
+        let started = Instant::now();
+        let child = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", HELPER, "--ignored", "--nocapture"])
+            .env("CODEX_USAGE_SCALE_HOME", &codex_home)
+            .env("CODEX_USAGE_SCALE_EXPECTATIONS", &expectation_path)
+            .env("CODEX_USAGE_SCALE_RECOVERY_RECEIPT", &recovery_path)
+            .env("CODEX_USAGE_SCALE_PROFILE_RECOVERY", "1")
+            .output()
+            .expect("fresh-process recovery");
+        let elapsed = started.elapsed();
+        fs::write(
+            profile.join(format!("attempt-{attempt}.stdout")),
+            &child.stdout,
+        )
+        .expect("retain child stdout");
+        fs::write(
+            profile.join(format!("attempt-{attempt}.stderr")),
+            &child.stderr,
+        )
+        .expect("retain child stage profile");
+        let recovery = fs::read(&recovery_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({"missingReceipt":true}));
+        target(
+            "fresh-process startup/recovery",
+            elapsed,
+            Duration::from_secs(2),
+            &mut failures,
+        );
+        if !child.status.success()
+            || recovery["fullyRecovered"].as_bool() != Some(true)
+            || recovery["exactTotalsMatch"].as_bool() != Some(true)
+            || recovery["exactOperationCountsMatch"].as_bool() != Some(true)
+            || recovery["publishedWatermark"].as_u64() != Some(head.sequence)
+            || recovery["publishedByteOffset"].as_u64() != Some(head.byte_offset)
+            || recovery["pendingEntries"].as_u64() != Some(0)
+        {
+            failures.push(format!(
+                "recovery attempt {attempt} failed its original exact 2s target"
+            ));
+        }
+        // Retain the failed result and leave the shared synthetic fixture fully
+        // published for a subsequent candidate or attempt.
+        let final_publication = publish_through(&root, head);
+        let recovered = UsageReader::open_at(&root).expect("final consistent snapshot");
+        wanted.records = head.sequence;
+        assert_eq!(
+            recovered
+                .totals(TimeRange::all(), &UsageFilter::default())
+                .expect("final exact totals"),
+            wanted
+        );
+        assert_eq!(
+            published_counts(&root, recovered.manifest()).expect("final exact operation counts"),
+            recovery_counts(&expected.global_counts, head.sequence)
+        );
+        assert_eq!(recovered.pending_entries(), 0);
+        attempts.push(json!({"attempt":attempt,"before":before,"head":head,
+            "freshProcessMs":milliseconds(elapsed),"freshProcess":recovery,
+            "finalPublication":final_publication}));
+    }
+    let receipt_path = profile.join("acceptance.json");
+    fs::write(
+        &receipt_path,
+        serde_json::to_vec_pretty(&json!({
+            "kind":"retainedFixtureStartupRecovery","baselineFacts":fixture::FACTS,
+            "recoveryTailEntries":RECOVERY_TAIL,"attempts":attempts,"failures":failures
+        }))
+        .expect("profile receipt"),
+    )
+    .expect("retain profile acceptance");
+    eprintln!(
+        "usage-scale {}",
+        json!({"stage":"retained-startup-recovery",
+        "receipt":receipt_path,"failedChecks":failures.len()})
+    );
+    assert!(
+        failures.is_empty(),
+        "retained startup recovery failed; inspect {}",
         receipt_path.display()
     );
 }

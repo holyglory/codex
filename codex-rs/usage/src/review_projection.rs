@@ -193,6 +193,8 @@ pub(crate) fn publish_review_projection(
     records: &[(u64, UsageRecord)],
     connection: &Connection,
 ) -> Result<(String, BTreeMap<String, ReviewCounts>)> {
+    #[cfg(test)]
+    let mut profile = crate::performance_tests::RecoveryProfile::new("review-projection");
     let prior = JournalCheckpoint {
         sequence: manifest.watermark,
         byte_offset: manifest.journal_byte_offset,
@@ -225,6 +227,8 @@ pub(crate) fn publish_review_projection(
         read_review_counts_map(root, &descriptor)?
     };
     let mut updates = BTreeMap::<String, Vec<(u64, &UsageRecord)>>::new();
+    #[cfg(test)]
+    profile.mark("descriptor-and-cached-counts");
     let mut contributions = Vec::new();
     let mut classifications = Vec::new();
     for (sequence, record) in records {
@@ -272,6 +276,8 @@ pub(crate) fn publish_review_projection(
         updates.keys().cloned().collect(),
         connection,
     )?;
+    #[cfg(test)]
+    profile.mark("operation-address-lookup");
     let mut affected = BTreeMap::<u64, Vec<(u64, &UsageRecord)>>::new();
     for (id, mut facts) in updates {
         facts.sort_by_key(|(sequence, _)| *sequence);
@@ -403,6 +409,8 @@ pub(crate) fn publish_review_projection(
         }
     }
     descriptor.partitions = partitions.into_values().collect();
+    #[cfg(test)]
+    profile.mark("changed-operation-partitions");
     for values in descriptor.dimension_partitions.values_mut() {
         values.sort_unstable();
         values.dedup();
@@ -427,7 +435,11 @@ pub(crate) fn publish_review_projection(
         storage_file::finish_generated(&membership_path)?;
         descriptor.membership_index_file = Some(membership_index_file);
     }
+    #[cfg(test)]
+    profile.mark("combined-membership-index");
     descriptor.counts_file = counts.finish(stamp, &mut cached_counts)?;
+    #[cfg(test)]
+    profile.mark("operation-counts");
     if !contributions.is_empty() {
         contributions.sort_by(|a, b| {
             (&a.repository_id, a.observed_at_ms, &a.record_id).cmp(&(
@@ -476,8 +488,12 @@ pub(crate) fn publish_review_projection(
         descriptor.classification_files.push(file);
     }
     descriptor.watermark = next;
+    #[cfg(test)]
+    profile.mark("contributions-and-classifications");
     let file = format!("review-projection-{stamp}.json");
     write_json(root, &file, &descriptor)?;
+    #[cfg(test)]
+    profile.mark("descriptor-write");
     Ok((file, cached_counts))
 }
 

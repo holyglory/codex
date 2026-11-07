@@ -63,6 +63,8 @@ impl UsagePublisher {
     /// Publish one bounded journal prefix, retaining every previous immutable file.
     /// A failed attempt leaves its files unreferenced and its journal entries intact.
     pub fn publish_batch(&mut self, limits: JournalReadLimits) -> Result<UsageManifest> {
+        #[cfg(test)]
+        let mut profile = crate::performance_tests::RecoveryProfile::new("publisher");
         let directory = self.root.join("segments");
         storage_file::ensure_usage_directory(&self.root)?;
         let lock = storage_file::open_read_write(&self.root.join(".snapshot.lock"))?;
@@ -84,6 +86,8 @@ impl UsagePublisher {
                 "publisher byte limit must be at least {minimum_bytes}"
             )));
         }
+        #[cfg(test)]
+        profile.mark("manifest-and-journal-read");
         if batch.entries.is_empty()
             && manifest.pending_corrections.is_empty()
             && manifest.summaries_include_corrections
@@ -165,6 +169,8 @@ impl UsagePublisher {
             )?
         };
         records.retain(|id, _| !existing.contains_key(id));
+        #[cfg(test)]
+        profile.mark("record-identity-lookup");
         if let Some(cutoff) = manifest.raw_admission_cutoff_at_ms {
             let before = records.len();
             records.retain(|_, (_, record)| record.effective_observed_at_ms() >= cutoff);
@@ -187,6 +193,8 @@ impl UsagePublisher {
                         .collect::<BTreeSet<_>>()
                 })
                 .unwrap_or_default();
+        #[cfg(test)]
+        profile.mark("prior-projection-metadata");
         let (review_file, review_counts) = publish_review_projection(
             &self.root,
             &manifest,
@@ -195,6 +203,8 @@ impl UsagePublisher {
             &records,
             &connection,
         )?;
+        #[cfg(test)]
+        profile.mark("review-projection-publication");
         manifest.review_projection_file = Some(review_file);
         manifest.review_counts = review_counts;
         manifest.review_counts_watermark = Some(batch.next.sequence);
@@ -215,6 +225,8 @@ impl UsagePublisher {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+        #[cfg(test)]
+        profile.mark("new-projection-metadata");
         let mut touched = BTreeMap::<i64, Vec<UsageRecord>>::new();
         let mut lineage = Vec::new();
         for (_, record) in records {
@@ -281,6 +293,8 @@ impl UsagePublisher {
             }
             segment_by_hour.insert(hour, file);
         }
+        #[cfg(test)]
+        profile.mark("raw-segment-publication");
         if !index_candidates.is_empty() {
             let mut previous = manifest
                 .id_index_file
@@ -352,6 +366,8 @@ impl UsagePublisher {
             )?;
             manifest.id_index_file = Some(write.file);
         }
+        #[cfg(test)]
+        profile.mark("record-id-index-publication");
 
         let seen = find_corrections(
             &connection,
@@ -510,6 +526,8 @@ impl UsagePublisher {
         #[cfg(unix)]
         std::fs::File::open(&directory)?.sync_all()?;
         self.manifests.save(&manifest)?;
+        #[cfg(test)]
+        profile.mark("corrections-membership-and-manifest-save");
         Ok(manifest)
     }
 }
