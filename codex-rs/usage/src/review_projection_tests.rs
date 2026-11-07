@@ -105,7 +105,11 @@ fn assert_private_projection(root: &Path, manifest: &UsageManifest) {
     ];
     if let Some(file) = &descriptor.operation_id_index_file {
         files.push(file.clone());
-        for entry in operation_id_index::load(root, &descriptor).expect("operation index").expect("indexed projection").runs {
+        for entry in operation_id_index::load(root, &descriptor)
+            .expect("operation index")
+            .expect("indexed projection")
+            .runs
+        {
             files.extend([entry.run.data_file, entry.run.fence_file]);
             files.extend(entry.run.bloom_file);
         }
@@ -145,7 +149,9 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         .publish_batch(limits())
         .expect("publish open operation");
     let open_descriptor = descriptor(root, &open_manifest);
-    let open_index = operation_id_index::load(root, &open_descriptor).expect("first index").expect("fresh index");
+    let open_index = operation_id_index::load(root, &open_descriptor)
+        .expect("first index")
+        .expect("fresh index");
     let pinned_reader = crate::UsageReader::open_at(root).expect("pin open summary");
     let open_summary = pinned_reader
         .summary(TimeRange::all(), &UsageFilter::default())
@@ -215,8 +221,13 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         open_summary
     );
     let closed = descriptor(root, &restarted);
-    let closed_index = operation_id_index::load(root, &closed).expect("advanced index").expect("fresh index");
-    assert_eq!(closed_index.runs, open_index.runs, "late facts retain the original first-sequence address");
+    let closed_index = operation_id_index::load(root, &closed)
+        .expect("advanced index")
+        .expect("fresh index");
+    assert_eq!(
+        closed_index.runs, open_index.runs,
+        "late facts retain the original first-sequence address"
+    );
     assert_eq!(closed_index.watermark.sequence, restarted.watermark);
     assert_eq!(
         (closed.complete_from_sequence, closed.watermark),
@@ -523,9 +534,12 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
     let unavailable_membership = first_membership.with_extension("unavailable");
     fs::rename(&first_membership, &unavailable_membership)
         .expect("make unrelated fragment unavailable");
-    let old_address = root.join("segments").join(&first.partitions[0].operation_index_file);
+    let old_address = root
+        .join("segments")
+        .join(&first.partitions[0].operation_index_file);
     let unavailable_address = old_address.with_extension("unavailable");
-    fs::rename(&old_address, &unavailable_address).expect("publication must use the global exact index");
+    fs::rename(&old_address, &unavailable_address)
+        .expect("publication must use the global exact index");
     let mut unrelated = started("second-partition", "tool", /*at_ms*/ 6_000);
     unrelated.repository_id = Some("repository-b".into());
     unrelated.thread_id = Some("thread-b".into());
@@ -577,12 +591,18 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
         select_review_files(root, &second, range, &filter).expect("metadata-only finite selection"),
         vec![first.partitions[0].file.clone()]
     );
-    let requested = BTreeSet::from(["first-partition".to_string(), "not-yet-captured".to_string()]);
+    let requested = BTreeSet::from([
+        "first-partition".to_string(),
+        "not-yet-captured".to_string(),
+    ]);
     let connection = Connection::open_in_memory().expect("connection");
     let mut legacy = second.clone();
     legacy.operation_id_index_file = None;
-    assert_eq!(load_review_operations(root, &legacy, &requested, &connection).expect("optional legacy fallback"),
-        all_operations(root, &first));
+    assert_eq!(
+        load_review_operations(root, &legacy, &requested, &connection)
+            .expect("optional legacy fallback"),
+        all_operations(root, &first)
+    );
     for partition in &second.partitions {
         fs::remove_file(root.join("segments").join(&partition.operation_index_file))
             .expect("global exact lookup must not open legacy Parquet indexes");

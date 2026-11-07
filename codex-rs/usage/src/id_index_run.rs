@@ -22,7 +22,9 @@ use crate::storage_file;
 
 /// Payloads share exact run I/O while their owners define coverage and retention.
 /// The routing hash is never identity; implementations expose the complete ID.
-pub(crate) trait ExactIdEntry: serde::Serialize + serde::de::DeserializeOwned + Clone + Eq {
+pub(crate) trait ExactIdEntry:
+    serde::Serialize + serde::de::DeserializeOwned + Clone + Eq
+{
     #[cfg(test)]
     const LOOKUP_PROFILE_COMPONENT: &'static str;
     fn id(&self) -> &str;
@@ -32,8 +34,12 @@ pub(crate) trait ExactIdEntry: serde::Serialize + serde::de::DeserializeOwned + 
 impl ExactIdEntry for RecordIdEntry {
     #[cfg(test)]
     const LOOKUP_PROFILE_COMPONENT: &'static str = "record-id-lookup";
-    fn id(&self) -> &str { &self.id }
-    fn first_sequence(&self) -> u64 { self.first_sequence }
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn first_sequence(&self) -> u64 {
+        self.first_sequence
+    }
 }
 
 const DATA_MAGIC: &[u8; 8] = b"CIDX1RUN";

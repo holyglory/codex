@@ -1,16 +1,27 @@
 //! Shared exact probes; payload owners retain their own admission and retention rules.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::BufReader;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::path::Path;
 
-use super::{IdRunDescriptor, candidate_offset, data_path, invalid, read_fences};
+use super::IdRunDescriptor;
+use super::candidate_offset;
+use super::data_path;
+use super::invalid;
+use super::read_fences;
 use crate::Result;
-use crate::id_index_run::{ExactIdEntry, next_frame};
+use crate::id_index_run::ExactIdEntry;
+use crate::id_index_run::next_frame;
 use crate::storage_file;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum Duplicates { Earliest, Reject }
+pub(crate) enum Duplicates {
+    Earliest,
+    Reject,
+}
 
 pub(crate) fn lookup<'a, T: ExactIdEntry>(
     root: &Path,
@@ -68,15 +79,23 @@ pub(crate) fn lookup<'a, T: ExactIdEntry>(
                     if current_hash > hash {
                         break;
                     }
-                    if current_hash == hash && by_hash[&hash].contains(&current.id()) && retain(current)? {
+                    if current_hash == hash
+                        && by_hash[&hash].contains(&current.id())
+                        && retain(current)?
+                    {
                         match found.get(current.id()) {
                             Some(_) if duplicates == Duplicates::Reject => {
                                 return Err(invalid("conflicting current operation addresses"));
                             }
-                            Some(previous) if previous.first_sequence() < current.first_sequence() => {}
-                            Some(previous) if previous.first_sequence() == current.first_sequence() => {
+                            Some(previous)
+                                if previous.first_sequence() < current.first_sequence() => {}
+                            Some(previous)
+                                if previous.first_sequence() == current.first_sequence() =>
+                            {
                                 if previous != current {
-                                    return Err(invalid("conflicting exact-id facts at one sequence"));
+                                    return Err(invalid(
+                                        "conflicting exact-id facts at one sequence",
+                                    ));
                                 }
                             }
                             _ => {

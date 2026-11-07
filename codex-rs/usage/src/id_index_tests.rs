@@ -493,8 +493,21 @@ fn compaction_streams_runs_and_rejects_stale_install_without_releasing_pins() {
         .descriptor;
     }
     let next = checkpoint(MAX_ID_RUNS as u64 + 1);
-    let deferred = entry("record-after-cap", next.sequence, "segment-after-cap.parquet");
-    assert!(publish_id_index(root, Some(&current), next, "over-cap", std::slice::from_ref(&deferred)).is_err());
+    let deferred = entry(
+        "record-after-cap",
+        next.sequence,
+        "segment-after-cap.parquet",
+    );
+    assert!(
+        publish_id_index(
+            root,
+            Some(&current),
+            next,
+            "over-cap",
+            std::slice::from_ref(&deferred)
+        )
+        .is_err()
+    );
     assert!(!root.join("segments/record-id-run-over-cap-l0.bin").exists());
     let plan = plan_id_compaction(&current).expect("bounded compaction plan");
     let old_descriptor = current.clone();
@@ -559,10 +572,21 @@ fn compaction_streams_runs_and_rejects_stale_install_without_releasing_pins() {
             .len(),
         2
     );
-    let resumed = publish_id_index(root, Some(&installed.descriptor), next, "after-maintenance", &[deferred])
-        .expect("publication resumes after bounded merge");
-    assert_eq!(lookup_ids(root, &resumed.descriptor, &ids(&["record-after-cap"]))
-        .expect("resumed exact lookup").found["record-after-cap"].first_sequence, next.sequence);
+    let resumed = publish_id_index(
+        root,
+        Some(&installed.descriptor),
+        next,
+        "after-maintenance",
+        &[deferred],
+    )
+    .expect("publication resumes after bounded merge");
+    assert_eq!(
+        lookup_ids(root, &resumed.descriptor, &ids(&["record-after-cap"]))
+            .expect("resumed exact lookup")
+            .found["record-after-cap"]
+            .first_sequence,
+        next.sequence
+    );
     let mut stale = current;
     stale.watermark = checkpoint(129);
     assert!(matches!(

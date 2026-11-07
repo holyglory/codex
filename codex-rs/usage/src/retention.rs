@@ -95,7 +95,9 @@ pub(crate) fn maintain(
         // Cursor-only scans and protected sidecars never keep the work loop
         // alive, including while an independent ID rewrite yields more steps.
         scan_corrections = corrected;
-        if (!id_progress && !operation_progress && !corrected) || started.elapsed() >= std::time::Duration::from_secs(10) {
+        if (!id_progress && !operation_progress && !corrected)
+            || started.elapsed() >= std::time::Duration::from_secs(10)
+        {
             break;
         }
     }

@@ -15,7 +15,8 @@ use crate::UsageManifest;
 use crate::UsageRecord;
 use crate::id_index::id_hash;
 use crate::operation_id_index;
-use crate::operation_id_index::{OperationIdEntry, OperationIdIndex};
+use crate::operation_id_index::OperationIdEntry;
+use crate::operation_id_index::OperationIdIndex;
 use crate::review_counts::ReviewCounts;
 use crate::review_counts::ReviewCountsUpdate;
 use crate::review_counts::read_review_counts_map;
@@ -290,10 +291,14 @@ pub(crate) fn publish_review_projection(
     )?;
     #[cfg(test)]
     profile.mark("operation-address-lookup");
-    if operation_index.as_ref().is_some_and(|index| index.runs.len() >= crate::id_index::MAX_ID_RUNS)
+    if operation_index
+        .as_ref()
+        .is_some_and(|index| index.runs.len() >= crate::id_index::MAX_ID_RUNS)
         && updates.keys().any(|id| !addresses.contains_key(id))
     {
-        return Err(invalid("operation-id publication awaits bounded run maintenance"));
+        return Err(invalid(
+            "operation-id publication awaits bounded run maintenance",
+        ));
     }
     let mut affected = BTreeMap::<u64, Vec<(u64, &UsageRecord)>>::new();
     for (id, mut facts) in updates {
@@ -343,7 +348,8 @@ pub(crate) fn publish_review_projection(
                 }
                 let state = ReviewOperation::from_fact(sequence, fact)?;
                 new_addresses.push(OperationIdEntry {
-                    operation_id: id.clone(), first_sequence: state.first_sequence,
+                    operation_id: id.clone(),
+                    first_sequence: state.first_sequence,
                 });
                 states.insert(id.clone(), state);
             }
@@ -425,10 +431,13 @@ pub(crate) fn publish_review_projection(
                 operation_id_bloom: operation_bloom(&rows),
                 // A removed partition may reappear before the journal leaves
                 // its sequence range. Older run addresses must stay retired.
-                operation_sequences: partitions.get(&partition).map_or(
-                    partition * REVIEW_PARTITION_SIZE < prior.sequence,
-                    |previous| previous.operation_sequences.is_some(),
-                ).then(|| operation_id_index::live_sequences(&rows)),
+                operation_sequences: partitions
+                    .get(&partition)
+                    .map_or(
+                        partition * REVIEW_PARTITION_SIZE < prior.sequence,
+                        |previous| previous.operation_sequences.is_some(),
+                    )
+                    .then(|| operation_id_index::live_sequences(&rows)),
             },
         );
         for values in descriptor.dimension_partitions.values_mut() {
@@ -549,7 +558,12 @@ pub(crate) fn publish_review_projection(
     }
     if let Some(index) = operation_index {
         descriptor.operation_id_index_file = Some(operation_id_index::publish(
-            root, index, next, descriptor.retired_operation_rows, stamp, new_addresses,
+            root,
+            index,
+            next,
+            descriptor.retired_operation_rows,
+            stamp,
+            new_addresses,
         )?);
     }
     descriptor.watermark = next;
@@ -576,7 +590,12 @@ fn find_addresses(
     connection: &Connection,
 ) -> Result<BTreeMap<String, u64>> {
     if let Some(index) = operation_index {
-        return operation_id_index::find_addresses(root, index, partitions, &ids.into_iter().collect());
+        return operation_id_index::find_addresses(
+            root,
+            index,
+            partitions,
+            &ids.into_iter().collect(),
+        );
     }
     #[cfg(test)]
     let mut profile = crate::performance_tests::RecoveryProfile::new("operation-addresses");
@@ -658,7 +677,13 @@ pub(crate) fn load_review_operations(
         .map(|partition| (partition.partition, partition))
         .collect::<BTreeMap<_, _>>();
     let index = operation_id_index::load(root, descriptor)?;
-    let addresses = find_addresses(root, &partitions, ids.iter().cloned().collect(), index.as_ref(), connection)?;
+    let addresses = find_addresses(
+        root,
+        &partitions,
+        ids.iter().cloned().collect(),
+        index.as_ref(),
+        connection,
+    )?;
     if addresses.is_empty() {
         return Ok(Vec::new());
     }
@@ -717,9 +742,11 @@ fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProje
         segment_path(root, &partition.membership_file)?;
         if partition.operation_count == 0
             || partition.operation_count as u64 > REVIEW_PARTITION_SIZE
-            || partition.operation_sequences.as_ref().is_some_and(|bits|
+            || partition.operation_sequences.as_ref().is_some_and(|bits| {
                 bits.len() != REVIEW_PARTITION_SIZE as usize / 64
-                || bits.iter().map(|word| word.count_ones()).sum::<u32>() != partition.operation_count)
+                    || bits.iter().map(|word| word.count_ones()).sum::<u32>()
+                        != partition.operation_count
+            })
             || partition.open_operations > partition.operation_count
             || previous.is_some_and(|id| id >= partition.partition)
         {

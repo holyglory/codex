@@ -165,8 +165,12 @@ fn lookup_ids_with_hash(
 ) -> Result<IdLookup> {
     validate_descriptor(root, descriptor)?;
     let found = exact_id_lookup::lookup(
-        root, &descriptor.runs, ids, hash_id,
-        exact_id_lookup::Duplicates::Earliest, |_| Ok(true),
+        root,
+        &descriptor.runs,
+        ids,
+        hash_id,
+        exact_id_lookup::Duplicates::Earliest,
+        |_| Ok(true),
     )?;
     Ok(IdLookup {
         found,
@@ -203,7 +207,9 @@ pub fn publish_id_index(
         return Err(invalid("record-id index entry lies outside its checkpoint"));
     }
     if !canonical.is_empty() && previous.runs.len() >= MAX_ID_RUNS {
-        return Err(invalid("record-id publication awaits bounded run maintenance"));
+        return Err(invalid(
+            "record-id publication awaits bounded run maintenance",
+        ));
     }
     let run = if canonical.is_empty() {
         None
