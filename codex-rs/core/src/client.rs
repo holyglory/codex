@@ -1935,6 +1935,7 @@ impl ResponsesHttpExecutor<'_> {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        let request_store = responses_metadata.request_store();
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
             .as_ref()
@@ -2028,8 +2029,12 @@ impl ResponsesHttpExecutor<'_> {
                 &self.client.state.thread_id.to_string(),
                 &model_info.slug,
                 codex_extension_api::ModelRequestKind::Generation,
+                &request_store,
                 &mut request.client_metadata,
             );
+            let mut observers = crate::model_request::telemetry(&interceptors);
+            observers.push(request_telemetry);
+            let request_telemetry = Arc::new(crate::model_request::RequestTelemetrySet(observers));
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
@@ -2131,6 +2136,7 @@ impl ModelClientSession {
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<WebsocketStreamOutcome> {
+        let request_store = responses_metadata.request_store();
         let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
         let provider = Arc::clone(&self.client.state.provider);
         let auth_manager = provider.auth_manager();
@@ -2330,6 +2336,7 @@ impl ModelClientSession {
                 } else {
                     codex_extension_api::ModelRequestKind::Generation
                 },
+                &request_store,
                 &mut ws_payload.client_metadata,
             );
             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
@@ -2369,10 +2376,13 @@ impl ModelClientSession {
                 ],
             );
             let stream_result = websocket_connection
-                .stream_request(
+                .stream_request_with_telemetry(
                     ws_request,
                     self.websocket_session.connection_reused(),
                     Some(Arc::clone(&self.turn_state)),
+                    Some(Arc::new(crate::model_request::RequestTelemetrySet(
+                        crate::model_request::telemetry(&interceptors),
+                    ))),
                 )
                 .await;
             if let Some(original_item_ids) = original_item_ids {
@@ -2526,6 +2536,9 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        let mut responses_metadata = responses_metadata.clone();
+        responses_metadata.request_store = Some(responses_metadata.request_store());
+        let responses_metadata = &responses_metadata;
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {

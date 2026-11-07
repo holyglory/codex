@@ -4,6 +4,7 @@ pub use codex_api::GuardianAssessment;
 pub use codex_api::ResponseEvent;
 use futures::stream::BoxStream;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Model response events owned by an interceptor or its downstream consumer.
 pub type ModelResponseStream = BoxStream<'static, Result<ResponseEvent, ModelResponseError>>;
@@ -27,6 +28,8 @@ pub struct ModelRequestInput<'a> {
     pub client_metadata: &'a mut Option<HashMap<String, String>>,
     /// Requested model identifier.
     pub model: &'a str,
+    /// Host-local state shared only by attempts of this logical request; never provider metadata.
+    pub request_store: &'a crate::ExtensionData,
 }
 
 /// Creates request-scoped interceptors without delaying inference.
@@ -39,6 +42,12 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
 /// Interceptors compose in registration order; dropping their stream must release unfinished work.
 /// Trusted host implementations must bound any model-visible content they synthesize.
 pub trait ModelResponseInterceptor: Send + Sync {
+    /// Optional content-free transport observation for this request. Existing interceptors need
+    /// not implement it; successful HTTP headers do not complete the response stream.
+    fn request_telemetry(&self) -> Option<Arc<dyn codex_api::RequestTelemetry>> {
+        None
+    }
+
     /// Wrap the response stream, optionally buffering, inspecting, or transforming events.
     /// The returned stream must own request state and propagate cancellation by dropping upstream.
     fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream;

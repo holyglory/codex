@@ -7,11 +7,16 @@ use codex_extension_api::ModelResponseStream;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "model_request_telemetry.rs"]
+mod telemetry;
+pub(crate) use telemetry::RequestTelemetrySet;
+
 pub(crate) fn prepare(
     contributors: &[Arc<dyn ModelRequestContributor>],
     thread_id: &str,
     model: &str,
     kind: ModelRequestKind,
+    request_store: &codex_extension_api::ExtensionData,
     metadata: &mut Option<HashMap<String, String>>,
 ) -> Vec<Box<dyn ModelResponseInterceptor>> {
     contributors
@@ -23,6 +28,7 @@ pub(crate) fn prepare(
                 thread_id,
                 client_metadata: &mut additions,
                 model,
+                request_store,
             });
             if let Some(additions) = additions {
                 for (key, value) in crate::responses_metadata::filter_extra_metadata(additions) {
@@ -33,6 +39,15 @@ pub(crate) fn prepare(
             }
             interceptor
         })
+        .collect()
+}
+
+pub(crate) fn telemetry(
+    interceptors: &[Box<dyn ModelResponseInterceptor>],
+) -> Vec<Arc<dyn codex_api::RequestTelemetry>> {
+    interceptors
+        .iter()
+        .filter_map(|interceptor| interceptor.request_telemetry())
         .collect()
 }
 

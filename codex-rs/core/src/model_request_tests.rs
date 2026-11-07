@@ -91,6 +91,7 @@ fn contributor_metadata_preserves_core_fields_and_existing_values() {
             "thread",
             "model",
             ModelRequestKind::Generation,
+            &codex_extension_api::ExtensionData::new("request"),
             &mut metadata
         )
         .is_empty()

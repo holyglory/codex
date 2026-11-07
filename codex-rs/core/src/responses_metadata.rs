@@ -1,3 +1,6 @@
+#[path = "responses_metadata_debug.rs"]
+mod debug;
+
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -232,8 +235,10 @@ pub(crate) enum TurnToolSource {
 /// `client_metadata["x-codex-turn-metadata"]`. Flat `client_metadata` keys and direct HTTP/ws
 /// headers are generated compatibility projections of this snapshot, not separate sources of
 /// truth.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CodexResponsesMetadata {
+    /// Host-local retry identity; excluded from every header and body projection.
+    pub(crate) request_store: Option<std::sync::Arc<codex_extension_api::ExtensionData>>,
     /// The private reviewer forwards recorded items through its parent's raw-event subscription.
     pub(crate) guardian_recorded_items: bool,
     /// Guardian parent reference; projected only onto a Guardian request.
@@ -285,6 +290,7 @@ impl CodexResponsesMetadata {
         window_id: String,
     ) -> Self {
         Self {
+            request_store: None,
             parent_response_id: None,
             parent_routing_affinity: None,
             guardian_recorded_items: false,
@@ -325,6 +331,12 @@ impl CodexResponsesMetadata {
 
     pub(crate) fn has_turn_metadata(&self) -> bool {
         self.request_kind.is_some()
+    }
+
+    pub(crate) fn request_store(&self) -> std::sync::Arc<codex_extension_api::ExtensionData> {
+        self.request_store.clone().unwrap_or_else(|| {
+            std::sync::Arc::new(codex_extension_api::ExtensionData::new("model_request"))
+        })
     }
 
     pub(crate) fn turn_metadata_json(&self) -> Option<String> {
