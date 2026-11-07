@@ -2551,8 +2551,13 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let code_mode_tools = tools.clone().map(|tool| {
+            codex_tools::augment_tool_spec_for_code_mode(
+                tool, /*code_mode_input_schema_max_bytes*/ None,
+            )
+        });
         let bytes = serde_json::to_vec_pretty(&serde_json::json!({
-            "schemaVersion":1,"tools":tools,"sections":sections,
+            "schemaVersion":2,"tools":tools,"sections":sections,"codeModeTools":code_mode_tools,
         }))
         .expect("serialize schema contract");
         assert!(

@@ -961,6 +961,40 @@ fn schema_evidence_reconstruction_removes_only_exact_reviewed_definitions() {
     changed_section[0]["tools"][0]["description"] =
         json!("### `usage_stats`\nunreviewed declaration");
     assert!(schema_evidence::reconstruct(&changed_section, &contract).is_err());
+    let mut variant_contract = contract.clone();
+    variant_contract["schemaVersion"] = json!(2);
+    let variants = tools
+        .iter()
+        .map(|tool| {
+            let name = tool["name"].as_str().expect("reviewed name");
+            let description = format!(
+                "reviewed\n\nexec tool declaration:\n```ts\ndeclare const tools: {{ {name}(args: unknown): Promise<unknown>; }};\n```"
+            );
+            variant_contract["sections"][name] = json!(format!("### `{name}`\n{description}"));
+            let mut variant = tool.clone();
+            variant["description"] = json!(description);
+            variant
+        })
+        .collect::<Vec<_>>();
+    variant_contract["codeModeTools"] = json!(variants);
+    assert_eq!(
+        schema_evidence::reconstruct(&json!(tools), &variant_contract)
+            .expect("base schemas remain approved"),
+        json!([])
+    );
+    assert_eq!(
+        schema_evidence::reconstruct(&json!(variants), &variant_contract)
+            .expect("exact Code Mode description variants"),
+        json!([])
+    );
+    for field in ["strict", "parameters", "description"] {
+        let mut changed = json!(variants);
+        changed[0][field] = json!("unreviewed");
+        assert!(schema_evidence::reconstruct(&changed, &variant_contract).is_err());
+    }
+    let mut changed_variant_contract = variant_contract;
+    changed_variant_contract["codeModeTools"][0]["strict"] = json!(true);
+    assert!(schema_evidence::reconstruct(&json!(tools), &changed_variant_contract).is_err());
     let mut unrelated = current;
     unrelated[0]["description"] = json!("unrelated namespace change");
     assert_ne!(

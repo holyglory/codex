@@ -3,6 +3,8 @@
 import copy
 import re
 
+from tool_schema_contract_variants import approved_code_mode_tools
+
 NAMES = {"account_management", "usage_stats", "usage_activity"}
 HEADER = re.compile(
     r"(?P<prefix>(?:[0-9]{2,}:additional_tools/[^\s()]+ |  tools ))"
@@ -27,6 +29,7 @@ def reconstruct_catalog(current, contract):
         or any(not isinstance(section, str) for section in sections.values())
     ):
         raise ValueError("contract must contain exactly the three approved tools")
+    code_mode_tools = approved_code_mode_tools(contract)
 
     def visit(catalog):
         if not isinstance(catalog, list):
@@ -34,7 +37,9 @@ def reconstruct_catalog(current, contract):
         result = []
         for tool in catalog:
             if tool.get("name") in NAMES:
-                if tool != reviewed[tool["name"]]:
+                if tool != reviewed[tool["name"]] and tool != code_mode_tools.get(
+                    tool["name"]
+                ):
                     raise ValueError("direct tool differs from the approved contract")
                 continue
             tool = copy.deepcopy(tool)

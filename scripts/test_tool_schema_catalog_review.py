@@ -1,9 +1,11 @@
 """Static proof regressions; no Codex process or snapshot acceptance is involved."""
 
+import copy
 import unittest
 
 from review_tool_schema_hashes import fingerprint
 from tool_schema_catalog_review import review_body
+from tool_schema_catalog_review import reconstruct_catalog
 
 
 BASE = {
@@ -211,6 +213,72 @@ class CatalogReviewTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.review(before, after.replace(new_rows, delta))
+
+
+class ContractVariantTests(unittest.TestCase):
+    def setUp(self):
+        self.tools = [
+            {
+                "type": "function",
+                "name": tool["name"],
+                "description": "Approved.",
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"action": {"type": "string", "enum": ["list"]}},
+                    "required": ["action"],
+                },
+            }
+            for tool in APPROVED
+        ]
+        self.variants = copy.deepcopy(self.tools)
+        sections = {}
+        for variant in self.variants:
+            name = variant["name"]
+            variant["description"] = (
+                "Approved.\n\nexec tool declaration:\n```ts\n"
+                f'declare const tools: {{ {name}(args: {{ action: "list"; }}): Promise<unknown>; }};\n```'
+            )
+            sections[name] = f"### `{name}`\n" + variant["description"]
+        self.contract = {
+            "schemaVersion": 2,
+            "tools": self.tools,
+            "sections": sections,
+            "codeModeTools": self.variants,
+        }
+
+    def test_both_exact_production_forms_are_accepted(self):
+        self.assertEqual(reconstruct_catalog(self.tools, self.contract), [])
+        self.assertEqual(reconstruct_catalog(self.variants, self.contract), [])
+
+    def test_changed_captured_fields_are_rejected(self):
+        for field, value in [
+            ("strict", True),
+            ("defer_loading", True),
+            ("parameters", {}),
+            ("description", "Other."),
+        ]:
+            changed = copy.deepcopy(self.variants)
+            changed[0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                reconstruct_catalog(changed, self.contract)
+
+    def test_forged_export_and_matching_section_are_rejected(self):
+        changed = copy.deepcopy(self.contract)
+        name = changed["codeModeTools"][0]["name"]
+        changed["codeModeTools"][0]["description"] += "\nOther instructions."
+        changed["sections"][name] += "\nOther instructions."
+        with self.assertRaises(ValueError):
+            reconstruct_catalog(changed["codeModeTools"], changed)
+
+    def test_version_one_does_not_admit_code_mode_variants(self):
+        legacy = copy.deepcopy(self.contract)
+        legacy["schemaVersion"] = 1
+        del legacy["codeModeTools"]
+        self.assertEqual(reconstruct_catalog(self.tools, legacy), [])
+        with self.assertRaises(ValueError):
+            reconstruct_catalog(self.variants, legacy)
 
 
 if __name__ == "__main__":

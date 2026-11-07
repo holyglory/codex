@@ -44,6 +44,18 @@ pub(super) fn record(requests: &[CapturedRequest]) -> AuditResult<()> {
 }
 
 fn validate_contract(contract: &Value) -> AuditResult<()> {
+    let version = match contract.get("schemaVersion") {
+        None => 1,
+        Some(version) => version
+            .as_u64()
+            .ok_or("invalid tool-schema contract version")?,
+    };
+    if version != 1 && version != 2 {
+        return Err("unsupported tool-schema contract version".into());
+    }
+    if version == 1 && contract.get("codeModeTools").is_some() {
+        return Err("Code Mode variants require contract version 2".into());
+    }
     let tools = contract["tools"]
         .as_array()
         .ok_or("contract tools missing")?;
@@ -62,6 +74,44 @@ fn validate_contract(contract: &Value) -> AuditResult<()> {
             || !sections.get(name).is_some_and(Value::is_string)
         {
             return Err("contract tool identity is invalid".into());
+        }
+        if version == 2 {
+            let variants = contract["codeModeTools"]
+                .as_array()
+                .filter(|variants| variants.len() == NAMES.len())
+                .ok_or("contract must contain exactly three Code Mode variants")?;
+            let matching = variants
+                .iter()
+                .filter(|tool| tool["name"] == name)
+                .collect::<Vec<_>>();
+            let [variant] = matching.as_slice() else {
+                return Err("Code Mode contract variant identity is invalid".into());
+            };
+            let mut expected = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .ok_or("reviewed tool absent from contract")?
+                .clone();
+            let heading = format!("### `{name}`\n");
+            let description = sections[name]
+                .as_str()
+                .and_then(|section| section.strip_prefix(heading.as_str()))
+                .ok_or("Code Mode contract section is not anchored")?;
+            let prefix = format!(
+                "{}\n\nexec tool declaration:\n```ts\n",
+                expected["description"]
+                    .as_str()
+                    .ok_or("reviewed description missing")?
+            );
+            if !description.starts_with(&prefix) || !description.ends_with("\n```") {
+                return Err(
+                    "Code Mode contract description is not the approved augmentation".into(),
+                );
+            }
+            expected["description"] = Value::String(description.to_string());
+            if fingerprint_bytes(variant) != fingerprint_bytes(&expected) {
+                return Err("Code Mode contract variant changes unapproved fields".into());
+            }
         }
     }
     Ok(())
@@ -138,7 +188,19 @@ fn reconstruct_tool(tool: &Value, contract: &Value) -> AuditResult<Option<Value>
             .as_array()
             .and_then(|tools| tools.iter().find(|tool| tool["name"] == name))
             .ok_or("reviewed tool absent from contract")?;
-        if fingerprint_bytes(tool) != fingerprint_bytes(&portable_tool_schema(expected)) {
+        let matches_code_mode = contract["schemaVersion"] == 2
+            && contract["codeModeTools"]
+                .as_array()
+                .is_some_and(|variants| {
+                    variants.iter().any(|variant| {
+                        variant["name"] == name
+                            && fingerprint_bytes(tool)
+                                == fingerprint_bytes(&portable_tool_schema(variant))
+                    })
+                });
+        if fingerprint_bytes(tool) != fingerprint_bytes(&portable_tool_schema(expected))
+            && !matches_code_mode
+        {
             return Err("captured downstream tool differs from the production contract".into());
         }
         return Ok(None);
