@@ -93,9 +93,18 @@ def main():
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--repository-root", required=True, type=Path)
     parser.add_argument("--candidate-root", required=True, type=Path)
+    parser.add_argument(
+        "--snapshot-directory",
+        type=Path,
+        default=Path("codex-rs/core/tests/suite/snapshots"),
+        help="Existing snapshot directory within the repository (default: core suite).",
+    )
     parser.add_argument("--patch-output", required=True, type=Path)
     args = parser.parse_args()
     repository = args.repository_root.resolve()
+    snapshots = (repository / args.snapshot_directory).resolve()
+    if not snapshots.is_relative_to(repository) or not snapshots.is_dir():
+        raise ValueError("snapshot directory must exist within the source checkout")
     patch_output = args.patch_output.resolve()
     if patch_output.is_relative_to(repository):
         raise ValueError("diagnostic patch must be outside the source checkout")
@@ -140,8 +149,8 @@ def main():
         evidence_receipts.append(
             {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
         )
-    snapshots = repository / "codex-rs/core/tests/suite/snapshots"
     changes = []
+    reviewed_files = []
     used = {}
     candidates = sorted(args.candidate_root.glob("*.snap.new"))
     if not candidates or len(candidates) > MAX_FILES:
@@ -150,7 +159,12 @@ def main():
         )
     for candidate in candidates:
         original = snapshots / candidate.name.removesuffix(".new")
-        if not original.is_file() or candidate.is_symlink():
+        if (
+            not original.is_file()
+            or original.is_symlink()
+            or candidate.is_symlink()
+            or not original.resolve().is_relative_to(snapshots)
+        ):
             raise ValueError("candidate has no matching existing snapshot")
         if original.stat().st_size > MAX_BYTES or candidate.stat().st_size > MAX_BYTES:
             raise ValueError("snapshot candidate exceeds review limit")
@@ -166,11 +180,20 @@ def main():
         if not file_used:
             continue
         relative = original.relative_to(repository).as_posix()
+        rendered = original_header + reconstructed
+        reviewed_files.append(
+            {
+                "path": relative,
+                "originalSha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+                "candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                "reviewedSha256": hashlib.sha256(rendered.encode()).hexdigest(),
+            }
+        )
         changes.append(f"diff --git a/{relative} b/{relative}\n")
         changes.extend(
             difflib.unified_diff(
                 before.splitlines(True),
-                (original_header + reconstructed).splitlines(True),
+                rendered.splitlines(True),
                 fromfile=f"a/{relative}",
                 tofile=f"b/{relative}",
             )
@@ -183,6 +206,9 @@ def main():
         output.write("".join(changes))
     manifest = {
         "patch": str(patch_output),
+        "reviewerSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "snapshotDirectory": snapshots.relative_to(repository).as_posix(),
+        "snapshotFiles": reviewed_files,
         "contractSha256": hashlib.sha256(encoded(contract)).hexdigest(),
         "files": len([line for line in changes if line.startswith("diff --git ")]),
         "fingerprints": [
