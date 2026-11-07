@@ -1,6 +1,7 @@
 //! Cancellation coverage shares the existing public retry journey fixture.
 use super::*;
 use anyhow::Context as _;
+use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
 /// Cancellation records elapsed backoff without inventing a second provider attempt.
@@ -24,7 +25,7 @@ async fn cancelled_retry_wait_records_partial_elapsed_time(
     )
     .await;
     let test = test_codex()
-        .with_config(|config| {
+        .with_config(move |config| {
             config.model_provider.request_max_retries = Some(request_max_retries);
             config.model_provider.stream_max_retries = Some(1);
         })
