@@ -36,6 +36,8 @@ exec /usr/bin/bwrap \
   --unsetenv OPENAI_API_KEY \
   --unsetenv CODEX_API_KEY \
   --unsetenv CODEX_ACCESS_TOKEN \
+  --unsetenv CODEX_CA_CERTIFICATE \
+  --unsetenv SSL_CERT_FILE \
   --unsetenv NO_COLOR \
   --unsetenv INSTA_FORCE_PASS \
   -- "$@"
