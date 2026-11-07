@@ -18,6 +18,7 @@ struct Pinned {
     created: Instant,
     context: (PathBuf, String, PathBuf),
     query: Value,
+    filter: UsageFilter,
     reader: Arc<UsageReader>,
     review: Option<Arc<Value>>,
 }
@@ -112,7 +113,7 @@ impl SnapshotCache {
         let continuation = outcome
             .map(|(id, _)| (id, None))
             .or_else(|| continuation.map(|(id, row)| (id, Some(row))));
-        let (reader, retained_review, snapshot) = if let Some((id, row)) = continuation {
+        let (reader, filter, retained_review, snapshot) = if let Some((id, row)) = continuation {
             let retained = self
                 .state
                 .entries
@@ -132,12 +133,14 @@ impl SnapshotCache {
             args.cursor_id = row;
             (
                 Arc::clone(&entry.reader),
+                entry.filter.clone(),
                 entry.review.clone(),
                 Some((id, entry.created)),
             )
         } else {
             (
                 Arc::new(UsageReader::open(&context.codex_home).map_err(|_| storage_error())?),
+                query_filters::resolve(context, &args)?,
                 None,
                 None,
             )
@@ -145,7 +148,7 @@ impl SnapshotCache {
         let mut value = if let Some(report) = retained_review.as_deref() {
             report.clone()
         } else {
-            execute(&reader, context, args)?
+            execute(&reader, context, args, filter.clone())?
         };
         let (id, created) =
             snapshot.unwrap_or_else(|| (uuid::Uuid::new_v4().simple().to_string(), Instant::now()));
@@ -204,6 +207,7 @@ impl SnapshotCache {
                         created,
                         context: owner,
                         query: signature,
+                        filter,
                         reader,
                         review,
                     });

@@ -139,7 +139,8 @@ fn outcome_continuation_freezes_report_filters_and_original_lease() {
         query.as_object_mut().expect("signature").remove(field);
     }
     let reader = Arc::new(UsageReader::open(directory.path()).expect("reader"));
-    let mut report = execute(&reader, &context, request).expect("observed report");
+    let filter = query_filters::resolve(&context, &request).expect("resolved query");
+    let mut report = execute(&reader, &context, request, filter.clone()).expect("observed report");
     // No production outcome source exists yet. Fixture rows exercise the cache
     // boundary; the integration test separately verifies its honest empty set.
     report["outcomes"]["coverage"] = json!("fixture_only");
@@ -168,6 +169,7 @@ fn outcome_continuation_freezes_report_filters_and_original_lease() {
                 context.cwd.clone(),
             ),
             query,
+            filter,
             reader,
             review: Some(Arc::new(report.clone())),
         });
@@ -289,4 +291,214 @@ fn outcome_continuation_freezes_report_filters_and_original_lease() {
         )
         .expect_err("expired lease");
     assert!(error.to_string().contains("expired"));
+}
+
+#[test]
+fn continuation_keeps_resolved_account_and_repository_after_alias_changes() {
+    use codex_account_registry::AccountMetadata;
+    use codex_account_registry::AccountRegistry;
+    use codex_account_registry::RegistryStore;
+    use codex_protocol::auth::AuthMode;
+
+    let directory = tempdir().expect("directory");
+    let home = directory.path().join("home");
+    let cwd = directory.path().join("linked");
+    std::fs::create_dir_all(&cwd).expect("linked checkout");
+    let primary_a = directory.path().join("primary-a");
+    let primary_b = directory.path().join("primary-b");
+    for primary in [&primary_a, &primary_b] {
+        let admin = primary.join(".git/worktrees/linked");
+        std::fs::create_dir_all(&admin).expect("Git administrative directory");
+        std::fs::write(primary.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        std::fs::write(admin.join("commondir"), "../..\n").expect("common directory");
+        std::fs::write(
+            admin.join("gitdir"),
+            format!("{}\n", cwd.join(".git").display()),
+        )
+        .expect("validated backlink");
+    }
+    let point_to = |primary: &std::path::Path| {
+        std::fs::write(
+            cwd.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                primary.join(".git/worktrees/linked").display()
+            ),
+        )
+        .expect("linked checkout pointer");
+    };
+    point_to(&primary_a);
+    let repository_a = crate::usage_identity::repository_id(&cwd).expect("repository A");
+    let repository_b = crate::usage_identity::repository_id(&primary_b).expect("repository B");
+    assert_ne!(repository_a, repository_b);
+    let account_a = AccountMetadata::new(
+        "selected".parse().expect("alias"),
+        AuthMode::ApiKey,
+        chrono::Utc::now(),
+    );
+    let account_b = AccountMetadata::new(
+        "other".parse().expect("alias"),
+        AuthMode::ApiKey,
+        chrono::Utc::now(),
+    );
+    let registry = RegistryStore::new(&home);
+    registry
+        .create(&AccountRegistry {
+            accounts: vec![account_a.clone(), account_b.clone()],
+            default_account_id: Some(account_a.id.clone()),
+            ..AccountRegistry::default()
+        })
+        .expect("account registry");
+    let record = |id: &str, account: &AccountMetadata, repository: &str, input_tokens| {
+        UsageRecord::new(
+            id,
+            /*observed_at*/ 10,
+            input_tokens,
+            /*output_tokens*/ 0,
+        )
+        .with_account(account.id.to_string())
+        .with_repository(repository)
+        .with_thread("thread-1")
+    };
+    let original = [
+        record("a-1", &account_a, &repository_a, /*input_tokens*/ 1),
+        record("a-2", &account_a, &repository_a, /*input_tokens*/ 2),
+        record("a-3", &account_a, &repository_a, /*input_tokens*/ 3),
+    ];
+    let mut store = codex_usage::UsageStore::open(&home).expect("usage store");
+    for fact in original.iter().cloned().chain([
+        record(
+            "b-in-a",
+            &account_b,
+            &repository_a,
+            /*input_tokens*/ 100,
+        ),
+        record(
+            "a-in-b",
+            &account_a,
+            &repository_b,
+            /*input_tokens*/ 1000,
+        ),
+        record(
+            "b-in-b",
+            &account_b,
+            &repository_b,
+            /*input_tokens*/ 2000,
+        ),
+    ]) {
+        store.append_record(fact).expect("record");
+    }
+    store
+        .materialize_snapshot(codex_usage::Freshness::Fresh)
+        .expect("first generation");
+    let context = UsageStatsContext {
+        codex_home: home,
+        thread_id: "thread-1".into(),
+        cwd: cwd.clone(),
+    };
+    let cache = SnapshotCache::new(LIFETIME);
+    let params =
+        json!({"action":"events", "scope":"current_repository", "account":"selected", "limit":1});
+    let first = cache
+        .execute_request(
+            &context,
+            serde_json::from_value(params.clone()).expect("first request"),
+        )
+        .expect("account A first page");
+    registry
+        .compare_and_swap(registry.read().expect("registry").generation, |registry| {
+            registry.accounts[0].alias = "renamed".parse().expect("new alias");
+            registry.accounts[1].alias = "selected".parse().expect("reassigned alias");
+        })
+        .expect("rename with current registry generation");
+    store
+        .append_record(record(
+            "b-after",
+            &account_b,
+            &repository_b,
+            /*input_tokens*/ 4000,
+        ))
+        .expect("new B observation");
+    store
+        .materialize_snapshot(codex_usage::Freshness::Fresh)
+        .expect("new generation");
+    let continuation = |page: &Value| {
+        let mut request = params.clone();
+        request["cursor_id"] = page["nextCursor"]["id"].clone();
+        request["cursor_sort_value"] = page["nextCursor"]["sortValue"].clone();
+        serde_json::from_value(request).expect("continuation")
+    };
+    let second = cache
+        .execute_request(&context, continuation(&first))
+        .expect("A after alias reassignment");
+    point_to(&primary_b);
+    assert_eq!(
+        crate::usage_identity::repository_id(&context.cwd),
+        Some(repository_b.clone())
+    );
+    let third = cache
+        .execute_request(&context, continuation(&second))
+        .expect("A after current repository changes");
+    assert_eq!(
+        [&first, &second, &third]
+            .into_iter()
+            .flat_map(|page| page["data"].as_array().expect("rows").clone())
+            .collect::<Vec<_>>(),
+        original.iter().map(record_fields).collect::<Vec<_>>()
+    );
+    assert!(third["nextCursor"].is_null());
+    for page in [&second, &third] {
+        assert_eq!(
+            (&page["snapshotGeneration"], &page["journalWatermark"]),
+            (&first["snapshotGeneration"], &first["journalWatermark"])
+        );
+    }
+    {
+        let entries = cache.state.entries.lock().expect("cache");
+        let pinned = entries.snapshots.front().expect("pinned query");
+        assert_eq!(
+            pinned.filter,
+            UsageFilter::default()
+                .for_account(account_a.id.to_string())
+                .for_repository(repository_a.clone())
+        );
+        assert_eq!(
+            pinned
+                .reader
+                .totals(TimeRange::all(), &pinned.filter)
+                .expect("frozen totals"),
+            codex_usage::UsageTotals {
+                records: 3,
+                input_tokens: 6,
+                ..codex_usage::UsageTotals::default()
+            }
+        );
+    }
+    for (field, value) in [
+        ("account", json!("renamed")),
+        ("repository", json!(repository_a)),
+    ] {
+        let mut changed = serde_json::to_value(continuation(&first)).expect("query");
+        changed[field] = value;
+        let error = cache
+            .execute_request(
+                &context,
+                serde_json::from_value(changed).expect("changed query"),
+            )
+            .expect_err("query mismatch");
+        assert!(error.to_string().contains("does not match"));
+    }
+    let fresh = cache
+        .execute_request(
+            &context,
+            serde_json::from_value(params).expect("fresh request"),
+        )
+        .expect("new alias target");
+    assert_eq!(
+        (
+            &fresh["data"][0]["accountId"],
+            &fresh["data"][0]["repositoryId"]
+        ),
+        (&json!(account_b.id.to_string()), &json!(repository_b))
+    );
 }

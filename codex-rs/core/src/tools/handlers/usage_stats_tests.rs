@@ -5,6 +5,15 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
 
+fn execute(
+    store: &UsageReader,
+    context: &UsageStatsContext,
+    args: UsageStatsArgs,
+) -> Result<Value, FunctionCallError> {
+    let filter = query_filters::resolve(context, &args)?;
+    super::execute(store, context, args, filter)
+}
+
 fn args(action: UsageStatsAction) -> UsageStatsArgs {
     UsageStatsArgs {
         action,

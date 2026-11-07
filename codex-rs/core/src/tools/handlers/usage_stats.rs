@@ -25,6 +25,7 @@ use std::path::PathBuf;
 
 mod outcomes;
 mod presentation;
+mod query_filters;
 mod snapshots;
 mod spec;
 
@@ -167,6 +168,7 @@ fn execute(
     store: &UsageReader,
     context: &UsageStatsContext,
     args: UsageStatsArgs,
+    mut filter: UsageFilter,
 ) -> Result<Value, FunctionCallError> {
     let start = args.from_at_ms.unwrap_or(i64::MIN);
     let end = args.to_at_ms.unwrap_or(i64::MAX);
@@ -179,61 +181,6 @@ fn execute(
     } else {
         args.scope.unwrap_or(UsageStatsScope::All)
     };
-    let mut filter = UsageFilter::default();
-    if let Some(account) = args.account.as_deref() {
-        let id = if let Ok(id) = account.parse::<codex_account_registry::AccountId>() {
-            id.to_string()
-        } else {
-            let registry = codex_account_registry::RegistryStore::new(&context.codex_home)
-                .read()
-                .map_err(|_| tool_error("account registry is unavailable"))?;
-            registry
-                .accounts
-                .iter()
-                .find(|profile| profile.alias.as_str() == account)
-                .map(|profile| profile.id.to_string())
-                .ok_or_else(|| tool_error("unknown account alias"))?
-        };
-        filter = filter.for_account(id);
-    }
-    let current_repository = || {
-        crate::usage_identity::repository_id(&context.cwd)
-            .ok_or_else(|| tool_error("current directory is not a recognized Git repository"))
-    };
-    match scope {
-        UsageStatsScope::All => {}
-        UsageStatsScope::CurrentRepository => {
-            filter = filter.for_repository(current_repository()?);
-        }
-        UsageStatsScope::CurrentChat => {
-            filter = filter.for_thread(context.thread_id.clone());
-        }
-        UsageStatsScope::Repository => {
-            let repository = args
-                .repository
-                .as_deref()
-                .ok_or_else(|| tool_error("repository is required for repository scope"))?;
-            filter = filter.for_repository(if repository == "current" {
-                current_repository()?
-            } else {
-                repository.to_string()
-            });
-        }
-    }
-    if let Some(repository) = args.repository.as_deref() {
-        filter = filter.for_repository(if repository == "current" {
-            current_repository()?
-        } else {
-            repository.to_string()
-        });
-    }
-    if let Some(thread_id) = args.thread_id.as_deref() {
-        filter = filter.for_thread(if thread_id == "current" {
-            context.thread_id.clone()
-        } else {
-            thread_id.to_string()
-        });
-    }
     let limit = usize::try_from(args.limit.unwrap_or(50))
         .map_err(|_| tool_error("limit must be between 1 and 50"))?;
     if !(1..=50).contains(&limit) {
