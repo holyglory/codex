@@ -383,6 +383,7 @@ fn exact_lookup_scans_full_collision_groups_across_fence_boundaries() {
             hash_version: ID_HASH_VERSION,
             watermark: checkpoint(tail_sequence + 2),
             complete_from_sequence: 1,
+            retained_from_at_ms: None,
             runs: vec![later_run, first_run],
         };
         let mut expected = original

@@ -135,6 +135,16 @@ impl IdCompactionJob {
     /// Emit no more than `max_entries` canonical ids. Streaming merge keeps
     /// memory bounded independently of historical run size.
     pub fn step(&mut self, max_entries: usize) -> Result<IdCompactionProgress> {
+        self.step_retaining(max_entries, |_| true)
+    }
+
+    /// Consume a bounded number of canonical IDs, retaining only admitted facts.
+    /// Rejected entries still count against the step budget.
+    pub(crate) fn step_retaining(
+        &mut self,
+        max_entries: usize,
+        mut retain: impl FnMut(&RecordIdEntry) -> bool,
+    ) -> Result<IdCompactionProgress> {
         if max_entries == 0 {
             return Err(invalid("compaction step requires a positive entry limit"));
         }
@@ -184,8 +194,10 @@ impl IdCompactionJob {
             let Some(writer) = self.writer.as_mut() else {
                 return Err(invalid("unfinished compaction has no writer"));
             };
-            writer.push(&winner)?;
-            self.emitted_entries += 1;
+            if retain(&winner) {
+                writer.push(&winner)?;
+                self.emitted_entries += 1;
+            }
         }
         Ok(IdCompactionProgress::More {
             emitted_entries: self.emitted_entries,

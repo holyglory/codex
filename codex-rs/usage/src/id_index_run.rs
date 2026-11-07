@@ -144,6 +144,7 @@ impl RunWriter {
             min_sequence: self.min_sequence,
             max_sequence: self.max_sequence,
             data_bytes,
+            retained_from_at_ms: None,
         })
     }
 }

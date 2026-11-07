@@ -62,6 +62,13 @@ pub struct UsageManifest {
     /// Number of observations retained as aggregate values only.
     #[serde(default)]
     pub retired_observations: u64,
+    /// Raw observations captured after this published frontier must be recent
+    /// enough to retain exact replay identity. Advances only with a drained journal.
+    #[serde(default)]
+    pub raw_admission_cutoff_at_ms: Option<i64>,
+    /// Cumulative rejected old observation attempts after identity retirement.
+    #[serde(default)]
+    pub unapplied_retention_records: u64,
     /// Monotonic admission frontier for unresolved row-level corrections.
     #[serde(default)]
     pub correction_retention_cutoff_at_ms: Option<i64>,
@@ -69,12 +76,16 @@ pub struct UsageManifest {
     /// never presented as successfully applied adjustments.
     #[serde(default)]
     pub expired_correction_ids: BTreeSet<String>,
-    /// Cumulative coverage gaps from corrections after detail retirement.
+    /// Cumulative rejected correction attempts after detail retirement. Exact
+    /// duplicate suppression is retained only through the raw-detail horizon.
     #[serde(default)]
     pub unapplied_retention_corrections: u64,
     /// Background scan position; never used to select foreground report data.
     #[serde(default)]
     pub retention_scan_offset: usize,
+    /// Independent bounded scan position for correction-sidecar retirement.
+    #[serde(default)]
+    pub correction_retention_scan_offset: usize,
     /// Complete immutable dimension/hour membership index, relative to segments.
     /// None preserves safe query fallback for manifests without an index.
     #[serde(default)]
@@ -152,10 +163,13 @@ impl Default for UsageManifest {
             segment_files: Vec::new(),
             token_rollup_files: Vec::new(),
             retired_observations: 0,
+            raw_admission_cutoff_at_ms: None,
+            unapplied_retention_records: 0,
             correction_retention_cutoff_at_ms: None,
             expired_correction_ids: BTreeSet::new(),
             unapplied_retention_corrections: 0,
             retention_scan_offset: 0,
+            correction_retention_scan_offset: 0,
             membership_file: None,
             membership_files: Vec::new(),
             lineage_file: None,

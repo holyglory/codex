@@ -65,6 +65,9 @@ pub struct IdRunDescriptor {
     pub min_sequence: u64,
     pub max_sequence: u64,
     pub data_bytes: u64,
+    /// Whole-hour admission frontier already filtered from this run.
+    #[serde(default)]
+    pub retained_from_at_ms: Option<i64>,
 }
 
 /// Atomic snapshot of all runs visible to one reader.
@@ -75,11 +78,16 @@ pub struct IdIndexDescriptor {
     pub hash_version: u32,
     pub watermark: JournalCheckpoint,
     pub complete_from_sequence: u64,
+    /// Absence below this event-time admission floor is intentionally unknown.
+    /// Exact replay identity is retained for facts admitted at or above it.
+    #[serde(default)]
+    pub retained_from_at_ms: Option<i64>,
     pub runs: Vec<IdRunDescriptor>,
 }
 
 /// Result of a bounded lookup. A missing id is conclusive only when the
-/// descriptor's `complete_from_sequence` covers the caller's requested range.
+/// descriptor's sequence coverage and retained event-time admission floor cover
+/// the caller's requested facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdLookup {
     pub found: BTreeMap<String, RecordIdEntry>,
@@ -110,6 +118,7 @@ pub fn missing_id_index(checkpoint: JournalCheckpoint) -> IdIndexDescriptor {
         hash_version: ID_HASH_VERSION,
         watermark: checkpoint,
         complete_from_sequence: checkpoint.sequence.saturating_add(1),
+        retained_from_at_ms: None,
         runs: Vec::new(),
     }
 }
@@ -382,7 +391,11 @@ fn candidate_offset(fences: &[(u64, u64)], hash: u64) -> Option<u64> {
         .and_then(|(current, offset)| (*current <= hash).then_some(*offset))
 }
 
-fn write_descriptor(root: &Path, file: &str, descriptor: &IdIndexDescriptor) -> Result<()> {
+pub(crate) fn write_descriptor(
+    root: &Path,
+    file: &str,
+    descriptor: &IdIndexDescriptor,
+) -> Result<()> {
     let path = index_path(root, file)?;
     let mut encoded = serde_json::to_vec_pretty(descriptor)?;
     encoded.push(b'\n');
