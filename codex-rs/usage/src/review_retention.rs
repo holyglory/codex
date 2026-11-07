@@ -246,6 +246,7 @@ fn retire(
                 retained.open_operations =
                     rows.iter().filter(|row| !row.terminal_observed).count() as u32;
                 retained.operation_id_bloom = operation_bloom(&rows);
+                retained.operation_sequences = Some(crate::operation_id_index::live_sequences(&rows));
                 descriptor.partitions[index] = retained;
             }
             // Per-partition memberships now name the rewritten file. The old

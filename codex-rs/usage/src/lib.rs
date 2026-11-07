@@ -23,6 +23,7 @@ mod lineage;
 mod manifest;
 mod metadata_cache;
 mod model;
+mod operation_id_index;
 mod publisher;
 mod query;
 mod reader;

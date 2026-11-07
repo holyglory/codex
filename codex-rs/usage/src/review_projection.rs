@@ -14,6 +14,8 @@ use crate::Result;
 use crate::UsageManifest;
 use crate::UsageRecord;
 use crate::id_index::id_hash;
+use crate::operation_id_index;
+use crate::operation_id_index::{OperationIdEntry, OperationIdIndex};
 use crate::review_counts::ReviewCounts;
 use crate::review_counts::ReviewCountsUpdate;
 use crate::review_counts::read_review_counts_map;
@@ -56,6 +58,10 @@ pub struct ReviewPartition {
     /// introduced and therefore keeps the lookup conservative.
     #[serde(default)]
     pub operation_id_bloom: Vec<u64>,
+    /// Exact live first-sequence membership after any row retires. None means
+    /// no operation address has retired from this partition since its creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_sequences: Option<Vec<u64>>,
 }
 
 /// Canonical record contributions in one immutable bounded publication batch.
@@ -76,6 +82,9 @@ pub struct ReviewProjectionDescriptor {
     pub version: u32,
     pub watermark: JournalCheckpoint,
     pub complete_from_sequence: u64,
+    /// Operation-owned global exact runs; absent legacy pointers use Parquet.
+    #[serde(default)]
+    pub operation_id_index_file: Option<String>,
     pub partitions: Vec<ReviewPartition>,
     pub contribution_fragments: Vec<ReviewContributionFragment>,
     /// Compact dimension summaries, independent of operation data files.
@@ -203,6 +212,7 @@ pub(crate) fn publish_review_projection(
             version: 1,
             watermark: prior,
             complete_from_sequence: prior.sequence.saturating_add(1),
+            operation_id_index_file: None,
             partitions: Vec::new(),
             contribution_fragments: Vec::new(),
             counts_file: None,
@@ -220,6 +230,8 @@ pub(crate) fn publish_review_projection(
     if descriptor.watermark != prior || next.sequence < prior.sequence {
         return Err(invalid("review projection and manifest frontiers disagree"));
     }
+    let operation_index = operation_id_index::load(root, &descriptor)?;
+    let mut new_addresses = Vec::new();
     let mut cached_counts = if manifest.review_counts_watermark == Some(prior.sequence) {
         manifest.review_counts.clone()
     } else {
@@ -273,6 +285,7 @@ pub(crate) fn publish_review_projection(
         root,
         &partitions,
         updates.keys().cloned().collect(),
+        operation_index.as_ref(),
         connection,
     )?;
     #[cfg(test)]
@@ -323,7 +336,11 @@ pub(crate) fn publish_review_projection(
                 if addresses.contains_key(id) {
                     return Err(invalid("indexed operation missing from its partition"));
                 }
-                states.insert(id.clone(), ReviewOperation::from_fact(sequence, fact)?);
+                let state = ReviewOperation::from_fact(sequence, fact)?;
+                new_addresses.push(OperationIdEntry {
+                    operation_id: id.clone(), first_sequence: state.first_sequence,
+                });
+                states.insert(id.clone(), state);
             }
         }
         if states.len() > REVIEW_PARTITION_SIZE as usize {
@@ -401,6 +418,9 @@ pub(crate) fn publish_review_projection(
                 open_operations: rows.iter().filter(|row| !row.terminal_observed).count() as u32,
                 bounds,
                 operation_id_bloom: operation_bloom(&rows),
+                operation_sequences: partitions.get(&partition)
+                    .and_then(|prior| prior.operation_sequences.as_ref())
+                    .map(|_| operation_id_index::live_sequences(&rows)),
             },
         );
         for values in descriptor.dimension_partitions.values_mut() {
@@ -519,6 +539,11 @@ pub(crate) fn publish_review_projection(
         write_rows(root, &file, &classifications, CLASSIFICATION_COLUMNS)?;
         descriptor.classification_files.push(file);
     }
+    if let Some(index) = operation_index {
+        descriptor.operation_id_index_file = Some(operation_id_index::publish(
+            root, index, next, descriptor.retired_operation_rows, stamp, new_addresses,
+        )?);
+    }
     descriptor.watermark = next;
     #[cfg(test)]
     profile.mark("contributions-and-classifications");
@@ -539,8 +564,12 @@ fn find_addresses(
     root: &Path,
     partitions: &BTreeMap<u64, ReviewPartition>,
     ids: Vec<String>,
+    operation_index: Option<&OperationIdIndex>,
     connection: &Connection,
 ) -> Result<BTreeMap<String, u64>> {
+    if let Some(index) = operation_index {
+        return operation_id_index::find_addresses(root, index, partitions, &ids.into_iter().collect());
+    }
     #[cfg(test)]
     let mut profile = crate::performance_tests::RecoveryProfile::new("operation-addresses");
     if ids.is_empty() || partitions.is_empty() {
@@ -620,7 +649,8 @@ pub(crate) fn load_review_operations(
         .cloned()
         .map(|partition| (partition.partition, partition))
         .collect::<BTreeMap<_, _>>();
-    let addresses = find_addresses(root, &partitions, ids.iter().cloned().collect(), connection)?;
+    let index = operation_id_index::load(root, descriptor)?;
+    let addresses = find_addresses(root, &partitions, ids.iter().cloned().collect(), index.as_ref(), connection)?;
     if addresses.is_empty() {
         return Ok(Vec::new());
     }
@@ -669,6 +699,9 @@ fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProje
     if descriptor.version != 1 || descriptor.complete_from_sequence == 0 {
         return Err(invalid("unsupported review projection descriptor"));
     }
+    if let Some(file) = &descriptor.operation_id_index_file {
+        segment_path(root, file)?;
+    }
     let mut previous = None;
     for partition in &descriptor.partitions {
         segment_path(root, &partition.file)?;
@@ -676,6 +709,9 @@ fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProje
         segment_path(root, &partition.membership_file)?;
         if partition.operation_count == 0
             || partition.operation_count as u64 > REVIEW_PARTITION_SIZE
+            || partition.operation_sequences.as_ref().is_some_and(|bits|
+                bits.len() != REVIEW_PARTITION_SIZE as usize / 64
+                || bits.iter().map(|word| word.count_ones()).sum::<u32>() != partition.operation_count)
             || partition.open_operations > partition.operation_count
             || previous.is_some_and(|id| id >= partition.partition)
         {

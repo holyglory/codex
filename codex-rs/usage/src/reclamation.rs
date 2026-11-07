@@ -149,6 +149,16 @@ fn retained_files(root: &Path, manifest: &UsageManifest) -> Result<BTreeSet<Stri
         }
     }
     if let Some(review) = crate::review_projection::load_review_projection_shared(root, manifest)? {
+        files.extend(review.operation_id_index_file.iter().cloned());
+        if review.operation_id_index_file.is_some()
+            && let Some(index) = crate::operation_id_index::load(root, &review)?
+        {
+            for entry in index.runs {
+                files.insert(entry.run.data_file);
+                files.insert(entry.run.fence_file);
+                files.extend(entry.run.bloom_file);
+            }
+        }
         files.extend(review.counts_file.iter().cloned());
         files.extend(review.classification_files.iter().cloned());
         files.extend(review.membership_index_file.iter().cloned());
