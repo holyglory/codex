@@ -450,6 +450,15 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
             "pendingEntries": 0,
             "freshness": "fresh",
             "pendingCorrections": 0,
+            "retention": {
+                "rolledUpObservations": 0,
+                "unappliedCorrections": 0,
+                "unappliedObservations": 0,
+                "retiredReviewOperations": 0,
+                "retiredReviewContributions": 0,
+                "totalsCoverage": "recorded",
+                "historicalWindowCoverage": "rawObservations",
+            },
         })
     );
     test.codex.shutdown_and_wait().await?;

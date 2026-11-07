@@ -147,12 +147,17 @@ impl ToolExecutor<ToolInvocation> for UsageStatsHandler {
     }
 }
 
-fn bounded_output(value: Value) -> Result<UsageStatsOutput, FunctionCallError> {
-    let encoded = serde_json::to_vec(&value).map_err(|_| storage_error())?;
-    if encoded.len() > MAX_OUTPUT_BYTES {
-        return Err(tool_error(
-            "usage_stats result exceeds the safe response bound; narrow the scope or time range",
-        ));
+fn bounded_output(mut value: Value) -> Result<UsageStatsOutput, FunctionCallError> {
+    while serde_json::to_vec(&value)
+        .map_err(|_| storage_error())?
+        .len()
+        > MAX_OUTPUT_BYTES
+    {
+        if !presentation::coalesce_operation_facet(&mut value)? {
+            return Err(tool_error(
+                "usage_stats result exceeds the safe response bound; narrow the scope or time range",
+            ));
+        }
     }
     Ok(UsageStatsOutput(value))
 }
@@ -402,9 +407,11 @@ fn snapshot_metadata(store: &UsageReader, range: TimeRange) -> serde_json::Map<S
             json!({
                 "rolledUpObservations": manifest.retired_observations,
                 "unappliedCorrections": manifest.unapplied_retention_corrections,
-            "retiredReviewOperations": manifest.retired_review_operations,
-            "retiredReviewContributions": manifest.retired_review_contributions,
+                "unappliedObservations": manifest.unapplied_retention_records,
+                "retiredReviewOperations": manifest.retired_review_operations,
+                "retiredReviewContributions": manifest.retired_review_contributions,
                 "totalsCoverage": if manifest.unapplied_retention_corrections != 0
+                    || manifest.unapplied_retention_records != 0
                     || (range != TimeRange::all() && manifest.retired_observations != 0) {
                     "partial_retention"
                 } else { "recorded" },

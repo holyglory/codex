@@ -269,6 +269,12 @@ fn dimension_actions_expose_recorded_rows() {
     let reader = UsageReader::open(directory.path()).expect("latest reader");
     let after = review(&reader);
     assert_eq!(
+        bounded_output(after.clone())
+            .expect("small complete report fits")
+            .0,
+        after
+    );
+    assert_eq!(
         after["operations"],
         json!([
             {"category":"model_request","count":1,"measuredIntervalSumMs":200,"unknownIntervals":0},
@@ -310,6 +316,152 @@ fn dimension_actions_expose_recorded_rows() {
     assert_eq!(
         review(&pinned)["tokensByActivity"],
         before["tokensByActivity"]
+    );
+}
+
+#[test]
+fn performance_review_facets_keep_all_measurements_within_the_response_bound() {
+    let directory = tempdir().expect("temporary directory");
+    let root = directory.path().join(codex_usage::USAGE_DIRECTORY_NAME);
+    let journal = codex_usage::UsageJournal::new(root.join("events.jsonl"));
+    let count = 192_u64;
+    let mut facts = Vec::new();
+    let mut interval_sum = 0;
+    let mut unknown_intervals = 0;
+    for index in 0..count {
+        let at = 1_000 + index as i64 * 10;
+        let duration = index % 7 + 1;
+        let tool = format!(
+            "tool-{index:03}-{}",
+            "t".repeat(1_000 + (index % 5) as usize * 137)
+        );
+        let activity = format!(
+            "activity-{index:03}-{}",
+            "a".repeat(200 + (index % 3) as usize * 71)
+        );
+        let mut started = UsageRecord::new_millis(
+            format!("tool-{index}:start"),
+            at,
+            /*input_tokens*/ 0,
+            /*output_tokens*/ 0,
+        )
+        .with_operation(format!("tool-{index}"))
+        .with_thread("thread-1")
+        .with_repository("repo-1")
+        .with_tool(tool)
+        .with_activity(activity, "implementation");
+        started.event = Some("tool_started".into());
+        started.started_at_ms = Some(at);
+        started.classification = Some("agent_declared".into());
+        let mut finished = started.clone();
+        finished.id = format!("tool-{index}:finish");
+        finished.observed_at_ms = Some(at + duration as i64);
+        finished.event = Some("tool_finished".into());
+        finished.ended_at_ms = finished.observed_at_ms;
+        finished.outcome = Some(codex_usage::UsageOutcome::Completed);
+        finished.coverage = Some("recorded".into());
+        if index % 11 == 0 {
+            finished.started_at_ms = None;
+            unknown_intervals += 1;
+        } else {
+            finished.duration_ms = Some(duration);
+            interval_sum += duration;
+            facts.push(codex_usage::JournalPayload::Record(started));
+        }
+        facts.push(codex_usage::JournalPayload::Record(finished));
+    }
+    journal
+        .append_batch(facts)
+        .expect("capture many distinct zero-token tool groups");
+    codex_usage::UsagePublisher::open_at(&root)
+        .expect("publisher")
+        .publish_batch(codex_usage::JournalReadLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_entries: (2 * count) as usize,
+        })
+        .expect("publish actual lifecycle facts");
+    let context = UsageStatsContext {
+        codex_home: directory.path().to_path_buf(),
+        thread_id: "thread-1".into(),
+        cwd: directory.path().to_path_buf(),
+    };
+    let mut request = args(UsageStatsAction::PerformanceReview);
+    request.repository = Some("repo-1".into());
+    let report = snapshots::execute_request(&context, request)
+        .expect("more than128 operation groups remain reportable");
+    let expected = [count, interval_sum, unknown_intervals, count];
+    let measurements = |rows: &Value| {
+        rows.as_array()
+            .expect("facet rows")
+            .iter()
+            .fold([0_u64; 4], |mut total, row| {
+                for (index, key) in [
+                    "count",
+                    "measuredIntervalSumMs",
+                    "unknownIntervals",
+                    "mergedGroups",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    total[index] += row[key].as_u64().expect("exact facet measurement");
+                }
+                total
+            })
+    };
+    for facet in ["tools", "operationsByActivity"] {
+        assert_eq!(measurements(&report[facet]), expected);
+        assert!(
+            report[facet]
+                .as_array()
+                .expect("facet")
+                .iter()
+                .any(|row| row["remainder"] == true
+                    && row["mergedGroups"].as_u64().expect("merged groups") > 1)
+        );
+    }
+    assert!(serde_json::to_vec(&report).expect("original JSON").len() > MAX_OUTPUT_BYTES);
+    let bounded = bounded_output(report.clone())
+        .expect("complete bounded response")
+        .0;
+    assert!(serde_json::to_vec(&bounded).expect("bounded JSON").len() <= MAX_OUTPUT_BYTES);
+    assert_eq!(bounded["counts"]["operations"], json!(count));
+    assert_eq!(bounded["counts"]["interval_sum_ms"], json!(interval_sum));
+    assert_eq!(
+        bounded["counts"]["unknown_intervals"],
+        json!(unknown_intervals)
+    );
+    let mut original_totals = report.clone();
+    let mut bounded_totals = bounded.clone();
+    let mut reduced = false;
+    for facet in ["tools", "operationsByActivity"] {
+        assert_eq!(measurements(&bounded[facet]), expected);
+        let rows = bounded[facet].as_array().expect("bounded facet");
+        let remainder = rows
+            .iter()
+            .find(|row| row["remainder"] == true)
+            .expect("explicit complete remainder");
+        assert!(remainder["mergedGroups"].as_u64().expect("merged groups") > 1);
+        reduced |= rows.len() < report[facet].as_array().expect("original facet").len();
+        original_totals
+            .as_object_mut()
+            .expect("report")
+            .remove(facet);
+        bounded_totals
+            .as_object_mut()
+            .expect("report")
+            .remove(facet);
+    }
+    assert!(
+        reduced,
+        "variable labels require additional coalescing at the final boundary"
+    );
+    assert_eq!(bounded_totals, original_totals);
+    let mut oversized_base = report;
+    oversized_base["interpretation"] = json!("x".repeat(MAX_OUTPUT_BYTES));
+    assert!(
+        bounded_output(oversized_base).is_err(),
+        "existing oversized report fields still fail"
     );
 }
 

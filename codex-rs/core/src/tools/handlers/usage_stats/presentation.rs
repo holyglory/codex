@@ -1,6 +1,51 @@
 use super::*;
 use codex_usage::OperationSelection;
 
+/// Reduce only the new operation facets, retaining every count and interval
+/// in an explicit remainder. Older report sections keep their existing bound.
+pub(super) fn coalesce_operation_facet(value: &mut Value) -> Result<bool, FunctionCallError> {
+    if value["kind"].as_str() != Some("performanceReview") {
+        return Ok(false);
+    }
+    let candidate = ["operationsByActivity", "tools"]
+        .into_iter()
+        .filter_map(|key| {
+            let rows = value[key].as_array()?;
+            let index = rows.iter().rposition(|row| row["remainder"] != true)?;
+            Some((key, index, rows[index].to_string().len()))
+        })
+        .max_by_key(|(_, _, bytes)| *bytes);
+    let Some((key, index, _)) = candidate else {
+        return Ok(false);
+    };
+    let rows = value[key].as_array_mut().ok_or_else(storage_error)?;
+    let row = rows.remove(index);
+    let mut remainder = if let Some(index) = rows.iter().position(|row| row["remainder"] == true) {
+        rows.remove(index)
+    } else {
+        json!({"count":0,"measuredIntervalSumMs":0,"unknownIntervals":0,"mergedGroups":0,"remainder":true})
+    };
+    for metric in [
+        "count",
+        "measuredIntervalSumMs",
+        "unknownIntervals",
+        "mergedGroups",
+    ] {
+        let sum = remainder[metric]
+            .as_u64()
+            .ok_or_else(storage_error)?
+            .checked_add(row[metric].as_u64().ok_or_else(storage_error)?)
+            .ok_or_else(storage_error)?;
+        remainder[metric] = json!(sum);
+    }
+    let object = remainder.as_object_mut().ok_or_else(storage_error)?;
+    for dimension in ["phase", "activity", "provenance", "tool", "outcome"] {
+        object.remove(dimension);
+    }
+    rows.push(remainder);
+    Ok(true)
+}
+
 /// Preserve a complete JSON envelope and a continuation for every omitted row.
 pub(super) fn record_page(
     store: &UsageReader,

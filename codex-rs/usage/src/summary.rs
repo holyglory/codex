@@ -72,19 +72,19 @@ impl UsageReader {
         } else {
             let query = ReportQuery::new(self, range, filter)?;
             query_rows::<ReviewCounts>(&query.connection, &format!(
-                "SELECT count(*)::UBIGINT operations, \
-                 count(*) FILTER (WHERE kind = 'model_request')::UBIGINT model_requests, \
-                 count(*) FILTER (WHERE kind = 'tool')::UBIGINT tools, \
-                 count(*) FILTER (WHERE kind = 'model_warmup')::UBIGINT warmups, \
-                 count(*) FILTER (WHERE NOT terminal_observed)::UBIGINT unfinished, \
-                 count(*) FILTER (WHERE started_at_ms IS NULL OR ended_at_ms IS NULL)::UBIGINT unknown_intervals, \
-                 count(*) FILTER (WHERE phase IS NULL OR activity IS NULL)::UBIGINT unclassified, \
-                 count(*) FILTER (WHERE repository_id IS NULL)::UBIGINT missing_repository, \
-                 count(*) FILTER (WHERE kind='tool' AND outcome='completed')::UBIGINT tool_completed, \
-                 count(*) FILTER (WHERE kind='tool' AND outcome='failed')::UBIGINT tool_failed, \
-                 count(*) FILTER (WHERE kind='tool' AND outcome='blocked')::UBIGINT tool_blocked, \
-                 count(*) FILTER (WHERE kind='tool' AND outcome='cancelled')::UBIGINT tool_cancelled, \
-                 count(*) FILTER (WHERE kind='tool' AND outcome='incomplete')::UBIGINT tool_incomplete FROM ({})", query.operations
+                "SELECT COALESCE(sum(operation_count),0)::UBIGINT operations, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_request'),0)::UBIGINT model_requests, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'tool'),0)::UBIGINT tools, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_warmup'),0)::UBIGINT warmups, \
+                 COALESCE(sum(unfinished),0)::UBIGINT unfinished, \
+                 COALESCE(sum(unknown_intervals),0)::UBIGINT unknown_intervals, \
+                 COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
+                 COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT missing_repository, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='completed'),0)::UBIGINT tool_completed, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='failed'),0)::UBIGINT tool_failed, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='blocked'),0)::UBIGINT tool_blocked, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='cancelled'),0)::UBIGINT tool_cancelled, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='incomplete'),0)::UBIGINT tool_incomplete FROM ({})", query.operation_statistics
             ), 1)?.remove(0)
         };
         let value = json!({
@@ -100,8 +100,11 @@ impl UsageReader {
                 {"outcome":"incomplete","count":counts.tool_incomplete}]},
             "coverage":{"operationState":if complete_from == 1 {"recorded"}else{"partial"},
                 "tokenTotals": if self.manifest.unapplied_retention_corrections != 0
+                    || self.manifest.unapplied_retention_records != 0
                     || (range != TimeRange::all() && self.manifest.retired_observations != 0) {"partial_retention"} else {"recorded"},
                 "unappliedCorrectionsAfterRetention": self.manifest.unapplied_retention_corrections,
+                "unappliedObservationsAfterRetention": self.manifest.unapplied_retention_records,
+                "operationStatistics": if self.manifest.unapplied_retention_records != 0 || range != TimeRange::all() && self.manifest.retired_review_operations != 0 {"partial_retention"} else {"recorded"},
                 "reviewDetail": if self.manifest.review_retention_cutoff_at_ms.is_some() {"partial_retention"} else {"recorded"},
                 "retiredReviewOperations": self.manifest.retired_review_operations,
                 "retiredReviewContributions": self.manifest.retired_review_contributions,

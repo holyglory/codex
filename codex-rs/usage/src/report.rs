@@ -7,6 +7,7 @@ use crate::TimeRange;
 use crate::UsageFilter;
 use crate::UsageReader;
 use crate::reader_query::query_error;
+use crate::report_facets::operation_facet;
 use crate::report_query::ReportQuery;
 use crate::review_storage::query_rows;
 
@@ -17,34 +18,55 @@ impl UsageReader {
         let query = ReportQuery::new(self, range, filter)?;
         let start = range.start_ms();
         let end = range.end_ms();
-        let clipped = format!(
-            "CASE WHEN started_at_ms IS NOT NULL AND ended_at_ms IS NOT NULL \
-             THEN GREATEST(0, LEAST(ended_at_ms::HUGEINT, {end}) - \
-             GREATEST(started_at_ms::HUGEINT, {start})) ELSE NULL END"
-        );
+        let exact_token_window = self.manifest.unapplied_retention_corrections == 0
+            && self.manifest.unapplied_retention_records == 0
+            && (range == TimeRange::all() || self.manifest.retired_review_contributions == 0);
         let operation_counts = query_rows::<Value>(&query.connection, &format!(
-            "SELECT count(*)::UBIGINT operations, \
-             count(*) FILTER (WHERE kind = 'model_request')::UBIGINT model_requests, \
-             count(*) FILTER (WHERE kind = 'tool')::UBIGINT tools, \
-             count(*) FILTER (WHERE kind = 'model_warmup')::UBIGINT warmups, \
-             count(*) FILTER (WHERE NOT terminal_observed)::UBIGINT unfinished, \
-             count(*) FILTER (WHERE started_at_ms IS NULL OR ended_at_ms IS NULL)::UBIGINT unknown_intervals, \
-             count(*) FILTER (WHERE phase IS NULL OR activity IS NULL)::UBIGINT unclassified, \
-             count(*) FILTER (WHERE repository_id IS NULL)::UBIGINT without_repository, \
-             COALESCE(sum({clipped}),0)::UBIGINT interval_sum_ms FROM ({})", query.operations
+            "SELECT COALESCE(sum(operation_count),0)::UBIGINT operations, \
+             COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_request'),0)::UBIGINT model_requests, \
+             COALESCE(sum(operation_count) FILTER (WHERE kind = 'tool'),0)::UBIGINT tools, \
+             COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_warmup'),0)::UBIGINT warmups, \
+             COALESCE(sum(unfinished),0)::UBIGINT unfinished, \
+             COALESCE(sum(unknown_intervals),0)::UBIGINT unknown_intervals, \
+             COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
+             COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT without_repository, \
+             COALESCE(sum(interval_sum_ms),0)::UBIGINT interval_sum_ms FROM ({})", query.operation_statistics
         ), 1)?.remove(0);
         let operations = query_rows::<Value>(
             &query.connection,
             &format!(
                 "SELECT kind category, \
-             count(*)::UBIGINT count, COALESCE(sum({clipped}),0)::UBIGINT \"measuredIntervalSumMs\", \
-             count(*) FILTER (WHERE started_at_ms IS NULL OR ended_at_ms IS NULL)::UBIGINT \"unknownIntervals\" \
+             sum(operation_count)::UBIGINT count, COALESCE(sum(interval_sum_ms),0)::UBIGINT \"measuredIntervalSumMs\", \
+             sum(unknown_intervals)::UBIGINT \"unknownIntervals\" \
              FROM ({}) GROUP BY category ORDER BY category",
-                query.operations
+                query.operation_statistics
             ),
             128,
         )?;
-        let token_predicate = "event = 'token_observation' OR provider_total_tokens IS NOT NULL OR input_tokens <> 0 OR output_tokens <> 0 OR cached_input_tokens <> 0 OR reasoning_output_tokens <> 0";
+        let by_operation_activity = operation_facet(
+            &query.connection,
+            &format!(
+                "SELECT COALESCE(phase,'unknown') phase, COALESCE(activity,'unknown') activity, \
+                 COALESCE(classification,'unknown') provenance, sum(operation_count)::UBIGINT count, \
+                 sum(interval_sum_ms)::UBIGINT \"measuredIntervalSumMs\", \
+                 sum(unknown_intervals)::UBIGINT \"unknownIntervals\" \
+                 FROM ({}) GROUP BY ALL ORDER BY phase,activity,provenance",
+                query.operation_statistics
+            ),
+            &["phase", "activity", "provenance"],
+        )?;
+        let tools = operation_facet(
+            &query.connection,
+            &format!(
+                "SELECT COALESCE(tool,'unknown') tool, COALESCE(outcome,'unknown') outcome, \
+                 sum(operation_count)::UBIGINT count, sum(interval_sum_ms)::UBIGINT \"measuredIntervalSumMs\", \
+                 sum(unknown_intervals)::UBIGINT \"unknownIntervals\" FROM ({}) \
+                 WHERE kind='tool' GROUP BY ALL ORDER BY tool,outcome",
+                query.operation_statistics
+            ),
+            &["tool", "outcome"],
+        )?;
+        let token_predicate = crate::review_aggregate::TOKEN_PREDICATE;
         let token_counts = query_rows::<Value>(
             &query.connection,
             &format!(
@@ -79,11 +101,11 @@ impl UsageReader {
             let (measured, observations, unknown): (i64, u64, u64) = query.connection.query_row(&format!(
                 "SELECT COALESCE(sum({column}),0)::BIGINT, \
                  COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT, \
-                 COALESCE(sum(CASE WHEN {column} IS NULL THEN COALESCE({unknown_column}, observation_count, 1) ELSE 0 END),0)::UBIGINT \
+                 COALESCE(sum(COALESCE({unknown_column}, CASE WHEN {column} IS NULL THEN COALESCE(observation_count,1) ELSE 0 END)),0)::UBIGINT \
                  FROM ({}) WHERE {token_predicate}", query.contributions
             ), [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(query_error)?;
             tokens.push(json!({"category": category, "provenance": "provider_reported",
-                "measuredTokens": measured, "exactTokens": (unknown == 0 && observations > 0).then_some(measured),
+                "measuredTokens": measured, "exactTokens": (exact_token_window && unknown == 0 && observations > 0).then_some(measured),
                 "observations": observations, "unknownObservations": unknown}));
         }
         let by_activity = query_rows::<Value>(
@@ -134,8 +156,8 @@ impl UsageReader {
             .connection
             .query_row(
                 &format!(
-                    "SELECT count(*)::UBIGINT FROM ({}) WHERE rework_of_operation_id IS NOT NULL",
-                    query.operations
+                    "SELECT COALESCE(sum(rework_operations),0)::UBIGINT FROM ({})",
+                    query.operation_statistics
                 ),
                 [],
                 |row| row.get(0),
@@ -148,6 +170,17 @@ impl UsageReader {
             query.operations, query.contributions
         ), [], |row| row.get(0)).map_err(query_error)?;
         let total_operations = operation_counts["operations"].as_u64().unwrap_or_default();
+        let detail_operations: u64 = query
+            .connection
+            .query_row(
+                &format!("SELECT count(*)::UBIGINT FROM ({})", query.operations),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(query_error)?;
+        let retained_operations = total_operations.saturating_sub(detail_operations);
+        let omitted_rework_operations =
+            rework_operations.saturating_sub(links.len().min(16) as u64);
         let unknown_intervals = operation_counts["unknown_intervals"]
             .as_u64()
             .unwrap_or_default();
@@ -160,6 +193,7 @@ impl UsageReader {
             || self.manifest.retired_review_operations != 0
             || self.manifest.retired_review_contributions != 0
             || self.manifest.unapplied_retention_corrections != 0
+            || self.manifest.unapplied_retention_records != 0
         {
             "partial"
         } else if total_operations == 0 && observed_tokens == 0 {
@@ -168,7 +202,7 @@ impl UsageReader {
             "recorded"
         };
         let measurement = json!({"measured": token_counts["provider_total"],
-            "exact": if observed_tokens > 0 && token_counts["unknown_totals"] == 0 { token_counts["provider_total"].clone() } else { Value::Null },
+            "exact": if exact_token_window && observed_tokens > 0 && token_counts["unknown_totals"] == 0 { token_counts["provider_total"].clone() } else { Value::Null },
             "unknown": token_counts["unknown_totals"]});
         let effort = json!({"operations": total_operations, "retryOperations": Value::Null, "reworkOperations": rework_operations,
             "providerTotalTokens": measurement, "activeAgentMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
@@ -176,17 +210,23 @@ impl UsageReader {
             "recordedWaitMs": {"measured":0,"exact":Value::Null,"unknown":total_operations}});
         Ok(json!({
             "schemaVersion":1,"kind":"performanceReview", "window":{"fromAtMs":(start != i64::MIN).then_some(start),"toAtMs":(end != i64::MAX).then_some(end)},
-            "tokens":tokens,"tokensByActivity":by_activity,"operations":operations,"counts":operation_counts,"waits":[],
-            "links":{"retryOperations":Value::Null,"reworkOperations":rework_operations,"sample":links.into_iter().take(16).collect::<Vec<_>>(),"omittedOperations":rework_operations.saturating_sub(16),"retryCoverage":"unobserved"},
+            "tokens":tokens,"tokensByActivity":by_activity,"operations":operations,
+            "operationsByActivity":by_operation_activity,"tools":tools,"counts":operation_counts,"waits":[],
+            "links":{"retryOperations":Value::Null,"reworkOperations":rework_operations,"sample":links.into_iter().take(16).collect::<Vec<_>>(),"omittedOperations":omitted_rework_operations,"retryCoverage":"unobserved"},
             "candidates":[],"diagnostics":{"longLivedDeclarations":{"thresholdMs":3600000,"count":Value::Null,"coverage":"unobserved"}},
-            "coverage":{"rawOperations":total_operations,"deduplicatedOperations":total_operations,"unknownOperationIntervals":unknown_intervals,
+            "coverage":{"rawOperations":detail_operations,"deduplicatedOperations":total_operations,"unknownOperationIntervals":unknown_intervals,
+                "retainedAggregateOperations":retained_operations,
+                "operationStatistics":if self.manifest.unapplied_retention_records != 0 || range != TimeRange::all() && self.manifest.retired_review_operations != 0 {"partial_retention"} else {"recorded"},
+                "reviewDetail":if self.manifest.review_retention_cutoff_at_ms.is_some() {"partial_retention"} else {"recorded"},
+                "tokenTotals":if exact_token_window {"recorded"} else {"partial_retention"},
                 "unclassifiedOperations":operation_counts["unclassified"],"operationsWithoutRepository":operation_counts["without_repository"],
-                "unlinkedToolOperations":Value::Null,"modelRequestsWithoutProviderTotal":model_without_total,
+                "unlinkedToolOperations":Value::Null,"modelRequestsWithoutProviderTotal":if retained_operations == 0 {Some(model_without_total)} else {None},
                 "rawTokenObservations":observed_tokens,"deduplicatedTokenObservations":observed_tokens,
                 "unknownTokenObservations":token_counts["unknown_totals"],"incompleteTokenObservations":token_counts["incomplete"],
                 "conflictingTokenObservations":Value::Null,"coverageEvents":gaps,"collectionCompleteness":completeness,
                 "projectionCompleteFromSequence":query.complete_from_sequence,
                 "unappliedCorrectionsAfterRetention":self.manifest.unapplied_retention_corrections,
+                "unappliedObservationsAfterRetention":self.manifest.unapplied_retention_records,
                 "criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"unobserved"},
             "workBindings":{"references":[],"boundOperations":0,"unknownOperations":total_operations,"basis":"unobserved"},
             "outcomes":{"schemaVersion":1,"coverage":"unobserved","totals":effort,"attributed":Value::Null,"unattributed":effort,
@@ -194,7 +234,7 @@ impl UsageReader {
                 "basis":"No outcome binding was captured; operation completion is not proof of a delivered outcome."},
             "evidence":{"action":"details","details":["operations","tokens","coverage","classifications"],"repository":filter.repository_id,
                 "thread_id":filter.thread_id,"from_at_ms":(start != i64::MIN).then_some(start),"to_at_ms":(end != i64::MAX).then_some(end),"limit":20},
-            "interpretation":"Operation intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
+            "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available operation intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
         }))
     }
 }
