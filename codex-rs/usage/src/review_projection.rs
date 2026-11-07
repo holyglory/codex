@@ -290,6 +290,11 @@ pub(crate) fn publish_review_projection(
     )?;
     #[cfg(test)]
     profile.mark("operation-address-lookup");
+    if operation_index.as_ref().is_some_and(|index| index.runs.len() >= crate::id_index::MAX_ID_RUNS)
+        && updates.keys().any(|id| !addresses.contains_key(id))
+    {
+        return Err(invalid("operation-id publication awaits bounded run maintenance"));
+    }
     let mut affected = BTreeMap::<u64, Vec<(u64, &UsageRecord)>>::new();
     for (id, mut facts) in updates {
         facts.sort_by_key(|(sequence, _)| *sequence);

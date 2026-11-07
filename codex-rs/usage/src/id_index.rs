@@ -202,6 +202,9 @@ pub fn publish_id_index(
     }) {
         return Err(invalid("record-id index entry lies outside its checkpoint"));
     }
+    if !canonical.is_empty() && previous.runs.len() >= MAX_ID_RUNS {
+        return Err(invalid("record-id publication awaits bounded run maintenance"));
+    }
     let run = if canonical.is_empty() {
         None
     } else {
@@ -214,12 +217,6 @@ pub fn publish_id_index(
     }
     if let Some(run) = &run {
         descriptor.runs.push(run.clone());
-    }
-    if descriptor.runs.len() > MAX_ID_RUNS {
-        // Publication remains valid; a separate compactor can reduce fanout.
-        descriptor
-            .runs
-            .sort_by_key(|run| (run.level, run.min_sequence, run.data_file.clone()));
     }
     let file = format!("record-id-index-{stamp}.json");
     write_descriptor(root, &file, &descriptor)?;
@@ -333,6 +330,7 @@ pub(crate) fn write_descriptor(
     file: &str,
     descriptor: &IdIndexDescriptor,
 ) -> Result<()> {
+    validate_descriptor(root, descriptor)?;
     let path = index_path(root, file)?;
     let mut encoded = serde_json::to_vec_pretty(descriptor)?;
     encoded.push(b'\n');

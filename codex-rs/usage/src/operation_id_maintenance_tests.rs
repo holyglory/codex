@@ -101,3 +101,65 @@ fn merge_filters_retired_sequence_before_selecting_same_id_and_rejects_live_dupl
     let mut duplicate = Job::start(root, Arc::new(source), inputs, SnapshotPin::acquire(root).expect("pin")).expect("duplicate job");
     assert!(duplicate.step(/*max_entries*/ 4).is_err());
 }
+
+#[test]
+fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_publication() {
+    let directory = tempdir().expect("directory");
+    let root = directory.path();
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let records = (0..crate::id_index::MAX_ID_RUNS).map(|i| {
+        let mut fact = UsageRecord::new_millis(format!("cap-{i}"), /*observed_at_ms*/ 1_000,
+            /*input_tokens*/ 0, /*output_tokens*/ 0).with_operation(format!("cap-{i}"));
+        fact.event = Some("tool_started".into());
+        fact.started_at_ms = Some(1_000);
+        crate::JournalPayload::Record(fact)
+    }).collect();
+    journal.append_batch(records).expect("real captures");
+    let mut publisher = UsagePublisher::open_at(root).expect("publisher");
+    let mut manifest = publisher.publish_batch(JournalReadLimits { max_bytes: 1024 * 1024, max_entries: 512 })
+        .expect("publish complete canonical partition");
+    let mut review = review_projection::load_review_projection(root, &manifest).expect("metadata").expect("review");
+    let mut index = operation_id_index::load(root, &review).expect("index").expect("fresh index");
+    index.runs.clear();
+    for i in 0..crate::id_index::MAX_ID_RUNS {
+        let mut writer = RunWriter::new(root, &format!("review-operation-id-cap-{i}.bin"),
+            &format!("review-operation-id-cap-fence-{i}.bin"), /*level*/ 0, /*estimated_entries*/ 1).expect("run");
+        writer.push_entry(&OperationIdEntry { operation_id: format!("cap-{i}"), first_sequence: i as u64 + 1 }).expect("exact address");
+        index.runs.push(OperationIdRun { run: writer.finish().expect("immutable run"), retired_through: 0 });
+    }
+    review.operation_id_index_file = Some(operation_id_index::write(root, &index, "at-cap").expect("cap is valid"));
+    let mut invalid = index.clone();
+    invalid.runs.push(index.runs[0].clone());
+    assert!(operation_id_index::write(root, &invalid, "over-cap").is_err());
+    let review_file = "review-projection-at-cap.json";
+    write_json(root, review_file, &review).expect("descriptor");
+    manifest.review_projection_file = Some(review_file.into());
+    ManifestStore::new(root.join("manifest.json")).save(&manifest).expect("install real cap fixture");
+    let pinned = UsageReader::open_at(root).expect("snapshot at cap");
+    let mut late = UsageRecord::new_millis("after-cap", /*observed_at_ms*/ 2_000,
+        /*input_tokens*/ 0, /*output_tokens*/ 0).with_operation("after-cap");
+    late.event = Some("tool_started".into());
+    late.started_at_ms = Some(2_000);
+    journal.append_record(late).expect("capture remains append-only at cap");
+    assert!(publisher.publish_batch(JournalReadLimits { max_bytes: 64 * 1024, max_entries: 16 }).is_err());
+    assert_eq!(ManifestStore::new(root.join("manifest.json")).load().expect("unchanged readable snapshot"), manifest);
+    let pending = UsageReader::open_at(root).expect("read snapshot and durable tail at cap");
+    assert!(pending.records.iter().any(|record| record.id == "after-cap"));
+    let mut maintenance = Maintenance::default();
+    for _ in 0..16 {
+        maintenance.step(root, /*max_entries*/ 1).expect("maintenance runs with unpublished observations");
+        if maintenance.job.is_none() { break; }
+    }
+    assert!(maintenance.job.is_none());
+    let resumed = publisher.publish_batch(JournalReadLimits { max_bytes: 64 * 1024, max_entries: 16 })
+        .expect("retry resumes after background merge");
+    assert_eq!(resumed.watermark, journal.checkpoint().expect("durable frontier").sequence);
+    let current = review_projection::load_review_projection(root, &resumed).expect("metadata").expect("review");
+    let current_index = operation_id_index::load(root, &current).expect("index").expect("fresh index");
+    assert!(current_index.runs.len() <= crate::id_index::MAX_ID_RUNS);
+    let partitions = current.partitions.iter().cloned().map(|p| (p.partition, p)).collect();
+    let ids = BTreeSet::from(["cap-0".into(), "after-cap".into()]);
+    assert_eq!(operation_id_index::find_addresses(root, &current_index, &partitions, &ids).expect("exact resumed addresses"),
+        BTreeMap::from([("cap-0".into(), 1), ("after-cap".into(), crate::id_index::MAX_ID_RUNS as u64 + 1)]));
+    assert_eq!(pinned.manifest(), &manifest);
+}
