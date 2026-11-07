@@ -776,7 +776,13 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
         sqlite_artifacts.is_empty(),
         "non-local thread persistence should not create sqlite artifacts: {sqlite_artifacts:?}"
     );
+    assert!(
+        !codex_home.join("usage").exists(),
+        "non-local thread persistence should not create legacy usage sqlite storage"
+    );
     let mut entries = codex_home_entries(codex_home)?;
+    // Content-free local analytics is independent of thread persistence.
+    entries.remove(codex_usage::USAGE_DIRECTORY_NAME);
     // Host startup may leave sandbox migration markers or Windows sandbox logs,
     // and Bazel test runs may initialize shell snapshot storage. None is thread
     // persistence.

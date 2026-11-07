@@ -256,7 +256,8 @@ jobs:
             exit 1
           fi
 
-          cargo_args=(test -p codex-v8-poc --target "${TARGET}")
+          # Select each artifact ABI explicitly, including the legacy pair.
+          cargo_args=(test -p codex-v8-poc --target "${TARGET}" --no-default-features)
           if [[ "${SANDBOX}" == "true" ]]; then
             cargo_args+=(--features sandbox)
           fi

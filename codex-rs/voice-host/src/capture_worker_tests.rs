@@ -190,6 +190,7 @@ async fn capture_reaches_remote_rtp_and_mute_discards_queued_and_partial_audio()
         let (media, _) = AudioTrack::new().unwrap();
         let mut settings = webrtc::peer_connection::SettingEngine::default();
         settings.set_lite(/*lite*/ true);
+        settings.set_include_loopback_candidate(/*allow_loopback*/ true);
         let remote = PeerConnectionBuilder::new()
             .with_media_engine(media)
             .with_setting_engine(settings)
@@ -198,7 +199,7 @@ async fn capture_reaches_remote_rtp_and_mute_discards_queued_and_partial_audio()
                 next: NoopInterceptor::new(),
                 sender,
             }))
-            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .with_udp_addrs(vec!["127.0.0.1:0"])
             .build()
             .await
             .unwrap();

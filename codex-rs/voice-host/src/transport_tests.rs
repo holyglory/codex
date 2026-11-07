@@ -55,15 +55,16 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             let gathered = Arc::new(Notify::new());
             let mut settings = webrtc::peer_connection::SettingEngine::default();
             settings.set_lite(/*lite*/ true);
+            settings.set_include_loopback_candidate(/*allow_loopback*/ true);
             let (media, mut remote_audio) = crate::audio_track::AudioTrack::new().unwrap();
             let builder = PeerConnectionBuilder::new()
                 .with_media_engine(media)
                 .with_setting_engine(settings)
                 .with_handler(Arc::new(RemoteEvents(sender, gathered.clone())));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec!["127.0.0.1:0"])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec!["127.0.0.1:0"])
             }
             .build()
             .await
@@ -83,6 +84,11 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 .collect();
             // Normal generated UDP/TCP answers still connect at the admission boundary.
             assert!(!candidates.is_empty() && candidates.len() <= MAX_REMOTE_CANDIDATES);
+            assert!(
+                candidates
+                    .iter()
+                    .all(|candidate| candidate.contains(" 127.0.0.1 "))
+            );
             for _ in candidates.len()..MAX_REMOTE_CANDIDATES {
                 answer.push_str(&format!("{}\r\n", candidates[0]));
             }

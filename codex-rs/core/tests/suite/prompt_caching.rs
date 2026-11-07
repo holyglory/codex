@@ -273,6 +273,9 @@ async fn prompt_tools_are_consistent_across_requests(
     }
     expected_tools_names.extend([
         "request_user_input",
+        "usage_stats",
+        "usage_activity",
+        "account_management",
         "apply_patch",
         "view_image",
         "tool_search",
