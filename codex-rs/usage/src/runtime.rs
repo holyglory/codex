@@ -19,20 +19,66 @@ const PUBLICATION_LIMITS: JournalReadLimits = JournalReadLimits {
     max_entries: 16_384,
 };
 
-type Publishers = BTreeMap<PathBuf, Weak<PublisherSignal>>;
+struct PublisherRegistration {
+    owner: Weak<PublisherOwner>,
+    signal: Weak<PublisherSignal>,
+}
+
+type Publishers = BTreeMap<PathBuf, PublisherRegistration>;
 static PUBLISHERS: OnceLock<Mutex<Publishers>> = OnceLock::new();
 
 #[derive(Debug)]
 struct PublisherSignal {
-    wake: mpsc::SyncSender<()>,
+    wake: Mutex<Option<mpsc::SyncSender<()>>>,
+}
+
+impl PublisherSignal {
+    fn notify(&self) {
+        if let Ok(wake) = self.wake.try_lock()
+            && let Some(wake) = wake.as_ref()
+        {
+            let _ = wake.try_send(());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PublisherOwner {
+    signal: Arc<PublisherSignal>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl Drop for PublisherOwner {
+    fn drop(&mut self) {
+        drop(
+            self.signal
+                .wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+        // Never leave DuckDB work running while the host process tears down
+        // its native libraries. Notification handles do not own these joins,
+        // so capture remains independent of publication and report reads.
+        for worker in self
+            .workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
+            if worker.join().is_err() {
+                tracing::warn!("usage worker ended unexpectedly during shutdown");
+            }
+        }
+    }
 }
 
 /// Lifetime handle for the process's independent publisher for one Codex home.
 /// Clones share one worker. Dropping the last handle closes its wake channel;
-/// the worker finishes its current bounded publication and exits.
+/// the workers finish their bounded work and join before shutdown returns.
 #[derive(Clone, Debug)]
 pub struct UsagePublisherRuntime {
-    _signal: Arc<PublisherSignal>,
+    _owner: Arc<PublisherOwner>,
 }
 
 impl UsagePublisherRuntime {
@@ -53,16 +99,25 @@ impl UsagePublisherRuntime {
             .get_or_init(Mutex::default)
             .lock()
             .map_err(|_| StorageError::InvalidData("publisher registry lock poisoned".into()))?;
-        publishers.retain(|_, publisher| publisher.strong_count() != 0);
-        if let Some(signal) = publishers.get(&root).and_then(Weak::upgrade) {
-            return Ok(Self { _signal: signal });
+        publishers.retain(|_, publisher| publisher.owner.strong_count() != 0);
+        if let Some(owner) = publishers
+            .get(&root)
+            .and_then(|entry| entry.owner.upgrade())
+        {
+            return Ok(Self { _owner: owner });
         }
         let (wake, receiver) = mpsc::sync_channel(1);
-        let signal = Arc::new(PublisherSignal { wake });
+        let signal = Arc::new(PublisherSignal {
+            wake: Mutex::new(Some(wake)),
+        });
+        let owner = Arc::new(PublisherOwner {
+            signal: Arc::clone(&signal),
+            workers: Mutex::default(),
+        });
         let (warm, ready) = mpsc::channel();
         let warm_root = root.clone();
-        let warm_signal = Arc::downgrade(&signal);
-        std::thread::Builder::new()
+        let warm_signal = Arc::downgrade(&owner);
+        let warm_worker = std::thread::Builder::new()
             .name("codex-usage-startup-warmup".into())
             .spawn(move || {
                 if ready.recv().is_ok() {
@@ -72,7 +127,7 @@ impl UsagePublisherRuntime {
         let worker_root = root.clone();
         let (maintenance, maintain) = mpsc::sync_channel(1);
         let maintenance_root = root.clone();
-        std::thread::Builder::new()
+        let maintenance_worker = std::thread::Builder::new()
             .name("codex-usage-retention".into())
             .spawn(move || {
                 let mut retention_maintenance = crate::retention::Maintenance::default();
@@ -94,12 +149,23 @@ impl UsagePublisherRuntime {
                     }
                 }
             })?;
-        std::thread::Builder::new()
+        let publisher_worker = std::thread::Builder::new()
             .name("codex-usage-publisher".into())
             .spawn(move || publish_loop(worker_root, receiver, warm, maintenance))?;
-        let _ = signal.wake.try_send(());
-        publishers.insert(root, Arc::downgrade(&signal));
-        Ok(Self { _signal: signal })
+        *owner
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            vec![warm_worker, maintenance_worker, publisher_worker];
+        signal.notify();
+        publishers.insert(
+            root,
+            PublisherRegistration {
+                owner: Arc::downgrade(&owner),
+                signal: Arc::downgrade(&signal),
+            },
+        );
+        Ok(Self { _owner: owner })
     }
 }
 
@@ -113,9 +179,9 @@ pub(crate) fn notify_publisher(codex_home: &Path) {
     };
     if let Some(signal) = publishers
         .get(&codex_home.join(USAGE_DIRECTORY_NAME))
-        .and_then(Weak::upgrade)
+        .and_then(|entry| entry.signal.upgrade())
     {
-        let _ = signal.wake.try_send(());
+        signal.notify();
     }
 }
 
@@ -141,6 +207,12 @@ fn publish_loop(
             Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
+        if std::time::Instant::now() >= next_maintenance {
+            // Maintenance must also run during catch-up or publication errors:
+            // reaching an index run cap is repaired by this separate worker.
+            let _ = maintenance.try_send(());
+            next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+        }
         let result = UsagePublisher::open_at(&root)
             .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
         match result {
@@ -154,12 +226,6 @@ fn publish_loop(
                 let _ = crate::review_projection::load_review_projection_shared(&root, &manifest);
                 if !catch_up && let Some(warm) = warm.take() {
                     let _ = warm.send(());
-                }
-                if !catch_up && std::time::Instant::now() >= next_maintenance {
-                    // Retention has its own worker and never holds up catch-up
-                    // or startup warming. A pending request coalesces later wakes.
-                    let _ = maintenance.try_send(());
-                    next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
                 }
                 had_failure = false;
             }
@@ -176,7 +242,7 @@ fn publish_loop(
     }
 }
 
-fn prewarm_recent_chats(root: PathBuf, signal: Weak<PublisherSignal>) {
+fn prewarm_recent_chats(root: PathBuf, signal: Weak<PublisherOwner>) {
     let Ok(reader) = crate::UsageReader::open_at(root) else {
         tracing::debug!("usage startup warmup could not pin a snapshot");
         return;

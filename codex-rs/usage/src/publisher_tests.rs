@@ -223,7 +223,36 @@ fn startup_worker_prewarms_ten_most_recent_chats_from_persisted_activity() {
             .sequence,
         manifest.watermark
     );
-    drop(runtime);
+    drop(reader);
+    let publication = crate::storage_file::open_read_write(&root.join(".snapshot.lock"))
+        .expect("publication gate");
+    publication.lock().expect("hold publication");
+    crate::capture_record(
+        directory.path(),
+        record("shutdown", /*at*/ 101, /*input*/ 7),
+    )
+    .expect("capture stays independent of the held publication gate");
+    let (stopped, completion) = std::sync::mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        drop(runtime);
+        stopped.send(()).expect("report joined shutdown");
+    });
+    assert_eq!(
+        completion.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    drop(publication);
+    completion
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("all publisher workers joined");
+    shutdown.join().expect("shutdown thread");
+    assert_eq!(
+        ManifestStore::new(root.join("manifest.json"))
+            .load()
+            .expect("last queued publication")
+            .watermark,
+        journal.checkpoint().expect("durable journal").sequence
+    );
 }
 
 #[test]
