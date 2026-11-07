@@ -47,6 +47,7 @@ struct BlockingMetadataFileSystem {
 
 struct BlockingMetadataCalls {
     paths: Mutex<Vec<PathUri>>,
+    metadata_root: Option<AbsolutePathBuf>,
     started: Notify,
     release: Semaphore,
     round_trip: std::time::Duration,
@@ -59,6 +60,7 @@ impl Default for BlockingMetadataCalls {
     fn default() -> Self {
         Self {
             paths: Mutex::new(Vec::new()),
+            metadata_root: None,
             started: Notify::new(),
             release: Semaphore::new(0),
             round_trip: std::time::Duration::ZERO,
@@ -150,6 +152,14 @@ impl ExecutorFileSystem for BlockingMetadataFileSystem {
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async move {
+            if let Some(root) = &self.calls.metadata_root
+                && !path.to_abs_path()?.starts_with(root)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "outside the fixture filesystem",
+                ));
+            }
             if !self.calls.round_trip.is_zero() {
                 tokio::time::sleep(self.calls.round_trip).await;
             }
@@ -445,8 +455,19 @@ async fn repo_ancestry_without_project_marker_does_not_walk_parents() {
     fs::create_dir_all(outer.join(".agents/skills")).expect("create outer skills");
     fs::create_dir_all(cwd.join(".agents/skills")).expect("create cwd skills");
 
+    // Concurrent sandbox tests can create protected metadata mount targets in
+    // the shared temp parent. The no-marker premise belongs to this filesystem.
+    let calls = Arc::new(BlockingMetadataCalls {
+        metadata_root: Some(absolute(temp_dir.path())),
+        release: Semaphore::new(Semaphore::MAX_PERMITS),
+        ..Default::default()
+    });
+    let fixture: Arc<dyn ExecutorFileSystem> = Arc::new(BlockingMetadataFileSystem {
+        inner: Arc::clone(&LOCAL_FS),
+        calls,
+    });
     let roots = repo_agents_skill_roots(
-        Some(Arc::clone(&LOCAL_FS)),
+        Some(fixture),
         &stack(Vec::new()),
         &cwd,
         /*empty_remote_roots*/ None,
