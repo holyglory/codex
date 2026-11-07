@@ -239,6 +239,7 @@ fn execute(
     if !(1..=50).contains(&limit) {
         return Err(tool_error("limit must be between 1 and 50"));
     }
+    filter = presentation::agent_filter(filter, args.agent_id.as_deref())?;
     let metadata = snapshot_metadata(store, range);
     let value = match args.action {
         UsageStatsAction::Summary => {
@@ -281,8 +282,13 @@ fn execute(
             let threads = store
                 .thread_scope(root, scope)
                 .map_err(|_| storage_error())?;
+            let tree_filter = presentation::agent_filter(
+                filter.for_threads(threads.iter().cloned()),
+                args.agent_id.as_deref(),
+            )?;
+            let threads = tree_filter.thread_ids.as_ref().ok_or_else(storage_error)?;
             let totals = store
-                .totals(range, &filter.for_threads(threads.iter().cloned()))
+                .totals(range, &tree_filter)
                 .map_err(|_| storage_error())?;
             let after = args.cursor_id.as_deref();
             let mut page = threads
@@ -317,7 +323,10 @@ fn execute(
                 let threads = store
                     .thread_scope(root, codex_usage::ThreadLineageScope::Descendants)
                     .map_err(|_| storage_error())?;
-                filter = filter.for_threads(threads);
+                filter = presentation::agent_filter(
+                    filter.for_threads(threads),
+                    args.agent_id.as_deref(),
+                )?;
             }
             let mut report = store
                 .performance_review(range, &filter)
@@ -329,11 +338,6 @@ fn execute(
         | UsageStatsAction::Details
         | UsageStatsAction::Tools
         | UsageStatsAction::Activities => {
-            if args.agent_id.is_some() {
-                return Err(tool_error(
-                    "agent identity has not been captured for this report; use thread_id",
-                ));
-            }
             presentation::record_page(store, range, &filter, &args, limit)?
         }
     };
@@ -373,6 +377,13 @@ fn record_fields(record: &codex_usage::UsageRecord) -> Value {
         "cacheWriteInputTokens": record.cache_write_input_tokens,
         "missingObservations": record.missing_observations,
         "reworkOfOperationId": record.rework_of_operation_id,
+        "retryOfOperationId": record.retry_of_operation_id,
+        "processId": record.process_id,
+        "agentId": record.agent_id,
+        "approvalDecision": record.approval_decision,
+        "approvalSource": record.approval_source,
+        "taxonomyVersion": record.taxonomy_version,
+        "heartbeatCount": record.heartbeat_count,
         "repositoryId": record.repository_id,
         "model": record.model,
         "tool": record.tool,

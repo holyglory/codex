@@ -98,6 +98,7 @@ pub(super) fn record_page(
             .collect::<Vec<_>>();
         let data = page.data.iter().map(|row| json!({
             "id":row.operation_id,"operationId":row.operation_id,"operationKind":row.kind,
+            "processId":row.process_id,"agentId":row.agent_id,"retryOfOperationId":row.retry_of_operation_id,
             "threadId":row.thread_id,"turnId":row.turn_id,"accountId":row.account_id,
             "repositoryId":row.repository_id,"toolName":row.tool,"model":row.model,"responseId":row.response_id,
             "startedAtMs":row.started_at_ms,"completedAtMs":row.ended_at_ms,"observedAtMs":row.observed_at_ms,
@@ -114,15 +115,19 @@ pub(super) fn record_page(
                 "turns" => (RecordKind::Turns, "recorded_lifecycle"),
                 "classifications" => (RecordKind::Classifications, "recorded"),
                 "coverage" => (RecordKind::Coverage, "recorded"),
-                "activity_spans" => (RecordKind::Classifications, "recorded_declarations"),
+                "activity_spans" => (RecordKind::ActivitySpans, "recorded_observations"),
                 "lifecycle_events" | "events" => (RecordKind::Lifecycle, "recorded"),
-                "repository_attributions" | "repository_identities" | "repository_events" => {
-                    (RecordKind::Repositories, "unobserved")
+                "repository_attributions" => {
+                    (RecordKind::RepositoryAttributions, "recorded_observations")
                 }
-                "approvals" => (RecordKind::Approvals, "unobserved"),
-                "processes" => (RecordKind::Processes, "unobserved"),
-                "agents" => (RecordKind::Agents, "unobserved"),
-                "taxonomies" => (RecordKind::Taxonomies, "unobserved"),
+                "repository_identities" => {
+                    (RecordKind::RepositoryIdentities, "recorded_observations")
+                }
+                "repository_events" => (RecordKind::RepositoryEvents, "recorded_observations"),
+                "approvals" => (RecordKind::Approvals, "recorded_observations"),
+                "processes" => (RecordKind::Processes, "recorded_observations"),
+                "agents" => (RecordKind::Agents, "recorded_observations"),
+                "taxonomies" => (RecordKind::Taxonomies, "recorded_observations"),
                 _ => return Err(tool_error("unsupported usage detail family")),
             }
         } else {
@@ -137,7 +142,16 @@ pub(super) fn record_page(
             .map(|row| RecordCursor::from_millis(row.effective_observed_at_ms(), row.id.clone()))
             .collect::<Vec<_>>();
         (
-            page.records.iter().map(record_fields).collect(),
+            page.records
+                .iter()
+                .map(|record| {
+                    if matches!(args.action, UsageStatsAction::Details) {
+                        entity_fields(detail, record)
+                    } else {
+                        record_fields(record)
+                    }
+                })
+                .collect(),
             page.next,
             cursors,
             coverage,
@@ -159,4 +173,67 @@ pub(super) fn record_page(
         value["detailKind"] = json!(detail);
     }
     Ok(value)
+}
+
+/// Agent identity is the runtime thread session UUID. Intersect the indexed
+/// thread restriction after scope/tree planning; never replace other filters.
+pub(super) fn agent_filter(
+    mut filter: UsageFilter,
+    agent_id: Option<&str>,
+) -> Result<UsageFilter, FunctionCallError> {
+    if let Some(agent_id) = agent_id {
+        let agent = uuid::Uuid::parse_str(agent_id)
+            .map_err(|_| tool_error("agent_id must be a runtime thread UUID"))?
+            .to_string();
+        let threads = filter
+            .thread_ids
+            .take()
+            .unwrap_or_else(|| [agent.clone()].into_iter().collect());
+        filter.thread_ids = Some(
+            threads
+                .into_iter()
+                .filter(|thread| thread == &agent)
+                .collect(),
+        );
+    }
+    Ok(filter)
+}
+
+fn entity_fields(detail: &str, record: &codex_usage::UsageRecord) -> Value {
+    match detail {
+        "processes" => json!({"type":"process", "id":record.process_id,
+            "firstObservedAtMs":record.effective_observed_at_ms(),
+            "startedAtMs":record.effective_started_at_ms(), "endedAtMs":record.effective_ended_at_ms()}),
+        "agents" => json!({"type":"agent", "id":record.agent_id, "agentId":record.agent_id,
+            "identityKind":"thread_session", "incarnationId":record.operation_id, "threadId":record.thread_id, "parentAgentId":record.parent_thread_id,
+            "processId":record.process_id, "event":record.event,
+            "startedAtMs":record.effective_started_at_ms(), "endedAtMs":record.effective_ended_at_ms()}),
+        "activity_spans" => json!({"type":"activity_span", "id":record.operation_id,
+            "agentId":record.agent_id, "processId":record.process_id, "threadId":record.thread_id,
+            "phase":record.phase, "activity":record.activity, "provenance":record.classification,
+            "reworkOfOperationId":record.rework_of_operation_id,
+            "startedAtMs":record.effective_started_at_ms(), "endedAtMs":record.effective_ended_at_ms(),
+            "heartbeatCount":record.heartbeat_count}),
+        "approvals" => {
+            json!({"type":"approval", "eventId":record.id, "operationId":record.operation_id,
+            "agentId":record.agent_id, "processId":record.process_id, "toolName":record.tool,
+            "event":record.event, "decision":record.approval_decision, "source":record.approval_source,
+            "coverage":record.coverage, "requestedAtMs":record.effective_started_at_ms(),
+            "resolvedAtMs":record.effective_ended_at_ms(), "reviewDurationMs":record.duration_ms})
+        }
+        "repository_attributions" => json!({"type":"repository_attribution", "eventId":record.id,
+            "operationId":record.operation_id, "repositoryId":record.repository_id,
+            "agentId":record.agent_id, "processId":record.process_id, "threadId":record.thread_id,
+            "provenance":record.classification, "coverage":record.coverage, "observedAtMs":record.effective_observed_at_ms()}),
+        "repository_identities" => json!({"type":"repository_identity", "id":record.repository_id,
+            "safeDisplayLabel":record.repository_id, "identitySource":"validated_git_common_directory",
+            "observedAtMs":record.effective_observed_at_ms()}),
+        "repository_events" => json!({"type":"repository_event", "eventId":record.id,
+            "repositoryId":record.repository_id, "agentId":record.agent_id, "processId":record.process_id,
+            "event":record.event, "observedAtMs":record.effective_observed_at_ms()}),
+        "taxonomies" => json!({"type":"taxonomy", "version":record.taxonomy_version,
+            "mappingKey":record.classification, "processId":record.process_id,
+            "observedAtMs":record.effective_observed_at_ms()}),
+        _ => record_fields(record),
+    }
 }

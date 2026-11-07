@@ -185,6 +185,64 @@ fn event_cursor_continuation_does_not_skip_the_next_record() {
         continuation["snapshotGeneration"],
         pinned["snapshotGeneration"]
     );
+    for (id, span, event, at, ended, heartbeats) in [
+        (
+            "z-span-start",
+            "span-a",
+            "activity_span_started",
+            12_000,
+            None,
+            0,
+        ),
+        (
+            "a-span-finish",
+            "span-a",
+            "activity_span_finished",
+            12_000,
+            Some(12_000),
+            1,
+        ),
+        (
+            "other-span-finish",
+            "span-b",
+            "activity_span_finished",
+            13_000,
+            Some(13_000),
+            2,
+        ),
+    ] {
+        let mut span = UsageRecord::new_millis(id, at, 0, 0).with_operation(span);
+        span.event = Some(event.to_string());
+        span.started_at_ms = Some(12_000);
+        span.ended_at_ms = ended;
+        span.heartbeat_count = Some(heartbeats);
+        store.append_record(span).expect("capture span lifecycle");
+    }
+    store
+        .materialize_snapshot(codex_usage::Freshness::Fresh)
+        .expect("publish span states");
+    let reader = UsageReader::open(directory.path()).expect("span snapshot reader");
+    let mut request = args(UsageStatsAction::Details);
+    request.detail = Some("activity_spans".to_string());
+    request.limit = Some(1);
+    let first = execute(&reader, &context, request).expect("first span");
+    assert_eq!(
+        first["data"],
+        json!([{"type":"activity_span", "id":"span-a",
+        "agentId":null,"processId":null,"threadId":null,"phase":null,"activity":null,"provenance":null,
+        "reworkOfOperationId":null,"startedAtMs":12_000,"endedAtMs":12_000,"heartbeatCount":1}])
+    );
+    let mut continuation = args(UsageStatsAction::Details);
+    continuation.detail = Some("activity_spans".to_string());
+    continuation.limit = Some(1);
+    continuation.cursor_sort_value = first["nextCursor"]["sortValue"].as_i64();
+    continuation.cursor_id = first["nextCursor"]["id"].as_str().map(str::to_string);
+    let second = execute(&reader, &context, continuation).expect("second span");
+    assert_eq!(second["data"][0]["id"], json!("span-b"));
+    assert!(
+        second["nextCursor"].is_null(),
+        "older snapshots must not reappear after the cursor"
+    );
 }
 
 #[test]
@@ -470,11 +528,14 @@ fn task_tree_summary_combines_published_and_recent_descendants() {
     let directory = tempdir().expect("directory");
     let root = directory.path().join(codex_usage::USAGE_DIRECTORY_NAME);
     let journal = codex_usage::UsageJournal::new(root.join("events.jsonl"));
-    let mut child = UsageRecord::new("child", 11, 20, 3).with_thread("thread-child");
-    child.parent_thread_id = Some("thread-1".to_string());
+    let mut child =
+        UsageRecord::new("child", 11, 20, 3).with_thread("00000000-0000-0000-0000-000000000002");
+    child.parent_thread_id = Some("00000000-0000-0000-0000-000000000001".to_string());
     journal
         .append_batch(vec![
-            codex_usage::JournalPayload::Record(record("parent", 10)),
+            codex_usage::JournalPayload::Record(
+                record("parent", 10).with_thread("00000000-0000-0000-0000-000000000001"),
+            ),
             codex_usage::JournalPayload::Record(child),
             codex_usage::JournalPayload::Record(
                 UsageRecord::new("unrelated", 12, 100, 100).with_thread("unrelated"),
@@ -488,29 +549,56 @@ fn task_tree_summary_combines_published_and_recent_descendants() {
             max_entries: 100,
         })
         .expect("publication");
-    let mut recent = UsageRecord::new("grandchild", 13, 30, 3).with_thread("thread-grandchild");
-    recent.parent_thread_id = Some("thread-child".to_string());
+    let mut recent = UsageRecord::new("grandchild", 13, 30, 3)
+        .with_thread("00000000-0000-0000-0000-000000000003");
+    recent.parent_thread_id = Some("00000000-0000-0000-0000-000000000002".to_string());
     journal.append_record(recent).expect("recent lineage");
     let reader = UsageReader::open(directory.path()).expect("reader");
     let context = UsageStatsContext {
         codex_home: directory.path().to_path_buf(),
-        thread_id: "thread-1".to_string(),
+        thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
         cwd: directory.path().to_path_buf(),
     };
     let value = execute(&reader, &context, args(UsageStatsAction::TaskTreeSummary)).expect("tree");
     assert_eq!(
         value["data"],
-        json!([{"threadId": "thread-1", "records": 3, "inputTokens": 60, "outputTokens": 9}])
+        json!([{"threadId": "00000000-0000-0000-0000-000000000001", "records": 3, "inputTokens": 60, "outputTokens": 9}])
     );
     assert_eq!(
         value["threadIds"],
-        json!(["thread-1", "thread-child", "thread-grandchild"])
+        json!([
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+            "00000000-0000-0000-0000-000000000003"
+        ])
     );
     let mut root_only = args(UsageStatsAction::TaskTreeSummary);
     root_only.include_descendants = Some(false);
     let value = execute(&reader, &context, root_only).expect("root only");
     assert_eq!(
         value["data"],
-        json!([{"threadId": "thread-1", "records": 1, "inputTokens": 10, "outputTokens": 3}])
+        json!([{"threadId": "00000000-0000-0000-0000-000000000001", "records": 1, "inputTokens": 10, "outputTokens": 3}])
     );
+    let mut request = args(UsageStatsAction::TaskTreeSummary);
+    request.agent_id = Some("00000000-0000-0000-0000-000000000002".to_string());
+    let narrowed = execute(&reader, &context, request).expect("agent in descendant set");
+    assert_eq!(narrowed["data"][0]["inputTokens"], json!(20));
+    assert_eq!(
+        narrowed["threadIds"],
+        json!(["00000000-0000-0000-0000-000000000002"])
+    );
+    assert_eq!(narrowed["counts"]["threads"], json!(1));
+    let mut root_only = args(UsageStatsAction::TaskTreeSummary);
+    root_only.include_descendants = Some(false);
+    root_only.agent_id = Some("00000000-0000-0000-0000-000000000002".to_string());
+    let narrowed =
+        execute(&reader, &context, root_only).expect("agent cannot widen root-only scope");
+    assert_eq!(narrowed["threadIds"], json!([]));
+    assert_eq!(narrowed["counts"]["threads"], json!(0));
+    assert_eq!(narrowed["data"][0]["records"], json!(0));
+    let mut missing_repository = args(UsageStatsAction::TaskTreeSummary);
+    missing_repository.agent_id = Some("00000000-0000-0000-0000-000000000002".to_string());
+    missing_repository.repository = Some("another-repository".to_string());
+    let narrowed = execute(&reader, &context, missing_repository).expect("repository intersection");
+    assert_eq!(narrowed["data"][0]["records"], json!(0));
 }

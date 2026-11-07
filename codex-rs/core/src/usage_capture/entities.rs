@@ -73,6 +73,7 @@ pub(super) fn agent(operation: &Operation, transition: AgentLifecycle) {
         .as_deref()
         .unwrap_or(&operation.record.id);
     let mut record = context.fact(format!("{incarnation}:agent:{suffix}"), event);
+    record.operation_id = operation.record.operation_id.clone();
     record.started_at = operation.record.started_at;
     record.started_at_ms = operation.record.started_at_ms;
     if matches!(transition, AgentLifecycle::Stopped) {

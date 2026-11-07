@@ -49,6 +49,8 @@ struct Declaration {
     phase: Phase,
     activity: Activity,
     rework_of: Option<String>,
+    span_origin: Option<UsageRecord>,
+    heartbeat_count: u64,
 }
 
 #[derive(Default)]
@@ -62,11 +64,43 @@ struct Declarations {
 #[derive(Default)]
 pub(super) struct ActivityState(Mutex<Declarations>);
 
+#[derive(Clone, Copy)]
+enum SpanTransition {
+    Started,
+    Heartbeat,
+    Finished,
+}
+
 impl Declaration {
     fn annotate(&self, record: &mut UsageRecord) {
         record.phase = Some(self.phase.as_str().to_string());
         record.activity = Some(self.activity.as_str().to_string());
         record.classification = Some("agent_declared".to_string());
+    }
+
+    fn publish_span(&self, context: &CaptureContext, transition: SpanTransition) {
+        let Some(mut record) = self.span_origin.clone() else {
+            return;
+        };
+        let event = match transition {
+            SpanTransition::Started => "activity_span_started",
+            SpanTransition::Heartbeat => "activity_span_heartbeat",
+            SpanTransition::Finished => "activity_span_finished",
+        };
+        // Thread shutdown has no turn/account/repository dimensions. Preserve
+        // the actual activation owner, without retaining a CaptureContext Arc.
+        record.id = uuid::Uuid::new_v4().to_string();
+        let observed = super::now_ms();
+        record.observed_at = observed.div_euclid(1_000);
+        record.observed_at_ms = Some(observed);
+        record.event = Some(event.to_string());
+        record.heartbeat_count = Some(self.heartbeat_count);
+        if matches!(transition, SpanTransition::Finished) {
+            record.ended_at = Some(record.observed_at);
+            record.ended_at_ms = record.observed_at_ms;
+        }
+        // These wall-clock lifecycle boundaries are not measured active work.
+        context.sink.submit(record);
     }
 
     fn fact(&self, context: &CaptureContext, event: &str) -> UsageRecord {
@@ -85,12 +119,19 @@ impl ActivityState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.request_rework_of = None;
-        if let Some(declaration) = state.staged.take() {
+        if let Some(mut declaration) = state.staged.take() {
             if let Some(previous) = state.active.take() {
+                previous.publish_span(context, SpanTransition::Finished);
                 context
                     .sink
                     .submit(previous.fact(context, "activity_replaced"));
             }
+            let mut origin = declaration.fact(context, "activity_span_started");
+            let started = record.effective_observed_at_ms();
+            origin.started_at = Some(started.div_euclid(1_000));
+            origin.started_at_ms = Some(started);
+            declaration.span_origin = Some(origin);
+            declaration.publish_span(context, SpanTransition::Started);
             let mut activated = declaration.fact(context, "activity_activated");
             activated.operation_id = record.operation_id.clone();
             context.sink.submit(activated);
@@ -123,6 +164,7 @@ impl ActivityState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         if let Some(active) = state.active {
+            active.publish_span(context, SpanTransition::Finished);
             context
                 .sink
                 .submit(active.fact(context, "activity_stopped"));
@@ -200,6 +242,8 @@ pub(crate) async fn apply_activity(
                         phase,
                         activity,
                         rework_of,
+                        span_origin: None,
+                        heartbeat_count: 0,
                     };
                     let record = declaration.fact(context, "activity_staged");
                     if let Some(previous) = state.staged.replace(declaration) {
@@ -210,19 +254,28 @@ pub(crate) async fn apply_activity(
                     relation = Some(requested_relation.as_str());
                     (record, "staged")
                 }
-                ActivityAction::Heartbeat => (
-                    state.active.as_ref().map_or_else(
-                        || context.fact(uuid::Uuid::new_v4().to_string(), "activity_heartbeat"),
-                        |active| active.fact(context, "activity_heartbeat"),
-                    ),
-                    if state.active.is_some() {
-                        "ok"
-                    } else {
-                        "inactive"
-                    },
-                ),
+                ActivityAction::Heartbeat => {
+                    if let Some(active) = state.active.as_mut() {
+                        active.heartbeat_count = active.heartbeat_count.saturating_add(1);
+                        active.publish_span(context, SpanTransition::Heartbeat);
+                    }
+                    (
+                        state.active.as_ref().map_or_else(
+                            || context.fact(uuid::Uuid::new_v4().to_string(), "activity_heartbeat"),
+                            |active| active.fact(context, "activity_heartbeat"),
+                        ),
+                        if state.active.is_some() {
+                            "ok"
+                        } else {
+                            "inactive"
+                        },
+                    )
+                }
                 ActivityAction::End => {
                     let active = state.active.take();
+                    if let Some(active) = &active {
+                        active.publish_span(context, SpanTransition::Finished);
+                    }
                     let staged = state.staged.take();
                     if active.is_some()
                         && let Some(staged) = &staged

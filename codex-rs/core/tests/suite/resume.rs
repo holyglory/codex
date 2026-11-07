@@ -137,6 +137,59 @@ async fn local_thread_history_mode_survives_restart(
     assert!(request.body_contains_text("Remember this task"));
     assert!(request.body_contains_text("Remembered answer"));
     resumed.thread.shutdown_and_wait().await?;
+    let facts = codex_usage::UsageJournal::new(
+        initial
+            .home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let agents = facts
+        .iter()
+        .filter(|fact| {
+            fact.event
+                .as_deref()
+                .is_some_and(|event| event.starts_with("agent_"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        agents.len(),
+        4,
+        "both thread incarnations have start and stop observations"
+    );
+    assert_eq!(
+        agents
+            .iter()
+            .map(|fact| &fact.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+    assert_eq!(
+        agents
+            .iter()
+            .filter_map(|fact| fact.operation_id.as_ref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
+    assert!(agents.iter().all(|fact| fact.agent_id.as_deref()
+        == Some(initial.session_configured.thread_id.to_string().as_str())));
+    let reader = codex_usage::UsageReader::open(initial.home.path())?;
+    let page = reader.page(
+        codex_usage::TimeRange::all(),
+        &codex_usage::UsageFilter::default(),
+        codex_usage::RecordKind::Agents,
+        /*after*/ None,
+        /*limit*/ 10,
+    )?;
+    assert_eq!(
+        page.records.len(),
+        2,
+        "resume keeps separate observed agent incarnations"
+    );
+    assert!(page.records.iter().all(|fact| fact.ended_at_ms.is_some()));
     Ok(())
 }
 
