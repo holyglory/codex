@@ -6,8 +6,8 @@ Scenario: A prepares a child. After A and its manager shut down, a second manage
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=e03063c2cb6ece3a):
-        - namespace/functions; hash=e58195dea5c51dea
+00:additional_tools/developer (2; hash=a02145f7e258e58a):
+        - namespace/functions; hash=1ce6bad0bec07646
           - custom/exec
           - function/wait
           - function/request_user_input
