@@ -73,6 +73,10 @@ pub(crate) async fn start_temporary_thread(
         ("features.goals".to_string(), false.into()),
         ("features.hooks".to_string(), false.into()),
         ("features.image_generation".to_string(), false.into()),
+        (
+            "features.local_account_and_usage_tools".to_string(),
+            false.into(),
+        ),
         ("features.memories".to_string(), false.into()),
         ("features.multi_agent".to_string(), false.into()),
         ("features.multi_agent_v2".to_string(), false.into()),

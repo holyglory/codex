@@ -112,6 +112,8 @@ pub enum Feature {
     ShellTool,
     /// Enable the built-in local image viewer.
     ViewImage,
+    /// Enable the local account-management and usage tools.
+    LocalAccountAndUsageTools,
     /// Allow registration of the built-in sleep tool.
     SleepTool,
     /// Enable Claude-style lifecycle hooks loaded from hooks.json files.
@@ -1122,6 +1124,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ViewImage,
         key: "view_image",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::LocalAccountAndUsageTools,
+        key: "local_account_and_usage_tools",
         stage: Stage::Stable,
         default_enabled: true,
     },

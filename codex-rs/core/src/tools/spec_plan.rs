@@ -1392,9 +1392,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(CurrentTimeHandler);
     }
     // Local usage is a downstream built-in, independent of the provider's tool catalog.
-    registry.add(UsageStatsHandler);
-    registry.add(UsageActivityHandler);
-    registry.add(AccountManagementHandler);
+    if features.enabled(Feature::LocalAccountAndUsageTools) {
+        registry.add(UsageStatsHandler);
+        registry.add(UsageActivityHandler);
+        registry.add(AccountManagementHandler);
+    }
     if features.enabled(Feature::SleepTool)
         && match turn_context.config.sleep_tool_mode {
             SleepToolMode::AlwaysOn => true,
