@@ -227,53 +227,59 @@ async fn direct_and_routed_clients_build_equivalent_requests() {
 
 #[tokio::test]
 async fn request_failures_classify_real_untrusted_certificate_handshakes() {
-    codex_utils_rustls_provider::ensure_rustls_crypto_provider();
-    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("self-signed certificate should generate");
-    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-        rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
-    );
-    let configuration = Arc::new(
-        rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate.cert.der().clone()], private_key)
-            .expect("TLS server should be configured"),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").expect("TLS server should bind");
-    let address = listener
-        .local_addr()
-        .expect("TLS server should have an address");
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("TLS server should accept");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .expect("TLS handshake timeout");
-        let mut connection = rustls::ServerConnection::new(configuration)
-            .expect("TLS server connection should be created");
-        let _ = connection.complete_io(&mut stream);
-    });
-    let pool = RouteAwareClientPool::new_without_request_logging(
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-        ClientRouteClass::Api,
-    );
+    for (backend, builder) in [
+        ("transport-default", HttpClientBuilder::new()),
+        ("rustls", HttpClientBuilder::new().with_rustls_tls()),
+    ] {
+        codex_utils_rustls_provider::ensure_rustls_crypto_provider();
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("self-signed certificate should generate");
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
+        );
+        let configuration = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.cert.der().clone()], private_key)
+                .expect("TLS server should be configured"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS server should bind");
+        let address = listener
+            .local_addr()
+            .expect("TLS server should have an address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("TLS server should accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("TLS handshake timeout");
+            let mut connection = rustls::ServerConnection::new(configuration)
+                .expect("TLS server connection should be created");
+            let _ = connection.complete_io(&mut stream);
+        });
+        let pool = RouteAwareClientPool::with_builder(
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            ClientRouteClass::Api,
+            builder.without_request_logging(),
+        );
 
-    let mut request = reqwest::Request::new(
-        Method::GET,
-        reqwest::Url::parse(&format!("https://localhost:{}/", address.port())).unwrap(),
-    );
-    *request.timeout_mut() = Some(Duration::from_secs(3));
-    let error = pool
-        .send_with_resolver(request, |_| async { Ok(OutboundProxyRoute::Direct) })
-        .await
-        .expect_err("self-signed server certificate must not be trusted");
-    drop(std::net::TcpStream::connect(address));
-    server.join().expect("TLS server should finish");
+        let mut request = reqwest::Request::new(
+            Method::GET,
+            reqwest::Url::parse(&format!("https://localhost:{}/", address.port())).unwrap(),
+        );
+        *request.timeout_mut() = Some(Duration::from_secs(3));
+        let error = pool
+            .send_with_resolver(request, |_| async { Ok(OutboundProxyRoute::Direct) })
+            .await
+            .expect_err("self-signed server certificate must not be trusted");
+        drop(std::net::TcpStream::connect(address));
+        server.join().expect("TLS server should finish");
 
-    assert_eq!(
-        error.failure_class(),
-        Some(RouteFailureClass::TlsError),
-        "unexpected certificate error: {error:?}"
-    );
+        assert_eq!(
+            error.failure_class(),
+            Some(RouteFailureClass::TlsError),
+            "unexpected {backend} certificate error: {error:?}"
+        );
+    }
 }
 
 #[tokio::test]
