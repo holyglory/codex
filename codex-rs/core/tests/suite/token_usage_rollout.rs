@@ -371,12 +371,15 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
         .function_call_output_content_and_success("usage-call")
         .expect("exposed usage_stats output");
     let report: Value = serde_json::from_str(&content.expect("usage report JSON"))?;
-    let (content, success) = requests[2]
-        .function_call_output_content_and_success("usage-review-call")
-        .expect("performance review output");
-    assert_eq!(success, Some(true));
-    let review: Value = serde_json::from_str(&content.expect("review JSON"))?;
-    assert_eq!(review["kind"], json!("performanceReview"));
+    let content = requests[2]
+        .function_call_output_text("usage-review-call")
+        .expect("performance review JSON output");
+    let review: Value = serde_json::from_str(&content)
+        .context("performance review must be report JSON, not a tool error")?;
+    assert_eq!(
+        (&review["schemaVersion"], &review["kind"]),
+        (&json!(1), &json!("performanceReview"))
+    );
     assert_eq!(
         (
             &review["outcomes"]["coverage"],
