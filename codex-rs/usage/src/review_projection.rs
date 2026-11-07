@@ -418,9 +418,12 @@ pub(crate) fn publish_review_projection(
                 open_operations: rows.iter().filter(|row| !row.terminal_observed).count() as u32,
                 bounds,
                 operation_id_bloom: operation_bloom(&rows),
-                operation_sequences: partitions.get(&partition)
-                    .and_then(|prior| prior.operation_sequences.as_ref())
-                    .map(|_| operation_id_index::live_sequences(&rows)),
+                // A removed partition may reappear before the journal leaves
+                // its sequence range. Older run addresses must stay retired.
+                operation_sequences: partitions.get(&partition).map_or(
+                    partition * REVIEW_PARTITION_SIZE < prior.sequence,
+                    |previous| previous.operation_sequences.is_some(),
+                ).then(|| operation_id_index::live_sequences(&rows)),
             },
         );
         for values in descriptor.dimension_partitions.values_mut() {

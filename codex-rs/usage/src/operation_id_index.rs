@@ -26,6 +26,7 @@ pub(crate) struct OperationIdEntry {
 }
 
 impl ExactIdEntry for OperationIdEntry {
+    #[cfg(test)]
     const LOOKUP_PROFILE_COMPONENT: &'static str = "operation-id-lookup";
     fn id(&self) -> &str { &self.operation_id }
     fn first_sequence(&self) -> u64 { self.first_sequence }

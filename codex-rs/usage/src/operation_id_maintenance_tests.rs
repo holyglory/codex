@@ -88,6 +88,7 @@ fn merge_filters_retired_sequence_before_selecting_same_id_and_rejects_live_dupl
     live[0] = 1 << 2;
     source.partitions[0].operation_sequences = Some(live);
     source.partitions[0].operation_count = 1;
+    source.partitions[0].open_operations = 1;
     source.retired_operation_rows = 1;
     let mut job = Job::start(root, Arc::new(source.clone()), inputs.clone(), SnapshotPin::acquire(root).expect("pin")).expect("merge");
     assert!(!job.step(/*max_entries*/ 1).expect("retired input consumes budget"));

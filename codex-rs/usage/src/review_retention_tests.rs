@@ -833,3 +833,42 @@ fn retry_waits_and_attempt_counts_survive_retention_without_inflating_execution(
     );
     assert!(legacy_report["links"]["retryOperations"].is_null());
 }
+
+#[test]
+fn whole_partition_retirement_and_reappearance_keep_old_index_addresses_dead() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let old = started("repeat", DAY, "active");
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    journal.append_batch(vec![JournalPayload::Record(old.clone()), JournalPayload::Record(finished(&old))])
+        .expect("old incarnation");
+    let initial = publish(&root);
+    let pinned = UsageReader::open_at(&root).expect("pin original index graph");
+    let policy = RetentionPolicy { raw_retention_days: 7, inactive_chat_days: 7 };
+    // Exercise real raw/review retirement while deliberately leaving the
+    // independent index-maintenance step pending, as a publisher can observe.
+    for _ in 0..4 {
+        crate::token_rollup::compact_one(&root, policy, 12 * DAY).expect("bounded retirement");
+    }
+    let retired = descriptor(&root);
+    assert!(retired.partitions.is_empty());
+    let stale = crate::operation_id_index::load(&root, &retired).expect("index").expect("fresh format");
+    assert_eq!(stale.runs.len(), 1);
+    let mut next = started("repeat", 12 * DAY, "active");
+    next.id = "repeat:resumed:started".into();
+    journal.append_record(next.clone()).expect("new observation identity");
+    let latest = publish(&root);
+    let current = descriptor(&root);
+    let connection = Connection::open_in_memory().expect("connection");
+    let ids = BTreeSet::from(["repeat".to_string()]);
+    let expected = vec![crate::ReviewOperation::from_fact(latest.watermark, &next).expect("new incarnation")];
+    assert_eq!(load_review_operations(&root, &current, &ids, &connection).expect("no old address resurrection"), expected);
+    let mut maintenance = crate::operation_id_maintenance::Maintenance::default();
+    for _ in 0..4 { maintenance.step(&root, /*max_entries*/ 1).expect("bounded empty-run retirement"); }
+    let compacted = descriptor(&root);
+    assert_eq!(crate::operation_id_index::load(&root, &compacted).expect("index").expect("indexed").runs.len(), 1);
+    assert_eq!(load_review_operations(&root, &compacted, &ids, &connection).expect("after prune"), expected);
+    let original = load_review_projection(&root, &initial).expect("metadata").expect("pinned projection");
+    assert_eq!(load_review_operations(&root, &original, &ids, &connection).expect("old view survives")[0].first_sequence, 1);
+    drop(pinned);
+}
