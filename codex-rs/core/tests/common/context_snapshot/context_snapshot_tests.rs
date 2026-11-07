@@ -921,3 +921,50 @@ fn long_content_parts_keep_both_ends_and_fingerprint_only_the_omitted_middle() {
         .contains("<OMITTED")
     );
 }
+
+#[test]
+fn schema_evidence_reconstruction_removes_only_exact_reviewed_definitions() {
+    let names = ["account_management", "usage_stats", "usage_activity"];
+    let tools = names.map(|name| json!({"type":"function","name":name,"description":"reviewed"}));
+    let sections = names
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                json!(format!("### `{name}`\nreviewed declaration")),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let contract = json!({"tools":tools,"sections":sections});
+    let baseline = json!([{"type":"namespace","name":"functions","tools":[
+        {"type":"custom","name":"exec","description":"preamble\n\n### `ordinary`\nunchanged"}
+    ]}]);
+    let mut current = baseline.clone();
+    current[0]["tools"][0]["description"] = json!(format!(
+        "preamble\n\n{}\n\n### `ordinary`\nunchanged\n\n{}\n\n{}",
+        contract["sections"][names[0]].as_str().expect("section"),
+        contract["sections"][names[1]].as_str().expect("section"),
+        contract["sections"][names[2]].as_str().expect("section"),
+    ));
+    current[0]["tools"]
+        .as_array_mut()
+        .expect("tools")
+        .extend(tools.clone());
+    assert_eq!(
+        schema_evidence::reconstruct(&current, &contract).expect("audit reconstruction"),
+        baseline
+    );
+    let mut changed_spec = current.clone();
+    changed_spec[0]["tools"][1]["description"] = json!("unreviewed");
+    assert!(schema_evidence::reconstruct(&changed_spec, &contract).is_err());
+    let mut changed_section = current.clone();
+    changed_section[0]["tools"][0]["description"] =
+        json!("### `usage_stats`\nunreviewed declaration");
+    assert!(schema_evidence::reconstruct(&changed_section, &contract).is_err());
+    let mut unrelated = current;
+    unrelated[0]["description"] = json!("unrelated namespace change");
+    assert_ne!(
+        schema_evidence::reconstruct(&unrelated, &contract).expect("keep other fields"),
+        baseline
+    );
+}

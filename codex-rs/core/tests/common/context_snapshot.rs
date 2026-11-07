@@ -16,6 +16,7 @@ use serde_json::Value;
 use text::render_text;
 
 mod normalize;
+mod schema_evidence;
 #[cfg(test)]
 #[path = "context_snapshot/context_snapshot_tests.rs"]
 mod tests;
@@ -285,6 +286,8 @@ pub fn format_context_snapshot(
         .enumerate()
         .map(|(index, entry)| capture_request(index + 1, entry))
         .collect::<Vec<_>>();
+    schema_evidence::record(&requests)
+        .unwrap_or_else(|error| panic!("tool-schema evidence failed: {error}"));
     let windows = group_requests(&requests);
     let mut normalizer = Normalizer::default();
     let mut result = format!("Scenario: {scenario}");

@@ -424,10 +424,13 @@ fn uuid_regex() -> &'static Regex {
 
 // Hash complete normalized values whenever the readable rendering clips content.
 pub(super) fn fingerprint(value: &Value) -> String {
+    format!("{:016x}", fnv1a(&fingerprint_bytes(value)))
+}
+
+pub(super) fn fingerprint_bytes(value: &Value) -> Vec<u8> {
     let mut normalized = value.clone();
     normalize_json(&mut normalized, &mut normalize_stable_text);
-    let bytes = serde_json::to_vec(&normalized).expect("snapshot value should serialize");
-    format!("{:016x}", fnv1a(&bytes))
+    serde_json::to_vec(&normalized).expect("snapshot value should serialize")
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {

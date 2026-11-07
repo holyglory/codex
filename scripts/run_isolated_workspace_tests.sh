@@ -26,4 +26,5 @@ exec /usr/bin/bwrap \
   --unsetenv CODEX_API_KEY \
   --unsetenv CODEX_ACCESS_TOKEN \
   --unsetenv NO_COLOR \
+  --unsetenv INSTA_FORCE_PASS \
   -- "$@"
