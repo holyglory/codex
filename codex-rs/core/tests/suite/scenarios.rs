@@ -3312,10 +3312,11 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
 
     skip_if_no_network!(Ok(()));
     let over_budget = matches!(suffix, LiveSuffix::OverBudgetRetainedTool);
+    let tool_output_marker = "ASYNC_LIVE_SUFFIX_TOOL_OUTPUT";
     let retained_output = if over_budget {
-        format!("delegated work {}", "x ".repeat(12_000))
+        format!("{tool_output_marker} {}", "x ".repeat(12_000))
     } else {
-        "delegated work".to_string()
+        tool_output_marker.to_string()
     };
     let (release_background, background_gate) = oneshot::channel();
     let (release_foreground, foreground_gate) = oneshot::channel();
@@ -3546,7 +3547,7 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
             )
         );
     } else {
-        let tool = position("delegated work");
+        let tool = position(tool_output_marker);
         if matches!(
             suffix,
             LiveSuffix::RetainedTool | LiveSuffix::OverBudgetRetainedTool

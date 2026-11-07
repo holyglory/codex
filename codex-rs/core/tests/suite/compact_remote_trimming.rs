@@ -150,8 +150,11 @@ async fn remote_compact_v2_trim_estimate_uses_session_base_instructions(
 
     let short_instructions = "session base instructions";
     let medium_instructions = format!("{short_instructions} {}", "x".repeat(16_000));
+    let doubled_medium_instructions = medium_instructions.repeat(2);
     let long_instructions = format!("{short_instructions} {}", "x".repeat(40_000));
     let trailing_output = "x".repeat(12_000);
+    // Recorded tool schemas include the downstream tools; reserve their added context budget.
+    let context_window = if incremental_tools { 14_000 } else { 12_000 };
     for (instructions, expected_output) in [
         (short_instructions, trailing_output.as_str()),
         (medium_instructions.as_str(), trailing_output.as_str()),
@@ -159,7 +162,12 @@ async fn remote_compact_v2_trim_estimate_uses_session_base_instructions(
             long_instructions.as_str(),
             CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
         ),
-    ] {
+    ]
+    .into_iter()
+    .chain(incremental_tools.then_some((
+        doubled_medium_instructions.as_str(),
+        CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
+    ))) {
         let harness = TestCodexHarness::with_builder(
             test_codex()
                 .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -169,7 +177,7 @@ async fn remote_compact_v2_trim_estimate_uses_session_base_instructions(
                 .with_config({
                     let instructions = instructions.to_string();
                     move |config| {
-                        config.model_context_window = Some(12_000);
+                        config.model_context_window = Some(context_window);
                         config.base_instructions = Some(instructions);
                         if incremental_tools {
                             config
