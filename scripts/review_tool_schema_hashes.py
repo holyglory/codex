@@ -104,8 +104,11 @@ def main():
         raise ValueError("no schema evidence or evidence count exceeds limit")
     contract = load_bounded(args.evidence_dir / "contract.json")
     contract_hash = fingerprint(contract)
-    transitions = {}
-    catalogs = {}
+    # An array with cardinality zero has exactly one canonical preimage. Its
+    # count and fingerprint are still checked by the independent renderer.
+    empty_hash = fingerprint([])
+    transitions = {("catalog", empty_hash): empty_hash}
+    catalogs = {empty_hash: ([], [])}
     evidence_receipts = []
     for path in paths:
         evidence = load_bounded(path)
@@ -192,7 +195,16 @@ def main():
             for (label, old), count in sorted(used.items())
         ],
         "evidence": evidence_receipts,
-        "toolInventoryRule": "Require complete exact schema-rendered catalogs; reject unproved delta inventories.",
+        "toolInventoryRule": "Require exact schema-rendered full inventories or settings deltas against the proved preceding settings window; retain same-as lineage and reject missing preimages.",
+        "intrinsicCatalogs": [
+            {
+                "fingerprint": empty_hash,
+                "preimage": [],
+                "rule": "Require count zero and the exact canonical empty-array fingerprint.",
+            }
+        ]
+        if ("catalog", empty_hash) in used
+        else [],
         "candidateMetadataRule": "Preserve original headers; ignore only assertion_line when comparing candidates.",
     }
     manifest_path = patch_output.with_suffix(".evidence.json")

@@ -1,4 +1,4 @@
-"""Reproduce complete tool inventory blocks from bounded schema evidence only."""
+"""Reproduce full inventories and settings deltas from exact schema evidence."""
 
 import copy
 import re
@@ -8,6 +8,11 @@ HEADER = re.compile(
     r"(?P<prefix>(?:[0-9]{2,}:additional_tools/[^\s()]+ |  tools ))"
     r"\((?P<count>[0-9]+); hash=(?P<hash>[a-f0-9]{16})\):\n"
 )
+WINDOW = re.compile(r"## Window (?P<number>[1-9][0-9]*)(?: \([^\n]*\))?\n")
+RELATIVE = re.compile(r"Settings: relative to window (?P<number>[1-9][0-9]*)\n")
+SAME = re.compile(r"Settings: same as window (?P<number>[1-9][0-9]*)\n")
+UNAVAILABLE = object()
+UNKNOWN = object()
 
 
 def reconstruct_catalog(current, contract):
@@ -78,9 +83,9 @@ def tool_label(tool):
     return f"{kind}/{name}" if isinstance(name, str) else kind
 
 
-def render_tool(tool, fingerprint):
+def render_tool(tool, fingerprint, marker="-"):
     definition = tool.get("function", tool)
-    rendered = f"    - {tool_label(tool)}"
+    rendered = f"    {marker} {tool_label(tool)}"
     description = definition.get("description")
     if isinstance(description, str) and description:
         description = description.replace("\n", " ")
@@ -116,16 +121,32 @@ def blocks(lines):
     return result
 
 
-def render_block(header, catalog, fingerprint):
+def render_tools(catalog, fingerprint, previous=None):
+    if previous is None:
+        return [render_tool(tool, fingerprint) for tool in catalog]
+    old_labels = [tool_label(tool) for tool in previous]
+    new_labels = [tool_label(tool) for tool in catalog]
+    if len(set(old_labels)) != len(old_labels) or len(set(new_labels)) != len(
+        new_labels
+    ):
+        return ["    - inventory changed (ambiguous tool names)"]
+    changes = [
+        f"    - removed {label}" for label in old_labels if label not in new_labels
+    ]
+    old_by_label = dict(zip(old_labels, previous))
+    for label, tool in zip(new_labels, catalog):
+        if label not in old_by_label:
+            changes.append(render_tool(tool, fingerprint, "+"))
+        elif old_by_label[label] != tool:
+            changes.append(render_tool(tool, fingerprint, "~"))
+    return changes or ["    - order changed"]
+
+
+def render_block(header, catalog, fingerprint, previous=None):
     rendered = header["prefix"] + f"({len(catalog)}; hash={fingerprint(catalog)}):\n"
     indent = "" if header["prefix"] == "  tools " else "    "
-    for tool in catalog:
-        rendered += (
-            "\n".join(
-                indent + line for line in render_tool(tool, fingerprint).split("\n")
-            )
-            + "\n"
-        )
+    for tool in render_tools(catalog, fingerprint, previous):
+        rendered += "\n".join(indent + line for line in tool.split("\n")) + "\n"
     return rendered
 
 
@@ -136,25 +157,95 @@ def review_body(before, after, catalogs, fingerprint):
             "candidate changes non-tool structure or an unsupported inventory"
         )
     used = {}
+    windows = {}
+    window = 0
+    mode = None
+    prior = None
+    tools_seen = False
     for (old_header, old), (new_header, new) in zip(original, candidate):
-        if old == new:
+        if old_header is None:
+            if old != new:
+                raise ValueError("candidate changes non-tool text")
+            heading = WINDOW.fullmatch(old)
+            relative, same = RELATIVE.fullmatch(old), SAME.fullmatch(old)
+            if heading:
+                window = int(heading["number"])
+                if window != len(windows) + 1:
+                    raise ValueError("unsupported settings window sequence")
+                windows[window] = UNAVAILABLE
+                mode = None
+                tools_seen = False
+            elif old.startswith("Settings:"):
+                if not window or mode is not None:
+                    raise ValueError("unsupported settings lineage")
+                if old == "Settings:\n":
+                    if windows.get(window - 1, UNAVAILABLE) is not UNAVAILABLE:
+                        raise ValueError("full settings have an available predecessor")
+                    mode, prior = "full", None
+                    windows[window] = None
+                elif relative:
+                    target = int(relative["number"])
+                    if (
+                        target != window - 1
+                        or windows.get(target, UNAVAILABLE) is UNAVAILABLE
+                    ):
+                        raise ValueError(
+                            "settings delta has no available preceding window"
+                        )
+                    mode, prior = "delta", windows[target]
+                    windows[window] = prior
+                elif same:
+                    target = int(same["number"])
+                    if (
+                        target >= window
+                        or windows.get(target, UNAVAILABLE) is UNAVAILABLE
+                    ):
+                        raise ValueError(
+                            "settings reuse has no available earlier window"
+                        )
+                    mode = "same"
+                    windows[window] = windows[target]
+                elif old == "Settings: unavailable (items only)\n":
+                    mode = "unavailable"
+                else:
+                    raise ValueError("unsupported settings lineage")
+            elif old.startswith("-- request "):
+                mode = None
+            elif mode in ("full", "delta") and old.startswith("  tools:"):
+                if old != "  tools: <removed>\n" or mode != "delta" or tools_seen:
+                    raise ValueError("unsupported non-array tools setting")
+                windows[window] = None
+                tools_seen = True
             continue
-        if (
-            old_header is None
-            or new_header is None
-            or old_header["prefix"] != new_header["prefix"]
-        ):
-            raise ValueError("candidate changes non-tool text")
+        if new_header is None or old_header["prefix"] != new_header["prefix"]:
+            raise ValueError("candidate changes non-tool structure")
+        settings = old_header["prefix"] == "  tools "
+        if settings and (mode not in ("full", "delta") or tools_seen):
+            raise ValueError("tool delta has no supported settings lineage")
+        predecessor = prior if settings and mode == "delta" else None
+        if predecessor is UNKNOWN:
+            raise ValueError("settings predecessor has no exact catalog preimage")
         pair = catalogs.get(old_header["hash"])
         if pair is None:
+            if settings and old == new:
+                windows[window] = UNKNOWN
+                tools_seen = True
+                continue
+            if old == new:
+                continue
             raise ValueError("changed catalog has no exact evidence mapping")
         previous, current = pair
-        if old != render_block(old_header, previous, fingerprint):
+        old_prior, new_prior = predecessor if predecessor is not None else (None, None)
+        if old != render_block(old_header, previous, fingerprint, old_prior):
             raise ValueError(
-                "inventory is not a proved full catalog; capture its predecessor before reviewing a delta"
+                "original inventory differs from exact schema evidence or lineage"
             )
-        if new != render_block(old_header, current, fingerprint):
+        if new != render_block(old_header, current, fingerprint, new_prior):
             raise ValueError("candidate inventory differs from exact schema evidence")
-        key = "catalog", old_header["hash"]
-        used[key] = used.get(key, 0) + 1
+        if settings:
+            windows[window] = pair
+            tools_seen = True
+        if old != new:
+            key = "catalog", old_header["hash"]
+            used[key] = used.get(key, 0) + 1
     return "".join(after), used
