@@ -116,8 +116,27 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
         eprintln!("skipping sandbox test: {warning}");
         return Ok(());
     }
-    let context = if sandbox_mode == SnapshotSandbox::WorkspaceWrite {
+    let runtime_directory = TempDir::new()?;
+    let context = if sandbox_mode == SnapshotSandbox::WorkspaceWrite
+        || (deny_fd_path && cfg!(target_os = "linux"))
+    {
         let (exe, linux_sandbox) = current_test_binary_helper_paths()?;
+        let linux_sandbox = if deny_fd_path && cfg!(target_os = "linux") {
+            // Exercise the real no-proc fallback. A fresh procfs would otherwise
+            // replace the fixture's explicit /proc mask after filesystem setup.
+            std::os::unix::fs::symlink(
+                linux_sandbox.context("Linux sandbox helper")?,
+                runtime_directory.path().join("codex-linux-sandbox"),
+            )?;
+            let wrapper = runtime_directory.path().join("without-proc");
+            codex_utils_cargo_bin::write_executable(
+                &wrapper,
+                "#!/bin/sh\nexec \"${0%/*}/codex-linux-sandbox\" --no-proc \"$@\"\n",
+            )?;
+            Some(wrapper)
+        } else {
+            linux_sandbox
+        };
         let environment = Environment::create(
             /*exec_server_url*/ None,
             codex_exec_server::ExecServerRuntimeOptions::new(exe, linux_sandbox)?,
