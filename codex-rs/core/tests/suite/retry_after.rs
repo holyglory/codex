@@ -2004,7 +2004,7 @@ async fn websocket_error_uses_nested_retry_after() -> Result<()> {
         ],
         vec![vec![
             responses::ev_response_created("recovered"),
-            responses::ev_completed("recovered"),
+            responses::ev_completed_with_tokens("recovered", /*total_tokens*/ 37),
         ]],
     ])
     .await;
@@ -2045,6 +2045,162 @@ async fn websocket_error_uses_nested_retry_after() -> Result<()> {
     assert_eq!(
         telemetry.events.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
+    );
+    test.codex.shutdown_and_wait().await?;
+    let facts = UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let sends = server
+        .connections()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sends
+            .iter()
+            .filter(|request| request.body_json()["type"] == "response.create")
+            .count(),
+        3
+    );
+    let starts = facts
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact.event.as_deref(),
+                Some("model_request_started" | "model_warmup_started")
+            )
+        })
+        .collect::<Vec<_>>();
+    let terminals = facts
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact.event.as_deref(),
+                Some("model_request_finished" | "model_warmup_finished")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), sends.len());
+    assert_eq!(
+        starts
+            .iter()
+            .filter_map(|fact| fact.operation_id.as_deref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        sends.len()
+    );
+    assert_eq!(
+        terminals
+            .iter()
+            .map(|fact| fact.operation_id.as_deref())
+            .collect::<Vec<_>>(),
+        starts
+            .iter()
+            .map(|fact| fact.operation_id.as_deref())
+            .collect::<Vec<_>>(),
+    );
+    let warmups = terminals
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("model_warmup_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warmups
+            .iter()
+            .map(|fact| (
+                fact.attempt_number,
+                fact.outcome,
+                fact.response_id.as_deref(),
+                fact.retry_of_operation_id.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            Some(1),
+            Some(UsageOutcome::Completed),
+            Some("prewarm"),
+            None
+        )]
+    );
+    let attempts = terminals
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("model_request_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|fact| (
+                fact.attempt_number,
+                fact.outcome,
+                fact.response_id.as_deref(),
+                fact.retry_of_operation_id.as_deref(),
+                fact.rework_of_operation_id.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some(1), Some(UsageOutcome::Failed), None, None, None),
+            (
+                Some(2),
+                Some(UsageOutcome::Completed),
+                Some("recovered"),
+                attempts[0].operation_id.as_deref(),
+                None
+            ),
+        ]
+    );
+    let tokens = facts
+        .iter()
+        .filter(|fact| {
+            fact.event.as_deref() == Some("token_observation")
+                && fact.response_id.as_deref() == Some("recovered")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tokens
+            .iter()
+            .map(|fact| (
+                fact.provider_total_tokens,
+                fact.input_tokens,
+                fact.output_tokens
+            ))
+            .collect::<Vec<_>>(),
+        vec![(Some(37), 37, 0)]
+    );
+    let waits = facts
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("retry_wait_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        waits
+            .iter()
+            .map(|fact| (
+                fact.tool.as_deref(),
+                fact.outcome,
+                fact.retry_of_operation_id.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            Some("stream_retry"),
+            Some(UsageOutcome::Completed),
+            attempts[0].operation_id.as_deref()
+        )]
+    );
+    let wait = waits[0];
+    assert!(wait.duration_ms.is_some_and(|duration| duration > 0));
+    assert!(
+        attempts[0].ended_at_ms.expect("failed send end")
+            <= wait.started_at_ms.expect("retry wait start")
+    );
+    assert!(
+        wait.ended_at_ms.expect("retry wait end")
+            <= attempts[1].started_at_ms.expect("retry send start")
+    );
+    assert!(
+        attempts[1].started_at_ms.expect("successful send start")
+            <= tokens[0].observed_at_ms.expect("token observation")
     );
     server.shutdown().await;
 

@@ -145,3 +145,132 @@ async fn cancelled_http_attempt_before_headers_finishes_once() -> Result<()> {
     );
     Ok(())
 }
+
+/// An interrupted WebSocket backoff records only the warmup and failed send that reached the server.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_websocket_retry_wait_records_actual_sends() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let mut telemetry = RetryTelemetryCapture::install();
+    let server = responses::start_websocket_server(vec![vec![
+        vec![responses::ev_response_created("prewarm"), responses::ev_completed("prewarm")],
+        vec![json!({"type":"error","status":429,"error":{
+            "type":"rate_limit_error","code":"rate_limit_exceeded","message":"Please wait.","headers":{"retry-after":60}
+        }})],
+    ]]).await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_catalog = Some(bundled_models_response().expect("bundled models"));
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_websocket_server(&server)
+        .await?;
+    let warmup = server
+        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 0)
+        .await;
+    assert_eq!(warmup.body_json()["generate"].as_bool(), Some(false));
+    submit_user_input(&test, "cancel the websocket retry wait").await?;
+    let retry = telemetry.next_retry().await;
+    assert_eq!(
+        (retry.layer.as_str(), retry.operation.as_str()),
+        ("stream", "sampling")
+    );
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    test.codex.shutdown_and_wait().await?;
+    assert_eq!(
+        server
+            .connections()
+            .iter()
+            .map(Vec::len)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    let facts = UsageJournal::new(
+        test.home
+            .path()
+            .join(codex_usage::USAGE_DIRECTORY_NAME)
+            .join("events.jsonl"),
+    )
+    .records()?;
+    let starts = facts
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact.event.as_deref(),
+                Some("model_request_started" | "model_warmup_started")
+            )
+        })
+        .collect::<Vec<_>>();
+    let terminals = facts
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact.event.as_deref(),
+                Some("model_request_finished" | "model_warmup_finished")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(
+        terminals
+            .iter()
+            .map(|fact| (
+                fact.operation_id.as_deref(),
+                fact.attempt_number,
+                fact.outcome,
+                fact.retry_of_operation_id.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                starts[0].operation_id.as_deref(),
+                Some(1),
+                Some(UsageOutcome::Completed),
+                None
+            ),
+            (
+                starts[1].operation_id.as_deref(),
+                Some(1),
+                Some(UsageOutcome::Failed),
+                None
+            ),
+        ]
+    );
+    let waits = facts
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("retry_wait_finished"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        waits
+            .iter()
+            .map(|fact| (
+                fact.tool.as_deref(),
+                fact.outcome,
+                fact.retry_of_operation_id.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            Some("stream_retry"),
+            Some(UsageOutcome::Cancelled),
+            starts[1].operation_id.as_deref()
+        )]
+    );
+    assert!(
+        waits[0]
+            .duration_ms
+            .is_some_and(|duration| duration > 0 && duration < 60_000)
+    );
+    assert!(
+        facts
+            .iter()
+            .filter(|fact| fact.event.as_deref() == Some("token_observation"))
+            .all(|fact| fact.provider_total_tokens.is_none_or(|total| total == 0))
+    );
+    server.shutdown().await;
+    Ok(())
+}
