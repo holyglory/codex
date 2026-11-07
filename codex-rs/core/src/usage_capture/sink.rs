@@ -33,7 +33,7 @@ pub(super) struct CaptureSink {
     writing: AtomicBool,
     deferred: AtomicBool,
     tasks: Mutex<Vec<JoinHandle<()>>>,
-    flushing: tokio::sync::Mutex<()>,
+    flushing: tokio::sync::Semaphore,
 }
 
 #[derive(Default)]
@@ -54,7 +54,7 @@ impl CaptureSink {
             writing: AtomicBool::new(false),
             deferred: AtomicBool::new(false),
             tasks: Mutex::default(),
-            flushing: tokio::sync::Mutex::default(),
+            flushing: tokio::sync::Semaphore::new(/*permits*/ 1),
         })
     }
 
@@ -237,7 +237,10 @@ impl CaptureSink {
     }
 
     pub(super) async fn flush(self: &Arc<Self>) {
-        let _flushing = self.flushing.lock().await;
+        let Ok(_flushing) = self.flushing.acquire().await else {
+            tracing::warn!("local usage flush gate is unavailable");
+            return;
+        };
         self.schedule();
         loop {
             let tasks = std::mem::take(

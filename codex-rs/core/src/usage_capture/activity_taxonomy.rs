@@ -1,8 +1,9 @@
 macro_rules! taxonomy {
-    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+    ($(#[$attribute:meta])* $name:ident { $($(#[$variant_attribute:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
+        $(#[$attribute])*
         #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
         pub(crate) enum $name {
-            $(#[serde(rename = $value)] $variant),+
+            $($(#[$variant_attribute])* #[serde(rename = $value)] $variant),+
         }
 
         impl $name {
@@ -57,13 +58,8 @@ taxonomy!(Activity {
     Coordination => "coordination",
 });
 
-taxonomy!(Relation {
+taxonomy!(#[derive(Default)] Relation {
+    #[default]
     NewWork => "new_work",
     ReworkPrevious => "rework_previous",
 });
-
-impl Default for Relation {
-    fn default() -> Self {
-        Self::NewWork
-    }
-}

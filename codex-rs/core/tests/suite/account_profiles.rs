@@ -174,7 +174,10 @@ async fn automatic_selection_probes_capacity_and_uses_the_selected_inference_own
         .with_config(move |config| {
             config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
             config.chatgpt_base_url = backend;
-            config.features.disable(Feature::UseAgentIdentity);
+            config
+                .features
+                .disable(Feature::UseAgentIdentity)
+                .expect("disable agent identity for the account fixture");
         })
         .build_with_auto_env(&server)
         .await?;
@@ -445,7 +448,10 @@ async fn account_tool_refreshes_only_managed_profiles_and_redacts_probe_failures
         .with_config(move |config| {
             config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
             config.chatgpt_base_url = backend;
-            config.features.disable(Feature::UseAgentIdentity);
+            config
+                .features
+                .disable(Feature::UseAgentIdentity)
+                .expect("disable agent identity for the account fixture");
         })
         .build_with_auto_env(&server)
         .await?;
