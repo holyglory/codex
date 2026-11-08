@@ -85,6 +85,13 @@ jobs:
               "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
             }
           }
+      - name: Provision pinned just in the runner user cache
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command just -ErrorAction SilentlyContinue)) {
+            cargo install just --locked --version 1.51.0 --root 'H:\codex-ci\cargo-home'
+          }
+          if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Pinned just was not installed.' }
       - name: Check tool prerequisites before compiling
         run: python .github/scripts/downstream-windows-native.ps1 prerequisites
       - name: Build a matching x64 V8 archive and binding
