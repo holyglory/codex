@@ -1483,8 +1483,14 @@ async fn remote_process_preserves_empty_workspace_roots() -> Result<()> {
             network_proxy: None,
         })
         .await?;
-    let (stdout, _stderr, exit_code, closed) =
-        collect_process_output_from_events(session.process).await?;
+    // Match the remote harness's five-second event delivery bound while the
+    // sandboxed child starts, rejects the read, and closes both output streams.
+    let (stdout, _stderr, exit_code, closed) = collect_process_output_from_events_with_timeout(
+        session.process,
+        Duration::from_secs(/*secs*/ 5),
+    )
+    .await
+    .context("collect empty-workspace sandbox process events after process/start succeeded")?;
 
     assert!(!stdout.contains("excluded"), "unexpected stdout: {stdout}");
     assert_ne!(exit_code, Some(0));
@@ -1555,7 +1561,16 @@ async fn collect_process_output_from_events_with_timeout(
     let mut stderr = String::new();
     let mut exit_code = None;
     loop {
-        match timeout(event_timeout, events.recv()).await?? {
+        let event = timeout(event_timeout, events.recv())
+            .await
+            .with_context(|| {
+                format!(
+                    "process event delivery exceeded {event_timeout:?}; stdout_bytes={}, stderr_bytes={}, exit_code={exit_code:?}",
+                    stdout.len(),
+                    stderr.len(),
+                )
+            })??;
+        match event {
             ExecProcessEvent::Output(chunk) => match chunk.stream {
                 ExecOutputStream::Stdout | ExecOutputStream::Pty => {
                     stdout.push_str(&String::from_utf8_lossy(&chunk.chunk.into_inner()));

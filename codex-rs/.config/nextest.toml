@@ -157,8 +157,8 @@ filter = 'package(codex-core) & binary(=all) & test(=suite::rmcp_client::stdio_i
 threads-required = "num-test-threads"
 
 [[profile.local.overrides]]
-# This remote sandbox case waits 2 s per process event. Reserve local runner
-# slots so unrelated tests do not consume that unchanged delivery deadline.
+# This sandbox case uses the five-second remote process-event wait. Reserve
+# local runner slots while its child and both output streams close.
 filter = 'package(codex-exec-server) & binary(=exec_process) & test(=remote_process_preserves_empty_workspace_roots)'
 threads-required = "num-test-threads"
 
