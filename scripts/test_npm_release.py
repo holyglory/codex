@@ -2,7 +2,11 @@
 """Focused checks for release identity and archive naming guards."""
 
 import importlib.util
+import json
+import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -20,6 +24,74 @@ SPEC.loader.exec_module(candidate)
 
 
 class NpmReleaseContractTest(unittest.TestCase):
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_unix_package_command_preserves_common_and_optional_arguments(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / ".github/scripts/downstream-unix-native.sh"
+        ).read_text()
+        command = source[
+            source.index("package_args=(") : source.index("run_check native-version")
+        ]
+        harness = """set -euo pipefail
+run_check() { shift; "$@"; }
+just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+"""
+        with tempfile.TemporaryDirectory(prefix="npm recipe ") as directory:
+            for platform in PLATFORMS.values():
+                if platform["os"] == "win32":
+                    continue
+                target = platform["target_triple"]
+                with self.subTest(target=target):
+                    release = Path(directory) / target / "release"
+                    dist = Path(directory) / "dist" / target
+                    result = subprocess.run(
+                        ["bash", "-c", harness + command],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "TARGET": target,
+                            "SOURCE_VERSION": "0.166.0+multi.1",
+                            "release": str(release),
+                            "dist": str(dist),
+                            "NPM_FIXTURE_PYTHON": sys.executable,
+                        },
+                    )
+                    expected = [
+                        "assemble-codex-package",
+                        "--target",
+                        target,
+                        "--package-version",
+                        "0.166.0+multi.1",
+                        "--cargo-profile",
+                        "release",
+                        "--strip",
+                        "all",
+                        "--entrypoint-bin",
+                        str(release / "codex"),
+                        "--code-mode-host-bin",
+                        str(release / "codex-code-mode-host"),
+                        "--exec-server-bin",
+                        str(release / "codex-exec-server"),
+                    ]
+                    if platform["os"] == "linux":
+                        expected.extend(["--bwrap-bin", str(release / "bwrap")])
+                    expected.extend(
+                        [
+                            "--package-dir",
+                            str(dist / "package"),
+                            "--archive-output",
+                            str(dist / f"codex-package-{target}.tar.gz"),
+                            "--archive-output",
+                            str(dist / f"codex-package-{target}.tar.zst"),
+                        ]
+                    )
+                    self.assertEqual(json.loads(result.stdout), expected)
+
     def test_hosted_reuse_keeps_the_real_producer_and_unchanged_native_inputs(
         self,
     ) -> None:
