@@ -17,10 +17,6 @@ permissions:
 
 jobs:
   native-msvc:
-    # The private caller performs the owner/private/main checks before invoking
-    # this reusable workflow. A called workflow has no reliable branch ref in
-    # its event context, so keep the callee guard to the call boundary here.
-    if: github.event_name == 'workflow_call'
     runs-on: [self-hosted, Windows, X64, codex-win-msvc]
     timeout-minutes: 360
     defaults:
