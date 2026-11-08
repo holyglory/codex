@@ -155,3 +155,15 @@ threads-required = "num-test-threads"
 # next turn completes; competing tests can exhaust its unchanged event wait.
 filter = 'package(codex-core) & binary(=all) & test(=suite::rmcp_client::stdio_image_responses_resize_large_image)'
 threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This remote sandbox case waits 2 s per process event. Reserve local runner
+# slots so unrelated tests do not consume that unchanged delivery deadline.
+filter = 'package(codex-exec-server) & binary(=exec_process) & test(=remote_process_preserves_empty_workspace_roots)'
+threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This case launches six CLI processes in sequence and approaches its 60s
+# deadline when their startup, resume/fork and shutdown work competes locally.
+filter = 'package(codex-exec) & binary(=all) & test(=suite::daybreak::exec_resumes_and_forks_the_saved_daybreak_choice)'
+threads-required = "num-test-threads"
