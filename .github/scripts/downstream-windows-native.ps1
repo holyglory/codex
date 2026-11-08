@@ -172,7 +172,7 @@ class Producer:
             pins = {line.split()[1]: line.split()[0] for line in trusted.read_text().splitlines()}
             if pins.get(manifest.name) != digest(manifest):
                 raise ValueError("The published V8 manifest does not match the committed pin.")
-        if "v8__TYPED_ARRAY_MAX_SIZE_IN_HEAP: usize = 0;" not in binding.read_text(encoding="utf-8"):
+        if re.search(r"v8__TYPED_ARRAY_MAX_SIZE_IN_HEAP\s*:\s*usize\s*=\s*0\s*;", binding.read_text(encoding="utf-8")) is None:
             raise ValueError("The Windows archive must use its documented zero inline-heap binding policy.")
         return {"target": target, "profile": "sandbox_release", "producer": producer, "source_commit": self.identity["source_commit"],
                 "source_built": producer == "source-native-windows", "files": {path.name: digest(path) for path in (archive, binding, manifest)},
