@@ -1308,9 +1308,13 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
     let directory = tempdir().expect("directory");
     let root = directory.path().to_path_buf();
     let journal = UsageJournal::new(root.join("events.jsonl"));
+    // The publisher's compaction plan runs once the prior descriptor has more
+    // than the trigger number of runs. Keep the smallest fixture that reaches
+    // that path while retaining one-entry publications for lock contention.
+    let record_count = crate::id_index_compaction::ID_COMPACTION_TRIGGER + 3;
     journal
         .append_batch(
-            (0..270)
+            (0..record_count)
                 .map(|index| {
                     JournalPayload::Record(record(
                         &format!("record-{index}"),
@@ -1329,14 +1333,14 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
             std::thread::spawn(move || {
                 let mut publisher = UsagePublisher::open_at(root).expect("publisher");
                 barrier.wait();
-                for _ in 0..270 {
+                for _ in 0..record_count {
                     let manifest = publisher
                         .publish_batch(JournalReadLimits {
                             max_entries: 1,
                             ..limits()
                         })
                         .expect("concurrent publication");
-                    if manifest.watermark == 270 {
+                    if manifest.watermark == record_count as u64 {
                         return;
                     }
                 }
@@ -1357,28 +1361,37 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
         },
     )
     .expect("restarted identity index");
-    assert!(index.runs.len() < crate::id_index::MAX_ID_RUNS);
+    assert!(
+        index.runs.len() <= crate::id_index_compaction::ID_COMPACTION_TRIGGER,
+        "publisher must install its bounded compaction output"
+    );
     assert_eq!(
         lookup_ids(
             &root,
             &index,
-            &BTreeSet::from(["record-0".to_string(), "record-269".to_string()])
+            &BTreeSet::from([
+                "record-0".to_string(),
+                format!("record-{}", record_count - 1),
+            ])
         )
         .expect("identities survive automatic compaction")
         .found
         .keys()
         .cloned()
         .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["record-0".to_string(), "record-269".to_string()])
+        BTreeSet::from([
+            "record-0".to_string(),
+            format!("record-{}", record_count - 1),
+        ])
     );
     assert_eq!(
         reader
             .totals(TimeRange::all(), &UsageFilter::default())
             .expect("concurrent summary"),
         UsageTotals {
-            input_tokens: 270,
-            output_tokens: 270,
-            records: 270,
+            input_tokens: record_count as i64,
+            output_tokens: record_count as i64,
+            records: record_count as u64,
             ..UsageTotals::default()
         }
     );
