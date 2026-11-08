@@ -262,7 +262,7 @@ def golden(work):
             "--binary",
             work / "cli/bin/codex",
             "--reference-binary",
-            "/home/holyglory/.codex/packages/standalone/current/bin/codex",
+            "/home/holyglory/.codex/packages/standalone/releases/0.162.1+multi.4-x86_64-unknown-linux-gnu-local-usage-recovery-571ba85a/bin/codex",
             "--source-root",
             ROOT,
             "--output",
@@ -275,6 +275,7 @@ def golden(work):
 def qualify(run_id, work):
     identity = verify_source(work)
     base_run = os.environ.get("CODEX_MULTI_BASE_VALIDATION_RUN", run_id)
+    auth_run = os.environ.get("CODEX_MULTI_AUTH_VALIDATION_RUN", run_id)
     smoke_proof = json.loads((work / "smoke.json").read_text())
     for name, sha256 in smoke_proof["archives"].items():
         if digest(work / name) != sha256:
@@ -404,7 +405,7 @@ def qualify(run_id, work):
                 "scope": "product",
                 "state": "fixture_only",
                 "expected_result": "Report the preserved managed profile consistently to Desktop and reconnect the original chat; installed verification is pending.",
-                "evidence_refs": [f"run/{run_id}/app-server-suite"],
+                "evidence_refs": [f"run/{auth_run}/app-server-suite"],
             }
         )
     write_json(
