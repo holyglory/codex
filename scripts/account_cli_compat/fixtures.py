@@ -12,6 +12,56 @@ IDS = tuple(f"acct_{value:032x}" for value in range(1, 7))
 LONG_ALIAS = "long-account-alias-" + "x" * 45
 RETIRED = b"retired usage history: this is deliberately not a SQLite database\n"
 
+# These inputs belong to the separate installed-binary credit comparison. None
+# of the backend modes used by the frozen 190-row matrix changes.
+CREDIT_USAGE_PAYLOADS = {
+    "credits.balance": {
+        "credits": {"has_credits": True, "unlimited": False, "balance": "9.99"},
+    },
+    "credits.no_credits": {
+        "credits": {"has_credits": False, "unlimited": False, "balance": "999"},
+    },
+    "credits.unlimited": {
+        "credits": {"has_credits": True, "unlimited": True, "balance": "0"},
+    },
+    "credits.missing_balance": {
+        "credits": {"has_credits": True, "unlimited": False},
+    },
+    "credits.null_balance": {
+        "credits": {"has_credits": True, "unlimited": False, "balance": None},
+    },
+    "credits.blank_balance": {
+        "credits": {"has_credits": True, "unlimited": False, "balance": "   "},
+    },
+    "credits.control_balance": {
+        "credits": {"has_credits": True, "unlimited": False, "balance": "12\n34"},
+    },
+    "credits.overlong_balance": {
+        "credits": {"has_credits": True, "unlimited": False, "balance": "7" * 129},
+    },
+    "credits.auxiliary_only": {
+        "additional_rate_limits": [
+            {
+                "limit_name": "synthetic auxiliary quota",
+                "metered_feature": "synthetic_auxiliary",
+                "rate_limit": {
+                    "allowed": True,
+                    "limit_reached": False,
+                    "primary_window": {
+                        "used_percent": 95,
+                        "limit_window_seconds": 900,
+                        "reset_after_seconds": 0,
+                        "reset_at": 0,
+                    },
+                },
+                # Auxiliary credits are not modeled by the current API. This
+                # wire probe lets the installed binary establish its behavior.
+                "credits": {"has_credits": True, "unlimited": False, "balance": "999"},
+            }
+        ],
+    },
+}
+
 
 def write_private(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -204,6 +254,7 @@ class Backend:
                             "available_count": int(not fixture.consumed)
                         },
                     }
+                    payload.update(copy.deepcopy(CREDIT_USAGE_PAYLOADS.get(fixture.mode, {})))
                     if fixture.mode == "request_failed":
                         status, payload = 400, {"error": "synthetic usage failure"}
                 elif (

@@ -230,6 +230,14 @@ def smoke(work):
 
 def golden(work):
     verify_source(work)
+    reference = Path(
+        "/mnt/build-storage/codex/account-golden/reference-installed-be7b167.json"
+    )
+    if (
+        digest(reference)
+        != "fae81eb5297a5230ebcfd79dd2c3f5c47f6d8e9756ff70e42061026455d94bc5"
+    ):
+        raise RuntimeError("The independently captured installed CLI reference changed")
     run(
         [
             "python3",
@@ -241,9 +249,24 @@ def golden(work):
             "--source-root",
             ROOT,
             "--reference",
-            "/mnt/build-storage/codex/account-golden/reference.json",
+            reference,
             "--output",
             work / "account-golden.json",
+        ]
+    )
+    run(
+        [
+            "python3",
+            "-m",
+            "scripts.account_cli_compat.credits",
+            "--binary",
+            work / "cli/bin/codex",
+            "--reference-binary",
+            "/home/holyglory/.codex/packages/standalone/current/bin/codex",
+            "--source-root",
+            ROOT,
+            "--output",
+            work / "account-credit-golden.json",
         ]
     )
     verify_source(work)
@@ -272,6 +295,7 @@ def qualify(run_id, work):
         "smoke.json",
         "package-smoke.xml",
         "account-golden.json",
+        "account-credit-golden.json",
     ]:
         shutil.copy2(work / name, bundle / name)
     executable = bundle / "package/bin/codex"
@@ -321,6 +345,14 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Preserve installed credit capability and profile read/update fields through the public account RPCs; live activation is pending.",
             "evidence_refs": [f"run/{run_id}/full-workspace"],
+        },
+        {
+            "id": "accepted-account-cli-output",
+            "task_id": "p1adf58fb06e9d8c0",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Match the accepted installed account credit, help and aligned table output across the unchanged golden matrix and named credit-balance cases; live activation is pending.",
+            "evidence_refs": [f"run/{run_id}/account-golden"],
         },
         {
             "id": "local-usage-capability",

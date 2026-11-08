@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 
 ERRORS = {
     "unknownAccount": "account profile was not found",
@@ -31,6 +32,7 @@ VIEW_KEYS = [
     "enabled",
     "authenticated",
     "priority",
+    "creditUsageEnabled",
     "createdAt",
     "lastUsedAt",
     "note",
@@ -180,6 +182,8 @@ def human_contract(case, before, after, fingerprints_after):
             f"Authenticated: {'yes' if authenticated else 'no'}",
             f"Authentication: {mode}",
             f"Priority: {account['priority']}",
+            "Credit use (automatic): "
+            + ("enabled" if account.get("creditUsageEnabled", False) else "disabled"),
         ]
         if account["email"] is not None:
             lines.append("Email: " + account["email"])
@@ -275,8 +279,11 @@ def validate(case, style, result, initial, expected_fingerprints) -> list[str]:
             expected_view = {
                 key: stored[key]
                 for key in VIEW_KEYS
-                if key not in {"authenticated", "current"}
+                if key not in {"authenticated", "current", "creditUsageEnabled"}
             }
+            expected_view["creditUsageEnabled"] = stored.get(
+                "creditUsageEnabled", False
+            )
             expected_view["createdAt"] = stored["createdAt"].replace("Z", "+00:00")
             expected_view["authenticated"] = (
                 f"accounts/{stored['id']}/auth.json" in result["fingerprintsAfter"]
@@ -304,25 +311,32 @@ def validate(case, style, result, initial, expected_fingerprints) -> list[str]:
         is_list = case.arguments[0] == "list"
         is_priority_list = len(case.arguments) == 1 or case.arguments[1] == "list"
         if is_list or is_priority_list:
-            width = (
-                max(5, max(len(account["alias"]) for account in initial["accounts"]))
-                + 1
-            )
-            header = "ALIAS".ljust(width) + "\tPRIORITY\tNOTE"
+            columns = ["ALIAS", "PRIORITY"]
+            if any(account["note"] for account in initial["accounts"]):
+                columns.append("NOTE")
             if is_list:
-                header += "\tBANKED RESETS\tEXPIRY IN\tLIMITS\tRESET IN"
-            if result["stdout"].splitlines()[0] != header:
-                failures.append("human table columns/padding differ from named source")
+                columns += [
+                    "CREDITS",
+                    "CREDIT USE",
+                    "BANKED RESETS",
+                    "LIMITS",
+                    "RESET IN",
+                ]
+            lines = result["stdout"].splitlines()
+            if "\t" in result["stdout"] or re.split(r" {2,}", lines[0]) != columns:
+                failures.append(
+                    "human table columns/separators differ from accepted contract"
+                )
             aliases = [
-                line.split("\t", 1)[0].strip().removeprefix("*").strip()
-                for line in result["stdout"].splitlines()[1:]
+                re.split(r" {2,}", line.strip(), maxsplit=1)[0].removeprefix("*")
+                for line in lines[1:]
             ]
             expected_aliases = [
                 account["alias"]
                 for account in sorted(
                     initial["accounts"],
                     key=lambda account: (
-                        account["priority"],
+                        account["priority"] if is_list else -account["priority"],
                         account["alias"],
                         account["id"],
                     ),
@@ -330,6 +344,6 @@ def validate(case, style, result, initial, expected_fingerprints) -> list[str]:
             ]
             if aliases != expected_aliases:
                 failures.append(
-                    "human account sorting differs from lower-first source order"
+                    "human account sorting differs from its distinct display/priority contract"
                 )
     return failures

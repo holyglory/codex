@@ -30,10 +30,11 @@ def source_contract(root: Path) -> dict:
     prefix = root / "codex-rs/cli/src"
     names = [
         "account_cmd.rs",
-        *[
-            f"account_cmd/{name}.rs"
-            for name in ("add", "doctor", "error", "limits", "reset", "view")
-        ],
+        "config_override_args.rs",
+        *sorted(
+            path.relative_to(prefix).as_posix()
+            for path in (prefix / "account_cmd").rglob("*.rs")
+        ),
     ]
     return {"root": str(root), "files": {name: digest(prefix / name) for name in names}}
 
