@@ -277,6 +277,9 @@ class Producer:
             self.run("v8-arm64-compile-link", ["cargo", "nextest", "list", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--target", target, "--list-type", "binaries-only", "--message-format", "json", "-p", "codex-v8-poc"], environment=environment)
             pair["runtime_not_executed"] = "The owner-controlled runner is x64; ARM64 receives compile/link and PE architecture proof only."
             write_json(self.handoff / f"v8-{target}.json", pair)
+            # clang-cl needs explicit C++ exceptions for bundled DuckDB.
+            cxx_flags = "CXXFLAGS_aarch64_pc_windows_msvc"
+            environment[cxx_flags] = (environment.get(cxx_flags, "") + " /EHsc").strip()
         arguments = ["cargo", "build", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--release", "--target", target]
         self.run(f"{target}-build", [*arguments, *(value for binary in BINARIES for value in ("--bin", binary))], environment=environment)
         release = Path(environment["CARGO_TARGET_DIR"]) / target / "release"
