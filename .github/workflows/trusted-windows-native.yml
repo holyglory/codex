@@ -17,13 +17,10 @@ permissions:
 
 jobs:
   native-msvc:
-    if: >-
-      github.repository == 'holyglory/codex-win-msvc-ci' &&
-      github.event.repository.private == true &&
-      github.event_name == 'workflow_call' &&
-      github.ref == 'refs/heads/main' &&
-      github.actor == 'holyglory' &&
-      github.triggering_actor == 'holyglory'
+    # The private caller performs the owner/private/main checks before invoking
+    # this reusable workflow. A called workflow has no reliable branch ref in
+    # its event context, so keep the callee guard to the call boundary here.
+    if: github.event_name == 'workflow_call'
     runs-on: [self-hosted, Windows, X64, codex-win-msvc]
     timeout-minutes: 360
     defaults:
