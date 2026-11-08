@@ -216,6 +216,7 @@ fn replay_rejects_sequence_gaps_duplicates_and_out_of_order_entries() {
 fn independent_processes_append_one_contiguous_log() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
+    fs::write(&path, b"{\"sequence\":").expect("interrupted entry before concurrent recovery");
     let executable = std::env::current_exe().expect("test executable");
     let mut children = Vec::new();
     for _ in 0..4 {

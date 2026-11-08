@@ -168,7 +168,16 @@ impl UsageJournal {
             .ok_or_else(|| StorageError::InvalidData("journal sequence exhausted".into()))?;
         let complete_length = base.physical_offset(checkpoint.byte_offset)?;
         if complete_length != length {
-            file.set_len(complete_length)?;
+            // Windows append handles cannot truncate. Release this handle's lock
+            // before opening the recovery handle; the stable writer lock still
+            // excludes concurrent appends and rotation throughout both reopens.
+            drop(file);
+            let recovery = storage_file::open_read_write(&self.path)?;
+            recovery.lock()?;
+            recovery.set_len(complete_length)?;
+            drop(recovery);
+            file = storage_file::open_append(&self.path)?;
+            file.lock()?;
         }
         let mut positions = Vec::with_capacity(payloads.len());
         for payload in payloads {
