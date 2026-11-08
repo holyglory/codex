@@ -54,8 +54,9 @@ jobs:
           [[ "$RELEASE_TAG" == "npm-v$npm_version" ]]
           [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
           [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" |
-            python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$source_commit"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/candidate-jobs.json"
+          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$source_commit" --jobs-file "$RUNNER_TEMP/candidate-jobs.json" < "$RUNNER_TEMP/candidate-run.json"
           echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
 

@@ -84,7 +84,17 @@ def version() -> tuple[str, str]:
     return source, source.replace("+multi.", "-multi.", 1)
 
 
-def verify_acceptance(value: dict, producer: str) -> None:
+def verify_acceptance(
+    value: dict | None, producer: str, *, mode: str = "complete"
+) -> None:
+    if mode not in ("complete", "native-only"):
+        raise ValueError("Unknown candidate mode")
+    if value is None:
+        if mode == "native-only":
+            return
+        raise ValueError(
+            "Complete candidates require the local release acceptance receipt"
+        )
     producer_identity = identity(producer)
     expected = {
         "schema": 1,
@@ -226,11 +236,16 @@ def main() -> None:
     parser.add_argument("--packaging", required=True)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--local-acceptance")
+    parser.add_argument("--candidate-mode", choices=("complete", "native-only"))
     parser.add_argument("--artifacts-dir", type=Path)
     args = parser.parse_args()
     result = verify_native_source(args.producer, args.packaging)
-    if args.local_acceptance:
-        verify_acceptance(json.loads(args.local_acceptance), args.producer)
+    if args.local_acceptance or args.candidate_mode:
+        verify_acceptance(
+            json.loads(args.local_acceptance) if args.local_acceptance else None,
+            args.producer,
+            mode=args.candidate_mode or "complete",
+        )
     if args.artifacts_dir:
         result["native_artifacts"] = verify_artifacts(
             args.artifacts_dir, args.packaging
