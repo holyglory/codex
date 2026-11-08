@@ -35,9 +35,13 @@ class NpmReleaseContractTest(unittest.TestCase):
         command = source[
             source.index("package_args=(") : source.index("run_check native-version")
         ]
+        preparation = source[
+            source.index('if [[ "$TARGET" == *-linux-musl ]]') : source.index('root="')
+        ]
         harness = """set -euo pipefail
+ulimit -S -n 1024
 run_check() { shift; "$@"; }
-just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps({"argv":sys.argv[1:], "ldflags":os.environ[os.environ["TARGET"].upper().replace("-", "_")+"_LDFLAGS"], "fileLimit":resource.getrlimit(resource.RLIMIT_NOFILE)[0]}))' "$@"; }
 """
         with tempfile.TemporaryDirectory(prefix="npm recipe ") as directory:
             for platform in PLATFORMS.values():
@@ -48,7 +52,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:
                     release = Path(directory) / target / "release"
                     dist = Path(directory) / "dist" / target
                     result = subprocess.run(
-                        ["bash", "-c", harness + command],
+                        ["bash", "-c", harness + preparation + command],
                         check=True,
                         capture_output=True,
                         text=True,
@@ -59,6 +63,8 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:
                             "release": str(release),
                             "dist": str(dist),
                             "NPM_FIXTURE_PYTHON": sys.executable,
+                            target.upper().replace("-", "_")
+                            + "_LDFLAGS": "-Wl,--as-needed",
                         },
                     )
                     expected = [
@@ -90,7 +96,19 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:
                             str(dist / f"codex-package-{target}.tar.zst"),
                         ]
                     )
-                    self.assertEqual(json.loads(result.stdout), expected)
+                    self.assertEqual(
+                        json.loads(result.stdout),
+                        {
+                            "argv": expected,
+                            "ldflags": "-Wl,--as-needed"
+                            + (
+                                " -Wno-unused-command-line-argument"
+                                if platform["os"] == "linux"
+                                else ""
+                            ),
+                            "fileLimit": 16384 if platform["os"] == "linux" else 1024,
+                        },
+                    )
 
     def test_hosted_reuse_keeps_the_real_producer_and_unchanged_native_inputs(
         self,

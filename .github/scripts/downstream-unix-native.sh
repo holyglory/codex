@@ -2,6 +2,16 @@
 # Native target only: generate one V8 ABI pair, test it, then package that source.
 set -euo pipefail
 : "${TARGET:?}" "${BAZEL_PLATFORM:?}" "${BAZEL_CONFIG:?}" "${SOURCE_VERSION:?}"
+if [[ "$TARGET" == *-linux-musl ]]; then
+  # Keep Zig's unused CRT option from failing jemalloc's -Werror probes.
+  jemalloc_ldflags="$(printf '%s_LDFLAGS' "$TARGET" | tr '[:lower:]-' '[:upper:]_')"
+  export "$jemalloc_ldflags=${!jemalloc_ldflags:-} -Wno-unused-command-line-argument"
+  # Zig opens more than 1024 Rust objects when linking the release binaries.
+  musl_open_files="$(ulimit -S -n)"
+  if [[ "$musl_open_files" != unlimited ]] && (( musl_open_files < 16384 )); then
+    ulimit -S -n 16384
+  fi
+fi
 root="$(git rev-parse --show-toplevel)"
 dist="$root/native-dist/$TARGET"
 pair="$RUNNER_TEMP/downstream-v8/$TARGET"
