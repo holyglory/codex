@@ -274,6 +274,7 @@ def golden(work):
 
 def qualify(run_id, work):
     identity = verify_source(work)
+    base_run = os.environ.get("CODEX_MULTI_BASE_VALIDATION_RUN", run_id)
     smoke_proof = json.loads((work / "smoke.json").read_text())
     for name, sha256 in smoke_proof["archives"].items():
         if digest(work / name) != sha256:
@@ -323,7 +324,7 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Preserve account command output and model-request selection; packaged CLI compatibility is tested, live replacement is pending.",
             "evidence_refs": [
-                f"run/{run_id}/full-workspace",
+                f"run/{base_run}/full-workspace",
                 f"run/{run_id}/account-golden",
             ],
         },
@@ -334,8 +335,8 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Keep capture, reporting and seven-day retention correct on growing histories; final installation and live observation are pending.",
             "evidence_refs": [
-                f"run/{run_id}/full-workspace",
-                f"run/{run_id}/usage-scale",
+                f"run/{base_run}/full-workspace",
+                f"run/{base_run}/usage-scale",
             ],
         },
         {
@@ -344,7 +345,7 @@ def qualify(run_id, work):
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Preserve installed credit capability and profile read/update fields through the public account RPCs; live activation is pending.",
-            "evidence_refs": [f"run/{run_id}/full-workspace"],
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
             "id": "accepted-account-cli-output",
@@ -360,7 +361,7 @@ def qualify(run_id, work):
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Preserve null negotiation for the unported legacy usage RPC extension while keeping the implemented usage_stats tool available; live activation is pending.",
-            "evidence_refs": [f"run/{run_id}/full-workspace"],
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
             "id": "remaining-observed-detail-families",
@@ -368,7 +369,7 @@ def qualify(run_id, work):
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Return captured process, agent, approval, repository, taxonomy and activity-span facts with filters and pagination; installed observation is pending.",
-            "evidence_refs": [f"run/{run_id}/full-workspace"],
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
             "id": "performance-outcome-continuation",
@@ -376,7 +377,7 @@ def qualify(run_id, work):
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Keep continued usage pages on their original snapshot and resolved filters until expiry. Nonempty outcome pagination is fixture-tested; authoritative outcome capture remains unavailable.",
-            "evidence_refs": [f"run/{run_id}/full-workspace"],
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
             "id": "observed-retries-and-waits",
@@ -384,7 +385,7 @@ def qualify(run_id, work):
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Capture actual Responses HTTP/WebSocket attempts, retry predecessors and measured retry waits, including cancellation, with explicit coverage limits.",
-            "evidence_refs": [f"run/{run_id}/full-workspace"],
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
             "id": "retry-wait-and-outcome-bindings",
@@ -395,6 +396,17 @@ def qualify(run_id, work):
             "evidence_refs": [],
         },
     ]
+    if base_run != run_id:
+        capabilities.append(
+            {
+                "id": "desktop-profile-authentication",
+                "task_id": "pe5642aede831f5b1",
+                "scope": "product",
+                "state": "fixture_only",
+                "expected_result": "Report the preserved managed profile consistently to Desktop and reconnect the original chat; installed verification is pending.",
+                "evidence_refs": [f"run/{run_id}/app-server-suite"],
+            }
+        )
     write_json(
         bundle / "completion.json",
         {
