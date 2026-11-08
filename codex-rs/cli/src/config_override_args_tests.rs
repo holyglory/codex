@@ -69,8 +69,8 @@ fn credit_only_account_edits_preserve_scoped_overrides_and_json() {
 }
 
 #[test]
-fn account_edit_errors_retain_legacy_golden_bytes() {
-    let change = "<--priority <N>|--note <TEXT>|--clear-note>";
+fn account_edit_errors_retain_installed_golden_bytes() {
+    let change = "<--priority <N>|--credit-usage <CREDIT_USAGE>|--note <TEXT>|--clear-note>";
     for json in [false, true] {
         let mut args = vec!["codex", "account", "edit", "alpha"];
         let json_usage = if json {
@@ -105,7 +105,7 @@ fn account_edit_errors_retain_legacy_golden_bytes() {
 }
 
 #[test]
-fn credit_edit_retry_keeps_original_errors_for_invalid_commands() {
+fn credit_edit_preserves_clap_errors_for_invalid_commands() {
     for args in [
         vec!["codex", "account", "edit", "--credit-usage", "enabled"],
         vec![

@@ -254,7 +254,9 @@ class Backend:
                             "available_count": int(not fixture.consumed)
                         },
                     }
-                    payload.update(copy.deepcopy(CREDIT_USAGE_PAYLOADS.get(fixture.mode, {})))
+                    payload.update(
+                        copy.deepcopy(CREDIT_USAGE_PAYLOADS.get(fixture.mode, {}))
+                    )
                     if fixture.mode == "request_failed":
                         status, payload = 400, {"error": "synthetic usage failure"}
                 elif (
