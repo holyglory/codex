@@ -254,7 +254,7 @@ class Producer:
         environment = self.native_environment()
         checks = {
             "v8-x64-poc-cppgc": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-v8-poc", "--run-ignored", "all"],
-            "windows-product-regressions": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-code-mode-runtime", "-p", "codex-account-registry", "-p", "codex-account-selection", "-p", "codex-private-storage", "-p", "codex-usage"],
+            "windows-product-regressions": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-code-mode-runtime", "-p", "codex-account-registry", "-p", "codex-account-selection", "-p", "codex-private-storage", "-p", "codex-usage", "-p", "codex-login"],
         }
         for name, arguments in checks.items():
             self.run(name, ["just", "test", "--locked", "--test-threads", "4", *arguments], environment=environment)
