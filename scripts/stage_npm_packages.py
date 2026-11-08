@@ -19,7 +19,7 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "codex-cli" / "scripts" / "build_npm_package.py"
 WORKFLOW_NAME = ".github/workflows/rust-release.yml"
-GITHUB_REPO = "openai/codex"
+GITHUB_REPO = "holyglory/codex"
 BINARY_TARGETS = (
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
@@ -497,6 +497,9 @@ def tarball_name_for_package(package: str, version: str) -> str:
 def main() -> int:
     args = parse_args()
 
+    if "+" in args.release_version:
+        raise ValueError("npm versions must not contain + build metadata")
+
     output_dir = args.output_dir or (REPO_ROOT / "dist" / "npm")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -525,7 +528,10 @@ def main() -> int:
         if native_component_sets:
             if args.artifacts_dir is not None:
                 artifacts_temp_root = args.artifacts_dir.resolve()
-                artifacts_temp_root.mkdir(parents=True, exist_ok=True)
+                if not artifacts_temp_root.is_dir():
+                    raise FileNotFoundError(
+                        f"Native artifact directory not found: {artifacts_temp_root}"
+                    )
             else:
                 artifacts_temp_root = Path(
                     tempfile.mkdtemp(prefix="npm-native-artifacts-", dir=runner_temp)
@@ -536,10 +542,14 @@ def main() -> int:
                 artifact_dir_for_target(artifacts_temp_root, target)
                 for target in BINARY_TARGETS
             ]
-            if args.artifacts_dir is not None and all(
-                artifact_dir.is_dir() and any(artifact_dir.iterdir())
-                for artifact_dir in target_artifact_dirs
-            ):
+            if args.artifacts_dir is not None:
+                missing = [
+                    str(path) for path in target_artifact_dirs if not path.is_dir()
+                ]
+                if missing:
+                    raise FileNotFoundError(
+                        f"Missing native artifact directories: {missing}"
+                    )
                 workflow_url = None
             else:
                 workflow_url, resolved_head_sha = resolve_workflow_url(
