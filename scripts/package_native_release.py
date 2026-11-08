@@ -327,6 +327,7 @@ def qualify(run_id, work):
         },
         {
             "id": "observed-retries-and-waits",
+            "task_id": "p310ae9370e9a2ffa",
             "scope": "product",
             "state": "fixture_only",
             "expected_result": "Capture actual Responses HTTP/WebSocket attempts, retry predecessors and measured retry waits, including cancellation, with explicit coverage limits.",
