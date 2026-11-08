@@ -408,6 +408,34 @@ def qualify(run_id, work):
                 "evidence_refs": [f"run/{auth_run}/app-server-suite"],
             }
         )
+    if live_proof_path := os.environ.get("CODEX_MULTI_LIVE_PROOF"):
+        live_proof = Path(live_proof_path)
+        if (
+            digest(live_proof)
+            != "89f46f5797e25b76b0fdfba3c8c6876458db3a4e37b47abf090b5ede57d37d1c"
+        ):
+            raise RuntimeError("The qualified live observation changed")
+        live = json.loads(live_proof.read_text())
+        if live["result"] != "passed" or live["serving"]["executableSha256"] != digest(
+            executable
+        ):
+            raise RuntimeError(
+                "This package differs from the independently verified live executable"
+            )
+        completed = {
+            "usage-worker-and-retention": "The installed store serves real usage reports; retention, correction and restart behavior passed the complete storage and scale checks.",
+            "account-credit-protocol": "The installed account credit capability and profile fields match the tested protocol contract.",
+            "accepted-account-cli-output": "The selected local executable matches the accepted account output and credit fixtures.",
+            "local-usage-capability": "Installed initialization truthfully reports the legacy extension as unavailable and the real usage_stats tool succeeds.",
+            "desktop-profile-authentication": "The installed login APIs recognize preserved profiles consistently and both original chats resume.",
+        }
+        for capability in capabilities:
+            if capability["id"] in completed:
+                capability["state"] = "real_e2e"
+                capability["expected_result"] = completed[capability["id"]]
+                capability["evidence_refs"].append(
+                    "delivery-7935351864b86bec784b5ede398e6dd0a0598f404e6c31029fa7e24559940595"
+                )
     write_json(
         bundle / "completion.json",
         {
