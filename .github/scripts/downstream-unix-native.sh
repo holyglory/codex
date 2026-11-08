@@ -28,9 +28,11 @@ export RUSTY_V8_ARCHIVE="$pair/librusty_v8_ptrcomp_sandbox_release_${TARGET}.a.g
 export RUSTY_V8_SRC_BINDING_PATH="$pair/src_binding_ptrcomp_sandbox_release_${TARGET}.rs"
 test -s "$RUSTY_V8_ARCHIVE"
 test -s "$RUSTY_V8_SRC_BINDING_PATH"
+# The copied ABI pair is independent of Bazel; release its resident server before Cargo.
+run_check v8-bazel-shutdown env -u BUILDBUDDY_API_KEY python3 "$root/.github/scripts/run_bazel_with_buildbuddy.py" shutdown
 cd "$root/codex-rs"
-run_check v8-poc just test -p codex-v8-poc --target "$TARGET" --run-ignored all
-run_check product-regressions just test --target "$TARGET" \
+run_check v8-poc just test --locked -p codex-v8-poc --target "$TARGET" --run-ignored all
+run_check product-regressions just test --locked --target "$TARGET" \
   -p codex-code-mode-runtime -p codex-account-registry -p codex-account-selection \
   -p codex-private-storage -p codex-usage
 if [[ "$TARGET" == *-linux-musl ]]; then
