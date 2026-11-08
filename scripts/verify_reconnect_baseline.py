@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Retain the passed product checks when repairing only a release reference path."""
 
-import datetime
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -37,20 +37,26 @@ def main():
         raise RuntimeError(
             "Native build or smoke inputs changed with the reference repair"
         )
-    deadline = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-        seconds=30
-    )
+    receipt = Path(
+        "/mnt/build-storage/codex/state/reconnect-release-t20261108T200058Z-e66d25.json"
+    ).read_bytes()
+    if (
+        hashlib.sha256(receipt).hexdigest()
+        != "89511418c1ee21d03f2b4d98823d424f0cd1301cbf1236619b41f43177e26fcc"
+    ):
+        raise RuntimeError("The retained terminal test receipt changed")
+    result = json.loads(receipt)
+    status = result["data"]["status"]
     response = subprocess.run(
         [
             "devcoordinator2",
             "call",
-            "test.wait",
+            "test.history",
             "--params",
             json.dumps(
                 {
                     "path": str(ROOT),
-                    "run_id": PRIOR_RUN,
-                    "deadline_at": deadline.isoformat(),
+                    "limit": 10,
                 }
             ),
         ],
@@ -59,8 +65,17 @@ def main():
         text=True,
         timeout=45,
     )
-    result = json.loads(response.stdout)
-    status = result["data"]["status"]
+    history = json.loads(response.stdout)
+    original = next(
+        run for run in history["data"]["runs"] if run["run_id"] == PRIOR_RUN
+    )
+    if not history["ok"] or any(
+        original[key] != status[key]
+        for key in ("run_id", "test", "status", "finished_at")
+    ):
+        raise RuntimeError(
+            "The retained receipt does not match authoritative run history"
+        )
     required = {
         "source-preflight",
         "rust-lint",
