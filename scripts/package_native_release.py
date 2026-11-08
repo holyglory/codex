@@ -257,7 +257,12 @@ def qualify(run_id, work):
             raise RuntimeError(
                 "The qualified package no longer matches the smoke-tested archive"
             )
-    bundle = ROOT / "codex-rs/target/native-release-delivery"
+    directory = os.environ.get(
+        "CODEX_MULTI_NATIVE_ARTIFACT_DIRECTORY", "native-release-delivery"
+    )
+    if not re.fullmatch(r"native-release-[a-z0-9-]{1,64}", directory):
+        raise RuntimeError("Expected a bounded native release artifact directory name")
+    bundle = ROOT / "codex-rs/target" / directory
     bundle.mkdir(exist_ok=False)
     shutil.copytree(work / "cli", bundle / "package")
     archive_name = f"codex-{VERSION}-{TARGET}.tar.gz"
@@ -308,6 +313,22 @@ def qualify(run_id, work):
                 f"run/{run_id}/full-workspace",
                 f"run/{run_id}/usage-scale",
             ],
+        },
+        {
+            "id": "account-credit-protocol",
+            "task_id": "p9ba8b8805e54269b",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Preserve installed credit capability and profile read/update fields through the public account RPCs; live activation is pending.",
+            "evidence_refs": [f"run/{run_id}/full-workspace"],
+        },
+        {
+            "id": "local-usage-capability",
+            "task_id": "pb55141372eaf9f45",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Preserve null negotiation for the unported legacy usage RPC extension while keeping the implemented usage_stats tool available; live activation is pending.",
+            "evidence_refs": [f"run/{run_id}/full-workspace"],
         },
         {
             "id": "remaining-observed-detail-families",
