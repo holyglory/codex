@@ -39,11 +39,11 @@ async fn raw_error(
     params: Value,
 ) -> Result<JSONRPCError> {
     let request_id = app_server.send_raw_request(method, Some(params)).await?;
-    Ok(timeout(
+    timeout(
         DEFAULT_READ_TIMEOUT,
         app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
     )
-    .await??)
+    .await?
 }
 
 fn write_profile_config(home: &TempDir, forced_login_method: &str) -> Result<()> {
