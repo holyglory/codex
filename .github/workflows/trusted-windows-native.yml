@@ -92,6 +92,11 @@ jobs:
             cargo install just --locked --version 1.51.0 --root 'H:\codex-ci\cargo-home'
           }
           if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Pinned just was not installed.' }
+          $nextest = cargo nextest --version 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $nextest) {
+            cargo install cargo-nextest --locked --version 0.9.103 --root 'H:\codex-ci\cargo-home'
+          }
+          if ((cargo nextest --version 2>$null) -notmatch 'cargo-nextest 0\.9\.103') { throw 'Pinned cargo-nextest was not installed.' }
       - name: Install pinned DotSlash
         shell: bash
         env:
