@@ -130,7 +130,7 @@ class Producer:
         write_json(self.handoff / "source.json", self.identity)
 
     def source_v8(self) -> None:
-        self.bazel("v8-x64-source-build", "build", *BAZEL_FLAGS, *NATIVE_V8)
+        self.bazel("v8-x64-source-build", "build", "--remote_download_all", *BAZEL_FLAGS, *NATIVE_V8)
         outputs = self.bazel("v8-x64-source-outputs", "cquery", *BAZEL_FLAGS, "--output=files", "set(" + " ".join(NATIVE_V8) + ")", capture_output=True)
         execution_root = Path(self.bazel("v8-execution-root", "info", "execution_root", capture_output=True).strip())
         output_base = Path(self.bazel("v8-output-base", "info", "output_base", capture_output=True).strip())
