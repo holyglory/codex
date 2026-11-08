@@ -979,6 +979,7 @@ mod tests {
                 version: 2,
                 supports_managed_login: true,
                 supports_auto_selection: true,
+                supports_credit_usage: true,
             })
         );
         let response = client

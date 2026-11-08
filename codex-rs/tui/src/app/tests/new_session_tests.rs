@@ -206,6 +206,7 @@ async fn widget_replacement_preserves_server_account_capability() -> Result<()> 
                 version: 2,
                 supports_managed_login: false,
                 supports_auto_selection: true,
+                supports_credit_usage: false,
             }),
         ),
         (codex_config::types::AuthCredentialsStoreMode::File, None),

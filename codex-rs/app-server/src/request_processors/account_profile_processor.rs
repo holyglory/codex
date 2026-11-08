@@ -214,6 +214,9 @@ impl AccountProfileRequestProcessor {
             if let Some(priority) = params.priority {
                 account.priority = priority;
             }
+            if let Some(credit_usage_enabled) = params.credit_usage_enabled {
+                account.credit_usage_enabled = credit_usage_enabled;
+            }
             if let Some(note) = &params.note {
                 account.note = Some(note.clone());
             } else if params.clear_note {
@@ -555,6 +558,7 @@ fn api_profile(
         enabled: account.enabled,
         authenticated: is_authenticated(config, account)?,
         priority: account.priority,
+        credit_usage_enabled: account.credit_usage_enabled,
         created_at: account.created_at.timestamp(),
         last_used_at: account.last_used_at.map(|time| time.timestamp()),
         note: account.note.clone(),

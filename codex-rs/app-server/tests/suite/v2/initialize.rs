@@ -54,11 +54,16 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     let JSONRPCMessage::Response(response) = message else {
         anyhow::bail!("expected initialize response, got {message:?}");
     };
+    assert_eq!(
+        response.result.get("localUsageAccounting"),
+        Some(&Value::Null)
+    );
     let InitializeResponse {
         user_agent,
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        local_usage_accounting,
         ..
     } = to_response::<InitializeResponse>(response)?;
 
@@ -66,6 +71,7 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     assert_eq!(response_codex_home, expected_codex_home);
     assert_eq!(platform_family, std::env::consts::FAMILY);
     assert_eq!(platform_os, std::env::consts::OS);
+    assert_eq!(local_usage_accounting, None);
     Ok(())
 }
 

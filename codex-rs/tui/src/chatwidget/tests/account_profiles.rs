@@ -21,6 +21,7 @@ fn enable_profiles(chat: &mut ChatWidget) {
         version: 2,
         supports_managed_login: true,
         supports_auto_selection: true,
+        supports_credit_usage: true,
     }));
 }
 
@@ -34,6 +35,7 @@ fn profile(alias: &str, active: bool) -> AccountProfile {
         enabled: true,
         authenticated: true,
         priority: 10,
+        credit_usage_enabled: false,
         created_at: 1,
         last_used_at: Some(2),
         note: None,
@@ -305,6 +307,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: Some("INVALID-alias".to_string()),
         enabled: None,
         priority: None,
+        credit_usage_enabled: None,
         note: None,
         clear_note: false,
     });
@@ -326,6 +329,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: None,
         enabled: None,
         priority: None,
+        credit_usage_enabled: None,
         note: Some("correctable note".to_string()),
         clear_note: false,
     });
@@ -347,6 +351,7 @@ async fn mutation_validation_returns_to_the_correct_editor_with_input() {
         alias: None,
         enabled: None,
         priority: Some(42),
+        credit_usage_enabled: None,
         note: None,
         clear_note: false,
     });
@@ -402,6 +407,7 @@ async fn account_command_uses_server_capability_instead_of_local_storage() {
                 version,
                 supports_managed_login: true,
                 supports_auto_selection: true,
+                supports_credit_usage: true,
             });
             chat.set_account_profiles_capability(capability.as_ref());
             chat.open_account_command("list");
@@ -424,6 +430,7 @@ async fn account_selector_disables_actions_the_server_does_not_support() {
         version: 2,
         supports_managed_login: false,
         supports_auto_selection: false,
+        supports_credit_usage: false,
     };
     chat.set_account_profiles_capability(Some(&capability));
     chat.open_account_command("list");
@@ -481,6 +488,7 @@ async fn account_actions_respect_independent_server_feature_flags() {
             version: 2,
             supports_managed_login: managed_login,
             supports_auto_selection: automatic_selection,
+            supports_credit_usage: false,
         }));
         chat.open_account_command("auto");
         let mut auto_requested = false;
@@ -568,6 +576,7 @@ async fn successful_mutations_refresh_and_reveal_the_changed_profile() {
             alias: Some(edited.alias.clone()),
             enabled: None,
             priority: None,
+            credit_usage_enabled: None,
             note: None,
             clear_note: false,
         });

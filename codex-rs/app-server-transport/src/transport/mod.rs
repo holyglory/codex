@@ -387,6 +387,7 @@ mod tests {
                     platform_family: "unix".to_string(),
                     platform_os: "linux".to_string(),
                     multi_account: None,
+                    local_usage_accounting: None,
                 },
             )),
         });

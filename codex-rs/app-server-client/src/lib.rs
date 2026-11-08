@@ -1275,6 +1275,7 @@ mod tests {
                 version: 2,
                 supports_managed_login: true,
                 supports_auto_selection: true,
+                supports_credit_usage: true,
             })
         );
         assert_eq!(
@@ -1514,6 +1515,7 @@ mod tests {
                         version: 2,
                         supports_managed_login: true,
                         supports_auto_selection: true,
+                        supports_credit_usage: true,
                     }
                 )
             );
@@ -1527,11 +1529,13 @@ mod tests {
             version: 2,
             supports_managed_login: true,
             supports_auto_selection: true,
+            supports_credit_usage: true,
         };
         let limited = MultiAccountCapability {
             version: 2,
             supports_managed_login: false,
             supports_auto_selection: false,
+            supports_credit_usage: false,
         };
         for (advertised, expected) in [
             (None, None),
@@ -1553,6 +1557,21 @@ mod tests {
                     serde_json::json!({"version": 2, "supportsManagedLogin": "true", "supportsAutoSelection": true}),
                 ),
                 None,
+            ),
+            (
+                Some(
+                    serde_json::json!({"version": 2, "supportsManagedLogin": true, "supportsAutoSelection": true, "supportsCreditUsage": "true"}),
+                ),
+                None,
+            ),
+            (
+                Some(
+                    serde_json::json!({"version": 2, "supportsManagedLogin": true, "supportsAutoSelection": true}),
+                ),
+                Some(MultiAccountCapability {
+                    supports_credit_usage: false,
+                    ..full.clone()
+                }),
             ),
             (
                 Some(serde_json::to_value(&full).expect("capability")),
