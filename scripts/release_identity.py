@@ -92,7 +92,7 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
     # Identity, handoff and npm orchestration may evolve independently.
     for pattern in (
         r"^  native:\n.*?(?=^  [\w-]+:\n|\Z)",
-        r"^(?:env|defaults|permissions):\n.*?(?=^\S|\Z)",
+        r"^(?:env|defaults|permissions):[^\n]*(?:\n|\Z).*?(?=^\S|\Z)",
     ):
         before, after = [
             re.findall(pattern, workflow, flags=re.MULTILINE | re.DOTALL)

@@ -97,6 +97,12 @@ class NpmReleaseContractTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "global build settings"):
                     verify_hosted_native_source(producer, invalid)
+                invalid = commit(
+                    workflow,
+                    "defaults: {run: {shell: bash}}\n" + inputs[workflow],
+                )
+                with self.assertRaisesRegex(ValueError, "global build settings"):
+                    verify_hosted_native_source(producer, invalid)
 
     def test_only_native_builds_may_start_without_complete_local_proof(self) -> None:
         producer = "a" * 40
