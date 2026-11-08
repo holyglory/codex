@@ -2,12 +2,18 @@
 """Focused checks for release identity and archive naming guards."""
 
 import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from verify_npm_release import PLATFORMS, tarball_paths, verify_release
-from release_identity import verify_acceptance
+from release_identity import verify_acceptance, verify_hosted_native_source
 
 SPEC = importlib.util.spec_from_file_location(
     "verify_candidate_run",
@@ -18,6 +24,158 @@ SPEC.loader.exec_module(candidate)
 
 
 class NpmReleaseContractTest(unittest.TestCase):
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_unix_package_command_preserves_common_and_optional_arguments(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / ".github/scripts/downstream-unix-native.sh"
+        ).read_text()
+        command = source[
+            source.index("package_args=(") : source.index("run_check native-version")
+        ]
+        harness = """set -euo pipefail
+run_check() { shift; "$@"; }
+just() { "$NPM_FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+"""
+        with tempfile.TemporaryDirectory(prefix="npm recipe ") as directory:
+            for platform in PLATFORMS.values():
+                if platform["os"] == "win32":
+                    continue
+                target = platform["target_triple"]
+                with self.subTest(target=target):
+                    release = Path(directory) / target / "release"
+                    dist = Path(directory) / "dist" / target
+                    result = subprocess.run(
+                        ["bash", "-c", harness + command],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "TARGET": target,
+                            "SOURCE_VERSION": "0.166.0+multi.1",
+                            "release": str(release),
+                            "dist": str(dist),
+                            "NPM_FIXTURE_PYTHON": sys.executable,
+                        },
+                    )
+                    expected = [
+                        "assemble-codex-package",
+                        "--target",
+                        target,
+                        "--package-version",
+                        "0.166.0+multi.1",
+                        "--cargo-profile",
+                        "release",
+                        "--strip",
+                        "all",
+                        "--entrypoint-bin",
+                        str(release / "codex"),
+                        "--code-mode-host-bin",
+                        str(release / "codex-code-mode-host"),
+                        "--exec-server-bin",
+                        str(release / "codex-exec-server"),
+                    ]
+                    if platform["os"] == "linux":
+                        expected.extend(["--bwrap-bin", str(release / "bwrap")])
+                    expected.extend(
+                        [
+                            "--package-dir",
+                            str(dist / "package"),
+                            "--archive-output",
+                            str(dist / f"codex-package-{target}.tar.gz"),
+                            "--archive-output",
+                            str(dist / f"codex-package-{target}.tar.zst"),
+                        ]
+                    )
+                    self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_hosted_reuse_keeps_the_real_producer_and_unchanged_native_inputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args], text=True, stderr=subprocess.PIPE
+                ).strip()
+
+            def commit(path: str, content: str) -> str:
+                destination = root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(content)
+                git("add", ".")
+                git(
+                    "-c",
+                    "user.name=release-fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    "commit",
+                    "-qm",
+                    "fixture",
+                )
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q")
+            inputs = {
+                "codex-rs/product.rs": "product source\n",
+                "third_party/v8/source.bzl": "V8 source\n",
+                "MODULE.bazel": "toolchain source\n",
+                ".github/scripts/rusty_v8_bazel.py": "V8 helper\n",
+                ".github/scripts/prepare_downstream_musl.py": "musl helper\n",
+                ".github/scripts/downstream-unix-native.sh": "hosted helper\n",
+                ".github/workflows/downstream-candidate.yml": "env:\n  BUILD_MODE: release\njobs:\n  native:\n    runs-on: ubuntu-24.04-arm\n    steps:\n      - run: echo hosted\n  npm:\n    steps:\n      - run: echo assembly\n",
+            }
+            for path, content in inputs.items():
+                producer = commit(path, content)
+            packaging = commit(
+                ".github/workflows/trusted-windows-native.yml", "Windows checkout fix\n"
+            )
+            with patch("release_identity.ROOT", root):
+                result = verify_hosted_native_source(producer, packaging)
+                self.assertEqual(result["native_producer"]["source_commit"], producer)
+                self.assertEqual(result["packaging"]["source_commit"], packaging)
+                self.assertEqual(
+                    result["native_producer"]["native_tree"],
+                    result["packaging"]["native_tree"],
+                )
+                workflow = ".github/workflows/downstream-candidate.yml"
+                orchestration = commit(
+                    workflow,
+                    inputs[workflow].replace("echo assembly", "echo verified-assembly"),
+                )
+                verify_hosted_native_source(producer, orchestration)
+                commit(workflow, inputs[workflow])
+                for path, original in inputs.items():
+                    with self.subTest(changed_input=path):
+                        changed = (
+                            original.replace("echo hosted", "echo changed")
+                            if path.endswith("downstream-candidate.yml")
+                            else original + "changed\n"
+                        )
+                        invalid = commit(path, changed)
+                        with self.assertRaises(ValueError):
+                            verify_hosted_native_source(producer, invalid)
+                        packaging = commit(path, original)
+                        verify_hosted_native_source(producer, packaging)
+                invalid = commit(
+                    workflow,
+                    inputs[workflow].replace(
+                        "BUILD_MODE: release", "BUILD_MODE: changed"
+                    ),
+                )
+                with self.assertRaisesRegex(ValueError, "global build settings"):
+                    verify_hosted_native_source(producer, invalid)
+                invalid = commit(
+                    workflow,
+                    "defaults: {run: {shell: bash}}\n" + inputs[workflow],
+                )
+                with self.assertRaisesRegex(ValueError, "global build settings"):
+                    verify_hosted_native_source(producer, invalid)
+
     def test_only_native_builds_may_start_without_complete_local_proof(self) -> None:
         producer = "a" * 40
         verify_acceptance(None, producer, mode="native-only")

@@ -17,7 +17,7 @@ on:
         required: true
         default: false
       hosted_native_run_id:
-        description: Optional successful native-only run at this exact commit to reuse
+        description: Successful hosted run with unchanged product and hosted build inputs
         type: string
         required: false
       linux_handoff:
@@ -88,7 +88,9 @@ jobs:
           [[ "$NATIVE_ONLY" == false && "$HOSTED_RUN_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-jobs.json"
-          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --jobs-file "$RUNNER_TEMP/hosted-jobs.json" --hosted-native < "$RUNNER_TEMP/hosted-run.json"
+          hosted_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/hosted-run.json")"
+          python3 scripts/release_identity.py --producer "$hosted_commit" --packaging "$GITHUB_SHA" --hosted-native
+          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$hosted_commit" --jobs-file "$RUNNER_TEMP/hosted-jobs.json" --hosted-native < "$RUNNER_TEMP/hosted-run.json"
 
   handoff:
     name: Import verified VPS and private Windows outputs

@@ -50,6 +50,7 @@ def identity(commit: str) -> dict:
         "source_commit": commit,
         "source_tree": git("rev-parse", f"{commit}^{{tree}}"),
         "native_tree": git("rev-parse", f"{commit}:codex-rs"),
+        "v8_tree": git("rev-parse", f"{commit}:third_party/v8"),
     }
 
 
@@ -64,7 +65,11 @@ def verify_native_source(producer: str, packaging: str) -> dict:
         git("diff", "--name-only", "--no-renames", producer, packaging).splitlines()
     )
     unexpected = changed - PACKAGING_PATHS
-    if unexpected or native["native_tree"] != candidate["native_tree"]:
+    if (
+        unexpected
+        or native["native_tree"] != candidate["native_tree"]
+        or native["v8_tree"] != candidate["v8_tree"]
+    ):
         raise ValueError(
             f"Native reuse changes product/build inputs: {sorted(unexpected)}"
         )
@@ -73,6 +78,29 @@ def verify_native_source(producer: str, packaging: str) -> dict:
         "packaging": candidate,
         "packaging_only_paths": sorted(changed),
     }
+
+
+def verify_hosted_native_source(producer: str, packaging: str) -> dict:
+    result = verify_native_source(producer, packaging)
+    if ".github/scripts/downstream-unix-native.sh" in result["packaging_only_paths"]:
+        raise ValueError("Hosted native recipe changed after its producer run")
+    workflows = [
+        git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        for commit in (producer, packaging)
+    ]
+    # Keep the build job and workflow-wide execution settings byte-identical.
+    # Identity, handoff and npm orchestration may evolve independently.
+    for pattern in (
+        r"^  native:\n.*?(?=^  [\w-]+:\n|\Z)",
+        r"^(?:env|defaults|permissions):[^\n]*(?:\n|\Z).*?(?=^\S|\Z)",
+    ):
+        before, after = [
+            re.findall(pattern, workflow, flags=re.MULTILINE | re.DOTALL)
+            for workflow in workflows
+        ]
+        if not before or before != after:
+            raise ValueError("Hosted native job or global build settings changed")
+    return result
 
 
 def version() -> tuple[str, str]:
@@ -238,8 +266,13 @@ def main() -> None:
     parser.add_argument("--local-acceptance")
     parser.add_argument("--candidate-mode", choices=("complete", "native-only"))
     parser.add_argument("--artifacts-dir", type=Path)
+    parser.add_argument("--hosted-native", action="store_true")
     args = parser.parse_args()
-    result = verify_native_source(args.producer, args.packaging)
+    result = (
+        verify_hosted_native_source(args.producer, args.packaging)
+        if args.hosted_native
+        else verify_native_source(args.producer, args.packaging)
+    )
     if args.local_acceptance or args.candidate_mode:
         verify_acceptance(
             json.loads(args.local_acceptance) if args.local_acceptance else None,

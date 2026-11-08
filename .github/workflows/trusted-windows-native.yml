@@ -42,6 +42,10 @@ jobs:
       - name: Require an exact public source commit
         run: |
           if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full lowercase commit ID.' }
+      - name: Enable long paths for dependency checkouts
+        run: |
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'The runner Git configuration could not enable long paths.' }
       - name: Check out the exact public source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -71,13 +75,24 @@ jobs:
               -not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('R:\', $drive, $drive.Capacity) -or $mounted.ToString() -ne $drive.ToString()) {
             throw 'R: must refer to the existing bounded H:\codex-ci build volume.'
           }
+          $cargoHome = [IO.Path]::GetFullPath($env:CARGO_HOME)
+          if ($cargoHome.StartsWith('H:\codex-ci\', [StringComparison]::OrdinalIgnoreCase)) {
+            $shortCargoHome = 'R:\' + $cargoHome.Substring('H:\codex-ci\'.Length)
+          } elseif ($cargoHome.StartsWith('R:\', [StringComparison]::OrdinalIgnoreCase)) {
+            $shortCargoHome = $cargoHome
+          } else {
+            throw 'The runner Cargo cache must remain on the existing build volume.'
+          }
+          if (-not (Test-Path -LiteralPath $shortCargoHome -PathType Container)) {
+            throw 'The existing Cargo cache is unavailable through the short drive alias.'
+          }
           $evidence = Join-Path $env:RUNNER_TEMP "native-codex-evidence/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           $null = New-Item -ItemType Directory -Path $evidence -ErrorAction Stop
           foreach ($directory in @('R:/o', 'R:/b', 'R:/bazel-disk-cache', 'R:/bazel-repository-cache', 'R:/bazel-repo-contents-cache', 'R:/cargo-target', 'R:/tmp')) {
             $null = New-Item -ItemType Directory -Path $directory -Force
           }
           @(
-            "CODEX_WINDOWS_EVIDENCE=$evidence", "CODEX_REPO_ROOT=$env:GITHUB_WORKSPACE",
+            "CODEX_WINDOWS_EVIDENCE=$evidence", "CODEX_REPO_ROOT=$env:GITHUB_WORKSPACE", "CARGO_HOME=$shortCargoHome",
             'BAZEL_OUTPUT_BASE=R:/o', 'BAZEL_OUTPUT_USER_ROOT=R:/b',
             'BAZEL_REPOSITORY_CACHE=R:/bazel-repository-cache', 'BAZEL_REPO_CONTENTS_CACHE=R:/bazel-repo-contents-cache',
             'CARGO_TARGET_DIR=R:/cargo-target', 'TEMP=R:/tmp', 'TMP=R:/tmp', "STABLE_GIT_COMMIT=$env:SOURCE_SHA"
