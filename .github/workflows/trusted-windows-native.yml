@@ -92,6 +92,8 @@ jobs:
             cargo install just --locked --version 1.51.0 --root 'H:\codex-ci\cargo-home'
           }
           if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Pinned just was not installed.' }
+      - name: Install pinned DotSlash
+        uses: meta/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a
       - name: Check tool prerequisites before compiling
         run: python .github/scripts/downstream-windows-native.ps1 prerequisites
       - name: Build a matching x64 V8 archive and binding
