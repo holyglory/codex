@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use duckdb::Connection;
 use serde_json::Value;
 use serde_json::json;
 
@@ -138,7 +137,7 @@ impl UsageReader {
         }) {
             return Ok(counts);
         }
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let tail = canonical_tail(self, &connection)?;
         let ids = tail
             .iter()

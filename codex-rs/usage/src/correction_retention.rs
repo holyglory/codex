@@ -5,8 +5,6 @@ use std::fs::TryLockError;
 use std::io::Write;
 use std::path::Path;
 
-use duckdb::Connection;
-
 use crate::ManifestStore;
 use crate::Result;
 use crate::UsageManifest;
@@ -105,7 +103,7 @@ impl Maintenance {
             .into_iter()
             .collect::<Vec<_>>()
             .join(", ");
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let mut retained_targets = BTreeSet::new();
         let mut blockers = BTreeSet::new();
         for (column, files) in [("id", &source.segment_files), ("record_id", &review_files)] {

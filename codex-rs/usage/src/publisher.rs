@@ -106,7 +106,7 @@ impl UsagePublisher {
                 .unwrap_or_default()
                 .as_nanos()
         );
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let index_complete = manifest.membership_file.is_some()
             || !manifest.membership_files.is_empty()
             || manifest.segment_files.is_empty();

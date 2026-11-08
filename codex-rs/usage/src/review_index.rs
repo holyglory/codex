@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use duckdb::Connection;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -248,7 +247,7 @@ fn select_memberships<'a>(
         predicates.join(" OR "),
         predicates.len()
     );
-    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     let mut statement = connection.prepare(&query).map_err(query_error)?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(0))

@@ -78,7 +78,7 @@ impl SnapshotQuery {
         range: TimeRange,
         filter: &UsageFilter,
     ) -> Result<Self> {
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let directory = reader.root.join("segments");
         let files = matching_files(&connection, reader, range, filter)?;
         let immutable = parquet_source(&directory, &files, RECORD_COLUMNS)?;

@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use duckdb::Connection;
-
 use crate::error::Result;
 use crate::error::StorageError;
 use crate::model::TimeRange;
@@ -32,7 +30,7 @@ impl DuckDbSnapshot {
         if segment_files.is_empty() {
             return Ok(Vec::new());
         }
-        let connection = Connection::open_in_memory().map_err(duckdb_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(duckdb_error)?;
         let query = format!(
             "{} ORDER BY {}, id",
             self.select_query(segments_directory, segment_files, range, filter)?,
@@ -106,7 +104,7 @@ impl DuckDbSnapshot {
         if segment_files.is_empty() {
             return Ok(UsageTotals::default());
         }
-        let connection = Connection::open_in_memory().map_err(duckdb_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(duckdb_error)?;
         let source = self.select_query(segments_directory, segment_files, range, filter)?;
         let query = format!(
             "SELECT CAST(COALESCE(SUM(input_tokens), 0) AS BIGINT), \

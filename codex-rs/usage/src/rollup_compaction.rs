@@ -6,8 +6,6 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use duckdb::Connection;
-
 use crate::ManifestStore;
 use crate::Result;
 use crate::RetentionPolicy;
@@ -74,7 +72,7 @@ impl RollupCompactionJob {
         } else {
             format!("COALESCE(thread_id IN ({}), false)", inactive.join(", "))
         };
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let source = parquet_source(root, &inputs)?;
         if inputs.len() == 1 {
             let needs_conversion: bool = connection

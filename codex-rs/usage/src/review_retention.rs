@@ -6,8 +6,6 @@ use std::fs::TryLockError;
 use std::path::Path;
 use std::path::PathBuf;
 
-use duckdb::Connection;
-
 use crate::ManifestStore;
 use crate::Result;
 use crate::StorageError;
@@ -138,7 +136,7 @@ fn retire(
         descriptor.retention_scan_offset = index.saturating_add(1);
         descriptor.retention_scan_remaining -= 1;
     }
-    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     let inactive_threads = manifest
         .thread_last_activity_at_ms
         .iter()

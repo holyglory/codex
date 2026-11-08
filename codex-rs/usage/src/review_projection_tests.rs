@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
 
-use duckdb::Connection;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
@@ -70,7 +69,7 @@ fn all_operations(root: &Path, descriptor: &ReviewProjectionDescriptor) -> Vec<R
     if descriptor.partitions.is_empty() {
         return Vec::new();
     }
-    let connection = Connection::open_in_memory().expect("connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let source = parquet_source(
         root,
         &descriptor
@@ -303,7 +302,7 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
     );
     let files = select_review_contribution_files(root, &closed, window, &filter)
         .expect("indexed record coverage files");
-    let connection = Connection::open_in_memory().expect("connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let source = parquet_source(root, &files).expect("contribution source");
     let rows: Vec<ReviewContribution> = query_rows(
         &connection,
@@ -595,7 +594,7 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
         "first-partition".to_string(),
         "not-yet-captured".to_string(),
     ]);
-    let connection = Connection::open_in_memory().expect("connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let mut legacy = second.clone();
     legacy.operation_id_index_file = None;
     assert_eq!(
@@ -614,7 +613,7 @@ fn finite_dimension_selection_and_id_lookup_do_not_open_unrelated_operation_data
             "first-partition".to_string(),
             "not-yet-captured".to_string(),
         ]),
-        &Connection::open_in_memory().expect("connection"),
+        &crate::duckdb_connection::open_in_memory().expect("connection"),
     )
     .expect("indexed canonical operation lookup");
     assert_eq!(rows, all_operations(root, &first));
@@ -722,7 +721,7 @@ fn classification_for_an_unknown_operation_remains_joinable_after_later_lifecycl
     let source =
         parquet_source(root, &after.classification_files).expect("retained classification sidecar");
     let rows: Vec<ReviewClassification> = query_rows(
-        &Connection::open_in_memory().expect("connection"),
+        &crate::duckdb_connection::open_in_memory().expect("connection"),
         &format!("SELECT * FROM {source} WHERE operation_id = 'later-operation'"),
         /*max_rows*/ 1,
     )

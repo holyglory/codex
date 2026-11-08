@@ -145,7 +145,7 @@ fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() 
             .expect("background retention");
     }
     let retained = descriptor(&root);
-    let connection = Connection::open_in_memory().expect("query connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("query connection");
     let operations = load_review_operations(
         &root,
         &retained,
@@ -469,7 +469,7 @@ fn signed_tokens_and_inherited_activity_survive_retirement_restart_and_chat_resu
             .data
             .is_empty()
     );
-    let connection = Connection::open_in_memory().expect("inspect aggregates");
+    let connection = crate::duckdb_connection::open_in_memory().expect("inspect aggregates");
     let source = parquet_source(&root, &retained.operation_rollup_files).expect("aggregate files");
     let rows = query_rows::<serde_json::Value>(
         &connection,
@@ -650,7 +650,7 @@ fn large_publication_fragments_retire_without_a_partition_sized_decode_limit() {
             .collect::<Vec<_>>(),
     )
     .expect("retained large fragment");
-    let connection = Connection::open_in_memory().expect("connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let (rows, minimum): (u64, i64) = connection
         .query_row(
             &format!("SELECT count(*), min(observed_at_ms) FROM {source}"),
@@ -808,7 +808,7 @@ fn retry_waits_and_attempt_counts_survive_retention_without_inflating_execution(
     assert_eq!(retained["coverage"]["waits"], serde_json::json!("partial"));
     assert!(retained["outcomes"]["totals"]["recordedWaitMs"]["exact"].is_null());
     // Retain a separate pre-extension Parquet fixture; never rewrite a published segment.
-    let connection = Connection::open_in_memory().expect("legacy fixture connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("legacy fixture connection");
     let mut legacy = descriptor(&root);
     let source =
         parquet_source(&root, &legacy.operation_rollup_files).expect("retained aggregates");
@@ -891,7 +891,7 @@ fn whole_partition_retirement_and_reappearance_keep_old_index_addresses_dead() {
         .expect("new observation identity");
     let latest = publish(&root);
     let current = descriptor(&root);
-    let connection = Connection::open_in_memory().expect("connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let ids = BTreeSet::from(["repeat".to_string()]);
     let expected =
         vec![crate::ReviewOperation::from_fact(latest.watermark, &next).expect("new incarnation")];

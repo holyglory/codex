@@ -118,7 +118,7 @@ fn seed_rollups(root: &Path) -> crate::UsageManifest {
 fn buckets(root: &Path) -> Vec<Bucket> {
     let reader = UsageReader::open_at(root).expect("pinned rollups");
     let source = parquet_source(root, &reader.manifest().token_rollup_files).expect("source");
-    let connection = Connection::open_in_memory().expect("query connection");
+    let connection = crate::duckdb_connection::open_in_memory().expect("query connection");
     let mut statement = connection
         .prepare(&format!(
             "SELECT thread_id,model,hour_at_ms::BIGINT,first_at_ms,last_at_ms,records,input_tokens,\

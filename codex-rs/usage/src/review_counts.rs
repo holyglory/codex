@@ -129,7 +129,7 @@ pub fn read_review_counts(
         ReviewCountScope::Repository(id) => ("repository", id.as_str()),
         ReviewCountScope::Thread(id) => ("thread", id.as_str()),
     };
-    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     let source = parquet_source(root, std::slice::from_ref(file))?;
     let rows = query_rows::<CountsRow>(
         &connection,
@@ -158,7 +158,7 @@ pub(crate) fn read_review_counts_map(
         }
         return Ok(BTreeMap::new());
     };
-    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     let source = parquet_source(root, std::slice::from_ref(file))?;
     let rows: Vec<CountsRow> =
         query_rows(&connection, &format!("SELECT * FROM {source}"), 100_000)?;

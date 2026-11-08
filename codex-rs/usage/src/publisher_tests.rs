@@ -256,8 +256,19 @@ fn startup_worker_prewarms_ten_most_recent_chats_from_persisted_activity() {
 }
 
 #[test]
-fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
+fn retention_preserves_corrected_totals_and_resumed_chats_offline_across_restart() {
     const DAY: i64 = 86_400;
+    let connection = crate::duckdb_connection::open_in_memory().expect("offline connection");
+    let automatic_extensions = connection
+        .query_row(
+            "SELECT current_setting('autoinstall_known_extensions'), \
+             current_setting('autoload_known_extensions')",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .expect("extension settings");
+    assert_eq!(automatic_extensions, (false, false));
+    drop(connection);
     let home = tempdir().expect("home");
     let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
     let journal = UsageJournal::new(root.join("events.jsonl"));
@@ -287,6 +298,11 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
     let filter = UsageFilter::default()
         .for_account("account-a")
         .for_repository("repo-a");
+    let recent = TimeRange::new(/*start*/ 10 * DAY, /*end*/ 13 * DAY).expect("finite range");
+    let recent_summary = pinned
+        .summary(recent, &filter)
+        .expect("finite JSON query using bundled extensions");
+    assert_eq!(recent_summary["inputTokens"], serde_json::json!(70));
     let expected = pinned
         .totals(TimeRange::all(), &filter)
         .expect("corrected totals");
@@ -309,6 +325,13 @@ fn retention_preserves_corrected_totals_and_resumed_chats_across_restart() {
             .expect("background retention");
     }
     let retained = UsageReader::open_at(&root).expect("restart after retention");
+    let retained_summary = retained
+        .summary(recent, &filter)
+        .expect("finite JSON query after offline retention and restart");
+    assert_eq!(
+        retained_summary["inputTokens"],
+        recent_summary["inputTokens"]
+    );
     assert_eq!(retained.manifest().retired_observations, 2);
     assert_eq!(
         retained
@@ -1058,7 +1081,7 @@ fn stale_publishers_preserve_first_ids_pinned_fragments_and_exact_membership() {
             .expect("membership-selected query"),
         record("one", /*at*/ 5, /*input*/ 8).totals()
     );
-    let connection = Connection::open_in_memory().expect("membership reader");
+    let connection = crate::duckdb_connection::open_in_memory().expect("membership reader");
     let index = root
         .join("segments")
         .join(latest.membership_file.expect("complete membership"));

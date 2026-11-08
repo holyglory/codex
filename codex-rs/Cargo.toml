@@ -368,7 +368,7 @@ bitflags = "2.13.1"
 blake3 = "1.8.2"
 bm25 = "2.3.2"
 bytes = "1.10.1"
-duckdb = { version = "=1.4.3", default-features = false, features = ["bundled", "parquet"] }
+duckdb = { version = "=1.4.3", default-features = false, features = ["bundled", "json", "parquet"] }
 caseless = "0.2.2"
 chardetng = "0.1.17"
 chrono = "0.4.43"

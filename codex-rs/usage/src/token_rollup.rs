@@ -75,7 +75,7 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
         }
         return Ok(review_changed);
     }
-    let connection = Connection::open_in_memory().map_err(query_error)?;
+    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     let inactive = manifest
         .thread_last_activity_at_ms
         .iter()

@@ -44,7 +44,7 @@ impl ReportQuery {
         range: TimeRange,
         filter: &UsageFilter,
     ) -> Result<Self> {
-        let connection = Connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
         let descriptor = load_review_projection(&reader.root, &reader.manifest)?;
         let directory = reader.root.join("segments");
         let operation_columns = sql_columns(OPERATION_COLUMNS);

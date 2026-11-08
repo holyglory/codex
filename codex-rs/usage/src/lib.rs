@@ -10,6 +10,7 @@
 mod capture;
 mod correction_retention;
 mod detail_retention;
+mod duckdb_connection;
 mod duckdb_snapshot;
 mod entities;
 mod error;
