@@ -123,6 +123,11 @@ class Producer:
             raise ValueError("Rust 1.95.0 is required.")
         self.run("nextest-version", ["cargo", "nextest", "--version"])
         self.run("rust-targets", ["rustup", "target", "add", "--toolchain", "1.95.0-x86_64-pc-windows-msvc", *TARGETS])
+        if self.run("git-longpaths", ["git", "config", "--global", "--get", "core.longpaths"], capture_output=True).strip() != "true":
+            raise ValueError("Git long-path support is required for the pinned dependency checkouts.")
+        # Match nextest's dependency discovery before the expensive native V8
+        # build. This checks out locked Git submodules without compiling them.
+        self.run("cargo-source-metadata", ["cargo", "metadata", "--manifest-path", str(ROOT / "codex-rs/Cargo.toml"), "--config", str(ROOT / "codex-rs/.cargo/config.toml"), "--format-version", "1", "--all-features", "--filter-platform", "x86_64-pc-windows-msvc", "--locked"])
         probe = self.evidence / "sdk-probe.c"
         probe.write_text('#include <windows.h>\nint main(void) { return sizeof(void*) == 8 ? 0 : 1; }\n', encoding="ascii")
         binary = self.evidence / "sdk-probe.exe"
@@ -320,7 +325,7 @@ class Producer:
         if source_identity(os.environ["SOURCE_SHA"]) != self.identity:
             raise ValueError("Source identity changed before sealing the handoff.")
         checks = [json.loads(path.read_text()) for path in sorted((self.evidence / "checks").glob("*.json"))]
-        required = {"v8-x64-poc-cppgc", "windows-product-regressions", "v8-arm64-published-pair", "v8-arm64-compile-link", "sdk-arm64-build", "package-x64-version", "package-x64-accounts"}
+        required = {"git-longpaths", "cargo-source-metadata", "v8-x64-poc-cppgc", "windows-product-regressions", "v8-arm64-published-pair", "v8-arm64-compile-link", "sdk-arm64-build", "package-x64-version", "package-x64-accounts"}
         required.update(f"{target}-{phase}" for target in TARGETS for phase in ("build", "assemble", "pe-architecture"))
         if not required.issubset({check["name"] for check in checks}) or any(check["exit_code"] != 0 or digest(self.handoff / check["log_path"]) != check["log_sha256"] for check in checks):
             raise ValueError("Successful, unchanged Windows acceptance evidence is required.")
