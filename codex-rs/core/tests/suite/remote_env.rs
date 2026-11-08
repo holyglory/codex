@@ -1394,10 +1394,16 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
 }
 
 async fn read_exec_server_json(websocket: &mut WebSocketStream<TcpStream>) -> Value {
+    timeout(Duration::from_secs(5), receive_exec_server_json(websocket))
+        .await
+        .expect("websocket read should not time out")
+}
+
+async fn receive_exec_server_json(websocket: &mut WebSocketStream<TcpStream>) -> Value {
     loop {
-        match timeout(Duration::from_secs(5), websocket.next())
+        match websocket
+            .next()
             .await
-            .expect("websocket read should not time out")
             .expect("websocket should stay open")
             .expect("websocket frame should read")
         {
@@ -1482,8 +1488,10 @@ async fn serve_environment_with_instruction_files(
 
     let mut agents_md_reads = 0;
     loop {
+        // This fixture can remain idle while another environment handles the turn.
+        // Explicit shutdown owns its lifetime; expected handshake reads stay bounded.
         let request = tokio::select! {
-            request = read_exec_server_json(&mut websocket) => request,
+            request = receive_exec_server_json(&mut websocket) => request,
             _ = &mut shutdown => return agents_md_reads,
         };
         let is_agents_md = request["params"]["path"]
