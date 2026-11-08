@@ -82,6 +82,9 @@ def verify_release(dist_dir: Path, version: str) -> None:
                     raise ValueError(
                         "Launcher still points to the upstream npm package"
                     )
+                readme = archive.extractfile("package/README.md")
+                if readme is not None and b"@openai/codex" in readme.read():
+                    raise ValueError("README still points to the upstream npm package")
                 continue
             platform = PLATFORMS[tag]
             if metadata.get("os") != [platform["os"]] or metadata.get("cpu") != [

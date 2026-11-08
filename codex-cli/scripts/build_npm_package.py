@@ -295,6 +295,16 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     else:
         raise RuntimeError(f"Unknown package '{package}'.")
 
+    if package == "codex" or package in CODEX_PLATFORM_PACKAGES:
+        readme_path = staging_dir / "README.md"
+        if readme_path.is_file():
+            readme_path.write_text(
+                readme_path.read_text(encoding="utf-8").replace(
+                    "@openai/codex", CODEX_NPM_NAME
+                ),
+                encoding="utf-8",
+            )
+
     if package_json_path is not None:
         with open(package_json_path, "r", encoding="utf-8") as fh:
             package_json = json.load(fh)

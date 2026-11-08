@@ -13,14 +13,22 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "codex-cli" / "scripts"))
 
-from build_npm_package import CODEX_PLATFORM_PACKAGES, stage_sources
+from build_npm_package import CODEX_PLATFORM_PACKAGES, stage_sources  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from check_npm_install import smoke_install
-from verify_npm_release import tarball_paths, verify_release
+from check_npm_install import smoke_install  # noqa: E402
+from verify_npm_release import tarball_paths, verify_release  # noqa: E402
 
 
 class NpmPackageTest(unittest.TestCase):
+    def test_downstream_readme_uses_fork_install_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            staging = Path(temp)
+            stage_sources(staging, "0.166.0-multi.1", "codex")
+            readme = (staging / "README.md").read_text(encoding="utf-8")
+            self.assertIn("npm install -g @holyglory/codex", readme)
+            self.assertNotIn("@openai/codex", readme)
+
     def test_downloaded_archives_build_seven_packages_and_launch_in_isolation(
         self,
     ) -> None:
