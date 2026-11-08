@@ -23,7 +23,7 @@ ARTIFACT = "native-linux-gnu"
 MANIFEST = "dc3c3f725a957982feaee9df25240640452df5cd52d03be803fa1bcdca87a939"
 SOURCE = "9e0b690f3eef6af6c5f6fffd09d9e34d9f5c2e5ae8e632148eaae24934f5529b"
 PRIOR_CONFIG = "d6b4a8b84cc3768635c8a361e452b5906e33a294999f418a4ce5c6da17191e37"
-CONFIG = "098fa778de0174edfddbf39bce0aa5324a48126c0ef85f2fd7f3857c37e968be"
+CONFIG = "350d249844355436a42f0a281e962878b22e85a401101576aceb7f17bbfa0ba2"
 
 
 def main():
@@ -94,7 +94,7 @@ def main():
     ):
         raise RuntimeError("The original complete release proof does not match")
     original = ROOT / "codex-rs/target/native-release-delivery"
-    output = ROOT / "codex-rs/target/native-release-requalified"
+    output = ROOT / "codex-rs/target/native-release-corrected"
     output.mkdir(exist_ok=False)
     for entry in proof["entries"]:
         relative = Path(entry["path"])
@@ -118,6 +118,16 @@ def main():
         c for c in completion["capabilities"] if c["id"] == "observed-retries-and-waits"
     )
     capability["task_id"] = "p310ae9370e9a2ffa"
+    native = next(
+        c for c in completion["capabilities"] if c["id"] == "native-linux-package"
+    )
+    native["expected_result"] = (
+        "Execute the retained native CLI version and preserve the exact package files "
+        "whose executor, sandbox, SDK and account behavior passed the original full validation."
+    )
+    native["evidence_refs"].append(
+        f"run/{os.environ['DEVCOORDINATOR_RUN_ID']}/{os.environ['DEVCOORDINATOR_CHECK_NAME']}"
+    )
     completion["source_sha256"] = identity["source_sha256"]
     validation = json.loads(
         run(
