@@ -1098,6 +1098,19 @@ impl AccountRequestProcessor {
         &self,
         params: GetAuthStatusParams,
     ) -> Result<GetAuthStatusResponse, JSONRPCErrorError> {
+        if self.auth_manager.local_profile_id().is_none()
+            && let Some(router) = self.thread_manager.profile_auth_router()
+        {
+            let lease = router
+                .lease_for_operation()
+                .await
+                .map_err(super::account_profile_processor::router_error)?;
+            if lease.is_profile_scoped() {
+                let mut scoped = self.clone();
+                scoped.auth_manager = Arc::clone(lease.auth_manager());
+                return Box::pin(scoped.get_auth_status_response(params)).await;
+            }
+        }
         let include_token = params.include_token.unwrap_or(false);
         let do_refresh = params.refresh_token.unwrap_or(false);
 

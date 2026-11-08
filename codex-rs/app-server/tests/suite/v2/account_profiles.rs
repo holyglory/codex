@@ -1,8 +1,14 @@
 //! Public account-profile journeys over the app-server JSON-RPC surface.
 
 use anyhow::Result;
+use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
+use app_test_support::write_chatgpt_auth;
+use chrono::Utc;
+use codex_account_registry::AccountMetadata;
+use codex_account_registry::AccountRegistry;
+use codex_account_registry::AutoSelection;
 use codex_account_registry::RegistryStore;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeResponse;
@@ -11,6 +17,11 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::MultiAccountCapability;
 use codex_app_server_protocol::RequestId;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::ProfileAuthStorage;
+use codex_login::load_auth_dot_json;
+use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -139,6 +150,20 @@ async fn account_profile_journey_persists_mutations_and_orders_notifications() -
     assert_eq!(read["profile"]["authenticated"], true);
     assert_eq!(read["profile"]["authMode"], "apikey");
     assert_eq!(read["profile"]["creditUsageEnabled"], false);
+    let status = raw_request(
+        &mut app_server,
+        "getAuthStatus",
+        json!({"includeToken": true, "refreshToken": false}),
+    )
+    .await?;
+    assert_eq!(
+        status,
+        json!({
+            "authMethod": "apikey",
+            "authToken": "sk-profile-alpha",
+            "requiresOpenaiAuth": true
+        })
+    );
 
     let beta = raw_request(
         &mut app_server,
@@ -221,6 +246,25 @@ async fn account_profile_journey_persists_mutations_and_orders_notifications() -
         .position(|method| method == "account/updated")
         .expect("activation emits account/updated");
     assert!(account_updated < active_changed);
+    let notification: Value = app_server.read_notification("account/updated").await?;
+    assert_eq!(
+        notification,
+        json!({"authMode": "apikey", "planType": null})
+    );
+    let status = raw_request(
+        &mut app_server,
+        "getAuthStatus",
+        json!({"includeToken": true, "refreshToken": false}),
+    )
+    .await?;
+    assert_eq!(
+        status,
+        json!({
+            "authMethod": "apikey",
+            "authToken": "sk-profile-beta",
+            "requiresOpenaiAuth": true
+        })
+    );
 
     let auto = raw_request(
         &mut app_server,
@@ -286,6 +330,21 @@ async fn account_profile_journey_persists_mutations_and_orders_notifications() -
     let persisted = raw_request(&mut restarted, "accountProfile/list", json!({})).await?;
     assert_eq!(persisted["data"][0]["alias"], "renamed");
     assert_eq!(persisted["data"][0]["creditUsageEnabled"], true);
+    let status = raw_request(
+        &mut restarted,
+        "getAuthStatus",
+        json!({"includeToken": true, "refreshToken": false}),
+    )
+    .await?;
+    assert_eq!(
+        status,
+        json!({
+            "authMethod": "apikey",
+            "authToken": "sk-profile-beta",
+            "requiresOpenaiAuth": true
+        })
+    );
+    assert!(!home.path().join("auth.json").exists());
 
     let revoked = raw_request(
         &mut restarted,
@@ -297,6 +356,118 @@ async fn account_profile_journey_persists_mutations_and_orders_notifications() -
     expected["creditUsageEnabled"] = false.into();
     assert_eq!(revoked, json!({"profile": expected}));
     assert!(!store.read()?.accounts[0].credit_usage_enabled);
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_profile_auth_status_uses_persisted_chatgpt_routing() -> Result<()> {
+    let home = TempDir::new()?;
+    write_profile_config(&home, "chatgpt")?;
+    let fixture_home = TempDir::new()?;
+    let mut accounts = Vec::new();
+    for alias in ["alpha", "beta"] {
+        let mut account = AccountMetadata::new(alias.parse()?, AuthMode::Chatgpt, Utc::now());
+        if alias == "beta" {
+            account.priority += 1;
+        }
+        write_chatgpt_auth(
+            fixture_home.path(),
+            ChatGptAuthFixture::new(format!("{alias}-access"))
+                .account_id(format!("{alias}-workspace"))
+                .chatgpt_account_id(format!("{alias}-workspace"))
+                .email(format!("{alias}@example.com"))
+                .plan_type("pro"),
+            AuthCredentialsStoreMode::File,
+        )?;
+        let auth = load_auth_dot_json(
+            fixture_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?
+        .expect("fixture credentials");
+        ProfileAuthStorage::new(
+            home.path(),
+            account.id.clone(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?
+        .save(&auth)?;
+        accounts.push(account);
+    }
+    let store = RegistryStore::new(home.path());
+    store.create(&AccountRegistry {
+        default_account_id: Some(accounts[0].id.clone()),
+        accounts,
+        ..AccountRegistry::default()
+    })?;
+
+    // Passive account reads keep the default even when another profile has a higher priority.
+    for (automatic_selection, process_account, expected_alias) in [
+        (false, None, "alpha"),
+        (true, None, "alpha"),
+        (true, Some("beta"), "beta"),
+    ] {
+        write_profile_config(&home, "chatgpt")?;
+        let registry = store.read()?;
+        store.compare_and_swap(registry.generation, |registry| {
+            registry.auto_selection = AutoSelection {
+                enabled: automatic_selection,
+                ..AutoSelection::default()
+            };
+        })?;
+        let mut builder = TestAppServer::builder()
+            .with_codex_home(home.path())
+            .with_mock_chatgpt_backend()
+            .without_auto_env()
+            .with_env_overrides(&[("OPENAI_API_KEY", None)]);
+        if let Some(account) = process_account {
+            builder = builder.with_args(&["--account", account]);
+        }
+        let mut app_server = builder
+            .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+            .await?;
+        let status = raw_request(
+            &mut app_server,
+            "getAuthStatus",
+            json!({"includeToken": true, "refreshToken": false}),
+        )
+        .await?;
+        assert_eq!(
+            status,
+            json!({
+                "authMethod": "chatgpt",
+                "authToken": format!("{expected_alias}-access"),
+                "requiresOpenaiAuth": true
+            })
+        );
+        let account = raw_request(
+            &mut app_server,
+            "account/read",
+            json!({"refreshToken": false}),
+        )
+        .await?;
+        assert_eq!(account["account"]["type"], "chatgpt");
+        assert_eq!(
+            account["account"]["email"],
+            format!("{expected_alias}@example.com")
+        );
+        let status = raw_request(
+            &mut app_server,
+            "getAuthStatus",
+            json!({"includeToken": false, "refreshToken": false}),
+        )
+        .await?;
+        assert_eq!(
+            status,
+            json!({
+                "authMethod": "chatgpt",
+                "authToken": null,
+                "requiresOpenaiAuth": true
+            })
+        );
+        assert!(!home.path().join("auth.json").exists());
+        app_server.shutdown_gracefully().await?;
+    }
     Ok(())
 }
 
