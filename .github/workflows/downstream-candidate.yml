@@ -1,0 +1,246 @@
+name: downstream-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_source_commit:
+        description: Actual source commit of the completed local release acceptance
+        type: string
+        required: true
+      local_acceptance:
+        description: Retained complete local acceptance receipt JSON for that source
+        type: string
+        required: true
+      linux_handoff:
+        description: Hash-bound Linux x64 musl handoff JSON from the VPS
+        type: string
+        required: true
+      windows_handoff:
+        description: Hash-bound handoff JSON from the private Windows controller
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  identity:
+    name: Verify local acceptance and native source identity
+    if: github.repository == 'holyglory/codex'
+    runs-on: ubuntu-24.04
+    outputs:
+      source_version: ${{ steps.identity.outputs.source_version }}
+      npm_version: ${{ steps.identity.outputs.npm_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check the completed local proof and permitted packaging-only diff
+        id: identity
+        env:
+          NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}
+          LOCAL_ACCEPTANCE: ${{ inputs.local_acceptance }}
+        run: >-
+          python3 scripts/release_identity.py
+          --producer "$NATIVE_SOURCE_COMMIT" --packaging "$GITHUB_SHA"
+          --local-acceptance "$LOCAL_ACCEPTANCE" --github-output "$GITHUB_OUTPUT"
+      - name: Verify the seven-package fixture and release receipt regressions
+        run: |
+          python3 -m unittest discover -s codex-cli/tests -p test_build_npm_package.py -v
+          python3 -m unittest discover -s scripts -p test_npm_release.py -v
+      - name: Verify external handoff identities before starting native builds
+        env:
+          LINUX_HANDOFF: ${{ inputs.linux_handoff }}
+          WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
+        run: |
+          python3 scripts/runner_handoff.py verify --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets x86_64-unknown-linux-musl
+          python3 scripts/runner_handoff.py verify --manifest "$WINDOWS_HANDOFF" --commit "$GITHUB_SHA" --producer windows-private-controller --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+
+  handoff:
+    name: Import verified VPS and private Windows outputs
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Import authenticated and digested native bundles
+        env:
+          LINUX_HANDOFF: ${{ inputs.linux_handoff }}
+          WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
+          RUNNER_HANDOFF_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/runner_handoff.py download --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets x86_64-unknown-linux-musl --destination native-artifacts
+          python3 scripts/runner_handoff.py download --manifest "$WINDOWS_HANDOFF" --commit "$GITHUB_SHA" --producer windows-private-controller --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --destination native-artifacts
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: runner-handoff-${{ github.sha }}
+          path: native-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: Build and test ${{ matrix.target }}
+    needs: identity
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: linux_arm64_musl
+            bazel_config: ci
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos_amd64
+            bazel_config: ci-macos
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+            platform: macos_arm64
+            bazel_config: ci-macos
+    env:
+      TARGET: ${{ matrix.target }}
+      BAZEL_PLATFORM: ${{ matrix.platform }}
+      BAZEL_CONFIG: ${{ matrix.bazel_config }}
+      SOURCE_VERSION: ${{ needs.identity.outputs.source_version }}
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ runner.os == 'macOS' && 'packed' || 'off' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: ${{ matrix.target }}
+          cache-scope: downstream-v8-source
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: nextest
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: runner.os == 'Linux'
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux'
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - name: Install archive tools
+        run: |
+          if ! command -v zstd >/dev/null; then
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              sudo apt-get install -y zstd
+            else
+              brew install zstd
+            fi
+          fi
+      - name: Build the matching V8 pair, execute native regressions, and assemble packages
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: bash .github/scripts/downstream-unix-native.sh
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: always()
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            native-dist/${{ matrix.target }}/codex-package-*.tar.*
+            native-dist/${{ matrix.target }}/native-manifest.json
+            native-dist/${{ matrix.target }}/SHA256SUMS
+            native-dist/${{ matrix.target }}/logs
+          if-no-files-found: error
+          retention-days: 14
+
+  npm:
+    name: Assemble and verify all seven npm tarballs
+    needs: [identity, handoff, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: native-artifacts
+          pattern: "{aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin}"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runner-handoff-${{ github.sha }}
+          path: native-artifacts
+      - name: Verify all six native producer identities and archive bytes
+        env:
+          NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}
+        run: >-
+          python3 scripts/release_identity.py --producer "$NATIVE_SOURCE_COMMIT"
+          --packaging "$GITHUB_SHA" --artifacts-dir native-artifacts > native-receipts.json
+      - name: Pack, verify, and smoke the npm launcher
+        env:
+          VERSION: ${{ needs.identity.outputs.npm_version }}
+        run: |
+          python3 scripts/stage_npm_packages.py --release-version "$VERSION" --artifacts-dir native-artifacts --output-dir dist/npm --package codex
+          python3 scripts/verify_npm_release.py --version "$VERSION" --dist-dir dist/npm
+          python3 scripts/check_npm_install.py --version "$VERSION" --dist-dir dist/npm
+          cp native-receipts.json dist/npm/
+          cd dist/npm
+          sha256sum *.tgz > SHA256SUMS
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: dist/npm/*
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: npm-candidate-${{ needs.identity.outputs.npm_version }}
+          path: dist/npm/*
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-result:
+    name: Candidate checks passed
+    if: always()
+    needs: [identity, handoff, native, npm]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = {name: job['result'] for name, job in json.loads(os.environ['NEEDS_JSON']).items()}
+          if any(result != 'success' for result in results.values()):
+              raise SystemExit(f'Candidate gates did not all pass: {results}')
+          print('All native producers and seven npm packages passed their declared checks.')
+          PY

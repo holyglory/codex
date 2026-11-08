@@ -1,0 +1,135 @@
+name: Trusted native Windows release
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact holyglory/codex commit to validate and package
+        required: true
+        type: string
+      boot_after_utc:
+        description: Optional UTC timestamp; require an actual reboot after it
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-msvc:
+    if: >-
+      github.repository == 'holyglory/codex-win-msvc-ci' &&
+      github.event.repository.private == true &&
+      github.event_name == 'workflow_call' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'holyglory' &&
+      github.triggering_actor == 'holyglory'
+    runs-on: [self-hosted, Windows, X64, codex-win-msvc]
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      EXPECTED_BOOT_AFTER_UTC: ${{ inputs.boot_after_utc }}
+      CARGO_BUILD_JOBS: '56'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      INSTA_UPDATE: 'no'
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+    steps:
+      - name: Require an exact public source commit
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full lowercase commit ID.' }
+      - name: Check out the exact public source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: holyglory/codex
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify private service identity and existing build volume
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($identity.Name -notmatch '\\svc_codex_runner$' -or
+              ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The existing non-admin svc_codex_runner identity is required.'
+          }
+          if (-not ([IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)).StartsWith('H:\codex-ci\_work\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Unexpected private runner workspace.'
+          }
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          if ($env:EXPECTED_BOOT_AFTER_UTC -and $boot -le ([DateTimeOffset]::Parse($env:EXPECTED_BOOT_AFTER_UTC, [Globalization.CultureInfo]::InvariantCulture)).UtcDateTime) {
+            throw 'An actual Windows reboot has not occurred after the requested checkpoint.'
+          }
+          & 'C:\ProgramData\CodexRunner\volume\Assert-CodexBuildVolume.ps1'
+          $mounted = [Text.StringBuilder]::new(128)
+          $drive = [Text.StringBuilder]::new(128)
+          if (-not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('H:\codex-ci\', $mounted, $mounted.Capacity) -or
+              -not [CodexVolumeProbe]::GetVolumeNameForVolumeMountPoint('R:\', $drive, $drive.Capacity) -or $mounted.ToString() -ne $drive.ToString()) {
+            throw 'R: must refer to the existing bounded H:\codex-ci build volume.'
+          }
+          $evidence = Join-Path $env:RUNNER_TEMP "native-codex-evidence/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $null = New-Item -ItemType Directory -Path $evidence -ErrorAction Stop
+          foreach ($directory in @('R:/o', 'R:/b', 'R:/bazel-disk-cache', 'R:/bazel-repository-cache', 'R:/bazel-repo-contents-cache', 'R:/cargo-target', 'R:/tmp')) {
+            $null = New-Item -ItemType Directory -Path $directory -Force
+          }
+          @(
+            "CODEX_WINDOWS_EVIDENCE=$evidence", "CODEX_REPO_ROOT=$env:GITHUB_WORKSPACE",
+            'BAZEL_OUTPUT_BASE=R:/o', 'BAZEL_OUTPUT_USER_ROOT=R:/b',
+            'BAZEL_REPOSITORY_CACHE=R:/bazel-repository-cache', 'BAZEL_REPO_CONTENTS_CACHE=R:/bazel-repo-contents-cache',
+            'CARGO_TARGET_DIR=R:/cargo-target', 'TEMP=R:/tmp', 'TMP=R:/tmp', "STABLE_GIT_COMMIT=$env:SOURCE_SHA"
+          ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          [ordered]@{runner=$env:RUNNER_NAME;controller_commit=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;last_boot_utc=$boot;build_volume=$drive.ToString()} |
+            ConvertTo-Json | Set-Content (Join-Path $evidence 'runner.json') -Encoding utf8
+      - name: Import the preinstalled x64 MSVC SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = & $env:ComSpec /d /c '"C:\BuildTools\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 >nul && set'
+          if ($LASTEXITCODE -ne 0) { throw 'The preinstalled x64 MSVC SDK is unavailable.' }
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $matches[1] -in @('PATH','INCLUDE','LIB','LIBPATH','VCINSTALLDIR','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')) {
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Check tool prerequisites before compiling
+        run: python .github/scripts/downstream-windows-native.ps1 prerequisites
+      - name: Build a matching x64 V8 archive and binding
+        run: python .github/scripts/downstream-windows-native.ps1 source-v8
+      - name: Validate native Windows account, usage, V8 and complete suite
+        run: python .github/scripts/downstream-windows-native.ps1 acceptance
+      - name: Build, assemble and run the x64 package
+        run: python .github/scripts/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
+      - name: Import the preinstalled ARM64 cross SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = & $env:ComSpec /d /c '"C:\BuildTools\Common7\Tools\VsDevCmd.bat" -no_logo -arch=arm64 -host_arch=x64 >nul && set'
+          if ($LASTEXITCODE -ne 0) { throw 'The preinstalled x64-to-ARM64 MSVC SDK is unavailable.' }
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $matches[1] -in @('PATH','INCLUDE','LIB','LIBPATH','VCINSTALLDIR','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH')) {
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Verify the published ARM64 V8 pair against source-pinned checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-pc-windows-msvc
+      - name: Cross compile and assemble the ARM64 package
+        run: python .github/scripts/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
+      - name: Seal exact source, checksums and Windows handoff
+        run: python .github/scripts/downstream-windows-native.ps1 finalize
+      - name: Preserve native diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: native-codex-${{ inputs.source_sha }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CODEX_WINDOWS_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload the verified Windows package handoff
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: windows-handoff-${{ inputs.source_sha }}
+          path: ${{ env.CODEX_WINDOWS_EVIDENCE }}/windows-handoff
+          if-no-files-found: error
+          retention-days: 14
