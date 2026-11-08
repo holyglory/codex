@@ -3475,6 +3475,18 @@
           ],
           "description": "Absolute path to the server's $CODEX_HOME directory."
         },
+        "localUsageAccounting": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageAccountingCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advertises the additive local usage-accounting extension."
+        },
         "multiAccount": {
           "anyOf": [
             {
@@ -3622,6 +3634,19 @@
         "result"
       ],
       "title": "JSONRPCResponse",
+      "type": "object"
+    },
+    "LocalUsageAccountingCapability": {
+      "properties": {
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
       "type": "object"
     },
     "McpElicitationArrayType": {
@@ -4303,6 +4328,11 @@
     "MultiAccountCapability": {
       "properties": {
         "supportsAutoSelection": {
+          "type": "boolean"
+        },
+        "supportsCreditUsage": {
+          "default": false,
+          "description": "Whether profile updates accept the per-account automatic credit permission.",
           "type": "boolean"
         },
         "supportsManagedLogin": {
@@ -6994,6 +7024,11 @@
           "createdAt": {
             "format": "int64",
             "type": "integer"
+          },
+          "creditUsageEnabled": {
+            "default": false,
+            "description": "Permission for automatic credit fallback; manual sessions and pins are unaffected.",
+            "type": "boolean"
           },
           "email": {
             "type": [

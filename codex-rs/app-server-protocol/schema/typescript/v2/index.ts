@@ -257,6 +257,7 @@ export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardi
 export type { ItemStartedNotification } from "./ItemStartedNotification";
 export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
 export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
+export type { LocalUsageAccountingCapability } from "./LocalUsageAccountingCapability";
 export type { LoginAccountParams } from "./LoginAccountParams";
 export type { LoginAccountResponse } from "./LoginAccountResponse";
 export type { LoginAppBrand } from "./LoginAppBrand";
