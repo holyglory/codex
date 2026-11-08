@@ -52,7 +52,7 @@ pub(crate) struct AccountCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum AccountAction {
-    /// List account profiles with service limits and reset times.
+    /// List account profiles with service limits, remaining credits and reset times.
     List,
     /// Show the current default account profile.
     Current,
@@ -152,7 +152,7 @@ struct RenameArgs {
     clap::ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["priority", "note", "clear_note"])
+        .args(["priority", "credit_usage", "note", "clear_note"])
 ))]
 struct EditArgs {
     #[arg(value_name = "ACCOUNT")]
@@ -162,7 +162,7 @@ struct EditArgs {
     priority: Option<u32>,
 
     /// Permit automatic credit fallback after included usage at this priority is exhausted.
-    #[arg(long, value_enum, hide = true)]
+    #[arg(long, value_enum)]
     credit_usage: Option<CreditUsageMode>,
 
     #[arg(long, value_name = "TEXT", conflicts_with = "clear_note")]
