@@ -93,7 +93,35 @@ jobs:
           }
           if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Pinned just was not installed.' }
       - name: Install pinned DotSlash
-        uses: meta/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/install-dotslash"
+          mkdir -p "$root/bin"
+          release_json="$root/release.json"
+          curl -fsSL --retry 5 --header "authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/facebook/dotslash/releases/latest -o "$release_json"
+          read -r version asset digest <<EOF
+          $(python - "$release_json" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1]))
+          version = release['tag_name']
+          asset = f"dotslash-windows.{version}.tar.gz"
+          item = next(item for item in release['assets'] if item['name'] == asset)
+          print(version, asset, item['digest'])
+          PY
+          )
+          EOF
+          archive="$root/dotslash.tar.gz"
+          curl -fsSL --retry 5 --header "authorization: Bearer $GH_TOKEN" \
+            "https://github.com/facebook/dotslash/releases/download/$version/$asset" -o "$archive"
+          expected="${digest#sha256:}"
+          echo "$expected  $archive" | sha256sum --check
+          tar xvf "$archive" -O > "$root/bin/dotslash.exe" --force-local
+          echo "$root/bin" >> "$GITHUB_PATH"
+          "$root/bin/dotslash.exe" --version
       - name: Check tool prerequisites before compiling
         run: python .github/scripts/downstream-windows-native.ps1 prerequisites
       - name: Build a matching x64 V8 archive and binding
