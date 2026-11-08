@@ -1,7 +1,7 @@
 {
-  "name": "@openai/codex",
+  "name": "@holyglory/codex",
   "version": "0.0.0-dev",
-  "description": "Codex CLI is a coding agent from OpenAI that runs locally on your computer.",
+  "description": "CodexMulti is a downstream Codex CLI with local account management and usage reporting.",
   "license": "Apache-2.0",
   "bin": {
     "codex": "bin/codex.js"
@@ -11,12 +11,18 @@
     "node": ">=16"
   },
   "files": [
-    "bin/codex.js"
+    "bin/codex.js",
+    "LICENSE",
+    "NOTICE"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/holyglory/codex.git",
     "directory": "codex-cli"
   },
-  "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e"
+  "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }
