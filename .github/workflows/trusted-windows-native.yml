@@ -17,6 +17,15 @@ permissions:
 
 jobs:
   native-msvc:
+    # The reusable workflow's github context belongs to this private caller.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#github-context
+    if: >-
+      github.repository == 'holyglory/codex-win-msvc-ci' &&
+      github.event.repository.private == true &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'holyglory' &&
+      github.triggering_actor == 'holyglory'
     runs-on: [self-hosted, Windows, X64, codex-win-msvc]
     timeout-minutes: 360
     defaults:
@@ -132,7 +141,7 @@ jobs:
         run: python .github/scripts/downstream-windows-native.ps1 prerequisites
       - name: Build a matching x64 V8 archive and binding
         run: python .github/scripts/downstream-windows-native.ps1 source-v8
-      - name: Validate native Windows account, usage, V8 and complete suite
+      - name: Validate native Windows account, usage and V8 regressions
         run: python .github/scripts/downstream-windows-native.ps1 acceptance
       - name: Build, assemble and run the x64 package
         run: python .github/scripts/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
@@ -147,9 +156,7 @@ jobs:
             }
           }
       - name: Verify the published ARM64 V8 pair against source-pinned checksums
-        uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: aarch64-pc-windows-msvc
+        run: python .github/scripts/downstream-windows-native.ps1 published-v8
       - name: Cross compile and assemble the ARM64 package
         run: python .github/scripts/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
       - name: Seal exact source, checksums and Windows handoff

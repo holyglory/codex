@@ -31,6 +31,8 @@ BAZEL_FLAGS = (
     "--config=ci", "--config=ci-windows-msvc", "--compilation_mode=opt",
     "--host_platform=//:local_windows_msvc", "--platforms=//:local_windows_msvc",
     "--disk_cache=R:/bazel-disk-cache",
+    # common:ci selects minimal downloads. The explicit policy must follow it.
+    "--remote_download_outputs=all",
 )
 
 
@@ -127,33 +129,59 @@ class Producer:
         self.run("sdk-x64-build", ["cl", "/nologo", "/W4", "/WX", str(probe), f"/Fo{self.evidence / 'sdk-probe.obj'}", f"/Fe{binary}"])
         verify_pe(binary, "x86_64-pc-windows-msvc")
         self.run("sdk-x64-run", [str(binary)])
+        cross = subprocess.check_output([
+            os.environ["ComSpec"], "/d", "/c",
+            'C:\\BuildTools\\Common7\\Tools\\VsDevCmd.bat -no_logo -arch=arm64 -host_arch=x64 >nul && set',
+        ], cwd=ROOT, text=True)
+        environment = dict(os.environ)
+        for line in cross.splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name.upper() in {"PATH", "INCLUDE", "LIB", "LIBPATH", "VSCMD_ARG_HOST_ARCH", "VSCMD_ARG_TGT_ARCH"}:
+                # Preserve Windows' case-insensitive environment behavior in the dictionary.
+                environment = {key: item for key, item in environment.items() if key.upper() != name.upper()}
+                environment[name.upper()] = value
+        if environment.get("VSCMD_ARG_HOST_ARCH") != "x64" or environment.get("VSCMD_ARG_TGT_ARCH") != "arm64":
+            raise ValueError("The existing ARM64 cross SDK is unavailable.")
+        compiler = shutil.which("cl.exe", path=environment["PATH"])
+        if compiler is None:
+            raise ValueError("The existing ARM64 cross compiler is unavailable.")
+        binary = self.evidence / "sdk-probe-arm64.exe"
+        self.run("sdk-arm64-build", [compiler, "/nologo", "/W4", "/WX", str(probe), f"/Fo{self.evidence / 'sdk-probe-arm64.obj'}", f"/Fe{binary}"], environment=environment)
+        verify_pe(binary, "aarch64-pc-windows-msvc")
         write_json(self.handoff / "source.json", self.identity)
 
     def source_v8(self) -> None:
-        self.bazel("v8-x64-source-build", "build", "--remote_download_all", *BAZEL_FLAGS, *NATIVE_V8)
-        outputs = self.bazel("v8-x64-source-outputs", "cquery", *BAZEL_FLAGS, "--output=files", "set(" + " ".join(NATIVE_V8) + ")", capture_output=True)
-        execution_root = Path(self.bazel("v8-execution-root", "info", "execution_root", capture_output=True).strip())
-        output_base = Path(self.bazel("v8-output-base", "info", "output_base", capture_output=True).strip())
+        try:
+            self.bazel("v8-x64-source-build", "build", *BAZEL_FLAGS, *NATIVE_V8)
+            outputs = self.bazel("v8-x64-source-outputs", "cquery", *BAZEL_FLAGS, "--output=files", "set(" + " ".join(NATIVE_V8) + ")", capture_output=True)
+            execution_root = Path(self.bazel("v8-execution-root", "info", "execution_root", capture_output=True).strip())
+            output_base = Path(self.bazel("v8-output-base", "info", "output_base", capture_output=True).strip())
 
-        def resolve(value: str) -> Path:
-            path = Path(value.strip())
-            return path if path.is_absolute() else (output_base if value.startswith("external/") else execution_root) / path
+            def resolve(value: str) -> Path:
+                path = Path(value.strip())
+                return path if path.is_absolute() else (output_base if value.startswith("external/") else execution_root) / path
 
-        paths = [resolve(line) for line in outputs.splitlines() if line.strip()]
-        archives = [path for path in paths if path.suffix == ".lib"]
-        bindings = [path for path in paths if path.suffix == ".rs"]
-        if len(archives) != 1 or len(bindings) != 1:
-            raise ValueError("The native producer must return one archive and one matching binding.")
-        target = "x86_64-pc-windows-msvc"
-        directory = self.evidence / "v8" / target
-        stage_artifacts(target, archives[0], bindings[0], directory, True)
-        compilers = self.bazel("v8-pinned-clang", "cquery", *BAZEL_FLAGS, "--output=files", "@v8_native_windows_llvm//:compiler_files", capture_output=True)
-        clang_paths = [resolve(line) for line in compilers.splitlines() if line.strip().replace("\\", "/").endswith("/clang-cl.exe")]
-        if len(clang_paths) != 1 or not clang_paths[0].is_file():
-            raise ValueError("The source-pinned Windows LLVM compiler is unavailable.")
-        pair = self.pair_receipt(target, directory, "source-native-windows")
-        pair["compiler_directory"] = str(clang_paths[0].parent)
-        write_json(self.handoff / f"v8-{target}.json", pair)
+            paths = [resolve(line) for line in outputs.splitlines() if line.strip()]
+            archives = [path for path in paths if path.suffix == ".lib"]
+            bindings = [path for path in paths if path.suffix == ".rs"]
+            if len(archives) != 1 or len(bindings) != 1:
+                raise ValueError("The native producer must return one archive and one matching binding.")
+            if any(not path.is_file() or path.stat().st_size == 0 for path in paths):
+                raise ValueError("The native source archive and binding were not materialized by Bazel.")
+            target = "x86_64-pc-windows-msvc"
+            directory = self.evidence / "v8" / target
+            stage_artifacts(target, archives[0], bindings[0], directory, True)
+            compilers = self.bazel("v8-pinned-clang", "cquery", *BAZEL_FLAGS, "--output=files", "@v8_native_windows_llvm//:compiler_files", capture_output=True)
+            clang_paths = [resolve(line) for line in compilers.splitlines() if line.strip().replace("\\", "/").endswith("/clang-cl.exe")]
+            if len(clang_paths) != 1 or not clang_paths[0].is_file():
+                raise ValueError("The source-pinned Windows LLVM compiler is unavailable.")
+            pair = self.pair_receipt(target, directory, "source-native-windows")
+            pair["compiler_directory"] = str(clang_paths[0].parent)
+            write_json(self.handoff / f"v8-{target}.json", pair)
+        finally:
+            # Let the runner's normal cleanup remove its workspace without a live
+            # Bazel process holding entries open. Cargo retains its own cache.
+            self.bazel("v8-bazel-shutdown", "shutdown")
 
     def pair_receipt(self, target: str, directory: Path, producer: str) -> dict:
         profile = "ptrcomp_sandbox_release"
@@ -196,9 +224,26 @@ class Producer:
         target = "x86_64-pc-windows-msvc"
         pair = self.evidence / "v8" / target
         record = json.loads((self.handoff / f"v8-{target}.json").read_text())
+        if self.pair_receipt(target, pair, "source-native-windows")["files"] != record["files"]:
+            raise ValueError("The staged native V8 pair changed after its source build.")
         return {**os.environ, "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
                 "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
                 "LIBCLANG_PATH": record["compiler_directory"], "PATH": record["compiler_directory"] + os.pathsep + os.environ["PATH"]}
+
+    def published_v8(self) -> None:
+        # Reuse the canonical checksum verifier without the composite action's
+        # python3 alias requirement on a native Windows Python installation.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from codex_package.targets import TARGET_SPECS
+        from codex_package.v8 import fetch_codex_v8_artifacts
+
+        target = "aarch64-pc-windows-msvc"
+        pair = fetch_codex_v8_artifacts(TARGET_SPECS[target], cache_root=self.evidence / "published-v8")
+        environment = {"RUSTY_V8_ARCHIVE": str(pair.archive), "RUSTY_V8_SRC_BINDING_PATH": str(pair.binding)}
+        directory = self.copy_published_v8_pair(target, environment)
+        receipt = self.pair_receipt(target, directory, "published-source-pinned")
+        self.record_check("v8-arm64-published-pair", json.dumps(receipt, sort_keys=True))
+        write_json(self.handoff / f"v8-{target}.json", receipt)
 
     def acceptance(self) -> None:
         environment = self.native_environment()
@@ -214,8 +259,10 @@ class Producer:
         if target.startswith("aarch64"):
             if environment.get("VSCMD_ARG_HOST_ARCH") != "x64" or environment.get("VSCMD_ARG_TGT_ARCH") != "arm64":
                 raise ValueError("The x64-host/ARM64-target MSVC SDK environment is required.")
-            directory = self.copy_published_v8_pair(target, environment)
+            directory = self.evidence / "v8" / target
             pair = self.pair_receipt(target, directory, "published-source-pinned")
+            environment["RUSTY_V8_ARCHIVE"] = str(directory / pair["archive"]["name"])
+            environment["RUSTY_V8_SRC_BINDING_PATH"] = str(directory / pair["binding"]["name"])
             x64_pair = json.loads((self.handoff / "v8-x86_64-pc-windows-msvc.json").read_text())
             compiler = Path(x64_pair["compiler_directory"])
             for name, tool in (("CC", "clang-cl.exe"), ("CXX", "clang-cl.exe"), ("AR", "llvm-lib.exe")):
@@ -273,8 +320,8 @@ class Producer:
         if source_identity(os.environ["SOURCE_SHA"]) != self.identity:
             raise ValueError("Source identity changed before sealing the handoff.")
         checks = [json.loads(path.read_text()) for path in sorted((self.evidence / "checks").glob("*.json"))]
-        required = {"v8-x64-poc-cppgc", "windows-product-regressions", "v8-arm64-compile-link", "package-x64-version", "package-x64-accounts"}
-        required.update(f"{target}-{phase}" for target in TARGETS for phase in ("build", "assemble"))
+        required = {"v8-x64-poc-cppgc", "windows-product-regressions", "v8-arm64-published-pair", "v8-arm64-compile-link", "sdk-arm64-build", "package-x64-version", "package-x64-accounts"}
+        required.update(f"{target}-{phase}" for target in TARGETS for phase in ("build", "assemble", "pe-architecture"))
         if not required.issubset({check["name"] for check in checks}) or any(check["exit_code"] != 0 or digest(self.handoff / check["log_path"]) != check["log_sha256"] for check in checks):
             raise ValueError("Successful, unchanged Windows acceptance evidence is required.")
         pairs = [json.loads((self.handoff / f"v8-{target}.json").read_text()) for target in TARGETS]
@@ -288,6 +335,9 @@ class Producer:
                 path = self.handoff / package["target"] / item["name"]
                 if path.stat().st_size != item["size_bytes"] or digest(path) != item["sha256"]:
                     raise ValueError("A native archive changed before the handoff was sealed.")
+            # The importer bundles target directories independently. Keep the
+            # evidence named by each receipt within that same target subtree.
+            shutil.copytree(self.logs, self.handoff / package["target"] / "logs")
             write_json(self.handoff / package["target"] / "native-manifest.json", {
                 "schema": 1,
                 "status": "success",
@@ -310,7 +360,7 @@ class Producer:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prerequisites", "source-v8", "acceptance", "package", "finalize"))
+    parser.add_argument("phase", choices=("prerequisites", "source-v8", "acceptance", "published-v8", "package", "finalize"))
     parser.add_argument("--target", choices=TARGETS)
     args = parser.parse_args()
     if os.name != "nt":
@@ -321,7 +371,7 @@ def main() -> None:
             parser.error("package requires --target")
         producer.package(args.target)
     else:
-        {"prerequisites": producer.prerequisites, "source-v8": producer.source_v8, "acceptance": producer.acceptance, "finalize": producer.finalize}[args.phase]()
+        {"prerequisites": producer.prerequisites, "source-v8": producer.source_v8, "acceptance": producer.acceptance, "published-v8": producer.published_v8, "finalize": producer.finalize}[args.phase]()
 
 
 if __name__ == "__main__":
