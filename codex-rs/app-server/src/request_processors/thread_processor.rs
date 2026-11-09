@@ -1130,10 +1130,9 @@ impl ThreadRequestProcessor {
         )
         .await
         {
-            Ok(Ok(()))
-            | Ok(Err(ThreadStoreError::ThreadNotFound {
-                thread_id: missing,
-            })) if missing == thread_id => {}
+            Ok(Ok(())) => {}
+            Ok(Err(ThreadStoreError::ThreadNotFound { thread_id: missing }))
+                if missing == thread_id => {}
             Ok(Err(error)) => {
                 warn!(
                     %thread_id,
