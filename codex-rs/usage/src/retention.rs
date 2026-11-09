@@ -62,6 +62,17 @@ pub(crate) fn maintain(
     let started = std::time::Instant::now();
     maintenance.detail.advance_admission(root, policy, now_ms)?;
     for _ in 0..64 {
+        // Operation-ID compaction can be the prerequisite that lets the
+        // publisher advance at all. Service it before the more expensive
+        // rollup scans so a bounded maintenance wake cannot spend its whole
+        // budget on unrelated retention work while publication is blocked.
+        let operation_progress = maintenance.operations.step(root, /*max_entries*/ 16_384)?;
+        if operation_progress {
+            if started.elapsed() >= std::time::Duration::from_secs(10) {
+                break;
+            }
+            continue;
+        }
         let raw_progress = crate::token_rollup::compact_one(root, policy, now_ms)?;
         let mode = if raw_progress {
             crate::rollup_compaction::MergeMode::FullBatch
@@ -86,7 +97,6 @@ pub(crate) fn maintain(
         let id_progress = maintenance
             .detail
             .step_index(root, /*max_entries*/ 16_384)?;
-        let operation_progress = maintenance.operations.step(root, /*max_entries*/ 16_384)?;
         let corrected = if scan_corrections {
             maintenance.corrections.step(root)?
         } else {
@@ -95,9 +105,7 @@ pub(crate) fn maintain(
         // Cursor-only scans and protected sidecars never keep the work loop
         // alive, including while an independent ID rewrite yields more steps.
         scan_corrections = corrected;
-        if (!id_progress && !operation_progress && !corrected)
-            || started.elapsed() >= std::time::Duration::from_secs(10)
-        {
+        if (!id_progress && !corrected) || started.elapsed() >= std::time::Duration::from_secs(10) {
             break;
         }
     }
