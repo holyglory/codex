@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
@@ -237,19 +240,25 @@ fn merge_filters_retired_sequence_before_selecting_same_id_and_rejects_live_dupl
 #[test]
 fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_publication() {
     let directory = tempdir().expect("directory");
-    let root = directory.path();
+    let root_path = directory.path().join(crate::USAGE_DIRECTORY_NAME);
+    std::fs::create_dir_all(&root_path).expect("usage root");
+    let root = root_path.as_path();
+    let now_ms = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()) as i64;
     let journal = UsageJournal::new(root.join("events.jsonl"));
     let records = (0..crate::id_index::MAX_ID_RUNS)
         .map(|i| {
             let mut fact = UsageRecord::new_millis(
                 format!("cap-{i}"),
-                /*observed_at_ms*/ 1_000,
+                /*observed_at_ms*/ now_ms,
                 /*input_tokens*/ 0,
                 /*output_tokens*/ 0,
             )
             .with_operation(format!("cap-{i}"));
             fact.event = Some("tool_started".into());
-            fact.started_at_ms = Some(1_000);
+            fact.started_at_ms = Some(now_ms);
             crate::JournalPayload::Record(fact)
         })
         .collect();
@@ -302,13 +311,13 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
     let pinned = UsageReader::open_at(root).expect("snapshot at cap");
     let mut late = UsageRecord::new_millis(
         "after-cap",
-        /*observed_at_ms*/ 2_000,
+        /*observed_at_ms*/ now_ms + 1_000,
         /*input_tokens*/ 0,
         /*output_tokens*/ 0,
     )
     .with_operation("after-cap");
     late.event = Some("tool_started".into());
-    late.started_at_ms = Some(2_000);
+    late.started_at_ms = Some(now_ms + 1_000);
     journal
         .append_record(late)
         .expect("capture remains append-only at cap");
@@ -333,22 +342,78 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             .iter()
             .any(|record| record.id == "after-cap")
     );
-    let mut maintenance = Maintenance::default();
-    for _ in 0..16 {
-        maintenance
-            .step(root, /*max_entries*/ 1)
-            .expect("maintenance runs with unpublished observations");
-        if maintenance.job.is_none() {
-            break;
+    let base_target = journal.checkpoint().expect("durable target").sequence;
+    let captured = Arc::new(AtomicU64::new(/*v*/ 0));
+    let capture_progress = Arc::clone(&captured);
+    let capture_home = directory.path().to_path_buf();
+    let resumed = std::thread::scope(|scope| {
+        let (stop_capture, capture_stop) = std::sync::mpsc::channel::<()>();
+        let (capture_ready, ready) = std::sync::mpsc::channel::<()>();
+        let capture_thread = scope.spawn(move || {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(/*secs*/ 10);
+            for index in 0..16_384_u64 {
+                if capture_stop.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty)
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                let mut fact = UsageRecord::new_millis(
+                    format!("live-cap-{index}"),
+                    now_ms + 2_000 + index as i64,
+                    /*input_tokens*/ 0,
+                    /*output_tokens*/ 0,
+                )
+                .with_operation(format!("live-cap-{index}"));
+                fact.event = Some("tool_started".into());
+                fact.started_at_ms = Some(now_ms + 2_000 + index as i64);
+                crate::capture_records(&capture_home, vec![fact]).expect("live capture");
+                capture_progress.fetch_add(/*val*/ 1, Ordering::Release);
+                if index == 0 {
+                    capture_ready.send(()).expect("capture readiness");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(/*millis*/ 1));
+            }
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(/*secs*/ 5))
+            .expect("capture starts before the publisher");
+        let _runtime = crate::UsagePublisherRuntime::start(directory.path())
+            .expect("runtime maintenance starts");
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(/*secs*/ 10);
+        let progressed_during_capture = loop {
+            let manifest = ManifestStore::new(root.join("manifest.json"))
+                .load()
+                .expect("runtime manifest");
+            if manifest.watermark > base_target && !capture_thread.is_finished() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline || capture_thread.is_finished() {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(/*millis*/ 25));
+        };
+        drop(stop_capture);
+        capture_thread.join().expect("live capture thread");
+        assert!(progressed_during_capture, "publication must resume during capture");
+        let captured = captured.load(Ordering::Acquire);
+        assert!(captured > 0, "capture remains independent of maintenance");
+        let target = journal.checkpoint().expect("acknowledged capture frontier").sequence;
+        assert_eq!(target, base_target + captured);
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(/*secs*/ 10);
+        loop {
+            let manifest = ManifestStore::new(root.join("manifest.json"))
+                .load()
+                .expect("runtime drain manifest");
+            if manifest.watermark >= target {
+                break manifest;
+            }
+            assert!(std::time::Instant::now() < deadline, "runtime drains acknowledged captures");
+            std::thread::sleep(std::time::Duration::from_millis(/*millis*/ 25));
         }
-    }
-    assert!(maintenance.job.is_none());
-    let resumed = publisher
-        .publish_batch(JournalReadLimits {
-            max_bytes: 64 * 1024,
-            max_entries: 16,
-        })
-        .expect("retry resumes after background merge");
+    });
     assert_eq!(
         resumed.watermark,
         journal.checkpoint().expect("durable frontier").sequence

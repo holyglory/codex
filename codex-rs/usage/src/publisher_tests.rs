@@ -1,3 +1,10 @@
+use std::env;
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
+
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
@@ -50,6 +57,35 @@ fn linked_record(id: &str, child: &str, parent: &str) -> UsageRecord {
     .with_thread(child);
     record.parent_thread_id = Some(parent.to_string());
     record
+}
+
+fn copy_private_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "diagnostic source contains a symlink",
+        ));
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_private_tree(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "diagnostic source contains a special file",
+    ))
 }
 
 #[test]
@@ -1396,4 +1432,71 @@ fn concurrent_publishers_reload_under_the_publisher_lock() {
         }
     );
 }
-use std::fs;
+
+#[test]
+#[ignore = "requires CODEX_USAGE_DIAGNOSTIC_ROOT pointing at a private usage-v2 copy"]
+fn private_usage_v2_publish_batch_diagnostic() {
+    let source = env::var_os("CODEX_USAGE_DIAGNOSTIC_ROOT")
+        .map(PathBuf::from)
+        .expect("CODEX_USAGE_DIAGNOSTIC_ROOT");
+    let home = tempdir().expect("diagnostic home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    copy_private_tree(&source, &root).expect("copy private usage-v2 tree");
+    let max_bytes = env::var("CODEX_USAGE_DIAGNOSTIC_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16 * 1024 * 1024);
+    let max_entries = env::var("CODEX_USAGE_DIAGNOSTIC_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16_384);
+    let target = UsageJournal::new(root.join("events.jsonl"))
+        .checkpoint()
+        .expect("diagnostic target checkpoint")
+        .sequence;
+    let started = Instant::now();
+    let first = UsagePublisher::open_at(&root)
+        .expect("diagnostic publisher")
+        .publish_batch(JournalReadLimits {
+            max_bytes,
+            max_entries,
+        });
+    if let Err(error) = &first {
+        eprintln!(
+            "usage-diagnostic {}",
+            serde_json::json!({
+                "result": "initial-error",
+                "elapsedMs": started.elapsed().as_millis(),
+                "error": error.to_string(),
+                "debug": format!("{error:?}"),
+                "targetSequence": target,
+            })
+        );
+    }
+    let _runtime = crate::UsagePublisherRuntime::start(home.path()).expect("diagnostic runtime");
+    let deadline = Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        let manifest = ManifestStore::new(root.join("manifest.json"))
+            .load()
+            .expect("diagnostic manifest");
+        if manifest.watermark >= target {
+            eprintln!(
+                "usage-diagnostic {}",
+                serde_json::json!({
+                    "result": "caught-up",
+                    "elapsedMs": started.elapsed().as_millis(),
+                    "watermark": manifest.watermark,
+                    "targetSequence": target,
+                    "snapshotGeneration": manifest.snapshot_generation,
+                })
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "private usage-v2 runtime did not catch up from watermark {} to {target}",
+            manifest.watermark
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}

@@ -24,6 +24,10 @@ struct PublisherRegistration {
     signal: Weak<PublisherSignal>,
 }
 
+struct MaintenanceRequest {
+    completion: mpsc::SyncSender<()>,
+}
+
 type Publishers = BTreeMap<PathBuf, PublisherRegistration>;
 static PUBLISHERS: OnceLock<Mutex<Publishers>> = OnceLock::new();
 
@@ -125,13 +129,13 @@ impl UsagePublisherRuntime {
                 }
             })?;
         let worker_root = root.clone();
-        let (maintenance, maintain) = mpsc::sync_channel(1);
+        let (maintenance, maintain) = mpsc::sync_channel::<MaintenanceRequest>(/*bound*/ 1);
         let maintenance_root = root.clone();
         let maintenance_worker = std::thread::Builder::new()
             .name("codex-usage-retention".into())
             .spawn(move || {
                 let mut retention_maintenance = crate::retention::Maintenance::default();
-                while maintain.recv().is_ok() {
+                while let Ok(request) = maintain.recv() {
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -147,6 +151,7 @@ impl UsagePublisherRuntime {
                     {
                         tracing::debug!("usage retention deferred after failure");
                     }
+                    let _ = request.completion.send(());
                 }
             })?;
         let publisher_worker = std::thread::Builder::new()
@@ -156,7 +161,10 @@ impl UsagePublisherRuntime {
             .workers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            vec![warm_worker, maintenance_worker, publisher_worker];
+            // The publisher owns both wake senders. Join it first so the
+            // maintenance and warmup receivers observe channel closure during
+            // shutdown instead of waiting on a sender held by the publisher.
+            vec![publisher_worker, maintenance_worker, warm_worker];
         signal.notify();
         publishers.insert(
             root,
@@ -189,13 +197,51 @@ fn publish_loop(
     root: PathBuf,
     receiver: mpsc::Receiver<()>,
     warm: mpsc::Sender<()>,
-    maintenance: mpsc::SyncSender<()>,
+    maintenance: mpsc::SyncSender<MaintenanceRequest>,
 ) {
     let mut had_failure = false;
     let mut catch_up = false;
     let mut warm = Some(warm);
+    let mut handoff: Option<mpsc::Receiver<()>> = None;
+    let mut shutdown_requested = false;
+    let mut pending_wake = false;
+    // Keep ordinary startup/prewarming on its established periodic cadence;
+    // publication errors request maintenance immediately below.
     let mut next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
     loop {
+        if let Some(completion) = handoff.as_ref() {
+            match completion.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                    handoff = None;
+                    catch_up = true;
+                    next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                    if shutdown_requested && pending_wake {
+                        let _ = UsagePublisher::open_at(&root)
+                            .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
+                        return;
+                    }
+                    continue;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    match receiver.try_recv() {
+                        Ok(()) => {
+                            pending_wake = true;
+                            std::thread::sleep(Duration::from_millis(/*millis*/ 10));
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            std::thread::sleep(Duration::from_millis(/*millis*/ 10));
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            shutdown_requested = true;
+                            pending_wake = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
         // Polling while catching up observes channel closure between batches;
         // continuous capture cannot keep a dropped runtime alive indefinitely.
         let wait = if catch_up {
@@ -207,14 +253,10 @@ fn publish_loop(
             Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
-        if std::time::Instant::now() >= next_maintenance {
-            // Maintenance must also run during catch-up or publication errors:
-            // reaching an index run cap is repaired by this separate worker.
-            let _ = maintenance.try_send(());
-            next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
-        }
+        let maintenance_due = std::time::Instant::now() >= next_maintenance;
         let result = UsagePublisher::open_at(&root)
             .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
+        let mut maintenance_requested = maintenance_due;
         match result {
             Ok(manifest) => {
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
@@ -231,11 +273,48 @@ fn publish_loop(
             }
             Err(_) => {
                 catch_up = false;
+                // A failed bounded publication often means operation-id
+                // maintenance must run before the next retry. Queue it after
+                // publish_batch releases the snapshot lock.
+                maintenance_requested = true;
                 if !had_failure {
                     tracing::warn!(
                         "usage snapshot publication failed; durable journal remains available"
                     );
                     had_failure = true;
+                }
+            }
+        }
+        if maintenance_requested {
+            // Queue only after publication has released its lock, then wait
+            // for one bounded maintenance pass before allowing another
+            // publication attempt. Capture and report readers use separate
+            // locks and remain independent while this handoff is in flight.
+            let (completion, completed) = mpsc::sync_channel(/*bound*/ 0);
+            let mut request = MaintenanceRequest { completion };
+            loop {
+                match maintenance.try_send(request) {
+                    Ok(()) => {
+                        handoff = Some(completed);
+                        break;
+                    }
+                    Err(mpsc::TrySendError::Full(requested)) => {
+                        request = requested;
+                        match receiver.try_recv() {
+                            Ok(()) => pending_wake = true,
+                            Err(mpsc::TryRecvError::Empty) => {}
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                shutdown_requested = true;
+                                pending_wake = true;
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(/*millis*/ 10));
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        catch_up = true;
+                        next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                        break;
+                    }
                 }
             }
         }
