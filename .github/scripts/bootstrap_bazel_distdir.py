@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Stage exact locked GitHub BCR archives into Bazel's local distdir."""
 
-from __future__ import annotations
-
 import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -53,17 +51,24 @@ def sha256(data: bytes) -> str:
 
 def read_bounded(path: Path, limit: int) -> bytes:
     try:
-        stat = path.lstat()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         raise BootstrapError(f"cannot inspect {path.name}") from exc
-    if stat.st_mode & 0o170000 != 0o100000 or path.is_symlink():
-        raise BootstrapError(f"{path.name} must be a regular file")
-    if stat.st_size > limit:
-        raise BootstrapError(f"{path.name} is too large")
     try:
-        return path.read_bytes()
+        before = os.fstat(fd)
+        if before.st_mode & 0o170000 != 0o100000:
+            raise BootstrapError(f"{path.name} must be a regular file")
+        data = os.read(fd, limit + 1)
+        after = os.fstat(fd)
     except OSError as exc:
         raise BootstrapError(f"cannot read {path.name}") from exc
+    finally:
+        os.close(fd)
+    if len(data) > limit or after.st_size > limit:
+        raise BootstrapError(f"{path.name} is too large")
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise BootstrapError(f"{path.name} changed while reading")
+    return data
 
 
 def fetch_url(url: str, *, headers: dict[str, str] | None = None, limit: int) -> bytes:
@@ -208,7 +213,7 @@ def canonical_release_parts(url: str) -> tuple[str, str, str, str] | None:
     parsed = urlparse(url)
     if parsed.hostname != "github.com":
         return None
-    if parsed.netloc != "github.com":
+    if parsed.scheme != "https" or parsed.netloc != "github.com":
         raise BootstrapError("unsupported GitHub release archive URL")
     if "/releases/download/" not in parsed.path:
         return None
@@ -221,6 +226,15 @@ def canonical_release_parts(url: str) -> tuple[str, str, str, str] | None:
     if not all(unquote(value) == value for value in (owner, repo, tag, filename)):
         raise BootstrapError("encoded GitHub release archive URL is unsupported")
     return owner, repo, tag, filename
+
+
+def validate_signed_redirect(location: str) -> None:
+    parsed = urlparse(location)
+    if parsed.scheme != "https" or parsed.netloc not in {
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com",
+    }:
+        raise BootstrapError("GitHub release asset redirect host mismatch")
 
 
 def api_asset_bytes(spec: dict[str, str], token: str | None) -> bytes:
@@ -276,14 +290,12 @@ def api_asset_bytes(spec: dict[str, str], token: str | None) -> bytes:
         raise BootstrapError(
             f"GitHub release asset redirect missing for {spec['repo']}"
         )
-    location_host = urlparse(location).hostname
-    if location_host not in {
-        "release-assets.githubusercontent.com",
-        "objects.githubusercontent.com",
-    }:
+    try:
+        validate_signed_redirect(location)
+    except BootstrapError as exc:
         raise BootstrapError(
             f"GitHub release asset redirect host mismatch for {spec['repo']}"
-        )
+        ) from exc
     # Signed release URLs never receive the API bearer token.
     return fetch_url(location, limit=ARCHIVE_MAX_BYTES)
 
@@ -402,6 +414,8 @@ def update_override(workspace: Path, distdir: Path) -> None:
 
 def bootstrap(workspace: Path, distdir: Path, token: str | None = None) -> None:
     workspace = workspace.resolve()
+    if any(char.isspace() or ord(char) < 32 for char in str(distdir)):
+        raise BootstrapError("distdir path contains whitespace or control characters")
     lock_path = workspace / "MODULE.bazel.lock"
     try:
         distdir.mkdir(parents=True, exist_ok=True)

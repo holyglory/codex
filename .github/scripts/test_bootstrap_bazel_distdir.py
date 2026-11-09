@@ -272,6 +272,40 @@ class BootstrapBazelDistdirTest(unittest.TestCase):
             ):
                 bootstrap.api_asset_bytes(spec, None)
 
+    def test_url_guards_reject_insecure_or_credentialed_release_sources(self) -> None:
+        for url in (
+            "http://github.com/bazelbuild/rules_cc/releases/download/0.2.20/rules_cc-0.2.20.tar.gz",
+            "https://token@github.com/bazelbuild/rules_cc/releases/download/0.2.20/rules_cc-0.2.20.tar.gz",
+            "https://github.com:443/bazelbuild/rules_cc/releases/download/0.2.20/rules_cc-0.2.20.tar.gz",
+        ):
+            with (
+                self.subTest(url=url),
+                self.assertRaisesRegex(
+                    bootstrap.BootstrapError, "unsupported GitHub release archive URL"
+                ),
+            ):
+                bootstrap.canonical_release_parts(url)
+        for location in (
+            "http://release-assets.githubusercontent.com/signed",
+            "https://token@release-assets.githubusercontent.com/signed",
+            "https://release-assets.githubusercontent.com:443/signed",
+        ):
+            with (
+                self.subTest(location=location),
+                self.assertRaisesRegex(
+                    bootstrap.BootstrapError, "redirect host mismatch"
+                ),
+            ):
+                bootstrap.validate_signed_redirect(location)
+
+    def test_distdir_path_with_whitespace_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            self.write_lock(workspace)
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "whitespace"):
+                bootstrap.bootstrap(workspace, Path(directory) / "dist dir")
+
     def test_preexisting_unrelated_override_is_preserved_and_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
