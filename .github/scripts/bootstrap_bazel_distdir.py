@@ -88,16 +88,33 @@ def fetch_url(url: str, *, headers: dict[str, str] | None = None, limit: int) ->
     return content
 
 
-def fetch_api_metadata(url: str, headers: dict[str, str]) -> bytes:
-    request = Request(url, headers=headers, method="GET")
-    try:
-        response = NO_REDIRECT_OPENER.open(request, timeout=FETCH_TIMEOUT_SECONDS)
-    except HTTPError as exc:
-        raise FetchError(exc.code) from exc
-    status = getattr(response, "status", getattr(response, "code", 200))
-    if status != 200:
-        raise FetchError(status)
-    return read_response(response, 2 * 1024 * 1024)
+def validate_api_redirect(location: str) -> None:
+    parsed = urlparse(location)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+        raise BootstrapError("GitHub API redirect host mismatch")
+
+
+def fetch_api_metadata(url: str, headers: dict[str, str]) -> tuple[bytes, str]:
+    current = url
+    for _ in range(2):
+        request = Request(current, headers=headers, method="GET")
+        try:
+            response = NO_REDIRECT_OPENER.open(request, timeout=FETCH_TIMEOUT_SECONDS)
+        except HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise FetchError(exc.code) from exc
+            response = exc
+        status = getattr(response, "status", getattr(response, "code", 200))
+        if status == 200:
+            return read_response(response, 2 * 1024 * 1024), current
+        if status not in {301, 302, 303, 307, 308}:
+            raise FetchError(status)
+        location = response.headers.get("Location")
+        if not isinstance(location, str):
+            raise BootstrapError("GitHub API redirect missing")
+        validate_api_redirect(location)
+        current = location
+    raise BootstrapError("GitHub API redirect limit exceeded")
 
 
 def fetch_with_retry(url: str, *, limit: int) -> bytes:
@@ -246,7 +263,8 @@ def api_asset_bytes(spec: dict[str, str], token: str | None) -> bytes:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        metadata = json.loads(fetch_api_metadata(api_url, headers))
+        metadata_bytes, _metadata_url = fetch_api_metadata(api_url, headers)
+        metadata = json.loads(metadata_bytes)
     except json.JSONDecodeError as exc:
         raise BootstrapError(
             f"GitHub release metadata for {spec['repo']} is invalid"
@@ -266,10 +284,28 @@ def api_asset_bytes(spec: dict[str, str], token: str | None) -> bytes:
             f"GitHub release asset identity mismatch for {spec['repo']}"
         )
     asset = matches[0]
+    release_url = metadata.get("url") if isinstance(metadata, dict) else None
+    release_parts = (
+        re.fullmatch(
+            r"https://api\.github\.com/repos/([^/]+)/([^/]+)/releases/[^/]+",
+            release_url,
+        )
+        if isinstance(release_url, str)
+        else None
+    )
+    if release_parts is None:
+        raise BootstrapError("GitHub release metadata repository identity missing")
+    resolved_owner, resolved_repo = release_parts.groups()
+    if metadata.get("tag_name") != spec["tag"]:
+        raise BootstrapError(f"GitHub release tag mismatch for {spec['repo']}")
     browser_url = asset.get("browser_download_url")
-    if browser_url != spec["url"]:
+    expected_browser_url = (
+        f"https://github.com/{resolved_owner}/{resolved_repo}/releases/download/"
+        f"{spec['tag']}/{spec['filename']}"
+    )
+    if browser_url != expected_browser_url:
         raise BootstrapError(f"GitHub release asset URL mismatch for {spec['repo']}")
-    asset_url = f"https://api.github.com/repos/{quote(spec['owner'])}/{quote(spec['repo'])}/releases/assets/{asset['id']}"
+    asset_url = f"https://api.github.com/repos/{quote(resolved_owner)}/{quote(resolved_repo)}/releases/assets/{asset['id']}"
     asset_headers = {"Accept": "application/octet-stream"}
     if token:
         asset_headers["Authorization"] = f"Bearer {token}"

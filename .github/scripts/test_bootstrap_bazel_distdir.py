@@ -266,11 +266,123 @@ class BootstrapBazelDistdirTest(unittest.TestCase):
                 ]
             }
         ).encode()
-        with patch.object(bootstrap, "fetch_api_metadata", return_value=metadata):
+        with patch.object(
+            bootstrap,
+            "fetch_api_metadata",
+            return_value=(
+                metadata,
+                "https://api.github.com/repos/bazelbuild/rules_cc/releases/tags/0.2.20",
+            ),
+        ):
             with self.assertRaisesRegex(
                 bootstrap.BootstrapError, "asset identity mismatch"
             ):
                 bootstrap.api_asset_bytes(spec, None)
+
+    def test_api_metadata_follows_one_same_host_redirect_only(self) -> None:
+        class Response:
+            def __init__(self, status: int, headers: dict[str, str], body: bytes = b""):
+                self.status = status
+                self.headers = headers
+                self._body = body
+
+            def read(self, limit: int) -> bytes:
+                return self._body
+
+        class Opener:
+            def __init__(self, location: str):
+                self.location = location
+                self.requests = []
+
+            def open(self, request, timeout: int):
+                self.requests.append(request)
+                if len(self.requests) == 1:
+                    return Response(301, {"Location": self.location})
+                return Response(
+                    200,
+                    {},
+                    b'{"url":"https://api.github.com/repos/new/repo/releases/1"}',
+                )
+
+        opener = Opener("https://api.github.com/repositories/42/releases/tags/v1")
+        with patch.object(bootstrap, "NO_REDIRECT_OPENER", opener):
+            body, final_url = bootstrap.fetch_api_metadata(
+                "https://api.github.com/repos/old/repo/releases/tags/v1",
+                {"Authorization": "Bearer secret"},
+            )
+        self.assertIn(b"new/repo", body)
+        self.assertEqual(
+            final_url, "https://api.github.com/repositories/42/releases/tags/v1"
+        )
+        self.assertTrue(
+            all(request.headers.get("Authorization") for request in opener.requests)
+        )
+
+        cross_host = Opener("https://github.com/new/repo/releases/tags/v1")
+        with patch.object(bootstrap, "NO_REDIRECT_OPENER", cross_host):
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "API redirect host mismatch"
+            ):
+                bootstrap.fetch_api_metadata(
+                    "https://api.github.com/repos/old/repo/releases/tags/v1",
+                    {"Authorization": "Bearer secret"},
+                )
+
+    def test_api_metadata_move_keeps_exact_tag_name_and_unauthed_cdn_fetch(
+        self,
+    ) -> None:
+        spec = {
+            "owner": "aspect-build",
+            "repo": "tools_telemetry",
+            "tag": "v0.3.3",
+            "filename": "tools_telemetry-v0.3.3.tar.gz",
+            "url": "https://github.com/aspect-build/tools_telemetry/releases/download/v0.3.3/tools_telemetry-v0.3.3.tar.gz",
+        }
+        moved_url = "https://github.com/aspect-archives/tools_telemetry/releases/download/v0.3.3/tools_telemetry-v0.3.3.tar.gz"
+        metadata = json.dumps(
+            {
+                "url": "https://api.github.com/repos/aspect-archives/tools_telemetry/releases/1",
+                "tag_name": "v0.3.3",
+                "assets": [
+                    {
+                        "id": 7,
+                        "name": spec["filename"],
+                        "browser_download_url": moved_url,
+                    }
+                ],
+            }
+        ).encode()
+
+        class Response:
+            status = 302
+            headers = {
+                "Location": "https://release-assets.githubusercontent.com/signed"
+            }
+
+        class Opener:
+            def open(self, request, timeout: int):
+                self.request = request
+                return Response()
+
+        opener = Opener()
+        with (
+            patch.object(
+                bootstrap,
+                "fetch_api_metadata",
+                return_value=(
+                    metadata,
+                    "https://api.github.com/repositories/1009790369/releases/tags/v0.3.3",
+                ),
+            ),
+            patch.object(bootstrap, "NO_REDIRECT_OPENER", opener),
+            patch.object(bootstrap, "fetch_url", return_value=b"archive") as fetch,
+        ):
+            self.assertEqual(bootstrap.api_asset_bytes(spec, "secret"), b"archive")
+        self.assertIn("Authorization", opener.request.headers)
+        fetch.assert_called_once_with(
+            "https://release-assets.githubusercontent.com/signed",
+            limit=bootstrap.ARCHIVE_MAX_BYTES,
+        )
 
     def test_url_guards_reject_insecure_or_credentialed_release_sources(self) -> None:
         for url in (
