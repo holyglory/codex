@@ -3,6 +3,7 @@ use codex_api::SearchCommands;
 use codex_api::SearchQuery;
 use codex_api::SearchRequest;
 use codex_api::SearchSettings;
+use codex_api::auth_header_telemetry;
 use codex_core::X_CODEX_TURN_METADATA_HEADER;
 use codex_core::web_search_action_detail;
 use codex_extension_api::ExtensionTurnItem;
@@ -107,6 +108,15 @@ impl WebSearchTool {
             .api_provider_and_auth()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        if self.provider.info().requires_openai_auth
+            && !auth_header_telemetry(auth.as_ref())
+                .map(|telemetry| telemetry.attached)
+                .unwrap_or(false)
+        {
+            return Err(FunctionCallError::Fatal(
+                "authentication is required for web search".to_string(),
+            ));
+        }
         let transport = create_transport_for_routes_async(
             self.http_client_factory.clone(),
             ClientRouteClass::Api,

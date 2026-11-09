@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use codex_api::auth_header_telemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestBody;
 use codex_http_client::ClientRouteClass;
@@ -67,6 +68,15 @@ impl HistoryNotesBackend {
         let (provider, auth) = self.provider.api_provider_and_auth().await.map_err(|_| {
             format!("{OPERATION_ERROR_PREFIX} Could not prepare the backend request.")
         })?;
+        if self.provider.info().requires_openai_auth
+            && !auth_header_telemetry(auth.as_ref())
+                .map(|telemetry| telemetry.attached)
+                .unwrap_or(false)
+        {
+            return Err(format!(
+                "{OPERATION_ERROR_PREFIX} Authentication is required."
+            ));
+        }
 
         let mut request = provider.build_request(Method::POST, path);
         let encoded_truncation_policy =

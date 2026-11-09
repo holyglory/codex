@@ -30,7 +30,6 @@ use crate::bearer_auth_provider::BearerAuthProvider;
 
 const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
     "Bedrock API key auth is only supported by the Amazon Bedrock model provider";
-const PROVIDER_AUTH_REQUIRED_MESSAGE: &str = "authentication is required for this model provider";
 
 /// Credential ownership and optional OpenAI runtime auth for one harness/thread context.
 /// Publish these together so auxiliary clients cannot select another thread's credentials.
@@ -300,12 +299,6 @@ pub(crate) fn resolve_provider_auth(
     ) {
         return Err(CodexErr::UnsupportedOperation(
             BEDROCK_API_KEY_UNSUPPORTED_MESSAGE.to_string(),
-        ));
-    }
-
-    if auth.is_none() && (provider.requires_openai_auth || provider.auth.is_some()) {
-        return Err(CodexErr::InvalidRequest(
-            PROVIDER_AUTH_REQUIRED_MESSAGE.to_string(),
         ));
     }
 
@@ -590,21 +583,6 @@ mod tests {
         let auth = resolve_provider_auth(/*auth*/ None, &provider).expect("auth should resolve");
 
         assert!(auth.to_auth_headers().unwrap().is_empty());
-    }
-
-    #[test]
-    fn auth_required_provider_rejects_missing_authentication() {
-        let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-        let error = match resolve_provider_auth(/*auth*/ None, &provider) {
-            Err(error) => error,
-            Ok(_) => panic!("auth-required providers must not create unauthenticated clients"),
-        };
-
-        assert!(matches!(
-            error.details(),
-            CodexErrorDetails::InvalidRequest(message)
-                if message == PROVIDER_AUTH_REQUIRED_MESSAGE
-        ));
     }
 
     #[test]

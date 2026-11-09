@@ -4,6 +4,7 @@ use codex_api::ImageRequestError;
 use codex_api::ImageResponse;
 use codex_api::ImagesClient;
 use codex_api::ReqwestTransport;
+use codex_api::auth_header_telemetry;
 use codex_api::map_api_error;
 use codex_core::X_CODEX_TURN_METADATA_HEADER;
 use codex_http_client::ClientRouteClass;
@@ -83,6 +84,15 @@ impl CodexImagesBackend {
             .api_provider_and_auth()
             .await
             .map_err(|err| ImageBackendError::from_message(err.to_string()))?;
+        if self.provider.info().requires_openai_auth
+            && !auth_header_telemetry(auth.as_ref())
+                .map(|telemetry| telemetry.attached)
+                .unwrap_or(false)
+        {
+            return Err(ImageBackendError::from_message(
+                "authentication is required for image generation",
+            ));
+        }
         let transport = create_transport_for_routes_async(
             self.http_client_factory.clone(),
             ClientRouteClass::Api,
