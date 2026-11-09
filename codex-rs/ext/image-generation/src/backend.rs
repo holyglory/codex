@@ -90,7 +90,7 @@ impl CodexImagesBackend {
                 .unwrap_or(false)
         {
             return Err(ImageBackendError::from_message(
-                "authentication is required for image generation",
+                "authentication is required for image generation".to_string(),
             ));
         }
         let transport = create_transport_for_routes_async(
