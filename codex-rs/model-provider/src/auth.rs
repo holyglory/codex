@@ -595,8 +595,10 @@ mod tests {
     #[test]
     fn auth_required_provider_rejects_missing_authentication() {
         let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-        let error = resolve_provider_auth(/*auth*/ None, &provider)
-            .expect_err("auth-required providers must not create unauthenticated clients");
+        let error = match resolve_provider_auth(/*auth*/ None, &provider) {
+            Err(error) => error,
+            Ok(_) => panic!("auth-required providers must not create unauthenticated clients"),
+        };
 
         assert!(matches!(
             error.details(),
