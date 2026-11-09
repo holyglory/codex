@@ -14,7 +14,12 @@ import unittest
 from unittest.mock import patch
 
 from verify_npm_release import PLATFORMS, tarball_paths, verify_release
-from release_identity import verify_acceptance, verify_hosted_native_source
+from release_identity import (
+    V8_INPUT_PATHS,
+    verify_acceptance,
+    verify_hosted_native_source,
+    verify_hosted_v8_source,
+)
 
 SPEC = importlib.util.spec_from_file_location(
     "verify_candidate_run",
@@ -197,6 +202,89 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 with self.assertRaisesRegex(ValueError, "global build settings"):
                     verify_hosted_native_source(producer, invalid)
 
+    def test_hosted_v8_reuse_allows_usage_fix_and_rejects_v8_input_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args],
+                    text=True,
+                    stderr=subprocess.PIPE,
+                ).strip()
+
+            def commit(message: str) -> str:
+                git("add", "-f", ".")
+                git(
+                    "-c",
+                    "user.name=release-fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    "commit",
+                    "-qm",
+                    message,
+                )
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q")
+            for pattern in V8_INPUT_PATHS:
+                if pattern.endswith("/**"):
+                    path = Path(pattern[:-3]) / "fixture.bzl"
+                else:
+                    path = Path(pattern)
+                path = root / path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"{path}\n")
+            (root / ".github/scripts").mkdir(parents=True, exist_ok=True)
+            native_script = (
+                "phase=full\nroot=fixture\nrun_check() {\n  echo check\n}\n"
+                "write_pair_receipt() {\n  echo receipt\n}\n"
+                "source_v8() {\n  echo source\n}\n\npackage_native() {\n  echo package\n}\n"
+            )
+            script_path = root / ".github/scripts/downstream-unix-native.sh"
+            script_path.write_text(native_script)
+            (root / ".github/workflows").mkdir(parents=True, exist_ok=True)
+            (root / ".github/workflows/downstream-unix-native-target.yml").write_text(
+                "name: target\njobs:\n  v8:\n    name: V8 source pair\n    runs-on: ubuntu\n    steps:\n      - run: echo source\n  package:\n    name: Package native target\n"
+            )
+            (root / ".github/workflows/downstream-candidate.yml").write_text(
+                "env:\n  BUILD_MODE: release\njobs:\n  native:\n    if: inputs.hosted_native_run_id == ''\n    uses: target\n    with:\n      target: test\n  npm:\n    name: npm\n"
+            )
+            producer = commit("producer")
+            usage = root / "codex-rs/usage/src/runtime.rs"
+            usage.parent.mkdir(parents=True, exist_ok=True)
+            usage.write_text("usage fix\n")
+            packaging = commit("usage fix")
+
+            with patch("release_identity.ROOT", root):
+                result = verify_hosted_v8_source(producer, packaging)
+                self.assertEqual(result["native_producer"]["source_commit"], producer)
+                self.assertEqual(result["packaging"]["source_commit"], packaging)
+                self.assertEqual(result["v8_inputs"]["schema"], 1)
+
+                script_path.write_text(
+                    native_script.replace("phase=full", "phase=debug")
+                )
+                changed_setup = commit("changed V8 setup")
+                with self.assertRaisesRegex(ValueError, "V8 setup"):
+                    verify_hosted_v8_source(producer, changed_setup)
+                script_path.write_text(
+                    native_script.replace("echo check", "echo changed")
+                )
+                changed_helper = commit("changed V8 helper")
+                with self.assertRaisesRegex(ValueError, "source recipe"):
+                    verify_hosted_v8_source(producer, changed_helper)
+                script_path.write_text(native_script)
+                commit("restore V8 recipe")
+                (root / "third_party/v8/fixture.bzl").write_text("changed\n")
+                changed_inputs = commit("changed V8 input")
+                with self.assertRaisesRegex(
+                    ValueError, "V8 reuse changes|locked inputs"
+                ):
+                    verify_hosted_v8_source(producer, changed_inputs)
+
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
     )
@@ -343,6 +431,56 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
         with self.assertRaisesRegex(ValueError, "exact-source"):
             candidate.verify_candidate_run(
                 run, repository, "b" * 40, jobs, hosted_native=True
+            )
+
+    def test_partial_hosted_run_can_prove_only_successful_v8_jobs(self) -> None:
+        commit = "a" * 40
+        repository = "holyglory/codex"
+        run = {
+            "status": "completed",
+            "conclusion": "failure",
+            "path": ".github/workflows/downstream-candidate.yml",
+            "event": "workflow_dispatch",
+            "head_sha": commit,
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+        }
+        jobs = [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in candidate.HOSTED_V8_JOBS
+        ]
+        jobs.append(
+            {
+                "name": candidate.HOSTED_PACKAGE_JOBS[0],
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        )
+        candidate.verify_candidate_run(run, repository, commit, jobs, hosted_v8=True)
+        with self.assertRaisesRegex(ValueError, "Required candidate job"):
+            candidate.verify_candidate_run(
+                run,
+                repository,
+                commit,
+                jobs[1:],
+                hosted_v8=True,
+            )
+        with self.assertRaisesRegex(ValueError, "terminal state"):
+            candidate.verify_candidate_run(
+                {**run, "status": "in_progress"},
+                repository,
+                commit,
+                jobs,
+                hosted_v8=True,
+            )
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            candidate.verify_candidate_run(
+                run,
+                repository,
+                commit,
+                jobs,
+                hosted_native=True,
+                hosted_v8=True,
             )
 
     def test_release_names_include_root_and_all_six_platforms(self) -> None:

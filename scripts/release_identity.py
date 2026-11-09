@@ -46,9 +46,154 @@ HOSTED_RECIPE_PATHS = (
     ".github/scripts/bootstrap_bazel_distdir.py",
 )
 
+# These are the files that determine the Rusty V8 pair produced by the
+# hosted source-v8 phase. Keep this manifest independent of the native package
+# recipe: package-only verification changes must not force a V8 rebuild, while
+# a change to a locked dependency, toolchain setup, or Bazel target definition
+# must invalidate reuse.
+V8_INPUT_PATHS = (
+    ".bazelversion",
+    ".bazelrc",
+    "BUILD.bazel",
+    "defs.bzl",
+    "rbe.bzl",
+    "bazel/**",
+    "scripts/workspace-status.sh",
+    "scripts/workspace-status.cmd",
+    "MODULE.bazel",
+    "MODULE.bazel.lock",
+    "codex-rs/Cargo.toml",
+    "codex-rs/Cargo.lock",
+    ".github/scripts/rusty_v8_bazel.py",
+    ".github/scripts/rusty_v8_module_bazel.py",
+    ".github/scripts/run_bazel_with_buildbuddy.py",
+    ".github/actions/prepare-bazel-ci/**",
+    ".github/actions/setup-ci/**",
+    "third_party/v8/**",
+)
+
+V8_REUSE_SOURCE_PREFIXES = ("codex-rs/usage/",)
+
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
+
+
+def _v8_input_paths(commit: str) -> list[str]:
+    paths: set[str] = set()
+    for pattern in V8_INPUT_PATHS:
+        if pattern.endswith("/**"):
+            prefix = pattern[:-3]
+            paths.update(
+                git("ls-tree", "-r", "--name-only", commit, "--", prefix).splitlines()
+            )
+        else:
+            git("cat-file", "-e", f"{commit}:{pattern}")
+            paths.add(pattern)
+    if not paths:
+        raise ValueError("V8 input manifest is empty")
+    return sorted(paths)
+
+
+def v8_input_manifest(commit: str) -> dict:
+    entries = {
+        path: git("rev-parse", f"{commit}:{path}") for path in _v8_input_paths(commit)
+    }
+    encoded = json.dumps(
+        entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return {
+        "schema": 1,
+        "paths": entries,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _extract_shell_function(script: str, name: str) -> str:
+    match = re.search(
+        rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n",
+        script,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Hosted native recipe is missing {name}()")
+    return match.group(0)
+
+
+def _extract_v8_global_setup(script: str) -> str:
+    try:
+        start = script.index("phase=")
+        end = script.index("write_pair_receipt()")
+    except ValueError as exc:
+        raise ValueError("Hosted native recipe is missing its V8 setup") from exc
+    setup = script[start:end]
+    return re.sub(r'^: "\$\{V8_PRODUCER_COMMIT:=\}"\n', "", setup, flags=re.MULTILINE)
+
+
+def _extract_yaml_job(workflow: str, name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Hosted native workflow is missing the {name} job")
+    return match.group(0)
+
+
+def _verify_v8_recipe(producer: str, packaging: str) -> None:
+    scripts = [
+        git("show", f"{commit}:.github/scripts/downstream-unix-native.sh")
+        for commit in (producer, packaging)
+    ]
+    if _extract_shell_function(scripts[0], "source_v8") != _extract_shell_function(
+        scripts[1], "source_v8"
+    ):
+        raise ValueError("Hosted V8 source recipe changed after its producer run")
+    for name in ("run_check",):
+        if _extract_shell_function(scripts[0], name) != _extract_shell_function(
+            scripts[1], name
+        ):
+            raise ValueError("Hosted V8 source recipe changed after its producer run")
+    if _extract_v8_global_setup(scripts[0]) != _extract_v8_global_setup(scripts[1]):
+        raise ValueError("Hosted V8 setup changed after its producer run")
+
+    workflows = [
+        git("show", f"{commit}:.github/workflows/downstream-unix-native-target.yml")
+        for commit in (producer, packaging)
+    ]
+    source_jobs = []
+    for workflow in workflows:
+        job = _extract_yaml_job(workflow, "v8")
+        job = re.sub(r"^    if: inputs\.v8_run_id == ''\n", "", job, flags=re.MULTILINE)
+        source_jobs.append(job)
+    if source_jobs[0] != source_jobs[1]:
+        raise ValueError(
+            "Hosted V8 toolchain or source job changed after its producer run"
+        )
+
+    candidate_workflows = [
+        git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        for commit in (producer, packaging)
+    ]
+    native_jobs = []
+    for workflow in candidate_workflows:
+        job = _extract_yaml_job(workflow, "native")
+        job = job.replace(" && inputs.hosted_v8_run_id == ''", "")
+        job = re.sub(r"^      v8_run_id:.*\n", "", job, flags=re.MULTILINE)
+        job = re.sub(r"^      v8_source_commit:.*\n", "", job, flags=re.MULTILINE)
+        native_jobs.append(job)
+    if native_jobs[0] != native_jobs[1]:
+        raise ValueError(
+            "Hosted native matrix or package inputs changed after its producer run"
+        )
+    for pattern in (r"^(?:env|defaults|permissions):\n.*?(?=^\S|\Z)",):
+        before, after = [
+            re.findall(pattern, workflow, flags=re.MULTILINE | re.DOTALL)
+            for workflow in candidate_workflows
+        ]
+        if not before or before != after:
+            raise ValueError("Hosted V8 global workflow settings changed")
 
 
 def identity(commit: str) -> dict:
@@ -121,6 +266,40 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
         if not before or before != after:
             raise ValueError("Hosted native job or global build settings changed")
     return result
+
+
+def verify_hosted_v8_source(producer: str, packaging: str) -> dict:
+    native = identity(producer)
+    candidate = identity(packaging)
+    subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", producer, packaging],
+        check=True,
+    )
+    changed = set(
+        git("diff", "--name-only", "--no-renames", producer, packaging).splitlines()
+    )
+    unexpected = {
+        path
+        for path in changed
+        if path not in PACKAGING_PATHS
+        and not any(path.startswith(prefix) for prefix in V8_REUSE_SOURCE_PREFIXES)
+    }
+    if unexpected:
+        raise ValueError(
+            f"V8 reuse changes unapproved product/build inputs: {sorted(unexpected)}"
+        )
+    producer_inputs = v8_input_manifest(producer)
+    candidate_inputs = v8_input_manifest(packaging)
+    if producer_inputs != candidate_inputs:
+        raise ValueError("Hosted V8 locked inputs or build recipe changed")
+    _verify_v8_recipe(producer, packaging)
+    return {
+        "native_producer": native,
+        "packaging": candidate,
+        "packaging_only_paths": sorted(changed),
+        "v8_inputs": producer_inputs,
+        "reuse_source_prefixes": list(V8_REUSE_SOURCE_PREFIXES),
+    }
 
 
 def version() -> tuple[str, str]:
@@ -231,6 +410,23 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
             git("rev-parse", f"{packaging}:third_party/v8"),
         ):
             raise ValueError(f"V8 source inputs differ: {target}")
+        pair_source_commit = pair.get("source_commit") or producer
+        if not re.fullmatch(r"[0-9a-f]{40}", pair_source_commit):
+            raise ValueError(f"V8 pair source commit is invalid: {target}")
+        pair_source = identity(pair_source_commit)
+        for field in ("source_tree", "native_tree", "v8_tree"):
+            if field in pair and pair[field] != pair_source[field]:
+                raise ValueError(f"V8 pair {field} differs from its source: {target}")
+        expected_v8_inputs = v8_input_manifest(pair_source_commit)
+        if v8_input_manifest(packaging) != expected_v8_inputs:
+            raise ValueError(f"V8 locked inputs differ: {target}")
+        if pair.get("v8_inputs") not in (None, expected_v8_inputs):
+            raise ValueError(f"V8 receipt input manifest differs: {target}")
+        for key in ("producer_run_id", "producer_run_attempt"):
+            if pair.get(key) is not None and not re.fullmatch(
+                r"[0-9]+", str(pair[key])
+            ):
+                raise ValueError(f"V8 producer run identity is invalid: {target}")
         if target == "aarch64-pc-windows-msvc":
             reason = receipt.get("runtime_not_executed_reason") or receipt.get(
                 "runtime_not_executed"
@@ -273,6 +469,10 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
                 "native_tree": source["native_tree"],
                 "archive": observed,
                 "runtime_executed": receipt["runtime_executed"],
+                "v8_source_commit": pair_source_commit,
+                "v8_inputs_sha256": expected_v8_inputs["sha256"],
+                "v8_producer_run_id": pair.get("producer_run_id"),
+                "v8_producer_run_attempt": pair.get("producer_run_attempt"),
             }
         )
     return result
@@ -287,12 +487,16 @@ def main() -> None:
     parser.add_argument("--candidate-mode", choices=("complete", "native-only"))
     parser.add_argument("--artifacts-dir", type=Path)
     parser.add_argument("--hosted-native", action="store_true")
+    parser.add_argument("--hosted-v8", action="store_true")
     args = parser.parse_args()
-    result = (
-        verify_hosted_native_source(args.producer, args.packaging)
-        if args.hosted_native
-        else verify_native_source(args.producer, args.packaging)
-    )
+    if args.hosted_native and args.hosted_v8:
+        parser.error("--hosted-native and --hosted-v8 are mutually exclusive")
+    if args.hosted_v8:
+        result = verify_hosted_v8_source(args.producer, args.packaging)
+    elif args.hosted_native:
+        result = verify_hosted_native_source(args.producer, args.packaging)
+    else:
+        result = verify_native_source(args.producer, args.packaging)
     if args.local_acceptance or args.candidate_mode:
         verify_acceptance(
             json.loads(args.local_acceptance) if args.local_acceptance else None,

@@ -18,6 +18,14 @@ on:
       source_version:
         required: true
         type: string
+      v8_run_id:
+        description: Optional completed run whose successful V8 pair artifact is reused
+        required: false
+        type: string
+      v8_source_commit:
+        description: Exact source commit that produced the reused V8 pair
+        required: false
+        type: string
     secrets:
       BUILDBUDDY_API_KEY:
         required: false
@@ -32,6 +40,7 @@ env:
 jobs:
   v8:
     name: V8 source pair
+    if: inputs.v8_run_id == ''
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     env:
@@ -95,6 +104,10 @@ jobs:
   package:
     name: Package native target
     needs: v8
+    if: >-
+      !cancelled() &&
+      (needs.v8.result == 'success' ||
+       (needs.v8.result == 'skipped' && inputs.v8_run_id != ''))
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     env:
@@ -102,11 +115,14 @@ jobs:
       BAZEL_PLATFORM: ${{ inputs.platform }}
       BAZEL_CONFIG: ${{ inputs.bazel_config }}
       SOURCE_VERSION: ${{ inputs.source_version }}
+      V8_PRODUCER_COMMIT: ${{ inputs.v8_source_commit }}
+      V8_PRODUCER_RUN_ID: ${{ inputs.v8_run_id }}
       CARGO_PROFILE_RELEASE_DEBUG: "1"
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(inputs.target, 'apple-darwin') && 'packed' || 'off' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -118,8 +134,19 @@ jobs:
           python3 .github/scripts/bootstrap_bazel_distdir.py
           --workspace "$GITHUB_WORKSPACE"
           --distdir "$RUNNER_TEMP/bazel-distdir"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download V8 handoff from this run
+        if: inputs.v8_run_id == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          name: downstream-v8-${{ inputs.target }}
+          path: ${{ runner.temp }}/downstream-v8/${{ inputs.target }}
+      - name: Download V8 handoff from the producer run
+        if: inputs.v8_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.v8_run_id }}
           name: downstream-v8-${{ inputs.target }}
           path: ${{ runner.temp }}/downstream-v8/${{ inputs.target }}
       - name: Verify the V8 handoff before package setup
