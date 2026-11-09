@@ -20,6 +20,10 @@ on:
         description: Successful hosted run with unchanged product and hosted build inputs
         type: string
         required: false
+      hosted_v8_run_id:
+        description: Completed hosted run whose successful V8 jobs may be reused for fresh package builds
+        type: string
+        required: false
       linux_handoff:
         description: Hash-bound Linux x64 musl handoff JSON from the VPS
         type: string
@@ -50,6 +54,7 @@ jobs:
     outputs:
       source_version: ${{ steps.identity.outputs.source_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
+      hosted_v8_source_commit: ${{ steps.hosted_v8.outputs.source_commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -83,15 +88,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HOSTED_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          HOSTED_V8_RUN_ID: ${{ inputs.hosted_v8_run_id }}
           NATIVE_ONLY: ${{ inputs.native_only }}
         run: |
           set -euo pipefail
           [[ "$NATIVE_ONLY" == false && "$HOSTED_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ -z "$HOSTED_V8_RUN_ID" ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-jobs.json"
           hosted_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/hosted-run.json")"
           python3 scripts/release_identity.py --producer "$hosted_commit" --packaging "$GITHUB_SHA" --hosted-native
           python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$hosted_commit" --jobs-file "$RUNNER_TEMP/hosted-jobs.json" --hosted-native < "$RUNNER_TEMP/hosted-run.json"
+
+      - name: Verify the optional hosted V8 producer
+        id: hosted_v8
+        if: inputs.hosted_v8_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOSTED_RUN_ID: ${{ inputs.hosted_v8_run_id }}
+          HOSTED_NATIVE_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          NATIVE_ONLY: ${{ inputs.native_only }}
+        run: |
+          set -euo pipefail
+          [[ "$NATIVE_ONLY" == false && "$HOSTED_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ -z "$HOSTED_NATIVE_RUN_ID" ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-v8-run.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-v8-jobs.json"
+          hosted_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/hosted-v8-run.json")"
+          python3 scripts/release_identity.py --producer "$hosted_commit" --packaging "$GITHUB_SHA" --hosted-v8
+          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$hosted_commit" --jobs-file "$RUNNER_TEMP/hosted-v8-jobs.json" --hosted-v8 < "$RUNNER_TEMP/hosted-v8-run.json"
+          echo "source_commit=$hosted_commit" >> "$GITHUB_OUTPUT"
 
   handoff:
     name: Import verified VPS and private Windows outputs
@@ -149,6 +175,8 @@ jobs:
       platform: ${{ matrix.platform }}
       bazel_config: ${{ matrix.bazel_config }}
       source_version: ${{ needs.identity.outputs.source_version }}
+      v8_run_id: ${{ inputs.hosted_v8_run_id }}
+      v8_source_commit: ${{ needs.identity.outputs.hosted_v8_source_commit }}
     secrets:
       BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 

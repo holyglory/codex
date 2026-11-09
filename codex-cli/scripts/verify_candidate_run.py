@@ -32,14 +32,26 @@ def verify_candidate_run(
     jobs: list[dict],
     *,
     hosted_native: bool = False,
+    hosted_v8: bool = False,
 ) -> None:
+    if hosted_native and hosted_v8:
+        raise ValueError("Hosted native and V8 reuse modes are mutually exclusive")
     expected = {
         "status": "completed",
-        "conclusion": "success",
         "path": ".github/workflows/downstream-candidate.yml",
         "event": "workflow_dispatch",
         "head_sha": commit,
     }
+    if hosted_v8:
+        if run.get("status") != "completed" or run.get("conclusion") not in {
+            "success",
+            "failure",
+            "cancelled",
+            "timed_out",
+        }:
+            raise ValueError("Hosted V8 producer run did not reach a terminal state")
+    else:
+        expected["conclusion"] = "success"
     if repository != "holyglory/codex" or any(
         run.get(key) != value for key, value in expected.items()
     ):
@@ -51,9 +63,13 @@ def verify_candidate_run(
         ):
             raise ValueError(f"Candidate {field} differs from the release repository")
     required = (
-        (CANDIDATE_JOBS[0], *HOSTED_V8_JOBS, *HOSTED_PACKAGE_JOBS)
-        if hosted_native
-        else CANDIDATE_JOBS
+        HOSTED_V8_JOBS
+        if hosted_v8
+        else (
+            (CANDIDATE_JOBS[0], *HOSTED_V8_JOBS, *HOSTED_PACKAGE_JOBS)
+            if hosted_native
+            else CANDIDATE_JOBS
+        )
     )
     if (
         not isinstance(jobs, list)
@@ -81,6 +97,7 @@ def main() -> None:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--jobs-file", type=Path, required=True)
     parser.add_argument("--hosted-native", action="store_true")
+    parser.add_argument("--hosted-v8", action="store_true")
     args = parser.parse_args()
     pages = json.loads(args.jobs_file.read_text())
     if not isinstance(pages, list) or len(pages) > 5:
@@ -96,6 +113,7 @@ def main() -> None:
         args.commit,
         jobs,
         hosted_native=args.hosted_native,
+        hosted_v8=args.hosted_v8,
     )
 
 

@@ -2,6 +2,8 @@
 # Native target phases: build and hand off one V8 ABI pair, then test and package.
 set -euo pipefail
 : "${TARGET:?}" "${BAZEL_PLATFORM:?}" "${BAZEL_CONFIG:?}" "${SOURCE_VERSION:?}"
+: "${V8_PRODUCER_COMMIT:=}"
+: "${V8_PRODUCER_RUN_ID:=}"
 
 phase="${1:-full}"
 if [[ ! "$phase" =~ ^(full|source-v8|verify-pair|package)$ ]]; then
@@ -45,6 +47,8 @@ import subprocess
 import sys
 
 root, pair, receipt = map(Path, sys.argv[1:])
+sys.path.insert(0, str(root / "scripts"))
+from release_identity import v8_input_manifest
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
@@ -84,6 +88,9 @@ receipt_payload = {
     "source_tree": git("rev-parse", "HEAD^{tree}"),
     "native_tree": git("rev-parse", "HEAD:codex-rs"),
     "v8_tree": git("rev-parse", "HEAD:third_party/v8"),
+    "v8_inputs": v8_input_manifest(git("rev-parse", "HEAD")),
+    "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+    "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     "target": target,
     "profile": "sandbox_release",
     "source_built": True,
@@ -98,6 +105,7 @@ verify_pair() {
   python3 - "$root" "$pair" "$receipt" "$TARGET" <<'PY'
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -128,14 +136,40 @@ expected_identity = {
 }
 if {key: receipt.get(key) for key in expected_identity} != expected_identity:
     raise SystemExit("V8 pair receipt identity is invalid")
-current = {
-    "source_commit": git("rev-parse", "HEAD"),
-    "source_tree": git("rev-parse", "HEAD^{tree}"),
-    "native_tree": git("rev-parse", "HEAD:codex-rs"),
-    "v8_tree": git("rev-parse", "HEAD:third_party/v8"),
-}
-if {key: receipt.get(key) for key in current} != current:
-    raise SystemExit("V8 pair receipt source identity differs from the checked out source")
+producer_commit = os.environ.get("V8_PRODUCER_COMMIT", "")
+if producer_commit:
+    sys.path.insert(0, str(root / "scripts"))
+    from release_identity import v8_input_manifest
+
+    producer = {
+        "source_commit": producer_commit,
+        "source_tree": git("rev-parse", f"{producer_commit}^{{tree}}"),
+        "native_tree": git("rev-parse", f"{producer_commit}:codex-rs"),
+        "v8_tree": git("rev-parse", f"{producer_commit}:third_party/v8"),
+    }
+    if {key: receipt.get(key) for key in producer} != producer:
+        raise SystemExit("V8 pair receipt producer identity differs from its run")
+    producer_run_id = os.environ.get("V8_PRODUCER_RUN_ID", "")
+    if producer_run_id and receipt.get("github_run_id") not in (None, producer_run_id):
+        raise SystemExit("V8 pair receipt run identity differs from its producer")
+    if git("rev-parse", "HEAD:third_party/v8") != receipt.get("v8_tree"):
+        raise SystemExit("V8 pair source inputs differ from the checked out candidate")
+    expected_inputs = v8_input_manifest(producer_commit)
+    if v8_input_manifest(git("rev-parse", "HEAD")) != expected_inputs:
+        raise SystemExit("V8 pair locked inputs differ from the checked out candidate")
+    if receipt.get("v8_inputs") not in (None, expected_inputs):
+        raise SystemExit("V8 pair receipt input manifest differs from its producer")
+else:
+    current = {
+        "source_commit": git("rev-parse", "HEAD"),
+        "source_tree": git("rev-parse", "HEAD^{tree}"),
+        "native_tree": git("rev-parse", "HEAD:codex-rs"),
+        "v8_tree": git("rev-parse", "HEAD:third_party/v8"),
+    }
+    if {key: receipt.get(key) for key in current} != current:
+        raise SystemExit(
+            "V8 pair receipt source identity differs from the checked out source"
+        )
 files = receipt.get("files")
 if not isinstance(files, dict) or set(files) != expected:
     raise SystemExit("V8 pair receipt does not name the exact archive, binding and checksum files")
@@ -253,7 +287,12 @@ receipt = {
     "github_run_id": os.environ["GITHUB_RUN_ID"], "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
     "checks": [{"name": path.stem, "exit_code": 0, "log_sha256": digest(path)} for path in sorted((dist / "logs").glob("*.log"))],
     "v8_pair": {"profile": pair_receipt["profile"], "source_built": True, "cppgc_ignored_tests_executed": True,
-                "source_commit": pair_receipt["source_commit"], "files": pair_receipt["files"]},
+                "source_commit": pair_receipt["source_commit"], "source_tree": pair_receipt["source_tree"],
+                "native_tree": pair_receipt["native_tree"], "v8_tree": pair_receipt["v8_tree"],
+                "v8_inputs": pair_receipt.get("v8_inputs"), "reused": bool(os.environ.get("V8_PRODUCER_COMMIT")),
+                "producer_run_id": os.environ.get("V8_PRODUCER_RUN_ID") or pair_receipt.get("github_run_id"),
+                "producer_run_attempt": pair_receipt.get("github_run_attempt"),
+                "files": pair_receipt["files"]},
     "archives": {path.name: {"sha256": digest(path), "size_bytes": path.stat().st_size} for path in sorted(dist.glob("codex-package-*.tar.*"))},
 }
 (dist / "native-manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
