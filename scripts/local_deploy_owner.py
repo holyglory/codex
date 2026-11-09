@@ -215,6 +215,37 @@ class Owner:
             time.sleep(0.1)
         raise RuntimeError("fixture-server-not-ready")
 
+    def verify_serving(self, observed, mode):
+        if (
+            observed["uid"] != self.plan["ownerUid"]
+            or observed["executableSha256"] != self.plan["executableSha256"]
+        ):
+            raise RuntimeError("candidate-identity-mismatch")
+        self.receipt["serving"] = observed
+        self.receipt["ownershipMode"] = mode
+        try:
+            self.command(
+                "verify-rpc",
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("local_deploy_rpc.py")),
+                    str(self.plan_path),
+                ],
+            )
+        except Exception as error:
+            # A verification failure is not authority to terminate a serving child.
+            self.receipt["result"] = "failed"
+            self.event("verification-failed", reason=str(error)[:200])
+        else:
+            self.receipt["result"] = "passed"
+            self.event("serving-verified")
+        self.install_lock.close()
+        with os.fdopen(os.pidfd_open(observed["pid"]), "rb") as descriptor:
+            if identity(observed["pid"]) != observed:
+                raise RuntimeError("candidate-changed-before-supervision")
+            exited(descriptor.fileno())
+        raise RuntimeError("serving-child-exited")
+
     def activate(self):
         if self.plan["restartPolicy"] == "force-matching-unmanaged" and (
             self.plan.get("captureOldIdentity")
@@ -235,6 +266,14 @@ class Owner:
             if digest(reference) != self.plan["oldExecutableSha256"]:
                 raise RuntimeError("fixture-old-binary-changed")
             observed = expected = self.fixture_server(reference)
+        if observed and (
+            observed["uid"] == self.plan["ownerUid"]
+            and observed["executableSha256"] == self.plan["executableSha256"]
+        ):
+            root = self.task_codex_home / "packages/standalone"
+            select_release(root, self.selected)
+            self.event("candidate-already-serving", serving=observed)
+            self.verify_serving(observed, "desktop-owned" if not observed["managed"] else "managed")
         if observed:
             if not expected or any(
                 observed[key] != expected[key]
@@ -327,35 +366,7 @@ class Owner:
                 raise RuntimeError("canonical-child-ownership-missing")
             if observed["cgroup"] != identity(os.getpid())["cgroup"]:
                 raise RuntimeError("canonical-child-outside-owner-unit")
-        if (
-            observed["uid"] != self.plan["ownerUid"]
-            or observed["executableSha256"] != self.plan["executableSha256"]
-        ):
-            raise RuntimeError("candidate-identity-mismatch")
-        self.receipt["serving"] = observed
-        self.receipt["ownershipMode"] = mode
-        try:
-            self.command(
-                "verify-rpc",
-                [
-                    sys.executable,
-                    str(Path(__file__).with_name("local_deploy_rpc.py")),
-                    str(self.plan_path),
-                ],
-            )
-        except Exception as error:
-            # A verification failure is not authority to terminate a serving child.
-            self.receipt["result"] = "failed"
-            self.event("verification-failed", reason=str(error)[:200])
-        else:
-            self.receipt["result"] = "passed"
-            self.event("serving-verified")
-        self.install_lock.close()
-        with os.fdopen(os.pidfd_open(observed["pid"]), "rb") as descriptor:
-            if identity(observed["pid"]) != observed:
-                raise RuntimeError("candidate-changed-before-supervision")
-            exited(descriptor.fileno())
-        raise RuntimeError("serving-child-exited")
+        self.verify_serving(observed, mode)
 
     def run(self):
         try:

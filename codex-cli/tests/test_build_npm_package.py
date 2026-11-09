@@ -24,7 +24,7 @@ class NpmPackageTest(unittest.TestCase):
     def test_downstream_readme_uses_fork_install_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             staging = Path(temp)
-            stage_sources(staging, "0.166.0-multi.1", "codex")
+            stage_sources(staging, "0.166.0-multi.2", "codex")
             readme = (staging / "README.md").read_text(encoding="utf-8")
             self.assertIn("npm install -g @holyglory/codex", readme)
             self.assertNotIn("@openai/codex", readme)
@@ -32,7 +32,7 @@ class NpmPackageTest(unittest.TestCase):
     def test_downloaded_archives_build_seven_packages_and_launch_in_isolation(
         self,
     ) -> None:
-        version = "0.166.0-multi.1"
+        version = "0.166.0-multi.2"
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             artifacts = root / "artifacts"
@@ -43,7 +43,7 @@ class NpmPackageTest(unittest.TestCase):
                 metadata = {
                     "layoutVersion": 1,
                     "variant": "codex",
-                    "version": "0.166.0+multi.1",
+                    "version": "0.166.0+multi.2",
                     "target": target,
                     "entrypoint": f"bin/codex{suffix}",
                     "execServer": f"bin/codex-exec-server{suffix}",
@@ -116,7 +116,7 @@ class NpmPackageTest(unittest.TestCase):
     def test_npm_build_metadata_is_rejected_before_packing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, "build metadata"):
-                stage_sources(Path(temp), "0.166.0+multi.1", "codex")
+                stage_sources(Path(temp), "0.166.0+multi.2", "codex")
 
     def test_npm_archives_preserve_cli_runtime_without_standalone_executor(
         self,

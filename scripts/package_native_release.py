@@ -18,7 +18,9 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-VERSION = "0.166.0+multi.1"
+VERSION = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())["workspace"][
+    "package"
+]["version"]
 RELEASE_TARGET = Path("/mnt/build-storage/codex/rebase166-release-target")
 BULK_ROOT = Path("/mnt/build-storage/codex/rebase166-package-work")
 WORKTREE_ID = "wdcb50e621f3f9f8c"

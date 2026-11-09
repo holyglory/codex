@@ -323,6 +323,31 @@ def version() -> tuple[str, str]:
     return source, source.replace("+multi.", "-multi.", 1)
 
 
+def verify_new_downstream_version(source: str) -> None:
+    """Reject a downstream version that has already been tagged for this upstream release."""
+    match = re.fullmatch(
+        r"(?P<base>\d+\.\d+\.\d+)\+multi\.(?P<revision>\d+)", source
+    )
+    if match is None:
+        raise ValueError("Expected a Rust version with a downstream +multi revision")
+    revision = int(match.group("revision"))
+    base = match.group("base")
+    tags = git("tag", "--list", f"v{base}-multi.*", f"npm-v{base}-multi.*").splitlines()
+    prior = []
+    for tag in tags:
+        tag_match = re.fullmatch(
+            r"(?:npm-)?v" + re.escape(base) + r"-multi\.(\d+)", tag
+        )
+        if tag_match is not None:
+            prior.append((int(tag_match.group(1)), tag))
+    if prior and revision <= max(number for number, _ in prior):
+        highest, tag = max(prior)
+        raise ValueError(
+            f"Downstream version {source} is not newer than existing tag {tag}; "
+            f"use +multi.{highest + 1} or later"
+        )
+
+
 def verify_acceptance(
     value: dict | None, producer: str, *, mode: str = "complete"
 ) -> None:
@@ -520,6 +545,7 @@ def main() -> None:
             args.artifacts_dir, args.packaging
         )
     source, npm = version()
+    verify_new_downstream_version(source)
     result.update({"source_version": source, "npm_version": npm})
     if args.github_output:
         with args.github_output.open("a") as output:

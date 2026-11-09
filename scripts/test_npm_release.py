@@ -19,6 +19,7 @@ from release_identity import (
     verify_acceptance,
     verify_hosted_native_source,
     verify_hosted_v8_source,
+    verify_new_downstream_version,
 )
 
 SPEC = importlib.util.spec_from_file_location(
@@ -30,6 +31,11 @@ SPEC.loader.exec_module(candidate)
 
 
 class NpmReleaseContractTest(unittest.TestCase):
+    def test_downstream_version_must_advance_existing_tag(self) -> None:
+        with patch("release_identity.git", return_value="npm-v0.166.0-multi.2\n"):
+            with self.assertRaisesRegex(ValueError, r"use \+multi\.3"):
+                verify_new_downstream_version("0.166.0+multi.2")
+
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
     )
@@ -65,7 +71,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                         env={
                             **os.environ,
                             "TARGET": target,
-                            "SOURCE_VERSION": "0.166.0+multi.1",
+                            "SOURCE_VERSION": "0.166.0+multi.2",
                             "release": str(release),
                             "dist": str(dist),
                             "NPM_FIXTURE_PYTHON": sys.executable,
@@ -78,7 +84,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                         "--target",
                         target,
                         "--package-version",
-                        "0.166.0+multi.1",
+                        "0.166.0+multi.2",
                         "--cargo-profile",
                         "release",
                         "--strip",
@@ -377,7 +383,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 "TARGET": target,
                 "BAZEL_PLATFORM": "macos_amd64",
                 "BAZEL_CONFIG": "ci-macos",
-                "SOURCE_VERSION": "0.166.0+multi.1",
+                "SOURCE_VERSION": "0.166.0+multi.2",
                 "RUNNER_TEMP": directory,
                 "V8_HANDOFF_DIR": str(handoff),
             }
@@ -511,14 +517,14 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
             )
 
     def test_release_names_include_root_and_all_six_platforms(self) -> None:
-        paths = tarball_paths(Path("dist/npm"), "0.166.0-multi.1")
+        paths = tarball_paths(Path("dist/npm"), "0.166.0-multi.2")
         self.assertEqual(set(paths), {"root", *PLATFORMS})
         self.assertEqual(len(set(paths.values())), 7)
 
     def test_build_metadata_is_rejected_before_archive_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "build metadata"):
-                verify_release(Path(directory), "0.166.0+multi.1")
+                verify_release(Path(directory), "0.166.0+multi.2")
 
 
 if __name__ == "__main__":
