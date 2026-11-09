@@ -34,6 +34,8 @@ PACKAGING_PATHS = frozenset(
         ".github/workflows/trusted-windows-native.yml",
         ".github/scripts/downstream-windows-native.ps1",
         ".github/scripts/downstream-unix-native.sh",
+        ".github/scripts/bootstrap_bazel_distdir.py",
+        ".github/scripts/test_bootstrap_bazel_distdir.py",
         ".devcoordinator.toml",
     }
 )
@@ -41,6 +43,7 @@ PACKAGING_PATHS = frozenset(
 HOSTED_RECIPE_PATHS = (
     ".github/workflows/downstream-unix-native-target.yml",
     ".github/scripts/downstream-unix-native.sh",
+    ".github/scripts/bootstrap_bazel_distdir.py",
 )
 
 
@@ -91,7 +94,12 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
     if any(path in result["packaging_only_paths"] for path in HOSTED_RECIPE_PATHS):
         raise ValueError("Hosted native recipe changed after its producer run")
     for path in HOSTED_RECIPE_PATHS:
-        recipes = [git("show", f"{commit}:{path}") for commit in (producer, packaging)]
+        try:
+            recipes = [
+                git("show", f"{commit}:{path}") for commit in (producer, packaging)
+            ]
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(f"Hosted native recipe is missing from {path}") from exc
         if recipes[0] != recipes[1]:
             raise ValueError(
                 f"Hosted native recipe changed after its producer run: {path}"

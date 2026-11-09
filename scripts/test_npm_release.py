@@ -146,6 +146,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 ".github/scripts/rusty_v8_bazel.py": "V8 helper\n",
                 ".github/scripts/prepare_downstream_musl.py": "musl helper\n",
                 ".github/scripts/downstream-unix-native.sh": "hosted helper\n",
+                ".github/scripts/bootstrap_bazel_distdir.py": "distdir helper\n",
                 ".github/workflows/downstream-unix-native-target.yml": "name: target\non:\n  workflow_call:\njobs:\n  v8:\n    name: V8 source pair\n  package:\n    name: Package native target\n",
                 ".github/workflows/downstream-candidate.yml": "env:\n  BUILD_MODE: release\njobs:\n  native:\n    runs-on: ubuntu-24.04-arm\n    steps:\n      - run: echo hosted\n  npm:\n    steps:\n      - run: echo assembly\n",
             }
