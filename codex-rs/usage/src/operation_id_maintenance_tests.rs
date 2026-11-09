@@ -350,8 +350,8 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
         let (stop_capture, capture_stop) = std::sync::mpsc::channel::<()>();
         let (capture_ready, ready) = std::sync::mpsc::channel::<()>();
         let capture_thread = scope.spawn(move || {
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(/*secs*/ 10);
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 10);
             for index in 0..16_384_u64 {
                 if capture_stop.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty)
                     || std::time::Instant::now() >= deadline
@@ -380,8 +380,7 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             .expect("capture starts before the publisher");
         let _runtime = crate::UsagePublisherRuntime::start(directory.path())
             .expect("runtime maintenance starts");
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(/*secs*/ 10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 10);
         let progressed_during_capture = loop {
             let manifest = ManifestStore::new(root.join("manifest.json"))
                 .load()
@@ -396,13 +395,18 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
         };
         drop(stop_capture);
         capture_thread.join().expect("live capture thread");
-        assert!(progressed_during_capture, "publication must resume during capture");
+        assert!(
+            progressed_during_capture,
+            "publication must resume during capture"
+        );
         let captured = captured.load(Ordering::Acquire);
         assert!(captured > 0, "capture remains independent of maintenance");
-        let target = journal.checkpoint().expect("acknowledged capture frontier").sequence;
+        let target = journal
+            .checkpoint()
+            .expect("acknowledged capture frontier")
+            .sequence;
         assert_eq!(target, base_target + captured);
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(/*secs*/ 10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 10);
         loop {
             let manifest = ManifestStore::new(root.join("manifest.json"))
                 .load()
@@ -410,7 +414,10 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             if manifest.watermark >= target {
                 break manifest;
             }
-            assert!(std::time::Instant::now() < deadline, "runtime drains acknowledged captures");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "runtime drains acknowledged captures"
+            );
             std::thread::sleep(std::time::Duration::from_millis(/*millis*/ 25));
         }
     });

@@ -72,7 +72,13 @@ V8_INPUT_PATHS = (
     "third_party/v8/**",
 )
 
-V8_REUSE_SOURCE_PREFIXES = ("codex-rs/usage/",)
+# Product fixes allowed alongside a reused V8 producer. Keep this explicit so
+# a change to any other native or build input still forces a fresh V8 pair.
+V8_REUSE_SOURCE_PREFIXES = (
+    "codex-rs/usage/",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs",
+    "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+)
 
 
 def git(*args: str) -> str:

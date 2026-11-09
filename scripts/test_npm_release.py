@@ -264,6 +264,33 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 self.assertEqual(result["packaging"]["source_commit"], packaging)
                 self.assertEqual(result["v8_inputs"]["schema"], 1)
 
+                app_server_fix = (
+                    root
+                    / "codex-rs/app-server/src/request_processors/thread_processor.rs"
+                )
+                app_server_fix.parent.mkdir(parents=True, exist_ok=True)
+                app_server_fix.write_text("stale writer fix\n")
+                app_server_test = (
+                    root
+                    / "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs"
+                )
+                app_server_test.write_text("stale writer regression\n")
+                packaging = commit("app-server reconnect fix")
+                result = verify_hosted_v8_source(producer, packaging)
+                self.assertIn(
+                    str(app_server_fix.relative_to(root)),
+                    result["packaging_only_paths"],
+                )
+
+                unrelated_app_server = root / "codex-rs/app-server/src/lib.rs"
+                unrelated_app_server.write_text("unrelated app-server change\n")
+                changed_app_server = commit("unapproved app-server change")
+                with self.assertRaisesRegex(
+                    ValueError, "unapproved product/build inputs"
+                ):
+                    verify_hosted_v8_source(producer, changed_app_server)
+                unrelated_app_server.unlink()
+
                 script_path.write_text(
                     native_script.replace("phase=full", "phase=debug")
                 )
