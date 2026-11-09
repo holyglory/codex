@@ -1123,6 +1123,33 @@ impl ThreadRequestProcessor {
             .await;
     }
 
+    async fn shutdown_stale_thread_writer(&self, thread_id: ThreadId) {
+        match tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 10),
+            self.thread_store.shutdown_thread(thread_id),
+        )
+        .await
+        {
+            Ok(Ok(()))
+            | Ok(Err(ThreadStoreError::ThreadNotFound {
+                thread_id: missing,
+            })) if missing == thread_id => {}
+            Ok(Err(error)) => {
+                warn!(
+                    %thread_id,
+                    error = %error,
+                    "failed to release stale thread writer during connection teardown"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    %thread_id,
+                    "timed out releasing stale thread writer during connection teardown"
+                );
+            }
+        }
+    }
+
     async fn thread_unsubscribe_response_inner(
         &self,
         params: ThreadUnsubscribeParams,
@@ -3890,7 +3917,9 @@ impl ThreadRequestProcessor {
                 && !self.thread_state_manager.has_subscribers(thread_id).await
             {
                 // Reconcile stale app-server bookkeeping when the thread has already been
-                // removed from the core manager.
+                // removed from the core manager. The local store may still retain the writer
+                // acquired before the runtime disappeared, so release that recorder first.
+                self.shutdown_stale_thread_writer(thread_id).await;
                 self.finalize_thread_teardown(thread_id).await;
             }
         }
