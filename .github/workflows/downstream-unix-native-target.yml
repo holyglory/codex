@@ -76,16 +76,7 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: bash .github/scripts/downstream-unix-native.sh source-v8
       - name: Require a complete V8 handoff before upload
-        if: always()
-        run: |
-          set -euo pipefail
-          handoff="$V8_HANDOFF_DIR"
-          test -s "$handoff/v8-pair.json"
-          test -s "$handoff/pair/librusty_v8_ptrcomp_sandbox_release_${TARGET}.a.gz"
-          test -s "$handoff/pair/src_binding_ptrcomp_sandbox_release_${TARGET}.rs"
-          test -s "$handoff/pair/rusty_v8_ptrcomp_sandbox_release_${TARGET}.sha256"
-          test -f "$handoff/logs/v8-source-pair.log"
-          test -f "$handoff/logs/v8-bazel-shutdown.log"
+        run: bash .github/scripts/downstream-unix-native.sh verify-pair
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success()
         with:
