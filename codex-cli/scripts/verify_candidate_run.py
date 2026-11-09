@@ -11,6 +11,12 @@ HOSTED_TARGETS = (
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 )
+HOSTED_V8_JOBS = tuple(
+    f"Build and test {target} / V8 source pair" for target in HOSTED_TARGETS
+)
+HOSTED_PACKAGE_JOBS = tuple(
+    f"Build and test {target} / Package native target" for target in HOSTED_TARGETS
+)
 CANDIDATE_JOBS = (
     "Verify local acceptance and native source identity",
     "Import verified VPS and private Windows outputs",
@@ -45,7 +51,7 @@ def verify_candidate_run(
         ):
             raise ValueError(f"Candidate {field} differs from the release repository")
     required = (
-        (CANDIDATE_JOBS[0], *(f"Build and test {target}" for target in HOSTED_TARGETS))
+        (CANDIDATE_JOBS[0], *HOSTED_V8_JOBS, *HOSTED_PACKAGE_JOBS)
         if hosted_native
         else CANDIDATE_JOBS
     )

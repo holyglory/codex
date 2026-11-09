@@ -29,12 +29,18 @@ PACKAGING_PATHS = frozenset(
         "scripts/test_downstream_windows_contract.py",
         "codex-cli/scripts/verify_candidate_run.py",
         ".github/workflows/downstream-candidate.yml",
+        ".github/workflows/downstream-unix-native-target.yml",
         ".github/workflows/downstream-npm-publish.yml",
         ".github/workflows/trusted-windows-native.yml",
         ".github/scripts/downstream-windows-native.ps1",
         ".github/scripts/downstream-unix-native.sh",
         ".devcoordinator.toml",
     }
+)
+
+HOSTED_RECIPE_PATHS = (
+    ".github/workflows/downstream-unix-native-target.yml",
+    ".github/scripts/downstream-unix-native.sh",
 )
 
 
@@ -82,14 +88,20 @@ def verify_native_source(producer: str, packaging: str) -> dict:
 
 def verify_hosted_native_source(producer: str, packaging: str) -> dict:
     result = verify_native_source(producer, packaging)
-    if ".github/scripts/downstream-unix-native.sh" in result["packaging_only_paths"]:
+    if any(path in result["packaging_only_paths"] for path in HOSTED_RECIPE_PATHS):
         raise ValueError("Hosted native recipe changed after its producer run")
+    for path in HOSTED_RECIPE_PATHS:
+        recipes = [git("show", f"{commit}:{path}") for commit in (producer, packaging)]
+        if recipes[0] != recipes[1]:
+            raise ValueError(
+                f"Hosted native recipe changed after its producer run: {path}"
+            )
     workflows = [
         git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
         for commit in (producer, packaging)
     ]
-    # Keep the build job and workflow-wide execution settings byte-identical.
-    # Identity, handoff and npm orchestration may evolve independently.
+    # Keep the hosted native wrapper and workflow-wide execution settings
+    # byte-identical. Identity, handoff and npm orchestration may evolve.
     for pattern in (
         r"^  native:\n.*?(?=^  [\w-]+:\n|\Z)",
         r"^(?:env|defaults|permissions):[^\n]*(?:\n|\Z).*?(?=^\S|\Z)",

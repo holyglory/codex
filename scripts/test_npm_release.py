@@ -2,6 +2,7 @@
 """Focused checks for release identity and archive naming guards."""
 
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
@@ -145,6 +146,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 ".github/scripts/rusty_v8_bazel.py": "V8 helper\n",
                 ".github/scripts/prepare_downstream_musl.py": "musl helper\n",
                 ".github/scripts/downstream-unix-native.sh": "hosted helper\n",
+                ".github/workflows/downstream-unix-native-target.yml": "name: target\non:\n  workflow_call:\njobs:\n  v8:\n    name: V8 source pair\n  package:\n    name: Package native target\n",
                 ".github/workflows/downstream-candidate.yml": "env:\n  BUILD_MODE: release\njobs:\n  native:\n    runs-on: ubuntu-24.04-arm\n    steps:\n      - run: echo hosted\n  npm:\n    steps:\n      - run: echo assembly\n",
             }
             for path, content in inputs.items():
@@ -194,6 +196,103 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 with self.assertRaisesRegex(ValueError, "global build settings"):
                     verify_hosted_native_source(producer, invalid)
 
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_v8_handoff_rejects_corruption_and_identity_mismatch(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / ".github/scripts/downstream-unix-native.sh"
+        )
+        target = "x86_64-apple-darwin"
+        with tempfile.TemporaryDirectory() as directory:
+            handoff = Path(directory) / "handoff"
+            pair = handoff / "pair"
+            logs = handoff / "logs"
+            pair.mkdir(parents=True)
+            logs.mkdir()
+            (logs / "v8-source-pair.log").write_text("source\n")
+            (logs / "v8-bazel-shutdown.log").write_text("shutdown\n")
+            archive = f"librusty_v8_ptrcomp_sandbox_release_{target}.a.gz"
+            binding = f"src_binding_ptrcomp_sandbox_release_{target}.rs"
+            checksums = f"rusty_v8_ptrcomp_sandbox_release_{target}.sha256"
+            (pair / archive).write_bytes(b"archive")
+            (pair / binding).write_text("binding\n")
+
+            def digest(path: Path) -> str:
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            (pair / checksums).write_text(
+                f"{digest(pair / archive)}  {archive}\n"
+                f"{digest(pair / binding)}  {binding}\n"
+            )
+            root = Path(__file__).resolve().parents[1]
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args], text=True
+                ).strip()
+
+            (handoff / "v8-pair.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "status": "success",
+                        "source_commit": git("rev-parse", "HEAD"),
+                        "source_tree": git("rev-parse", "HEAD^{tree}"),
+                        "native_tree": git("rev-parse", "HEAD:codex-rs"),
+                        "v8_tree": git("rev-parse", "HEAD:third_party/v8"),
+                        "target": target,
+                        "profile": "sandbox_release",
+                        "source_built": True,
+                        "files": {
+                            name: digest(pair / name)
+                            for name in (archive, binding, checksums)
+                        },
+                        "logs": {
+                            name: digest(logs / name)
+                            for name in ("v8-source-pair.log", "v8-bazel-shutdown.log")
+                        },
+                    }
+                )
+            )
+            env = {
+                **os.environ,
+                "TARGET": target,
+                "BAZEL_PLATFORM": "macos_amd64",
+                "BAZEL_CONFIG": "ci-macos",
+                "SOURCE_VERSION": "0.166.0+multi.1",
+                "RUNNER_TEMP": directory,
+                "V8_HANDOFF_DIR": str(handoff),
+            }
+            valid = subprocess.run(
+                ["bash", str(script), "verify-pair"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            (logs / "v8-source-pair.log").unlink()
+            missing_log = subprocess.run(
+                ["bash", str(script), "verify-pair"], cwd=root, env=env
+            )
+            self.assertNotEqual(missing_log.returncode, 0)
+            (logs / "v8-source-pair.log").write_text("source\n")
+            (pair / archive).write_bytes(b"changed")
+            corrupted = subprocess.run(
+                ["bash", str(script), "verify-pair"], cwd=root, env=env
+            )
+            self.assertNotEqual(corrupted.returncode, 0)
+            (pair / archive).write_bytes(b"archive")
+            receipt = json.loads((handoff / "v8-pair.json").read_text())
+            receipt["target"] = "aarch64-apple-darwin"
+            (handoff / "v8-pair.json").write_text(json.dumps(receipt))
+            mismatched = subprocess.run(
+                ["bash", str(script), "verify-pair"], cwd=root, env=env
+            )
+            self.assertNotEqual(mismatched.returncode, 0)
+
     def test_only_native_builds_may_start_without_complete_local_proof(self) -> None:
         producer = "a" * 40
         verify_acceptance(None, producer, mode="native-only")
@@ -216,12 +315,20 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
             {"name": name, "status": "completed", "conclusion": "success"}
             for name in (
                 candidate.CANDIDATE_JOBS[0],
-                *(f"Build and test {target}" for target in candidate.HOSTED_TARGETS),
+                *candidate.HOSTED_V8_JOBS,
+                *candidate.HOSTED_PACKAGE_JOBS,
             )
         ]
         candidate.verify_candidate_run(
             run, repository, commit, jobs, hosted_native=True
         )
+        for required in (*candidate.HOSTED_V8_JOBS, *candidate.HOSTED_PACKAGE_JOBS):
+            with self.subTest(missing_hosted_job=required):
+                missing = [job for job in jobs if job["name"] != required]
+                with self.assertRaisesRegex(ValueError, "Required candidate job"):
+                    candidate.verify_candidate_run(
+                        run, repository, commit, missing, hosted_native=True
+                    )
         with self.assertRaisesRegex(ValueError, "Required candidate job"):
             candidate.verify_candidate_run(run, repository, commit, jobs)
         complete_jobs = [

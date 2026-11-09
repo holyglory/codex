@@ -122,8 +122,9 @@ jobs:
     name: Build and test ${{ matrix.target }}
     if: inputs.hosted_native_run_id == ''
     needs: identity
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -140,68 +141,15 @@ jobs:
             target: aarch64-apple-darwin
             platform: macos_arm64
             bazel_config: ci-macos
-    env:
-      TARGET: ${{ matrix.target }}
-      BAZEL_PLATFORM: ${{ matrix.platform }}
-      BAZEL_CONFIG: ${{ matrix.bazel_config }}
-      SOURCE_VERSION: ${{ needs.identity.outputs.source_version }}
-      CARGO_PROFILE_RELEASE_DEBUG: "1"
-      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/prepare-bazel-ci
-        with:
-          target: ${{ matrix.target }}
-          cache-scope: downstream-v8-source
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          toolchain: "1.95.0"
-          targets: ${{ matrix.target }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
-        with:
-          tool: nextest
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        if: runner.os == 'Linux'
-        with:
-          version: 0.14.0
-          use-cache: false
-      - name: Install native Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          bash .github/scripts/install-musl-build-tools.sh
-          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
-          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET//-/_}"
-          echo "$target_no_jitter=1" >> "$GITHUB_ENV"
-          python3 .github/scripts/prepare_downstream_musl.py --target "$TARGET" --output-dir "$RUNNER_TEMP/downstream-musl/$TARGET"
-      - name: Install archive tools
-        run: |
-          if ! command -v zstd >/dev/null; then
-            if [[ "$RUNNER_OS" == "Linux" ]]; then
-              sudo apt-get install -y zstd
-            else
-              brew install zstd
-            fi
-          fi
-      - name: Build the matching V8 pair, execute native regressions, and assemble packages
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        run: bash .github/scripts/downstream-unix-native.sh
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        if: always()
-        with:
-          name: ${{ matrix.target }}
-          path: |
-            native-dist/${{ matrix.target }}/codex-package-*.tar.*
-            native-dist/${{ matrix.target }}/native-manifest.json
-            native-dist/${{ matrix.target }}/SHA256SUMS
-            native-dist/${{ matrix.target }}/logs
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/downstream-unix-native-target.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      platform: ${{ matrix.platform }}
+      bazel_config: ${{ matrix.bazel_config }}
+      source_version: ${{ needs.identity.outputs.source_version }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
   npm:
     name: Assemble and verify all seven npm tarballs
