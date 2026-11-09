@@ -3,6 +3,7 @@ use std::sync::Arc;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::SelectedPluginSnapshot;
 use codex_extension_api::StepPreparationInput;
+use codex_extension_api::ToolContributor;
 use codex_login::AuthManager;
 use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
