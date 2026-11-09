@@ -71,7 +71,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                         env={
                             **os.environ,
                             "TARGET": target,
-                            "SOURCE_VERSION": "0.166.0+multi.2",
+                            "SOURCE_VERSION": "0.166.0+multi.3",
                             "release": str(release),
                             "dist": str(dist),
                             "NPM_FIXTURE_PYTHON": sys.executable,
@@ -84,7 +84,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                         "--target",
                         target,
                         "--package-version",
-                        "0.166.0+multi.2",
+                        "0.166.0+multi.3",
                         "--cargo-profile",
                         "release",
                         "--strip",
@@ -383,7 +383,7 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 "TARGET": target,
                 "BAZEL_PLATFORM": "macos_amd64",
                 "BAZEL_CONFIG": "ci-macos",
-                "SOURCE_VERSION": "0.166.0+multi.2",
+                "SOURCE_VERSION": "0.166.0+multi.3",
                 "RUNNER_TEMP": directory,
                 "V8_HANDOFF_DIR": str(handoff),
             }
@@ -517,14 +517,14 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
             )
 
     def test_release_names_include_root_and_all_six_platforms(self) -> None:
-        paths = tarball_paths(Path("dist/npm"), "0.166.0-multi.2")
+        paths = tarball_paths(Path("dist/npm"), "0.166.0-multi.3")
         self.assertEqual(set(paths), {"root", *PLATFORMS})
         self.assertEqual(len(set(paths.values())), 7)
 
     def test_build_metadata_is_rejected_before_archive_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "build metadata"):
-                verify_release(Path(directory), "0.166.0+multi.2")
+                verify_release(Path(directory), "0.166.0+multi.3")
 
 
 if __name__ == "__main__":
