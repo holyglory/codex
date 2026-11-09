@@ -376,6 +376,22 @@ async fn transparent_image_preserves_output_metadata_and_persisted_history(
     assert_eq!(transparent_background, Some(true));
     assert_eq!(input_images, expected_inputs);
 
+    let image_request = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?
+        .into_iter()
+        .find(|request| request.url.path() == "/api/codex/images/generations")
+        .context("image generation request should be sent")?;
+    assert_eq!(
+        image_request
+            .headers
+            .get("authorization")
+            .context("image generation should include the selected account bearer token")?
+            .to_str()?,
+        "Bearer access-chatgpt"
+    );
+
     drop(mcp);
     let mut resumed = TestAppServer::builder()
         .with_codex_home(codex_home.path())

@@ -13,12 +13,14 @@ use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::StepPreparationInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -122,6 +124,14 @@ impl ConfigContributor<Config> for WebSearchExtension {
 }
 
 impl ToolContributor for WebSearchExtension {
+    /// Carries the selected turn account into the step that executes web search.
+    fn prepare_for_step<'a>(&'a self, input: StepPreparationInput<'a>) -> ExtensionFuture<'a, ()> {
+        if let Some(lease) = input.turn_store.get::<AuthManagerLease>() {
+            input.step_store.insert_arc(lease);
+        }
+        Box::pin(async {})
+    }
+
     fn tools_for_step(
         &self,
         session_store: &ExtensionData,
@@ -137,13 +147,14 @@ impl ToolContributor for WebSearchExtension {
             return Vec::new();
         }
 
+        let auth_manager = step_store
+            .get::<AuthManagerLease>()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
             http_client_factory: config.http_client_factory.clone(),
-            provider: create_model_provider(
-                config.provider.clone(),
-                Some(self.auth_manager.clone()),
-            ),
+            provider: create_model_provider(config.provider.clone(), Some(auth_manager)),
             settings: config.settings.clone(),
             supports_literature_search: step_store.get::<ModelInfo>().is_some_and(|model| {
                 model

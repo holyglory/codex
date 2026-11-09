@@ -5,6 +5,7 @@ use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::StepPreparationInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
@@ -13,6 +14,7 @@ use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -84,6 +86,14 @@ impl ConfigContributor<Config> for ImageGenerationExtension {
 }
 
 impl ToolContributor for ImageGenerationExtension {
+    /// Carries the turn's selected account lease into the step that owns tool execution.
+    fn prepare_for_step<'a>(&'a self, input: StepPreparationInput<'a>) -> ExtensionFuture<'a, ()> {
+        if let Some(lease) = input.turn_store.get::<AuthManagerLease>() {
+            input.step_store.insert_arc(lease);
+        }
+        Box::pin(async {})
+    }
+
     /// Creates the image-generation tool exposed by this installed extension.
     fn tools(
         &self,
@@ -97,9 +107,44 @@ impl ToolContributor for ImageGenerationExtension {
             return Vec::new();
         }
 
+        let auth_manager = thread_store
+            .get::<AuthManagerLease>()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
         vec![Arc::new(ImageGenerationTool::new(
             CodexImagesBackend::new(
-                create_model_provider(config.provider.clone(), Some(self.auth_manager.clone())),
+                create_model_provider(config.provider.clone(), Some(auth_manager)),
+                config.http_client_factory.clone(),
+                thread_store
+                    .get::<ThreadOriginator>()
+                    .map(|originator| originator.0.clone()),
+            ),
+            config.save_root.clone(),
+            thread_store.level_id().to_string(),
+        ))]
+    }
+
+    /// Creates image generation with the account selected for this sampling step.
+    fn tools_for_step(
+        &self,
+        _session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        let Some(config) = thread_store.get::<ImageGenerationExtensionConfig>() else {
+            return Vec::new();
+        };
+        if !config.available {
+            return Vec::new();
+        }
+
+        let auth_manager = step_store
+            .get::<AuthManagerLease>()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        vec![Arc::new(ImageGenerationTool::new(
+            CodexImagesBackend::new(
+                create_model_provider(config.provider.clone(), Some(auth_manager)),
                 config.http_client_factory.clone(),
                 thread_store
                     .get::<ThreadOriginator>()
@@ -110,6 +155,10 @@ impl ToolContributor for ImageGenerationExtension {
         ))]
     }
 }
+
+#[cfg(test)]
+#[path = "extension_tests.rs"]
+mod tests;
 
 /// Installs the standalone image-generation extension contributors.
 pub fn install(

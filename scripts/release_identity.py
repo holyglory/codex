@@ -78,6 +78,12 @@ V8_REUSE_SOURCE_PREFIXES = (
     "codex-rs/usage/",
     "codex-rs/app-server/src/request_processors/thread_processor.rs",
     "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+    "codex-rs/ext/image-generation/",
+    "codex-rs/ext/web-search/",
+    "codex-rs/ext/history-notes/",
+    "codex-rs/ext/git-attribution/",
+    "codex-rs/model-provider/src/auth.rs",
+    "codex-rs/app-server/tests/suite/v2/imagegen_extension.rs",
 )
 
 
