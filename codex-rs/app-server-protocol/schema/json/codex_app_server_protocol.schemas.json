@@ -1844,6 +1844,30 @@
             },
             "method": {
               "enum": [
+                "localUsage/summary"
+              ],
+              "title": "LocalUsage/summaryRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageSummaryParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/summaryRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/gatewayOAuth/read"
               ],
               "title": "Account/gatewayOAuth/readRequestMethod",
@@ -3638,6 +3662,31 @@
     },
     "LocalUsageAccountingCapability": {
       "properties": {
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "storage": {
+          "default": "",
+          "type": "string"
+        },
+        "supportedVersions": {
+          "default": [],
+          "items": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "supportsWorkContextBindings": {
+          "default": false,
+          "description": "False until the producer captures explicit work-context bindings.",
+          "type": "boolean"
+        },
         "version": {
           "format": "uint32",
           "minimum": 0.0,
@@ -14894,6 +14943,366 @@
           "incomplete"
         ],
         "type": "string"
+      },
+      "LocalUsageCursor": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "observedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "observedAtMs"
+        ],
+        "type": "object"
+      },
+      "LocalUsageOperationBinding": {
+        "properties": {
+          "capturedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operationId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "workContextId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "capturedAtMs",
+          "operationId",
+          "schemaVersion",
+          "workContextId"
+        ],
+        "type": "object"
+      },
+      "LocalUsageSnapshot": {
+        "properties": {
+          "freshness": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "journalWatermark": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingCorrections": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingEntries": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "refreshId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourceWatermark": {
+            "type": "string"
+          },
+          "updatedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "watermark": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "watermarkAtMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "freshness",
+          "generatedAt",
+          "generation",
+          "journalWatermark",
+          "pendingCorrections",
+          "pendingEntries",
+          "sourceWatermark",
+          "updatedAtMs",
+          "watermark",
+          "watermarkAtMs"
+        ],
+        "type": "object"
+      },
+      "LocalUsageSummaryParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Read one consistent usage-v2 snapshot. No legacy usage database is opened.",
+        "properties": {
+          "accountId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contractVersion": {
+            "default": null,
+            "description": "Omission selects version 1; unsupported versions are rejected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expectedSnapshot": {
+            "default": null,
+            "description": "Required with a continuation, so paging never silently mixes snapshots.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fromAtMs": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "includeReview": {
+            "default": false,
+            "type": "boolean"
+          },
+          "includeUnassigned": {
+            "default": false,
+            "description": "Compatibility flag, meaningful only alongside a worktree selector.",
+            "type": "boolean"
+          },
+          "operationLimit": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "operationsAfter": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "recordLimit": {
+            "default": 0,
+            "description": "Zero/omission excludes detail; a requested page is limited to 50 rows.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "recordsAfter": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "repositoryId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "toAtMs": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "workstreamId": {
+            "default": null,
+            "description": "Recognized but currently rejected: outcome rows can be selected by the consumer, while complete workstream-scoped summary vectors are unavailable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktreeKeys": {
+            "default": null,
+            "description": "Reserved compatibility selector; non-null is rejected until captured.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "title": "LocalUsageSummaryParams",
+        "type": "object"
+      },
+      "LocalUsageSummaryResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Content-free summary with opt-in finite diagnostics. `report` preserves the existing localUsage/summary envelope; `summary` is the native usage-v2 view.",
+        "properties": {
+          "contractVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "generatedAt": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "nextOperationsCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextRecordsCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observations": {
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "operationBindings": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageOperationBinding"
+            },
+            "type": "array"
+          },
+          "operations": {
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "report": true,
+          "review": true,
+          "snapshot": {
+            "$ref": "#/definitions/v2/LocalUsageSnapshot"
+          },
+          "source": {
+            "type": "string"
+          },
+          "summary": true,
+          "workContexts": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageWorkContext"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "contractVersion",
+          "generatedAt",
+          "operationBindings",
+          "report",
+          "snapshot",
+          "source",
+          "summary",
+          "workContexts"
+        ],
+        "title": "LocalUsageSummaryResponse",
+        "type": "object"
+      },
+      "LocalUsageWorkContext": {
+        "description": "Only explicitly captured bindings may populate this versioned extension. Repository/thread identity or operation completion never implies a binding.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "outcomeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repositoryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "workstreamId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "schemaVersion"
+        ],
+        "type": "object"
       },
       "LoginAccountParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",

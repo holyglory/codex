@@ -7,6 +7,7 @@
 //! snapshot generation, journal watermark, freshness, correction segments, and
 //! mergeable totals without opening the retired SQLite report database.
 
+mod bound_evidence;
 mod capture;
 mod correction_retention;
 mod detail_retention;
@@ -54,6 +55,7 @@ mod summary;
 mod summary_cache;
 mod token_rollup;
 
+pub use bound_evidence::BoundOperationEffort;
 pub use capture::capture_record;
 pub use capture::capture_records;
 pub use duckdb_snapshot::DuckDbSnapshot;

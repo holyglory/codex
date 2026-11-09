@@ -220,7 +220,17 @@ impl InitializeRequestProcessor {
                     supports_auto_selection: true,
                     supports_credit_usage: true,
                 }),
-            local_usage_accounting: None,
+            local_usage_accounting: Some(
+                codex_app_server_protocol::LocalUsageAccountingCapability {
+                    version: 1,
+                    supported_versions: vec![1],
+                    methods: vec!["localUsage/summary".into()],
+                    storage: "usage-v2".into(),
+                    supports_work_context_bindings: super::local_usage_bindings::available(
+                        &self.config.codex_home,
+                    ),
+                },
+            ),
         };
 
         self.outgoing

@@ -1152,6 +1152,11 @@ client_request_definitions! {
         serialization: None,
         response: v2::ModelListResponse,
     },
+    LocalUsageSummary => "localUsage/summary" {
+        params: v2::LocalUsageSummaryParams,
+        serialization: None,
+        response: v2::LocalUsageSummaryResponse,
+    },
     GatewayOAuthRead => "account/gatewayOAuth/read" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: None,

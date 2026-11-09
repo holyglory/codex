@@ -1,0 +1,457 @@
+{
+  "contractVersion": 1,
+  "source": "usage-v2",
+  "generatedAt": 1794265818987,
+  "snapshot": {
+    "sourceWatermark": "usage-v2:1:2:4:b1-2000-r1-1794265817498107010",
+    "generatedAt": 1794265818987,
+    "generation": 1,
+    "watermark": 2,
+    "journalWatermark": 4,
+    "watermarkAtMs": 1794265817000,
+    "updatedAtMs": 1794265817000,
+    "freshness": "fresh",
+    "pendingEntries": 0,
+    "pendingCorrections": 0,
+    "refreshId": null
+  },
+  "report": {
+    "counts": {
+      "missingRepository": 0,
+      "modelRequests": 2,
+      "operations": 2,
+      "tools": 0,
+      "unclassified": 0,
+      "unfinished": 0,
+      "unknownIntervals": 0,
+      "warmups": 0
+    },
+    "coverage": {
+      "details": {
+        "collectionCompleteness": "recorded",
+        "conflictingTokenObservations": null,
+        "coverageEvents": [],
+        "criticalPath": "unobserved",
+        "deduplicatedOperations": 2,
+        "deduplicatedTokenObservations": 2,
+        "incompleteTokenObservations": 0,
+        "modelRequestsWithoutProviderTotal": 0,
+        "operationStatistics": "recorded",
+        "operationsWithoutRepository": 0,
+        "projectionCompleteFromSequence": 1,
+        "rawOperations": 2,
+        "rawTokenObservations": 2,
+        "repeatedInputComparison": "unobserved",
+        "retainedAggregateOperations": 0,
+        "reviewDetail": "recorded",
+        "tokenTotals": "recorded",
+        "unappliedCorrectionsAfterRetention": 0,
+        "unappliedObservationsAfterRetention": 0,
+        "unclassifiedOperations": 0,
+        "unknownOperationIntervals": 0,
+        "unknownTokenObservations": 0,
+        "unlinkedToolOperations": null,
+        "waits": "partial"
+      },
+      "hasGaps": false,
+      "state": "complete",
+      "workBindings": "partial"
+    },
+    "databaseSchemaVersion": 3,
+    "filters": {
+      "accountId": null,
+      "repositoryId": "repo-a",
+      "threadId": null
+    },
+    "kind": "usageSummary",
+    "measuredExecutionIntervalSumMs": 2000,
+    "providerTokens": [
+      {
+        "category": "total_tokens",
+        "exactTokens": 135,
+        "measuredTokens": 135,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 0
+      },
+      {
+        "category": "input_tokens",
+        "exactTokens": 135,
+        "measuredTokens": 135,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 0
+      },
+      {
+        "category": "input_tokens_details.cached_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 0
+      },
+      {
+        "category": "output_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 0
+      },
+      {
+        "category": "output_tokens_details.reasoning_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 0
+      },
+      {
+        "category": "cache_write_input_tokens",
+        "exactTokens": null,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 2,
+        "repositoryBucket": "repo-a",
+        "unknownObservations": 2
+      }
+    ],
+    "providerTokensByActivity": [
+      {
+        "activity": "coding",
+        "attributionProvenance": "unknown",
+        "exactTokens": null,
+        "measuredTokens": 135,
+        "phase": "implementation",
+        "unknownObservations": 0
+      }
+    ],
+    "schemaVersion": 1,
+    "scope": {
+      "id": "repo-a",
+      "type": "repository"
+    },
+    "taxonomyVersion": 1,
+    "timeRange": {
+      "endMs": 3000,
+      "startMs": 0
+    },
+    "workBindings": {
+      "basis": "explicit_sidecar",
+      "boundOperations": 1,
+      "coverage": "partial",
+      "schemaVersion": 1,
+      "sourceRevision": "b1-2000-r1-1794265817498107010",
+      "unknownOperations": 1
+    }
+  },
+  "summary": {
+    "cachedInputTokens": 0,
+    "counts": {
+      "missingRepository": 0,
+      "modelRequests": 2,
+      "operations": 2,
+      "tools": 0,
+      "unclassified": 0,
+      "unfinished": 0,
+      "unknownIntervals": 0,
+      "warmups": 0
+    },
+    "coverage": {
+      "observedWaitFamilies": [
+        "http_retry",
+        "stream_retry",
+        "compaction_retry"
+      ],
+      "operationState": "recorded",
+      "operationStatistics": "recorded",
+      "projectionCompleteFromSequence": 1,
+      "retiredReviewContributions": 0,
+      "retiredReviewOperations": 0,
+      "reviewDetail": "recorded",
+      "tokenTotals": "recorded",
+      "unappliedCorrectionsAfterRetention": 0,
+      "unappliedObservationsAfterRetention": 0,
+      "unobservedFamilies": [
+        "work_bindings"
+      ],
+      "unobservedWaitFamilies": [
+        "user",
+        "agent",
+        "approval",
+        "websocket_connection",
+        "auth_refresh"
+      ],
+      "waits": "partial"
+    },
+    "formulas": {
+      "counts": "Operations count canonical tool/model lifecycles, not the number of journal observations.",
+      "tokens": "Input and output are disjoint components. Cached input and reasoning output are subsets; do not add them again."
+    },
+    "inputTokens": 135,
+    "kind": "usageSummary",
+    "outputTokens": 0,
+    "reasoningOutputTokens": 0,
+    "records": 2,
+    "schemaVersion": 1,
+    "tools": {
+      "count": 0,
+      "outcomes": [
+        {
+          "count": 0,
+          "outcome": "completed"
+        },
+        {
+          "count": 0,
+          "outcome": "failed"
+        },
+        {
+          "count": 0,
+          "outcome": "blocked"
+        },
+        {
+          "count": 0,
+          "outcome": "cancelled"
+        },
+        {
+          "count": 0,
+          "outcome": "incomplete"
+        }
+      ]
+    }
+  },
+  "review": {
+    "activities": [
+      {
+        "activity": "coding",
+        "operations": null,
+        "phase": "implementation",
+        "provenance": {
+          "unknown": 135
+        },
+        "share": null,
+        "total_tokens": 135
+      }
+    ],
+    "coverage": {
+      "available_collectors": 1,
+      "configured_collectors": 1,
+      "contributing_collectors": 1,
+      "database_schemas": [
+        3
+      ],
+      "events": {},
+      "freshest_at_ms": 1794265817000,
+      "has_gaps": false,
+      "state": "complete",
+      "taxonomy_versions": [
+        1
+      ],
+      "token_observations": {
+        "observed": 2,
+        "unknown": 0
+      },
+      "unavailable_reasons": {
+        "work_binding_unobserved": 1
+      }
+    },
+    "outcomes": {
+      "attributed": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 1
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 1000,
+          "unknown": 0
+        },
+        "operations": 1,
+        "providerTotalTokens": {
+          "exact": null,
+          "measured": 120,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "basis": "Explicit version-1 sidecar declarations joined only by captured operation_id; missing or retired operation detail and response-only token links stay unattributed. Operation completion does not prove delivery.",
+      "coverage": "partial",
+      "nextCursor": null,
+      "rows": [
+        {
+          "effort": {
+            "activeAgentMs": {
+              "exact": null,
+              "measured": 0,
+              "unknown": 1
+            },
+            "elapsedExecutionMs": {
+              "exact": null,
+              "measured": 1000,
+              "unknown": 0
+            },
+            "operations": 1,
+            "providerTotalTokens": {
+              "exact": null,
+              "measured": 120,
+              "unknown": 0
+            },
+            "recordedWaitMs": {
+              "exact": null,
+              "measured": 0,
+              "unknown": 0
+            },
+            "retryOperations": 0,
+            "reworkOperations": 0
+          },
+          "outcomeId": "outcome-one",
+          "title": null,
+          "workstreamId": "stream-one"
+        }
+      ],
+      "schemaVersion": 1,
+      "totalRows": 1,
+      "totals": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 2
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 2000,
+          "unknown": 0
+        },
+        "operations": 2,
+        "providerTotalTokens": {
+          "exact": 135,
+          "measured": 135,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "unattributed": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 1
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 1000,
+          "unknown": 0
+        },
+        "operations": 1,
+        "providerTotalTokens": {
+          "exact": null,
+          "measured": 15,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "unattributedReasons": {
+        "operation_context_or_outcome_unobserved": 1,
+        "token_observation_context_unobserved": 1
+      }
+    },
+    "semantics": {
+      "coverage": "Work-context attribution uses only explicit sidecar operation IDs. Missing or retired evidence stays unattributed. Completed operations do not prove delivery.",
+      "time": "Wall-clock, delivery, and active-agent intervals are unobserved. report.measuredExecutionIntervalSumMs and outcomes.elapsedExecutionMs retain sums of measured operation intervals; overlap is not wall-clock or active-agent time.",
+      "tokens": "Provider totals are reported, not inferred. Cached input and reasoning output are subsets; do not add them again."
+    },
+    "time": {
+      "execution_wall": {
+        "measured_ms": 0,
+        "unknown_intervals": 2
+      },
+      "phases": [],
+      "request_to_delivery": {
+        "measured_ms": 0,
+        "unknown_intervals": 2
+      },
+      "summed_agent_active": {
+        "measured_ms": 0,
+        "unknown_intervals": 2
+      }
+    },
+    "tools": {
+      "families": [],
+      "outcomes": [
+        {
+          "count": 0,
+          "outcome": "completed"
+        },
+        {
+          "count": 0,
+          "outcome": "failed"
+        },
+        {
+          "count": 0,
+          "outcome": "blocked"
+        },
+        {
+          "count": 0,
+          "outcome": "cancelled"
+        },
+        {
+          "count": 0,
+          "outcome": "incomplete"
+        }
+      ]
+    },
+    "totals": {
+      "cached_input_tokens": 0,
+      "input_tokens": 135,
+      "model_requests": 2,
+      "operations": 2,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "tool_calls": 0,
+      "total_tokens": 135
+    }
+  },
+  "nextRecordsCursor": null,
+  "nextOperationsCursor": null,
+  "workContexts": [
+    {
+      "schemaVersion": 1,
+      "id": "context-one",
+      "repositoryId": "coordinator-repo",
+      "projectId": "project-one",
+      "workstreamId": "stream-one",
+      "outcomeId": "outcome-one"
+    }
+  ],
+  "operationBindings": [
+    {
+      "schemaVersion": 1,
+      "operationId": "bound-operation",
+      "workContextId": "context-one",
+      "capturedAtMs": 2000
+    }
+  ]
+}

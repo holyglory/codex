@@ -7,6 +7,31 @@
     },
     "LocalUsageAccountingCapability": {
       "properties": {
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "storage": {
+          "default": "",
+          "type": "string"
+        },
+        "supportedVersions": {
+          "default": [],
+          "items": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "supportsWorkContextBindings": {
+          "default": false,
+          "description": "False until the producer captures explicit work-context bindings.",
+          "type": "boolean"
+        },
         "version": {
           "format": "uint32",
           "minimum": 0.0,

@@ -556,6 +556,8 @@ mod feedback_thread_index;
 mod fs_processor;
 mod git_processor;
 mod initialize_processor;
+mod local_usage_bindings;
+pub(crate) mod local_usage_processor;
 mod marketplace_processor;
 mod mcp_event_stream;
 mod mcp_processor;

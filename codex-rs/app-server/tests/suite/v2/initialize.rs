@@ -54,10 +54,7 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     let JSONRPCMessage::Response(response) = message else {
         anyhow::bail!("expected initialize response, got {message:?}");
     };
-    assert_eq!(
-        response.result.get("localUsageAccounting"),
-        Some(&Value::Null)
-    );
+    assert_eq!(response.result["localUsageAccounting"]["version"], 1);
     let InitializeResponse {
         user_agent,
         codex_home: response_codex_home,
@@ -71,7 +68,11 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     assert_eq!(response_codex_home, expected_codex_home);
     assert_eq!(platform_family, std::env::consts::FAMILY);
     assert_eq!(platform_os, std::env::consts::OS);
-    assert_eq!(local_usage_accounting, None);
+    let capability = local_usage_accounting.expect("local usage capability");
+    assert_eq!(capability.supported_versions, vec![1]);
+    assert_eq!(capability.methods, vec!["localUsage/summary"]);
+    assert_eq!(capability.storage, "usage-v2");
+    assert!(!capability.supports_work_context_bindings);
     Ok(())
 }
 

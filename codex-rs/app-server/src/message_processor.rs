@@ -168,6 +168,7 @@ pub(crate) struct MessageProcessor {
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
+    local_usage_home: std::path::PathBuf,
     marketplace_processor: MarketplaceRequestProcessor,
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
@@ -631,6 +632,7 @@ impl MessageProcessor {
         );
 
         Self {
+            local_usage_home: config.codex_home.to_path_buf(),
             turn_admission,
             user_verification,
             outgoing,
@@ -1195,6 +1197,14 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::LocalUsageSummary { params, .. } => {
+                crate::request_processors::local_usage_processor::summary(
+                    self.local_usage_home.clone(),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)
