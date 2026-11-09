@@ -41,7 +41,6 @@ jobs:
       SOURCE_VERSION: ${{ inputs.source_version }}
       CARGO_PROFILE_RELEASE_DEBUG: "1"
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(inputs.target, 'apple-darwin') && 'packed' || 'off' }}
-      V8_HANDOFF_DIR: ${{ runner.temp }}/downstream-v8/${{ inputs.target }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -107,7 +106,6 @@ jobs:
       SOURCE_VERSION: ${{ inputs.source_version }}
       CARGO_PROFILE_RELEASE_DEBUG: "1"
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(inputs.target, 'apple-darwin') && 'packed' || 'off' }}
-      V8_HANDOFF_DIR: ${{ runner.temp }}/downstream-v8/${{ inputs.target }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
