@@ -10763,8 +10763,40 @@
         "coverage": {
           "$ref": "#/definitions/LocalUsageCoverage"
         },
+        "durationNs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "errorCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "eventId": {
           "type": "string"
+        },
+        "failureStage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interface": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "kind": {
           "$ref": "#/definitions/LocalUsageEventKind"
@@ -11468,6 +11500,35 @@
             "null"
           ]
         },
+        "durationNs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "errorCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failureStage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interface": {
+          "type": "string"
+        },
         "operationFamily": {
           "type": "string"
         },
@@ -11480,6 +11541,7 @@
             "null"
           ]
         },
+        "requestShape": true,
         "startedAt": {
           "format": "int64",
           "type": "integer"
@@ -11498,6 +11560,7 @@
         }
       },
       "required": [
+        "interface",
         "operationFamily",
         "provenance",
         "startedAt",

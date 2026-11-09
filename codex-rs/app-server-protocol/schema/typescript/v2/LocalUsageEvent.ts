@@ -5,4 +5,4 @@ import type { LocalUsageCoverage } from "./LocalUsageCoverage";
 import type { LocalUsageEventKind } from "./LocalUsageEventKind";
 import type { LocalUsageProvenance } from "./LocalUsageProvenance";
 
-export type LocalUsageEvent = { eventId: string, threadId: string | null, repositoryKey: string | null, occurredAt: bigint, kind: LocalUsageEventKind, provenance: LocalUsageProvenance, coverage: LocalUsageCoverage, };
+export type LocalUsageEvent = { eventId: string, threadId: string | null, repositoryKey: string | null, occurredAt: bigint, kind: LocalUsageEventKind, interface: string | null, durationNs: bigint | null, failureStage: string | null, errorCategory: string | null, errorCode: string | null, provenance: LocalUsageProvenance, coverage: LocalUsageCoverage, };

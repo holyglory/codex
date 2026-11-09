@@ -1,6 +1,7 @@
 use super::*;
 use codex_usage::ObservationTiming;
 use codex_usage::OperationFamily;
+use codex_usage::ToolInterface;
 use codex_usage::ToolKind;
 use codex_usage::ToolName as UsageToolName;
 
@@ -224,6 +225,7 @@ bounded_identifier_impl!(
     ThreadId,
     ThreadSourceKind,
     ToolKind,
+    ToolInterface,
     TransportKind,
     UsageToolName,
 );

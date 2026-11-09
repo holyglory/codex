@@ -136,6 +136,8 @@ impl PendingModelAttempt {
             occurred_at_ms,
             duration_ns,
             error_category: error,
+            failure_stage: None,
+            error_code: None,
         };
         let classification = saw_usage_activity.then(|| NewClassificationEvent {
             event_id: FactEventId::new(),

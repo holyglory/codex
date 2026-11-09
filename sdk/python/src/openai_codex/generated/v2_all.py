@@ -9179,7 +9179,12 @@ class LocalUsageEvent(BaseModel):
         populate_by_name=True,
     )
     coverage: LocalUsageCoverage
+    duration_ns: Annotated[int | None, Field(alias="durationNs", ge=0)] = None
+    error_category: Annotated[str | None, Field(alias="errorCategory")] = None
+    error_code: Annotated[str | None, Field(alias="errorCode")] = None
     event_id: Annotated[str, Field(alias="eventId")]
+    failure_stage: Annotated[str | None, Field(alias="failureStage")] = None
+    interface: str | None = None
     kind: LocalUsageEventKind
     occurred_at: Annotated[int, Field(alias="occurredAt")]
     provenance: LocalUsageProvenance
@@ -9238,9 +9243,15 @@ class LocalUsageTool(BaseModel):
         populate_by_name=True,
     )
     completed_at: Annotated[int | None, Field(alias="completedAt")] = None
+    duration_ns: Annotated[int | None, Field(alias="durationNs", ge=0)] = None
+    error_category: Annotated[str | None, Field(alias="errorCategory")] = None
+    error_code: Annotated[str | None, Field(alias="errorCode")] = None
+    failure_stage: Annotated[str | None, Field(alias="failureStage")] = None
+    interface: str
     operation_family: Annotated[str, Field(alias="operationFamily")]
     provenance: LocalUsageProvenance
     repository_key: Annotated[str | None, Field(alias="repositoryKey")] = None
+    request_shape: Annotated[Any | None, Field(alias="requestShape")] = None
     started_at: Annotated[int, Field(alias="startedAt")]
     status: LocalUsageToolStatus
     thread_id: Annotated[str, Field(alias="threadId")]

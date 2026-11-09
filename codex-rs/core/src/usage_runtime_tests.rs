@@ -3,11 +3,13 @@ use codex_protocol::provider_usage::ProviderSourceEventKey;
 use codex_usage::CanonicalRepositoryPath;
 use codex_usage::RepositoryIdentityInput;
 use codex_usage::RepositoryIdentityMaterial;
+use codex_usage::ToolFailureStage;
 use codex_usage::UsageEventKind;
 use codex_usage::UsageEventListQuery;
 use codex_usage::UsageEventProvenance;
 use codex_usage::UsagePageRequest;
 use codex_usage::UsageSummaryScope;
+use codex_usage::UsageToolListQuery;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex as StdMutex;
 
@@ -56,11 +58,13 @@ fn tool_context<'a>(
             kind: "builtin",
             safe_name: "test_tool",
             family: "testing",
+            interface: "direct",
             activity_control: false,
             activity_state: ActivityState::ToolActive,
         },
         execution_group_id: None,
         execution_role: codex_usage::ToolExecutionRole::Standalone,
+        request_shape: None,
         account: AccountAttributionSnapshot::unknown(),
         repositories: Vec::new(),
     }
@@ -704,6 +708,177 @@ async fn local_tool_records_provider_tokens_approval_and_timeout() {
             .iter()
             .any(|duration| duration.name == "blocked_wait")
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tool_attempt_metadata_has_one_terminal_per_failure_and_redacts_arguments() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let runtime = UsageRuntime::new(home.path().to_path_buf());
+    let cases = [
+        (
+            "a1111111-1111-7111-8111-111111111111",
+            TerminalStatus::Failed,
+            ErrorCategory::Tool,
+            ToolFailureStage::UnknownTool,
+            "unknown_tool",
+        ),
+        (
+            "a2222222-2222-7222-8222-222222222222",
+            TerminalStatus::Failed,
+            ErrorCategory::Tool,
+            ToolFailureStage::InvalidPayload,
+            "invalid_payload",
+        ),
+        (
+            "a3333333-3333-7333-8333-333333333333",
+            TerminalStatus::Denied,
+            ErrorCategory::Tool,
+            ToolFailureStage::PreToolHook,
+            "blocked",
+        ),
+        (
+            "a4444444-4444-7444-8444-444444444444",
+            TerminalStatus::Denied,
+            ErrorCategory::Tool,
+            ToolFailureStage::Approval,
+            "denied",
+        ),
+        (
+            "a5555555-5555-7555-8555-555555555555",
+            TerminalStatus::Failed,
+            ErrorCategory::Tool,
+            ToolFailureStage::Handler,
+            "handler_failed",
+        ),
+        (
+            "a6666666-6666-7666-8666-666666666666",
+            TerminalStatus::Denied,
+            ErrorCategory::Tool,
+            ToolFailureStage::PostToolHook,
+            "blocked",
+        ),
+        (
+            "a7777777-7777-7777-8777-777777777777",
+            TerminalStatus::Cancelled,
+            ErrorCategory::Cancelled,
+            ToolFailureStage::Cancellation,
+            "cancelled",
+        ),
+        (
+            "a8888888-8888-7888-8888-888888888888",
+            TerminalStatus::Interrupted,
+            ErrorCategory::Tool,
+            ToolFailureStage::Interruption,
+            "dropped",
+        ),
+        (
+            "a9999999-9999-7999-8999-999999999999",
+            TerminalStatus::Interrupted,
+            ErrorCategory::Unavailable,
+            ToolFailureStage::Persistence,
+            "usage_store_unavailable",
+        ),
+    ];
+    let case_count = cases.len();
+    for (index, (thread_id, status, category, stage, code)) in cases.iter().copied().enumerate() {
+        let turn_id = format!("telemetry-turn-{index}");
+        let mut context = tool_context(thread_id, &turn_id, "telemetry-call");
+        context.request_shape = Some(
+            codex_usage::ToolRequestShape::new(r#"{"command":"string","credential":"string"}"#)
+                .expect("shape"),
+        );
+        let attempt = runtime.begin_tool_attempt(context).await;
+        assert_eq!(
+            runtime
+                .active_operation_reference(thread_id, Some(&turn_id), "telemetry-call")
+                .await,
+            Some(attempt.operation_id.as_string())
+        );
+        attempt
+            .finish_with_metadata(
+                status,
+                Some(category),
+                Some(stage),
+                Some(codex_usage::ErrorCode::new(code).expect("code")),
+            )
+            .await;
+        attempt.finish(status, Some(category)).await;
+    }
+
+    let first_retry = runtime
+        .begin_tool_attempt(tool_context(
+            "abbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+            "retry-turn",
+            "retry-call",
+        ))
+        .await;
+    let first_retry_id = first_retry.operation_id;
+    first_retry
+        .finish_with_metadata(
+            TerminalStatus::Failed,
+            Some(ErrorCategory::Tool),
+            Some(ToolFailureStage::Handler),
+            Some(codex_usage::ErrorCode::new("handler_failed").expect("code")),
+        )
+        .await;
+    let second_retry = runtime
+        .begin_tool_attempt(tool_context(
+            "abbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+            "retry-turn",
+            "retry-call",
+        ))
+        .await;
+    second_retry.finish(TerminalStatus::Completed, None).await;
+
+    let store = runtime.store.get().expect("usage store");
+    let page = store
+        .list_tools(&UsageToolListQuery {
+            page: UsagePageRequest {
+                cursor: None,
+                limit: 32,
+            },
+            time_range: None,
+            thread_id: None,
+            repository_id: None,
+        })
+        .await
+        .expect("tool page");
+    assert_eq!(page.data.len(), case_count + 2);
+    assert!(
+        page.data
+            .iter()
+            .any(|record| record.retry_of_operation_id == Some(first_retry_id))
+    );
+    let shaped_count = page
+        .data
+        .iter()
+        .filter(|record| record.request_shape.is_some())
+        .count();
+    assert_eq!(shaped_count, case_count);
+    for record in page
+        .data
+        .iter()
+        .filter(|record| record.request_shape.is_some())
+    {
+        assert_eq!(record.interface.as_str(), "direct");
+        assert_eq!(
+            record.request_shape.as_ref().expect("shape").as_str(),
+            r#"{"command":"string","credential":"string"}"#
+        );
+        assert!(
+            !record
+                .request_shape
+                .as_ref()
+                .expect("shape")
+                .as_str()
+                .contains("secret")
+        );
+        assert!(record.duration_ns.is_some());
+        assert!(record.failure_stage.is_some());
+        assert!(record.error_category.is_some());
+        assert!(record.error_code.is_some());
+    }
 }
 
 #[cfg(unix)]

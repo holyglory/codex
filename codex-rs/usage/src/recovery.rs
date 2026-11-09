@@ -43,9 +43,9 @@ impl UsageStore {
                 r#"
                 INSERT INTO operation_events(
                     event_id, operation_id, event_kind, terminal, occurred_at_ms,
-                    duration_ns, error_category
+                    duration_ns, error_category, failure_stage, error_code
                 )
-                SELECT ?, operation.id, ?, 1, ?, NULL, ?
+                SELECT ?, operation.id, ?, 1, ?, NULL, ?, 'persistence', 'usage_store_unavailable'
                 FROM operations AS operation
                 WHERE operation.id = ? AND operation.process_id = ?
                   AND NOT EXISTS (

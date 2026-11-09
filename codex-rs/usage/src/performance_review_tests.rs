@@ -108,6 +108,8 @@ impl Fixture {
                     + i64::try_from(duration_ms).expect("duration"),
                 duration_ns: duration_ms * 1_000_000,
                 error_category: None,
+                failure_stage: None,
+                error_code: None,
             })
             .await
             .expect("finish");
@@ -149,6 +151,8 @@ impl Fixture {
                 tool_kind: ToolKind::new("function").expect("kind"),
                 safe_tool_name: ToolName::new("exec").expect("tool"),
                 operation_family: OperationFamily::new("test").expect("family"),
+                interface: crate::ToolInterface::new("direct").expect("interface"),
+                request_shape: None,
                 observation_timing: ObservationTiming::new("runtime").expect("timing"),
                 covering_model_request_id: covering,
                 execution_group_id: group,

@@ -208,6 +208,8 @@ async fn operation_lifecycle_is_idempotent_and_doctor_reports_completion() {
         occurred_at_ms: 1_100,
         duration_ns: 100,
         error_category: None,
+        failure_stage: None,
+        error_code: None,
     };
     store
         .finish_operation(&terminal)
@@ -221,7 +223,7 @@ async fn operation_lifecycle_is_idempotent_and_doctor_reports_completion() {
     assert_eq!(
         DoctorReport {
             integrity: "ok".to_string(),
-            migration_count: 8,
+            migration_count: 9,
             incomplete_operations: 0,
         },
         store.doctor().await.expect("doctor")
@@ -262,6 +264,8 @@ async fn conflicting_replays_are_rejected() {
         occurred_at_ms: 1_100,
         duration_ns: 100,
         error_category: None,
+        failure_stage: None,
+        error_code: None,
     };
     store
         .finish_operation(&terminal)
@@ -297,6 +301,8 @@ async fn append_only_history_rejects_mutation() {
             occurred_at_ms: 1_100,
             duration_ns: 100,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("finish operation");
@@ -641,7 +647,7 @@ async fn populated_v3_database_migrates_without_losing_account_attribution() {
     let store = UsageStore::open(temp.path())
         .await
         .expect("migrate v3 store");
-    assert_eq!(store.doctor().await.expect("doctor").migration_count, 8);
+    assert_eq!(store.doctor().await.expect("doctor").migration_count, 9);
     assert_eq!(
         (
             sqlx::query_as::<_, (String, String, Option<String>)>(

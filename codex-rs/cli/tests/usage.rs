@@ -92,6 +92,8 @@ async fn usage_details_and_current_repository_run_through_the_codex_binary() -> 
             occurred_at_ms: 4,
             duration_ns: 1,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await?;
     let workspace = std::fs::canonicalize(checkout.path())?;

@@ -88,6 +88,8 @@ async fn finish(
                 .expect("nonnegative duration")
                 * NS_PER_MS,
             error_category,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("finish operation");
@@ -154,6 +156,8 @@ async fn record_tool(
             tool_kind: ToolKind::new(tool_kind).expect("tool kind"),
             safe_tool_name: ToolName::new(tool_name).expect("tool name"),
             operation_family: OperationFamily::new("test").expect("operation family"),
+            interface: crate::ToolInterface::new("direct").expect("interface"),
+            request_shape: None,
             observation_timing: ObservationTiming::new("runtime").expect("observation timing"),
             covering_model_request_id,
             execution_group_id,

@@ -12,6 +12,7 @@ use codex_usage::NewToolApprovalEvent;
 use codex_usage::NewToolInvocation;
 use codex_usage::ObservationTiming;
 use codex_usage::OperationFamily;
+use codex_usage::ToolInterface;
 use codex_usage::ToolInvocationId;
 use codex_usage::ToolKind;
 use codex_usage::ToolName as UsageToolName;
@@ -129,11 +130,13 @@ impl PendingToolAttempt {
         observations
     }
 
-    pub(in super::super) fn finish(
+    pub(in super::super) fn finish_with_metadata(
         &self,
         status: TerminalStatus,
         error: Option<ErrorCategory>,
         duration_ns: u64,
+        failure_stage: Option<codex_usage::ToolFailureStage>,
+        error_code: Option<codex_usage::ErrorCode>,
     ) -> Option<PendingToolFinish> {
         let occurred_at_ms = now_ms();
         let mut state = self
@@ -150,6 +153,8 @@ impl PendingToolAttempt {
             occurred_at_ms,
             duration_ns,
             error_category: error,
+            failure_stage,
+            error_code,
         };
         let attempt_coverage = NewCoverageEvent {
             event_id: FactEventId::new(),
@@ -295,6 +300,9 @@ impl UsageRuntime {
                     .unwrap_or_else(|_| bounded_identifier("unknown")),
                 operation_family: OperationFamily::new(context.descriptor.family)
                     .unwrap_or_else(|_| bounded_identifier("unknown")),
+                interface: ToolInterface::new(context.descriptor.interface)
+                    .unwrap_or_else(|_| bounded_identifier("unknown")),
+                request_shape: context.request_shape.clone(),
                 observation_timing: ObservationTiming::new("before_execution")
                     .unwrap_or_else(|_| bounded_identifier("unknown")),
                 covering_model_request_id: None,

@@ -4,6 +4,8 @@ use crate::ActivityState;
 use crate::AgentId;
 use crate::AttributionProvenance;
 use crate::CoverageState;
+use crate::ErrorCategory;
+use crate::ErrorCode;
 use crate::FactEventId;
 use crate::OperationFamily;
 use crate::OperationId;
@@ -11,8 +13,11 @@ use crate::Phase;
 use crate::RepositoryId;
 use crate::TerminalStatus;
 use crate::ThreadId;
+use crate::ToolFailureStage;
+use crate::ToolInterface;
 use crate::ToolInvocationId;
 use crate::ToolName;
+use crate::ToolRequestShape;
 use crate::UtcTimeRange;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,13 +82,22 @@ pub struct UsageToolListQuery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageToolRecord {
     pub id: ToolInvocationId,
+    pub operation_id: OperationId,
     pub thread_id: ThreadId,
     pub repository_id: Option<RepositoryId>,
     pub tool_name: ToolName,
     pub operation_family: OperationFamily,
+    pub interface: ToolInterface,
+    pub request_shape: Option<ToolRequestShape>,
     pub started_at_ms: i64,
     pub completed_at_ms: Option<i64>,
+    pub duration_ns: Option<u64>,
     pub status: Option<TerminalStatus>,
+    pub failure_stage: Option<ToolFailureStage>,
+    pub error_category: Option<ErrorCategory>,
+    pub error_code: Option<crate::ErrorCode>,
+    pub retry_of_operation_id: Option<OperationId>,
+    pub rework_of_operation_id: Option<OperationId>,
     pub provenance: AttributionProvenance,
 }
 
@@ -203,6 +217,11 @@ pub struct UsageEventRecord {
     pub repository_id: Option<RepositoryId>,
     pub occurred_at_ms: i64,
     pub kind: UsageEventKind,
+    pub interface: Option<ToolInterface>,
+    pub duration_ns: Option<u64>,
+    pub failure_stage: Option<ToolFailureStage>,
+    pub error_category: Option<ErrorCategory>,
+    pub error_code: Option<ErrorCode>,
     pub provenance: UsageEventProvenance,
     pub coverage: CoverageState,
 }

@@ -11,7 +11,11 @@ use std::sync::atomic::Ordering;
 
 #[test]
 fn usage_stats_is_accounting_overhead_control_work() {
-    let descriptor = usage_tool_descriptor(&ToolName::plain("usage_stats"), /*runtime*/ None);
+    let descriptor = usage_tool_descriptor(
+        &ToolName::plain("usage_stats"),
+        /*runtime*/ None,
+        &ToolCallSource::Direct,
+    );
     assert_eq!(descriptor.kind, "control");
     assert_eq!(descriptor.safe_name, "usage_stats");
     assert_eq!(descriptor.family, "accounting");

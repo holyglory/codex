@@ -321,8 +321,13 @@ pub(super) fn tool(record: UsageToolRecord) -> LocalUsageTool {
         repository_key: record.repository_id.map(|id| id.as_str().to_string()),
         tool_name: record.tool_name.as_str().to_string(),
         operation_family: record.operation_family.as_str().to_string(),
+        interface: record.interface.as_str().to_string(),
+        request_shape: record
+            .request_shape
+            .and_then(|shape| serde_json::from_str(shape.as_str()).ok()),
         started_at: seconds(record.started_at_ms),
         completed_at: record.completed_at_ms.map(seconds),
+        duration_ns: record.duration_ns,
         status: match record.status {
             Some(codex_usage::TerminalStatus::Completed) => LocalUsageToolStatus::Completed,
             Some(codex_usage::TerminalStatus::Failed) => LocalUsageToolStatus::Failed,
@@ -332,6 +337,11 @@ pub(super) fn tool(record: UsageToolRecord) -> LocalUsageTool {
             | Some(codex_usage::TerminalStatus::Interrupted) => LocalUsageToolStatus::Interrupted,
             Some(codex_usage::TerminalStatus::Incomplete) | None => LocalUsageToolStatus::Unknown,
         },
+        failure_stage: record.failure_stage.map(|stage| stage.as_str().to_string()),
+        error_category: record
+            .error_category
+            .map(|category| category.as_str().to_string()),
+        error_code: record.error_code.map(|code| code.as_str().to_string()),
         provenance: attribution_provenance(record.provenance),
     }
 }
@@ -357,6 +367,13 @@ pub(super) fn event(record: UsageEventRecord) -> LocalUsageEvent {
         repository_key: record.repository_id.map(|id| id.as_str().to_string()),
         occurred_at: seconds(record.occurred_at_ms),
         kind: event_kind(record.kind),
+        interface: record.interface.map(|value| value.as_str().to_string()),
+        duration_ns: record.duration_ns,
+        failure_stage: record.failure_stage.map(|value| value.as_str().to_string()),
+        error_category: record
+            .error_category
+            .map(|value| value.as_str().to_string()),
+        error_code: record.error_code.map(|value| value.as_str().to_string()),
         provenance: event_provenance(record.provenance),
         coverage: coverage(record.coverage),
     }

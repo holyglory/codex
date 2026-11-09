@@ -34,6 +34,8 @@ async fn completed_model_without_usage_keeps_a_gap_until_facts_arrive() {
                 occurred_at_ms: 1_100,
                 duration_ns: 100_000_000,
                 error_category: None,
+                failure_stage: None,
+                error_code: None,
             })
             .await
             .expect("terminal");
@@ -224,6 +226,8 @@ async fn completed_capture_keeps_history_without_reporting_the_start_as_a_gap() 
             occurred_at_ms: 1_100,
             duration_ns: 100_000_000,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("terminal");

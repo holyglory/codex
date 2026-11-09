@@ -85,6 +85,8 @@ async fn finish(
             occurred_at_ms: ended_at_ms,
             duration_ns: 1,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("terminal");
@@ -193,6 +195,8 @@ async fn unions_clip_overlaps_sum_agents_and_keep_missing_lifecycle_unknown() {
             tool_kind: ToolKind::new("builtin").expect("kind"),
             safe_tool_name: ToolName::new("apply_patch").expect("name"),
             operation_family: OperationFamily::new("filesystem").expect("family"),
+            interface: crate::ToolInterface::new("direct").expect("interface"),
+            request_shape: None,
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
             execution_group_id: None,
@@ -268,6 +272,8 @@ async fn unions_clip_overlaps_sum_agents_and_keep_missing_lifecycle_unknown() {
             tool_kind: ToolKind::new("builtin").expect("kind"),
             safe_tool_name: ToolName::new("shell").expect("name"),
             operation_family: OperationFamily::new("other").expect("family"),
+            interface: crate::ToolInterface::new("direct").expect("interface"),
+            request_shape: None,
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
             execution_group_id: None,
@@ -416,6 +422,8 @@ async fn nested_wait_spans_remain_in_wall_math_but_not_agent_active_time() {
             tool_kind: ToolKind::new("collaboration").expect("kind"),
             safe_tool_name: ToolName::new("collaboration").expect("name"),
             operation_family: OperationFamily::new("coordination").expect("family"),
+            interface: crate::ToolInterface::new("direct").expect("interface"),
+            request_shape: None,
             observation_timing: ObservationTiming::new("before_execution").expect("timing"),
             covering_model_request_id: None,
             execution_group_id: None,

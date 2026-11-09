@@ -2,6 +2,7 @@ use super::tool::ToolAttemptContext;
 use super::tool::UsageToolDescriptor;
 use super::*;
 use codex_usage::ToolExecutionRole;
+use codex_usage::ToolFailureStage;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex as StdMutex;
 use tracing_test::internal::MockWriter;
@@ -323,11 +324,13 @@ async fn unavailable_accounting_never_blocks_tool_execution_and_replays_terminal
                 kind: "local",
                 safe_name: "test_tool",
                 family: "testing",
+                interface: "direct",
                 activity_control: false,
                 activity_state: ActivityState::ToolActive,
             },
             execution_group_id: None,
             execution_role: ToolExecutionRole::Standalone,
+            request_shape: None,
             account: AccountAttributionSnapshot::unknown(),
             repositories: Vec::new(),
         })
@@ -354,6 +357,58 @@ async fn unavailable_accounting_never_blocks_tool_execution_and_replays_terminal
             .expect("usage summary")
             .tool_count,
         1
+    );
+}
+
+#[tokio::test]
+async fn dropping_a_tool_attempt_records_interruption_and_recovers() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let runtime = UsageRuntime::new(home.path().to_path_buf());
+    let attempt = runtime
+        .begin_tool_attempt(ToolAttemptContext {
+            thread_id: "77777777-7777-7777-8777-777777777777",
+            parent_thread_id: None,
+            turn_id: Some("drop-turn"),
+            delegated: false,
+            call_id: "drop-call",
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            descriptor: UsageToolDescriptor {
+                kind: "builtin",
+                safe_name: "drop_tool",
+                family: "testing",
+                interface: "direct",
+                activity_control: false,
+                activity_state: ActivityState::ToolActive,
+            },
+            execution_group_id: None,
+            execution_role: ToolExecutionRole::Standalone,
+            request_shape: None,
+            account: AccountAttributionSnapshot::unknown(),
+            repositories: Vec::new(),
+        })
+        .await;
+    drop(attempt);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let page = runtime
+        .store
+        .get()
+        .expect("usage store")
+        .list_tools(&codex_usage::UsageToolListQuery {
+            page: codex_usage::UsagePageRequest {
+                cursor: None,
+                limit: 4,
+            },
+            time_range: None,
+            thread_id: None,
+            repository_id: None,
+        })
+        .await
+        .expect("tool page");
+    assert_eq!(page.data.len(), 1);
+    assert_eq!(page.data[0].status, Some(TerminalStatus::Interrupted));
+    assert_eq!(
+        page.data[0].failure_stage,
+        Some(ToolFailureStage::Interruption)
     );
 }
 

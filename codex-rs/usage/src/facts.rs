@@ -22,8 +22,10 @@ use crate::types::TAXONOMY_VERSION;
 use crate::types::TokenUnit;
 use crate::types::ToolExecutionGroupId;
 use crate::types::ToolExecutionRole;
+use crate::types::ToolInterface;
 use crate::types::ToolKind;
 use crate::types::ToolName;
+use crate::types::ToolRequestShape;
 use crate::types::TransportKind;
 use sqlx::Row;
 use thiserror::Error;
@@ -179,6 +181,8 @@ pub struct NewToolInvocation {
     pub tool_kind: ToolKind,
     pub safe_tool_name: ToolName,
     pub operation_family: OperationFamily,
+    pub interface: ToolInterface,
+    pub request_shape: Option<ToolRequestShape>,
     pub observation_timing: ObservationTiming,
     pub covering_model_request_id: Option<ModelRequestId>,
     pub execution_group_id: Option<ToolExecutionGroupId>,
@@ -415,9 +419,9 @@ impl UsageStore {
             r#"
             INSERT INTO tool_invocations(
                 id, operation_id, operation_kind, tool_kind, safe_tool_name,
-                operation_family, observation_timing, covering_model_request_id,
-                execution_group_id, execution_role
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
+                operation_family, interface, request_shape, observation_timing,
+                covering_model_request_id, execution_group_id, execution_role
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
             "#,
         )
         .bind(fact.id.as_string())
@@ -426,6 +430,8 @@ impl UsageStore {
         .bind(fact.tool_kind.as_str())
         .bind(fact.safe_tool_name.as_str())
         .bind(fact.operation_family.as_str())
+        .bind(fact.interface.as_str())
+        .bind(fact.request_shape.as_ref().map(ToolRequestShape::as_str))
         .bind(fact.observation_timing.as_str())
         .bind(&covering_model_request_id)
         .bind(&execution_group_id)
@@ -708,14 +714,16 @@ impl UsageStore {
                 String,
                 String,
                 Option<String>,
+                String,
+                Option<String>,
                 Option<String>,
                 String,
             ),
         >(
             r#"
             SELECT operation_id, operation_kind, tool_kind, safe_tool_name,
-                   operation_family, observation_timing, covering_model_request_id,
-                   execution_group_id, execution_role
+                   operation_family, interface, request_shape, observation_timing,
+                   covering_model_request_id, execution_group_id, execution_role
             FROM tool_invocations WHERE id = ?
             "#,
         )
@@ -730,6 +738,10 @@ impl UsageStore {
                 fact.tool_kind.as_str().to_string(),
                 fact.safe_tool_name.as_str().to_string(),
                 fact.operation_family.as_str().to_string(),
+                fact.interface.as_str().to_string(),
+                fact.request_shape
+                    .as_ref()
+                    .map(|shape| shape.as_str().to_string()),
                 fact.observation_timing.as_str().to_string(),
                 covering_model_request_id.map(str::to_string),
                 execution_group_id.map(str::to_string),

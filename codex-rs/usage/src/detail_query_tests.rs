@@ -187,6 +187,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             occurred_at_ms: 1_050,
             duration_ns: 50,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("model terminal");
@@ -219,6 +221,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             tool_kind: ToolKind::new("builtin").expect("kind"),
             safe_tool_name: ToolName::new("apply_patch").expect("name"),
             operation_family: OperationFamily::new("filesystem").expect("family"),
+            interface: crate::ToolInterface::new("direct").expect("interface"),
+            request_shape: None,
             observation_timing: ObservationTiming::new("runtime").expect("timing"),
             covering_model_request_id: None,
             execution_group_id: None,
@@ -243,6 +247,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             occurred_at_ms: 1_150,
             duration_ns: 50,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("tool terminal");
@@ -291,6 +297,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             occurred_at_ms: 1_250,
             duration_ns: 50,
             error_category: Some(ErrorCategory::Transport),
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("retry terminal");
@@ -349,6 +357,8 @@ async fn every_approved_detail_family_is_queryable_and_operations_paginate() {
             occurred_at_ms: 1_350,
             duration_ns: 50,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("rework terminal");

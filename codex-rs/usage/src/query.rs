@@ -4,6 +4,8 @@ use crate::ActivityState;
 use crate::AgentId;
 use crate::AttributionProvenance;
 use crate::CoverageState;
+use crate::ErrorCategory;
+use crate::ErrorCode;
 use crate::FactEventId;
 use crate::NewClassificationEvent;
 use crate::OperationFamily;
@@ -13,8 +15,11 @@ use crate::RepositoryId;
 use crate::SafeRepositoryLabel;
 use crate::TerminalStatus;
 use crate::ThreadId;
+use crate::ToolFailureStage;
+use crate::ToolInterface;
 use crate::ToolInvocationId;
 use crate::ToolName;
+use crate::ToolRequestShape;
 use crate::UsageActivityListQuery;
 use crate::UsageActivityRecord;
 use crate::UsageEventKind;
@@ -263,8 +268,11 @@ impl UsageStore {
         let rows = sqlx::query(
             r#"
             SELECT tool.id, tool.operation_id, operation.thread_id,
-                   tool.safe_tool_name, tool.operation_family, operation.started_at_ms,
-                   terminal.occurred_at_ms, terminal.event_kind,
+                   tool.safe_tool_name, tool.operation_family, tool.interface,
+                   tool.request_shape, operation.started_at_ms,
+                   terminal.occurred_at_ms, terminal.event_kind, terminal.duration_ns,
+                   terminal.failure_stage, terminal.error_category, terminal.error_code,
+                   operation.retry_of_operation_id, operation.rework_of_operation_id,
                    COALESCE(classification.provenance, operation.attribution_provenance) AS provenance
             FROM tool_invocations AS tool
             JOIN operations AS operation ON operation.id = tool.operation_id
@@ -314,6 +322,8 @@ impl UsageStore {
             data.push(UsageToolRecord {
                 id: ToolInvocationId::from_string(row.get("id"))
                     .ok_or(UsageStoreError::InvalidFact)?,
+                operation_id: OperationId::from_string(row.get("operation_id"))
+                    .ok_or(UsageStoreError::InvalidFact)?,
                 thread_id: ThreadId::new(row.get::<String, _>("thread_id"))
                     .map_err(|_| UsageStoreError::InvalidFact)?,
                 repository_id: self.operation_repository_id(&operation_id).await?,
@@ -321,12 +331,48 @@ impl UsageStore {
                     .map_err(|_| UsageStoreError::InvalidFact)?,
                 operation_family: OperationFamily::new(row.get::<String, _>("operation_family"))
                     .map_err(|_| UsageStoreError::InvalidFact)?,
+                interface: ToolInterface::new(row.get::<String, _>("interface"))
+                    .map_err(|_| UsageStoreError::InvalidFact)?,
+                request_shape: row
+                    .get::<Option<String>, _>("request_shape")
+                    .map(|value| {
+                        ToolRequestShape::new(value).map_err(|_| UsageStoreError::InvalidFact)
+                    })
+                    .transpose()?,
                 started_at_ms: row.get("started_at_ms"),
                 completed_at_ms: row.get("occurred_at_ms"),
+                duration_ns: row
+                    .get::<Option<i64>, _>("duration_ns")
+                    .map(|value| u64::try_from(value).map_err(|_| UsageStoreError::InvalidFact))
+                    .transpose()?,
                 status: parse_optional(
                     row.get::<Option<String>, _>("event_kind"),
                     TerminalStatus::parse,
                 )?,
+                failure_stage: parse_optional(
+                    row.get::<Option<String>, _>("failure_stage"),
+                    ToolFailureStage::parse,
+                )?,
+                error_category: parse_optional(
+                    row.get::<Option<String>, _>("error_category"),
+                    ErrorCategory::parse,
+                )?,
+                error_code: row
+                    .get::<Option<String>, _>("error_code")
+                    .map(|value| ErrorCode::new(value).map_err(|_| UsageStoreError::InvalidFact))
+                    .transpose()?,
+                retry_of_operation_id: row
+                    .get::<Option<String>, _>("retry_of_operation_id")
+                    .map(|value| {
+                        OperationId::from_string(&value).ok_or(UsageStoreError::InvalidFact)
+                    })
+                    .transpose()?,
+                rework_of_operation_id: row
+                    .get::<Option<String>, _>("rework_of_operation_id")
+                    .map(|value| {
+                        OperationId::from_string(&value).ok_or(UsageStoreError::InvalidFact)
+                    })
+                    .transpose()?,
                 provenance: AttributionProvenance::parse(row.get("provenance"))
                     .ok_or(UsageStoreError::InvalidFact)?,
             });
@@ -460,7 +506,31 @@ impl UsageStore {
                 LEFT JOIN operations AS operation ON operation.id = coverage.operation_id
                 WHERE coverage.coverage_state NOT IN ('capture_started', 'complete')
             )
-            SELECT event_id, operation_id, thread_id, occurred_at_ms, kind, provenance, coverage_state
+            SELECT event_id, operation_id, thread_id, occurred_at_ms, kind, provenance, coverage_state,
+                   CASE WHEN event.kind IN ('tool_started', 'tool_completed') THEN (
+                       SELECT tool.interface FROM tool_invocations AS tool
+                       WHERE tool.operation_id = event.operation_id LIMIT 1
+                   ) END AS interface,
+                   CASE WHEN event.kind = 'tool_completed' THEN (
+                       SELECT terminal.duration_ns FROM operation_events AS terminal
+                       WHERE terminal.operation_id = event.operation_id AND terminal.terminal = 1
+                       LIMIT 1
+                   ) END AS duration_ns,
+                   CASE WHEN event.kind = 'tool_completed' THEN (
+                       SELECT terminal.failure_stage FROM operation_events AS terminal
+                       WHERE terminal.operation_id = event.operation_id AND terminal.terminal = 1
+                       LIMIT 1
+                   ) END AS failure_stage,
+                   CASE WHEN event.kind = 'tool_completed' THEN (
+                       SELECT terminal.error_category FROM operation_events AS terminal
+                       WHERE terminal.operation_id = event.operation_id AND terminal.terminal = 1
+                       LIMIT 1
+                   ) END AS error_category,
+                   CASE WHEN event.kind = 'tool_completed' THEN (
+                       SELECT terminal.error_code FROM operation_events AS terminal
+                       WHERE terminal.operation_id = event.operation_id AND terminal.terminal = 1
+                       LIMIT 1
+                   ) END AS error_code
             FROM usage_events AS event
             WHERE (? IS NULL OR event.thread_id = ?)
               AND (? IS NULL OR event.occurred_at_ms >= ?)
@@ -595,6 +665,11 @@ impl UsageStore {
             repository_id: self.operation_repository_id(&operation_id).await?,
             occurred_at_ms,
             kind: UsageEventKind::ClassificationCorrected,
+            interface: None,
+            duration_ns: None,
+            failure_stage: None,
+            error_category: None,
+            error_code: None,
             provenance: UsageEventProvenance::UserCorrected,
             coverage: CoverageState::parse(row.get("coverage_state"))
                 .ok_or(UsageStoreError::InvalidFact)?,
@@ -653,6 +728,26 @@ impl UsageStore {
             },
             occurred_at_ms: row.get("occurred_at_ms"),
             kind: UsageEventKind::parse(row.get("kind")).ok_or(UsageStoreError::InvalidFact)?,
+            interface: row
+                .get::<Option<String>, _>("interface")
+                .map(|value| ToolInterface::new(value).map_err(|_| UsageStoreError::InvalidFact))
+                .transpose()?,
+            duration_ns: row
+                .get::<Option<i64>, _>("duration_ns")
+                .map(|value| u64::try_from(value).map_err(|_| UsageStoreError::InvalidFact))
+                .transpose()?,
+            failure_stage: parse_optional(
+                row.get::<Option<String>, _>("failure_stage"),
+                ToolFailureStage::parse,
+            )?,
+            error_category: parse_optional(
+                row.get::<Option<String>, _>("error_category"),
+                ErrorCategory::parse,
+            )?,
+            error_code: row
+                .get::<Option<String>, _>("error_code")
+                .map(|value| ErrorCode::new(value).map_err(|_| UsageStoreError::InvalidFact))
+                .transpose()?,
             provenance: UsageEventProvenance::parse(row.get("provenance"))
                 .ok_or(UsageStoreError::InvalidFact)?,
             coverage: CoverageState::parse(row.get("coverage_state"))

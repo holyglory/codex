@@ -61,6 +61,8 @@ async fn canonical_outcome_conformance_cases() {
                         occurred_at_ms: operation.started_at_ms + duration as i64,
                         duration_ns: duration * 1_000_000,
                         error_category: None,
+                        failure_stage: None,
+                        error_code: None,
                     })
                     .await
                     .expect("measured interruption");

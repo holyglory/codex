@@ -47,6 +47,8 @@ async fn recovery_interrupts_only_affected_operations_and_accepts_late_terminals
             occurred_at_ms: 301,
             duration_ns: 5,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("late terminal is covered by conservative recovery");
@@ -57,6 +59,8 @@ async fn recovery_interrupts_only_affected_operations_and_accepts_late_terminals
             occurred_at_ms: 302,
             duration_ns: 6,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await
         .expect("concurrent terminal");
@@ -70,8 +74,8 @@ async fn recovery_interrupts_only_affected_operations_and_accepts_late_terminals
         0
     );
     assert_eq!(
-        sqlx::query_as::<_, (String, Option<i64>, Option<String>)>(
-            "SELECT event_kind, duration_ns, error_category FROM operation_events WHERE operation_id = ?",
+        sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, Option<String>)>(
+            "SELECT event_kind, duration_ns, error_category, failure_stage, error_code FROM operation_events WHERE operation_id = ?",
         )
         .bind(affected.id.as_string())
         .fetch_one(&store.pool)
@@ -81,6 +85,8 @@ async fn recovery_interrupts_only_affected_operations_and_accepts_late_terminals
             "interrupted".to_string(),
             None,
             Some("unavailable".to_string()),
+            Some("persistence".to_string()),
+            Some("usage_store_unavailable".to_string()),
         )
     );
     assert_eq!(

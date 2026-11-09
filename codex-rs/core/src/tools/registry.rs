@@ -575,7 +575,8 @@ impl ToolRegistry {
                 delegated: invocation.turn.session_source.is_non_root_agent(),
                 call_id: &invocation.call_id,
                 cancellation_token: invocation.cancellation_token.clone(),
-                descriptor: usage_tool_descriptor(&tool_name, tool.as_deref()),
+                descriptor: usage_tool_descriptor(&tool_name, tool.as_deref(), &invocation.source),
+                request_shape: usage_tool_request_shape(&invocation.payload),
                 execution_group_id,
                 execution_role,
                 account: usage_account,
@@ -613,9 +614,11 @@ impl ToolRegistry {
                 let err = FunctionCallError::RespondToModel(message);
                 dispatch_trace.record_failed(&err);
                 usage_attempt
-                    .finish(
+                    .finish_with_metadata(
                         codex_usage::TerminalStatus::Failed,
                         Some(codex_usage::ErrorCategory::Tool),
+                        Some(codex_usage::ToolFailureStage::UnknownTool),
+                        codex_usage::ErrorCode::new("unknown_tool").ok(),
                     )
                     .await;
                 return Err(err);
@@ -648,9 +651,11 @@ impl ToolRegistry {
             let err = FunctionCallError::Fatal(message);
             dispatch_trace.record_failed(&err);
             usage_attempt
-                .finish(
+                .finish_with_metadata(
                     codex_usage::TerminalStatus::Failed,
                     Some(codex_usage::ErrorCategory::Tool),
+                    Some(codex_usage::ToolFailureStage::InvalidPayload),
+                    codex_usage::ErrorCode::new("invalid_payload").ok(),
                 )
                 .await;
             return Err(err);
@@ -682,9 +687,11 @@ impl ToolRegistry {
                     )
                     .await;
                     usage_attempt
-                        .finish(
+                        .finish_with_metadata(
                             codex_usage::TerminalStatus::Denied,
                             Some(codex_usage::ErrorCategory::Tool),
+                            Some(codex_usage::ToolFailureStage::PreToolHook),
+                            codex_usage::ErrorCode::new("blocked").ok(),
                         )
                         .await;
                     return Err(err);
@@ -710,9 +717,11 @@ impl ToolRegistry {
                         )
                         .await;
                         usage_attempt
-                            .finish(
+                            .finish_with_metadata(
                                 codex_usage::TerminalStatus::Failed,
                                 Some(codex_usage::ErrorCategory::Tool),
+                                Some(codex_usage::ToolFailureStage::PreToolHook),
+                                codex_usage::ErrorCode::new("rewrite_failed").ok(),
                             )
                             .await;
                         return Err(err);
@@ -837,9 +846,11 @@ impl ToolRegistry {
                         let err = FunctionCallError::RespondToModel(message);
                         dispatch_trace.record_failed(&err);
                         usage_attempt
-                            .finish(
+                            .finish_with_metadata(
                                 codex_usage::TerminalStatus::Denied,
                                 Some(codex_usage::ErrorCategory::Tool),
+                                Some(codex_usage::ToolFailureStage::PostToolHook),
+                                codex_usage::ErrorCode::new("blocked").ok(),
                             )
                             .await;
                         return Err(err);
@@ -870,7 +881,11 @@ impl ToolRegistry {
                 dispatch_trace.record_failed(&err);
                 let cancelled = invocation.cancellation_token.is_cancelled();
                 usage_attempt
-                    .finish_error(cancelled, err.usage_terminal_outcome())
+                    .finish_error(
+                        cancelled,
+                        err.usage_terminal_outcome(),
+                        Some(codex_usage::ToolFailureStage::Handler),
+                    )
                     .await;
                 Err(err)
             }
@@ -903,11 +918,14 @@ fn usage_terminal_status(
 fn usage_tool_descriptor(
     name: &ToolName,
     runtime: Option<&dyn CoreToolRuntime>,
+    source: &ToolCallSource,
 ) -> UsageToolDescriptor {
+    let interface = usage_tool_interface(name, runtime, source);
     let descriptor = |kind, safe_name, family| UsageToolDescriptor {
         kind,
         safe_name,
         family,
+        interface,
         activity_control: false,
         activity_state: codex_usage::ActivityState::ToolActive,
     };
@@ -923,6 +941,7 @@ fn usage_tool_descriptor(
                 kind: "control",
                 safe_name: "usage_activity",
                 family: "accounting",
+                interface,
                 activity_control: true,
                 activity_state: codex_usage::ActivityState::ToolActive,
             },
@@ -931,6 +950,7 @@ fn usage_tool_descriptor(
                 kind: "control",
                 safe_name: "usage_stats",
                 family: "accounting",
+                interface,
                 activity_control: true,
                 activity_state: codex_usage::ActivityState::ToolActive,
             },
@@ -980,6 +1000,54 @@ fn usage_tool_descriptor(
         descriptor("plugin", "plugin_tool", "extension")
     } else {
         descriptor("unsupported", "unsupported_tool", "unsupported")
+    }
+}
+
+fn usage_tool_interface(
+    name: &ToolName,
+    runtime: Option<&dyn CoreToolRuntime>,
+    source: &ToolCallSource,
+) -> &'static str {
+    if matches!(source, ToolCallSource::CodeMode { .. }) {
+        return "code_mode";
+    }
+    if runtime.and_then(CoreToolRuntime::mcp_server_name).is_some() {
+        return "mcp";
+    }
+    if name.namespace.is_some() {
+        return "plugin";
+    }
+    "direct"
+}
+
+fn usage_tool_request_shape(payload: &ToolPayload) -> Option<codex_usage::ToolRequestShape> {
+    let value = match payload {
+        ToolPayload::Function { arguments } | ToolPayload::Custom { input: arguments } => {
+            serde_json::from_str(arguments).ok()?
+        }
+        ToolPayload::ToolSearch { arguments } => serde_json::to_value(arguments).ok()?,
+    };
+    let object = value.as_object()?;
+    let fields = object
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                serde_json::Value::String(json_type_name(value).to_string()),
+            )
+        })
+        .collect();
+    codex_usage::ToolRequestShape::from_json_object(&fields).ok()
+}
+
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
     }
 }
 

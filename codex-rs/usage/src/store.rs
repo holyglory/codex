@@ -458,8 +458,8 @@ impl UsageStore {
             r#"
             INSERT INTO operation_events(
                 event_id, operation_id, event_kind, terminal, occurred_at_ms,
-                duration_ns, error_category
-            ) VALUES (?, ?, ?, 1, ?, ?, ?)
+                duration_ns, error_category, failure_stage, error_code
+            ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
             ON CONFLICT(operation_id) WHERE terminal = 1 DO NOTHING
             "#,
         )
@@ -472,6 +472,17 @@ impl UsageStore {
             terminal
                 .error_category
                 .map(crate::types::ErrorCategory::as_str),
+        )
+        .bind(
+            terminal
+                .failure_stage
+                .map(crate::types::ToolFailureStage::as_str),
+        )
+        .bind(
+            terminal
+                .error_code
+                .as_ref()
+                .map(crate::types::ErrorCode::as_str),
         )
         .execute(&self.pool)
         .await
@@ -616,7 +627,8 @@ impl UsageStore {
     ) -> Result<bool, UsageStoreError> {
         let row = sqlx::query(
             r#"
-            SELECT event_kind, occurred_at_ms, duration_ns, error_category
+            SELECT event_kind, occurred_at_ms, duration_ns, error_category,
+                   failure_stage, error_code
             FROM operation_events WHERE operation_id = ? AND terminal = 1
             "#,
         )
@@ -630,6 +642,15 @@ impl UsageStore {
         let stored_kind = row.get::<String, _>("event_kind");
         let stored_duration = row.get::<Option<i64>, _>("duration_ns");
         let stored_error = row.get::<Option<String>, _>("error_category");
+        let stored_failure_stage = row.get::<Option<String>, _>("failure_stage");
+        let stored_error_code = row.get::<Option<String>, _>("error_code");
+        let expected_failure_stage = terminal
+            .failure_stage
+            .map(crate::types::ToolFailureStage::as_str);
+        let expected_error_code = terminal
+            .error_code
+            .as_ref()
+            .map(crate::types::ErrorCode::as_str);
         let recovered = stored_kind == TerminalStatus::Interrupted.as_str()
             && stored_duration.is_none()
             && stored_error.as_deref() == Some(ErrorCategory::Unavailable.as_str());
@@ -637,7 +658,9 @@ impl UsageStore {
             || (stored_kind == terminal.status.as_str()
                 && row.get::<i64, _>("occurred_at_ms") == terminal.occurred_at_ms
                 && stored_duration == Some(terminal.duration_ns as i64)
-                && stored_error.as_deref() == expected_error))
+                && stored_error.as_deref() == expected_error
+                && stored_failure_stage.as_deref() == expected_failure_stage
+                && stored_error_code.as_deref() == expected_error_code))
     }
 }
 

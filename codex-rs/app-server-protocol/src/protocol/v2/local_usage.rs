@@ -2,6 +2,7 @@ use crate::JsonSchema;
 use crate::TS;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -460,9 +461,15 @@ pub struct LocalUsageTool {
     pub repository_key: Option<String>,
     pub tool_name: String,
     pub operation_family: String,
+    pub interface: String,
+    pub request_shape: Option<JsonValue>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
+    pub duration_ns: Option<u64>,
     pub status: LocalUsageToolStatus,
+    pub failure_stage: Option<String>,
+    pub error_category: Option<String>,
+    pub error_code: Option<String>,
     pub provenance: LocalUsageProvenance,
 }
 
@@ -555,6 +562,11 @@ pub struct LocalUsageEvent {
     pub repository_key: Option<String>,
     pub occurred_at: i64,
     pub kind: LocalUsageEventKind,
+    pub interface: Option<String>,
+    pub duration_ns: Option<u64>,
+    pub failure_stage: Option<String>,
+    pub error_category: Option<String>,
+    pub error_code: Option<String>,
     pub provenance: LocalUsageProvenance,
     pub coverage: LocalUsageCoverage,
 }

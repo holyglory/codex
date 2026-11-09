@@ -212,6 +212,12 @@ async fn populated_summary_and_drilldowns_preserve_coverage() -> Result<()> {
         .await?;
     assert_eq!(tools.data.len(), 2);
     assert!(tools.data.iter().all(|tool| tool.tool_name == "shell"));
+    assert!(
+        tools
+            .data
+            .iter()
+            .all(|tool| { tool.interface == "direct" && tool.duration_ns == Some(5_000_000) })
+    );
 
     let activities: LocalUsageActivityListResponse = server
         .request(|request_id| ClientRequest::LocalUsageActivityList {
@@ -233,6 +239,11 @@ async fn populated_summary_and_drilldowns_preserve_coverage() -> Result<()> {
             .iter()
             .any(|event| event.kind == LocalUsageEventKind::ModelRequestStarted)
     );
+    assert!(events.data.iter().any(|event| {
+        event.kind == LocalUsageEventKind::ToolCompleted
+            && event.interface.as_deref() == Some("direct")
+            && event.duration_ns == Some(5_000_000)
+    }));
     assert!(events.data.iter().all(|event| {
         event.thread_id.as_deref() == Some("thread-one")
             && !event.event_id.contains('/')
@@ -723,6 +734,8 @@ async fn seed_usage(codex_home: &Path) -> Result<SeededUsage> {
                 tool_kind: ToolKind::new("shell")?,
                 safe_tool_name: ToolName::new("shell")?,
                 operation_family: OperationFamily::new("test")?,
+                interface: codex_usage::ToolInterface::new("direct")?,
+                request_shape: None,
                 observation_timing: ObservationTiming::new("before_dispatch")?,
                 covering_model_request_id: None,
                 execution_group_id: None,
@@ -793,6 +806,8 @@ async fn finish(store: &UsageStore, operation_id: OperationId, occurred_at_ms: i
             occurred_at_ms,
             duration_ns: 5_000_000,
             error_category: None,
+            failure_stage: None,
+            error_code: None,
         })
         .await?;
     Ok(())

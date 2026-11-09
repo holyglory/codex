@@ -56,6 +56,8 @@ redacted_identifier!(ToolKind);
 redacted_identifier!(ToolName);
 redacted_identifier!(OperationFamily);
 redacted_identifier!(ObservationTiming);
+redacted_identifier!(ToolInterface);
+redacted_identifier!(ErrorCode);
 redacted_identifier!(CoverageScopeKind);
 redacted_identifier!(CoverageReasonCode);
 redacted_identifier!(ThreadSourceKind);
@@ -221,6 +223,93 @@ string_enum!(ErrorCategory {
     Unavailable => "unavailable",
     Unknown => "unknown",
 });
+
+string_enum!(ToolFailureStage {
+    UnknownTool => "unknown_tool",
+    InvalidPayload => "invalid_payload",
+    PreToolHook => "pre_tool_hook",
+    Approval => "approval",
+    Handler => "handler",
+    PostToolHook => "post_tool_hook",
+    Cancellation => "cancellation",
+    Interruption => "interruption",
+    Persistence => "persistence",
+    Unknown => "unknown",
+});
+
+/// A bounded, content-free description of a tool request's fields and JSON types.
+///
+/// Values are deliberately represented as a JSON object whose keys are field names
+/// and whose values are type labels. The constructor rejects every other JSON shape,
+/// which keeps raw arguments and nested content out of durable usage facts.
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct ToolRequestShape(String);
+
+impl ToolRequestShape {
+    const MAX_BYTES: usize = 4096;
+    const MAX_FIELDS: usize = 64;
+    const MAX_FIELD_NAME_BYTES: usize = 128;
+    const MAX_TYPE_BYTES: usize = 32;
+
+    pub fn new(value: impl Into<String>) -> Result<Self, UsageIdentifierError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > Self::MAX_BYTES || value.contains('\0') {
+            return Err(UsageIdentifierError);
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&value).map_err(|_| UsageIdentifierError)?;
+        let serde_json::Value::Object(fields) = parsed else {
+            return Err(UsageIdentifierError);
+        };
+        if fields.len() > Self::MAX_FIELDS {
+            return Err(UsageIdentifierError);
+        }
+        for (name, kind) in &fields {
+            if name.is_empty()
+                || name.len() > Self::MAX_FIELD_NAME_BYTES
+                || name.chars().any(char::is_control)
+            {
+                return Err(UsageIdentifierError);
+            }
+            let serde_json::Value::String(kind) = kind else {
+                return Err(UsageIdentifierError);
+            };
+            if kind.is_empty()
+                || kind.len() > Self::MAX_TYPE_BYTES
+                || kind.chars().any(char::is_control)
+                || !kind
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                || !matches!(
+                    kind.as_str(),
+                    "null" | "boolean" | "number" | "string" | "array" | "object"
+                )
+            {
+                return Err(UsageIdentifierError);
+            }
+        }
+        let canonical = serde_json::to_string(&fields).map_err(|_| UsageIdentifierError)?;
+        (canonical.len() <= Self::MAX_BYTES)
+            .then_some(Self(canonical))
+            .ok_or(UsageIdentifierError)
+    }
+
+    pub fn from_json_object(
+        value: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, UsageIdentifierError> {
+        Self::new(serde_json::to_string(value).map_err(|_| UsageIdentifierError)?)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ToolRequestShape {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ToolRequestShape([redacted])")
+    }
+}
 
 // Content-free authentication mode captured at an operation boundary.
 string_enum!(AccountAuthMode {
@@ -401,6 +490,8 @@ pub struct TerminalOperation {
     pub occurred_at_ms: i64,
     pub duration_ns: u64,
     pub error_category: Option<ErrorCategory>,
+    pub failure_stage: Option<ToolFailureStage>,
+    pub error_code: Option<ErrorCode>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

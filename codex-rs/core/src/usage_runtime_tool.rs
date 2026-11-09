@@ -1,15 +1,19 @@
 use super::*;
 use codex_usage::ApprovalOutcome;
 use codex_usage::ApprovalProvenance;
+use codex_usage::ErrorCode;
 use codex_usage::NewToolApprovalEvent;
 use codex_usage::NewToolInvocation;
 use codex_usage::ObservationTiming;
 use codex_usage::OperationFamily;
 use codex_usage::ToolExecutionGroupId;
 use codex_usage::ToolExecutionRole;
+use codex_usage::ToolFailureStage;
+use codex_usage::ToolInterface;
 use codex_usage::ToolInvocationId;
 use codex_usage::ToolKind;
 use codex_usage::ToolName as UsageToolName;
+use codex_usage::ToolRequestShape;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct DeclaredActivity {
@@ -59,6 +63,7 @@ pub(crate) struct UsageToolDescriptor {
     pub(crate) kind: &'static str,
     pub(crate) safe_name: &'static str,
     pub(crate) family: &'static str,
+    pub(crate) interface: &'static str,
     pub(crate) activity_control: bool,
     pub(crate) activity_state: ActivityState,
 }
@@ -73,6 +78,7 @@ pub(crate) struct ToolAttemptContext<'a> {
     pub(crate) descriptor: UsageToolDescriptor,
     pub(crate) execution_group_id: Option<ToolExecutionGroupId>,
     pub(crate) execution_role: ToolExecutionRole,
+    pub(crate) request_shape: Option<ToolRequestShape>,
     pub(crate) account: AccountAttributionSnapshot,
     pub(crate) repositories: Vec<RepositoryCandidate>,
 }
@@ -286,6 +292,9 @@ impl UsageRuntime {
                 .map_err(|_| self.reject_invalid_metadata())?,
             operation_family: OperationFamily::new(context.descriptor.family)
                 .map_err(|_| self.reject_invalid_metadata())?,
+            interface: ToolInterface::new(context.descriptor.interface)
+                .map_err(|_| self.reject_invalid_metadata())?,
+            request_shape: context.request_shape.clone(),
             observation_timing: ObservationTiming::new("before_execution")
                 .map_err(|_| self.reject_invalid_metadata())?,
             covering_model_request_id: None,
@@ -750,6 +759,35 @@ impl UsageToolAttempt {
     }
 
     pub(crate) async fn finish(&self, status: TerminalStatus, error: Option<ErrorCategory>) {
+        let (failure_stage, error_code) = match status {
+            TerminalStatus::Cancelled => (
+                Some(ToolFailureStage::Cancellation),
+                ErrorCode::new("cancelled").ok(),
+            ),
+            TerminalStatus::TimedOut => (
+                Some(ToolFailureStage::Handler),
+                ErrorCode::new("timed_out").ok(),
+            ),
+            TerminalStatus::Interrupted => (
+                Some(ToolFailureStage::Interruption),
+                ErrorCode::new("interrupted").ok(),
+            ),
+            TerminalStatus::Completed
+            | TerminalStatus::Incomplete
+            | TerminalStatus::Failed
+            | TerminalStatus::Denied => (None, None),
+        };
+        self.finish_with_metadata(status, error, failure_stage, error_code)
+            .await;
+    }
+
+    pub(crate) async fn finish_with_metadata(
+        &self,
+        status: TerminalStatus,
+        error: Option<ErrorCategory>,
+        failure_stage: Option<ToolFailureStage>,
+        error_code: Option<ErrorCode>,
+    ) {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -764,7 +802,13 @@ impl UsageToolAttempt {
             )
             .await;
         let duration_ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let Some(finish) = self.pending.finish(status, error, duration_ns) else {
+        let Some(finish) = self.pending.finish_with_metadata(
+            status,
+            error,
+            duration_ns,
+            failure_stage,
+            error_code,
+        ) else {
             return;
         };
         if !self.durable {
@@ -816,6 +860,7 @@ impl UsageToolAttempt {
         &self,
         cancelled: bool,
         typed_outcome: Option<codex_tools::UsageTerminalOutcome>,
+        default_failure_stage: Option<ToolFailureStage>,
     ) {
         let approval_terminal = self
             .runtime
@@ -853,7 +898,25 @@ impl UsageToolAttempt {
             | TerminalStatus::Failed
             | TerminalStatus::Interrupted => ErrorCategory::Tool,
         });
-        self.finish(status, Some(error)).await;
+        let failure_stage = if approval_terminal.is_some() {
+            Some(ToolFailureStage::Approval)
+        } else if cancelled || matches!(status, TerminalStatus::Cancelled) {
+            Some(ToolFailureStage::Cancellation)
+        } else if matches!(status, TerminalStatus::Interrupted) {
+            Some(ToolFailureStage::Interruption)
+        } else {
+            default_failure_stage
+        };
+        let error_code = match approval_terminal {
+            Some(TerminalStatus::Denied) => ErrorCode::new("denied").ok(),
+            Some(TerminalStatus::TimedOut) => ErrorCode::new("timed_out").ok(),
+            Some(TerminalStatus::Cancelled) => ErrorCode::new("cancelled").ok(),
+            _ if matches!(status, TerminalStatus::Cancelled) => ErrorCode::new("cancelled").ok(),
+            _ if matches!(status, TerminalStatus::TimedOut) => ErrorCode::new("timed_out").ok(),
+            _ => None,
+        };
+        self.finish_with_metadata(status, Some(error), failure_stage, error_code)
+            .await;
     }
 }
 
@@ -880,7 +943,25 @@ impl Drop for UsageToolAttempt {
         } else {
             ErrorCategory::Tool
         };
-        let Some(finish) = self.pending.finish(status, Some(error), duration_ns) else {
+        let failure_stage = if cancelled {
+            ToolFailureStage::Cancellation
+        } else {
+            ToolFailureStage::Interruption
+        };
+        let Some(error_code) = (if cancelled {
+            ErrorCode::new("cancelled").ok()
+        } else {
+            ErrorCode::new("dropped").ok()
+        }) else {
+            return;
+        };
+        let Some(finish) = self.pending.finish_with_metadata(
+            status,
+            Some(error),
+            duration_ns,
+            Some(failure_stage),
+            Some(error_code),
+        ) else {
             return;
         };
         let pending = Arc::clone(&self.pending);
@@ -1087,6 +1168,7 @@ impl UsageAttempt {
                     kind: "hosted",
                     safe_name: "web_search",
                     family: "research",
+                    interface: "direct",
                     activity_control: false,
                     activity_state: ActivityState::ToolActive,
                 },
@@ -1099,6 +1181,7 @@ impl UsageAttempt {
                     kind: "hosted",
                     safe_name: "image_generation",
                     family: "generation",
+                    interface: "direct",
                     activity_control: false,
                     activity_state: ActivityState::ToolActive,
                 },
@@ -1174,6 +1257,9 @@ impl UsageAttempt {
                         .map_err(|_| codex_usage::UsageStoreError::InvalidFact)?,
                     operation_family: OperationFamily::new(descriptor.family)
                         .map_err(|_| codex_usage::UsageStoreError::InvalidFact)?,
+                    interface: ToolInterface::new("direct")
+                        .map_err(|_| codex_usage::UsageStoreError::InvalidFact)?,
+                    request_shape: None,
                     observation_timing: ObservationTiming::new("observed_after_execution")
                         .map_err(|_| codex_usage::UsageStoreError::InvalidFact)?,
                     covering_model_request_id: Some(self.model_request_id),
@@ -1189,6 +1275,8 @@ impl UsageAttempt {
                     duration_ns: 0,
                     error_category: (!matches!(terminal, TerminalStatus::Completed))
                         .then_some(ErrorCategory::Provider),
+                    failure_stage: None,
+                    error_code: None,
                 })
                 .await?;
             store
