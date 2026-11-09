@@ -228,3 +228,125 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn connection_close_releases_writer_after_runtime_removal() -> Result<()> {
+    let server = wiremock::MockServer::start().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let thread_id = test.session_configured.thread_id;
+    test.thread_store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await?;
+    let thread = test.codex;
+    let config = Arc::new(test.config.clone());
+    let auth =
+        AuthManager::shared_from_config(config.as_ref(), /*enable_codex_api_key_env*/ false)
+            .await?;
+    let config_manager =
+        ConfigManager::without_managed_config_for_tests(config.codex_home.to_path_buf());
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(/*buffer*/ 16);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        AnalyticsEventsClient::disabled(),
+    ));
+    let thread_state_manager = ThreadStateManager::new();
+    let thread_watch_manager = ThreadWatchManager::new_with_outgoing(outgoing.clone());
+    let skills_watcher = SkillsWatcher::new(
+        test.thread_manager.skills_service(),
+        &config.codex_home,
+        outgoing.clone(),
+    );
+    let thread_goal_processor = ThreadGoalRequestProcessor::new(
+        test.thread_manager.clone(),
+        outgoing.clone(),
+        config.clone(),
+        thread_state_manager.clone(),
+        /*state_db*/ None,
+        Arc::new(GoalService::new()),
+        config_manager.clone(),
+    );
+    let processor = ThreadRequestProcessor::new(
+        auth,
+        test.thread_manager.clone(),
+        outgoing,
+        Arg0DispatchPaths::default(),
+        config,
+        config_manager,
+        test.thread_store.clone(),
+        Default::default(),
+        thread_state_manager,
+        thread_watch_manager,
+        Arc::new(Semaphore::new(/*permits*/ 1)),
+        thread_goal_processor,
+        /*state_db*/ None,
+        /*log_db*/ None,
+        skills_watcher.clone(),
+        /*turn_cost_worker*/ None,
+        Vec::new(),
+        Arc::new(SampleResponseRegistry::default()),
+    );
+    let connection_id = ConnectionId(1);
+    let resume_connection_id = ConnectionId(2);
+    processor
+        .connection_initialized(connection_id, ConnectionCapabilities::default())
+        .await;
+    processor
+        .try_attach_thread_listener(thread_id, Arc::clone(&thread), vec![connection_id])
+        .await;
+
+    let removed = test.thread_manager.remove_thread(&thread_id).await;
+    assert!(
+        removed.is_some(),
+        "test runtime should be removed from the manager"
+    );
+    drop(removed);
+    drop(thread);
+    processor.connection_closed(connection_id).await;
+
+    processor
+        .connection_initialized(resume_connection_id, ConnectionCapabilities::default())
+        .await;
+    let resumed = processor
+        .thread_resume(
+            ThreadResumeTarget::Client(ConnectionRequestId {
+                connection_id: resume_connection_id,
+                request_id: RequestId::Integer(1),
+            }),
+            ThreadResumeParams {
+                thread_id: thread_id.to_string(),
+                exclude_turns: true,
+                ..Default::default()
+            },
+            /*app_server_client_name*/ None,
+            /*app_server_client_version*/ None,
+            /*client_mcp_extensions*/ Default::default(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("thread resume failed: {error:?}"))?;
+    if let Some(response) = resumed {
+        assert!(matches!(response, ClientResponsePayload::ThreadResume(_)));
+    } else {
+        loop {
+            match outgoing_rx.recv().await.expect("outgoing channel closed") {
+                OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message: OutgoingMessage::Response(response),
+                    ..
+                } if connection_id == resume_connection_id
+                    && response.id == RequestId::Integer(1) =>
+                {
+                    assert!(matches!(
+                        response.result.as_ref(),
+                        ClientResponsePayload::ThreadResume(_)
+                    ));
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    processor.shutdown_threads().await;
+    skills_watcher.shutdown();
+    Ok(())
+}
