@@ -54,6 +54,9 @@ def save(path, value):
 def identity(pid):
     root = Path(f"/proc/{pid}")
     fields = (root / "stat").read_text().rsplit(")", 1)[1].split()
+    status = dict(
+        line.split(":", 1) for line in (root / "status").read_text().splitlines()
+    )
     return {
         "pid": pid,
         "uid": root.stat().st_uid,
@@ -61,6 +64,7 @@ def identity(pid):
         "executableSha256": digest(root / "exe"),
         "managed": b"--managed-daemon" in (root / "cmdline").read_bytes().split(b"\0"),
         "cgroup": (root / "cgroup").read_text().strip(),
+        "noNewPrivileges": int(status["NoNewPrivs"]),
     }
 
 
@@ -221,6 +225,8 @@ class Owner:
             or observed["executableSha256"] != self.plan["executableSha256"]
         ):
             raise RuntimeError("candidate-identity-mismatch")
+        if observed["noNewPrivileges"] != 0:
+            raise RuntimeError("serving-no-new-privileges-must-be-zero")
         self.receipt["serving"] = observed
         self.receipt["ownershipMode"] = mode
         try:
@@ -270,6 +276,8 @@ class Owner:
             observed["uid"] == self.plan["ownerUid"]
             and observed["executableSha256"] == self.plan["executableSha256"]
         ):
+            if observed["noNewPrivileges"] != 0:
+                raise RuntimeError("serving-no-new-privileges-must-be-zero")
             root = self.task_codex_home / "packages/standalone"
             select_release(root, self.selected)
             self.event("candidate-already-serving", serving=observed)
@@ -289,6 +297,10 @@ class Owner:
                 raise RuntimeError("unsupported-old-owner")
         elif expected:
             raise RuntimeError("expected-old-endpoint-missing")
+        # Children inherit this irreversible bit. Refuse before changing the
+        # selected release or signalling the existing server.
+        if identity(os.getpid())["noNewPrivileges"] != 0:
+            raise RuntimeError("owner-no-new-privileges-must-be-zero")
         # Select before drain: Desktop can only respawn the reviewed package.
         root = self.task_codex_home / "packages/standalone"
         select_release(root, self.selected)

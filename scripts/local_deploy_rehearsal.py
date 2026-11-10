@@ -280,6 +280,7 @@ def verify():
             proofs.append({"case": case, "mismatchingPeerRefused": True})
             continue
         assert receipt["result"] == "passed", f"{case}-owner-failed"
+        assert receipt["serving"]["noNewPrivileges"] == 0
         assert identity(receipt["owner"]["pid"]) == receipt["owner"]
         assert receipt["owner"]["cgroup"] != requester["cgroup"]
         assert (
