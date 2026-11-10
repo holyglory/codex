@@ -291,6 +291,9 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 account_routing = root / "codex-rs/core/src/session/account_routing.rs"
                 account_routing.parent.mkdir(parents=True, exist_ok=True)
                 account_routing.write_text("account continuation fix\n")
+                (root / "codex-rs/core/src/compact.rs").write_text(
+                    "required compaction account continuation\n"
+                )
                 packaging = commit("managed account failover fix")
                 result = verify_hosted_v8_source(producer, packaging)
                 self.assertEqual(result["v8_inputs"]["schema"], 1)
