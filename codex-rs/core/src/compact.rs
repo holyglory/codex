@@ -176,7 +176,7 @@ pub(crate) async fn run_compact_task(
 
 async fn run_compact_task_inner(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     replacement_step_context: Arc<StepContext>,
     input: Vec<UserInput>,
     world_state: Arc<WorldState>,
@@ -219,6 +219,7 @@ async fn run_compact_task_inner(
         compaction_metadata,
     )
     .await;
+    turn_context = sess.reconcile_compaction_turn_auth(&turn_context).await;
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
     if result.is_ok() {
@@ -262,7 +263,7 @@ async fn run_compact_task_inner(
 
 async fn run_compact_task_inner_impl(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     replacement_step_context: Arc<StepContext>,
     input: Vec<UserInput>,
     world_state: Arc<WorldState>,
@@ -296,6 +297,7 @@ async fn run_compact_task_inner_impl(
     // request tracking) survives retries within this compact turn.
     let mut client_session = turn_context.model_client(&sess)?.new_session();
     let request_store = Arc::new(codex_extension_api::ExtensionData::new("local_compaction"));
+    let mut response_started = false;
     let compaction_response = loop {
         // Clone is required because of the loop
         let mut turn_input = history
@@ -330,15 +332,33 @@ async fn run_compact_task_inner_impl(
             .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
             .await;
         responses_metadata.request_store = Some(Arc::clone(&request_store));
-        let attempt_result = drain_to_completed(
-            &sess,
-            turn_context.as_ref(),
-            &mut client_session,
-            &responses_metadata,
-            &prompt,
-            compaction_metadata.phase(),
-        )
-        .await;
+        let attempt_result = loop {
+            let result = drain_to_completed(
+                &sess,
+                turn_context.as_ref(),
+                &mut client_session,
+                &responses_metadata,
+                &prompt,
+                compaction_metadata.phase(),
+                &mut response_started,
+            )
+            .await;
+            if let Err(error) = &result
+                && let Some(next) = sess
+                    .try_compaction_auth_failover(
+                        &turn_context,
+                        compaction_metadata,
+                        response_started,
+                        error,
+                    )
+                    .await?
+            {
+                client_session = next.model_client(&sess)?.new_session();
+                turn_context = next;
+                continue;
+            }
+            break result;
+        };
 
         match attempt_result {
             Ok(response) => {
@@ -397,6 +417,9 @@ async fn run_compact_task_inner_impl(
         }
     };
 
+    let replacement_step_context = sess
+        .reconcile_compaction_step_auth(&replacement_step_context)
+        .await;
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();
     let summary_suffix = if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
@@ -835,6 +858,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
     phase: CompactionPhase,
+    response_started: &mut bool,
 ) -> CodexResult<CompactionResponse> {
     let mut includes_reasoning = turn_context.model_info().use_responses_lite;
     let mut stream = client_session
@@ -863,6 +887,9 @@ async fn drain_to_completed(
                 "stream closed before response.completed".into(),
             ));
         };
+        if let Ok(event) = &event {
+            *response_started |= crate::responses_retry::response_generation_started(event);
+        }
         match event {
             // Keep each attempt isolated until the response completes successfully.
             Ok(ResponseEvent::OutputItemDone(item)) => output.push(item),

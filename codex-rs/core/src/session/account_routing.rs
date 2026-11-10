@@ -177,16 +177,7 @@ impl Session {
             )
             .await
             .ok()??;
-        let turn = turn.with_auth_manager(Arc::clone(lease.auth_manager()));
-        turn.install_turn_auth(
-            self,
-            TurnAuth {
-                lease: Some(AuthManagerLease::profile(lease)),
-                error: None,
-            },
-        );
-        turn.retarget_usage_capture(self);
-        Some(turn)
+        Some(turn.with_auth_lease(self, AuthManagerLease::profile(lease)))
     }
 
     pub(super) async fn publish_failover_turn_auth(
@@ -261,6 +252,19 @@ impl Session {
 }
 
 impl TurnContext {
+    pub(super) fn with_auth_lease(&self, session: &Session, lease: AuthManagerLease) -> Self {
+        let turn = self.with_auth_manager(Arc::clone(lease.auth_manager()));
+        turn.install_turn_auth(
+            session,
+            TurnAuth {
+                lease: Some(lease),
+                error: None,
+            },
+        );
+        turn.retarget_usage_capture(session);
+        turn
+    }
+
     pub(super) fn install_turn_auth(&self, session: &Session, mut auth: TurnAuth) {
         if let Some(lease) = auth.lease.as_ref() {
             let lease = Arc::new(lease.clone());

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::client::ModelClientSession;
+use crate::client_common::ResponseEvent;
 use crate::context::ContentFilterGuidance;
 use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
@@ -23,6 +24,30 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+/// Headers can precede a clean rejection; any response progress forbids account replay.
+pub(crate) fn response_generation_started(event: &ResponseEvent) -> bool {
+    match event {
+        ResponseEvent::Created { .. }
+        | ResponseEvent::SafetyBuffering(_)
+        | ResponseEvent::ModelVerifications(_)
+        | ResponseEvent::TurnModerationMetadata(_)
+        | ResponseEvent::GuardianAssessment(_)
+        | ResponseEvent::OutputItemDone(_)
+        | ResponseEvent::OutputItemAdded(_)
+        | ResponseEvent::Completed { .. }
+        | ResponseEvent::OutputTextDelta(_)
+        | ResponseEvent::ToolCallInputDelta { .. }
+        | ResponseEvent::ReasoningSummaryDelta { .. }
+        | ResponseEvent::ReasoningSummaryDone { .. }
+        | ResponseEvent::ReasoningContentDelta { .. }
+        | ResponseEvent::ReasoningSummaryPartAdded { .. } => true,
+        ResponseEvent::ServerModel(_)
+        | ResponseEvent::ServerReasoningIncluded(_)
+        | ResponseEvent::RateLimits(_)
+        | ResponseEvent::ModelsEtag(_) => false,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {

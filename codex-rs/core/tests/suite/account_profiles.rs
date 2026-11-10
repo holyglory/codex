@@ -31,8 +31,16 @@ use wiremock::matchers::path;
 mod failover;
 
 fn seed_profiles(home: &Path, mode: AuthMode) -> Result<Vec<AccountMetadata>> {
+    seed_profiles_with_aliases(home, mode, &["a", "b"])
+}
+
+fn seed_profiles_with_aliases(
+    home: &Path,
+    mode: AuthMode,
+    aliases: &[&str],
+) -> Result<Vec<AccountMetadata>> {
     let mut accounts = Vec::new();
-    for alias in ["a", "b"] {
+    for alias in aliases {
         let account = AccountMetadata::new(alias.parse()?, mode, chrono::Utc::now());
         let mut auth = AuthDotJson {
             auth_mode: Some(mode),

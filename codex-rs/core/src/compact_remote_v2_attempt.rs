@@ -212,6 +212,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         step_context,
         &prompt,
         &responses_metadata,
+        compaction_metadata,
         transport,
     )
     .await;

@@ -20,6 +20,7 @@ use codex_protocol::protocol::TurnContextItem;
 use tokio_util::sync::CancellationToken;
 
 /// Request-scoped state that may change between model sampling requests.
+#[derive(Clone)]
 pub(crate) struct StepContext {
     pub(crate) turn: Arc<TurnContext>,
     /// Preempts this request and yields its code-mode observations when user input arrives.

@@ -235,6 +235,8 @@ async fn run_remote_compact_task_inner(
         fallback,
     ))
     .await;
+    let current_turn_context = sess.reconcile_compaction_turn_auth(turn_context).await;
+    let turn_context = &current_turn_context;
     if matches!(result, Ok(false)) {
         if let Some(item) = started_item {
             sess.emit_turn_item_completed(turn_context, item).await;
@@ -285,15 +287,17 @@ struct RemoteCompactionV2Output {
 
 async fn run_remote_compaction_request_v2(
     sess: &Session,
-    step_context: &StepContext,
+    step_context: &Arc<StepContext>,
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
+    compaction_metadata: CompactionTurnMetadata,
     transport: CompactionRequestTransport<'_>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut retry_state = ResponsesStreamRetryState::default();
     let mut responses_metadata = responses_metadata.clone();
     responses_metadata.request_store = Some(Arc::clone(&retry_state.request_store));
     let responses_metadata = &responses_metadata;
+    let mut response_started = false;
     let turn_context = &step_context.turn;
     let client_session = match transport {
         CompactionRequestTransport::Background(turn_state, auth_owner_generation) => {
@@ -321,18 +325,29 @@ async fn run_remote_compaction_request_v2(
                 turn_context,
                 stream,
                 CompactionRequestKind::Background(&cancellation),
+                &mut response_started,
             )
             .await;
         }
         CompactionRequestTransport::Foreground(client_session) => client_session,
     };
-    let settings = &turn_context.initial_settings;
+    let mut step_context = Arc::clone(step_context);
+    if let Some(lease) = step_context
+        .turn
+        .extension_data
+        .get::<codex_login::AuthManagerLease>()
+        && !client_session.auth_manager_matches(lease.auth_manager())
+    {
+        *client_session = step_context.turn.model_client(sess)?.new_session();
+    }
     let max_retries = turn_context
         .provider
         .info()
         .stream_max_retries()
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     loop {
+        let turn_context = &step_context.turn;
+        let settings = &turn_context.initial_settings;
         let result = match client_session
             .stream(
                 prompt,
@@ -353,6 +368,7 @@ async fn run_remote_compaction_request_v2(
                     turn_context,
                     stream,
                     CompactionRequestKind::Foreground,
+                    &mut response_started,
                 )
                 .await
             }
@@ -361,13 +377,29 @@ async fn run_remote_compaction_request_v2(
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
             Err(err) => {
+                if let Some(next) = sess
+                    .try_compaction_auth_failover(
+                        turn_context,
+                        compaction_metadata,
+                        response_started,
+                        &err,
+                    )
+                    .await?
+                {
+                    *client_session = next.model_client(sess)?.new_session();
+                    step_context = Arc::new(StepContext {
+                        turn: next,
+                        ..step_context.as_ref().clone()
+                    });
+                    continue;
+                }
                 handle_response_stream_error(
                     &mut retry_state,
                     max_retries,
                     err,
                     client_session,
                     sess,
-                    step_context,
+                    &step_context,
                     ResponsesStreamRequest::RemoteCompactionV2,
                 )
                 .await?;
@@ -381,6 +413,7 @@ async fn collect_compaction_output(
     turn_context: &TurnContext,
     mut stream: ResponseStream,
     request_kind: CompactionRequestKind<'_>,
+    response_started: &mut bool,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
@@ -419,7 +452,14 @@ async fn collect_compaction_output(
                 }
             }
         }
-        match event? {
+        let event = event?;
+        *response_started |= crate::responses_retry::response_generation_started(&event);
+        match event {
+            ResponseEvent::RateLimits(snapshot)
+                if matches!(request_kind, CompactionRequestKind::Foreground) =>
+            {
+                sess.update_rate_limits(turn_context, snapshot).await;
+            }
             ResponseEvent::OutputItemDone(item) => {
                 output_item_count += 1;
                 if let ResponseItem::Compaction { .. } = item {
@@ -1265,12 +1305,14 @@ mod tests {
             crate::session::tests::make_session_and_context_with_rx().await;
         let cancellation = CancellationToken::new();
         cancellation.cancel();
+        let mut response_started = false;
 
         let result = collect_compaction_output(
             &sess,
             &turn_context,
             stream,
             CompactionRequestKind::Background(&cancellation),
+            &mut response_started,
         )
         .await;
 
@@ -1315,11 +1357,13 @@ mod tests {
 
         let (sess, turn_context, rx) =
             crate::session::tests::make_session_and_context_with_rx().await;
+        let mut response_started = false;
         let output = collect_compaction_output(
             &sess,
             &turn_context,
             stream,
             CompactionRequestKind::Foreground,
+            &mut response_started,
         )
         .await
         .expect("compaction should be collected");

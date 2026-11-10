@@ -183,6 +183,18 @@ async fn build_and_install_compaction(
         token_usage,
         owned_client_session: _owned_client_session,
     } = attempt;
+    // Request recovery may have published a new owner. Installation callbacks must
+    // see that owner while retaining the exact prepared model and world state.
+    let current_turn_context = sess.reconcile_compaction_turn_auth(turn_context).await;
+    let turn_context = &current_turn_context;
+    let current_compaction_turn_context = sess
+        .reconcile_compaction_turn_auth(compaction_turn_context)
+        .await;
+    let compaction_turn_context = &current_compaction_turn_context;
+    let replacement_step_context = sess
+        .reconcile_compaction_step_auth(replacement_step_context)
+        .await;
+    let replacement_step_context = &replacement_step_context;
     if prefix.is_none()
         && let Some(token_usage) = token_usage.as_ref()
     {

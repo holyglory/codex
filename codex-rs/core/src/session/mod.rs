@@ -248,6 +248,7 @@ use codex_protocol::exec_output::StreamOutput;
 pub(crate) mod account_routing;
 pub(crate) mod async_compaction;
 mod code_mode_warning;
+mod compaction_account_routing;
 mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;

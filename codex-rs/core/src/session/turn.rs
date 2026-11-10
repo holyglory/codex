@@ -206,15 +206,26 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if auto_compaction_enabled
-        && let Err(err) = run_pre_sampling_compact(
+    let pre_sampling_compact_result = if auto_compaction_enabled {
+        run_pre_sampling_compact(
             &sess,
             &turn_context,
             &mut client_session,
             &cancellation_token,
         )
         .await
+    } else {
+        Ok(())
+    };
+    turn_context = sess.reconcile_turn_auth(&turn_context).await;
+    if let Some(lease) = turn_context
+        .extension_data
+        .get::<codex_login::AuthManagerLease>()
+        && !client_session.auth_manager_matches(lease.auth_manager())
     {
+        client_session = turn_context.model_client(&sess)?.new_session();
+    }
+    if let Err(err) = pre_sampling_compact_result {
         // Compaction runs before the new input is recorded, so preserve it on every failure.
         run_hooks_and_record_inputs(
             &sess,
@@ -282,7 +293,7 @@ pub(crate) async fn run_turn(
     required_servers.dedup();
 
     // run_turn owns the step used to seed context and make the first sampling request.
-    let first_step_context = match sess
+    let mut first_step_context = match sess
         .capture_step_context_with_required_mcp_servers(
             Arc::clone(&turn_context),
             &cancellation_token,
@@ -380,6 +391,18 @@ pub(crate) async fn run_turn(
             /*candidate*/ None,
         )
         .await?;
+        let current = sess.reconcile_turn_auth(&turn_context).await;
+        if !Arc::ptr_eq(&current, &turn_context) {
+            turn_context = current;
+            first_step_context = sess
+                .capture_step_context_with_required_mcp_servers(
+                    Arc::clone(&turn_context),
+                    &cancellation_token,
+                    required_servers,
+                    required_plugins,
+                )
+                .await?;
+        }
         world_state = sess
             .record_context_updates_and_set_reference_context_item(first_step_context.as_ref())
             .await?;
@@ -480,6 +503,18 @@ pub(crate) async fn run_turn(
     let mut guardian_budget_compacted = false;
     let mut sampling_retry_state = ResponsesStreamRetryState::default();
     loop {
+        let current = sess.reconcile_turn_auth(&turn_context).await;
+        if !Arc::ptr_eq(&current, &turn_context) {
+            turn_context = current;
+            next_step_context = None;
+        }
+        if let Some(lease) = turn_context
+            .extension_data
+            .get::<codex_login::AuthManagerLease>()
+            && !client_session.auth_manager_matches(lease.auth_manager())
+        {
+            client_session = turn_context.model_client(&sess)?.new_session();
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -738,6 +773,7 @@ pub(crate) async fn run_turn(
                         candidate,
                     )
                     .await;
+                    turn_context = sess.reconcile_turn_auth(&turn_context).await;
                     match compacted {
                         Ok(true) => {
                             if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -1441,15 +1477,16 @@ async fn run_pre_sampling_compact(
 ) -> CodexResult<()> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
+    let turn_context = sess.reconcile_turn_auth(turn_context).await;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
-    let candidate = super::async_compaction::take_ready(sess, turn_context).await;
+    let candidate = super::async_compaction::take_ready(sess, &turn_context).await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached || candidate.is_some() {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
-            .capture_step_context(Arc::clone(turn_context), cancellation_token)
+            .capture_step_context(Arc::clone(&turn_context), cancellation_token)
             .await?;
         run_auto_compact(
             sess,
@@ -2955,28 +2992,7 @@ async fn try_run_sampling_request(
             .session_telemetry
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
-        *response_started |= match &event {
-            ResponseEvent::Created { .. }
-            | ResponseEvent::SafetyBuffering(_)
-            | ResponseEvent::ModelVerifications(_)
-            | ResponseEvent::TurnModerationMetadata(_)
-            | ResponseEvent::GuardianAssessment(_)
-            | ResponseEvent::OutputItemDone(_)
-            | ResponseEvent::OutputItemAdded(_)
-            | ResponseEvent::Completed { .. }
-            | ResponseEvent::OutputTextDelta(_)
-            | ResponseEvent::ToolCallInputDelta { .. }
-            | ResponseEvent::ReasoningSummaryDelta { .. }
-            | ResponseEvent::ReasoningSummaryDone { .. }
-            | ResponseEvent::ReasoningContentDelta { .. }
-            | ResponseEvent::ReasoningSummaryPartAdded { .. } => true,
-            // Error response headers can precede a clean usage-limit rejection, including
-            // WebSocket error frames. They do not prove that model generation started.
-            ResponseEvent::ServerModel(_)
-            | ResponseEvent::ServerReasoningIncluded(_)
-            | ResponseEvent::RateLimits(_)
-            | ResponseEvent::ModelsEtag(_) => false,
-        };
+        *response_started |= crate::responses_retry::response_generation_started(&event);
 
         match event {
             ResponseEvent::Created { response_id } => {
