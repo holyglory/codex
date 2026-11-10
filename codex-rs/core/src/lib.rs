@@ -110,7 +110,7 @@ mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
 mod usage_capture;
-mod usage_identity;
+pub mod usage_identity;
 pub use mcp::McpManager;
 pub use mcp::McpServersDisabled;
 mod original_image_detail;

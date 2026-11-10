@@ -15,9 +15,13 @@ pub struct LocalUsageAccountingCapability {
     pub methods: Vec<String>,
     #[serde(default)]
     pub storage: String,
-    /// False until the producer captures explicit work-context bindings.
+    /// Accepts explicit read-only workContextBindings supplied on each request.
     #[serde(default)]
     pub supports_work_context_bindings: bool,
+    #[serde(default)]
+    pub supports_workstream_outcomes: bool,
+    #[serde(default)]
+    pub snapshot_retention_ms: u32,
 }
 
 /// Read one consistent usage-v2 snapshot. No legacy usage database is opened.
@@ -38,10 +42,12 @@ pub struct LocalUsageSummaryParams {
     pub repository_id: Option<String>,
     #[serde(default)]
     pub thread_id: Option<String>,
-    /// Recognized but currently rejected: outcome rows can be selected by the
-    /// consumer, while complete workstream-scoped summary vectors are unavailable.
+    /// Select outcome accounting only. Repository report/totals retain scope.
     #[serde(default)]
     pub workstream_id: Option<String>,
+    /// Explicit authority declarations; at most 256, never persisted by this RPC.
+    #[serde(default)]
+    pub work_context_bindings: Option<Vec<LocalUsageWorkContextBinding>>,
     /// Reserved compatibility selector; non-null is rejected until captured.
     #[serde(default)]
     pub worktree_keys: Option<Vec<String>>,
@@ -92,15 +98,60 @@ pub struct LocalUsageSnapshot {
 /// Only explicitly captured bindings may populate this versioned extension.
 /// Repository/thread identity or operation completion never implies a binding.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct LocalUsageWorkContext {
+    #[serde(alias = "schema_version")]
     pub schema_version: u32,
     pub id: String,
+    #[serde(alias = "repository_id")]
     pub repository_id: Option<String>,
-    pub project_id: Option<String>,
+    #[serde(alias = "projectId", alias = "project_id", alias = "native_project_id")]
+    pub native_project_id: Option<String>,
+    #[serde(alias = "workstream_id")]
     pub workstream_id: Option<String>,
+    #[serde(alias = "outcome_id")]
     pub outcome_id: Option<String>,
+    #[serde(alias = "thread_id")]
+    pub thread_id: Option<String>,
+    #[serde(alias = "turn_id")]
+    pub turn_id: Option<String>,
+    #[serde(alias = "experiment_ref")]
+    pub experiment_ref: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageWorkContextBinding {
+    #[serde(alias = "schema_version")]
+    pub schema_version: u32,
+    #[serde(alias = "operation_id")]
+    pub operation_id: String,
+    #[serde(alias = "captured_at_ms")]
+    pub captured_at_ms: i64,
+    #[serde(alias = "work_context")]
+    pub work_context: LocalUsageWorkContext,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageRepositoryIdentityParams {
+    #[serde(default)]
+    pub contract_version: Option<u32>,
+    /// Private local input; never echoed in the response or error.
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageRepositoryIdentityResponse {
+    pub contract_version: u32,
+    pub source: String,
+    pub repository_id: Option<String>,
+    pub format_version: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

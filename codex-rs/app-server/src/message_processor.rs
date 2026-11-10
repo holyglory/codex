@@ -1205,6 +1205,11 @@ impl MessageProcessor {
                 .await
                 .map(|response| Some(response.into()))
             }
+            ClientRequest::LocalUsageRepositoryIdentity { params, .. } => {
+                crate::request_processors::local_usage_processor::repository_identity(params)
+                    .await
+                    .map(|response| Some(response.into()))
+            }
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

@@ -1,10 +1,12 @@
 //! Finite, explicit operation-ID evidence for external work-context bindings.
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Result;
+use crate::ReviewOperationKind;
 use crate::StorageError;
 use crate::TimeRange;
 use crate::UsageFilter;
@@ -13,6 +15,17 @@ use crate::reader_query::quoted;
 use crate::report_query::ReportQuery;
 use crate::review_aggregate::detail_statistics;
 use crate::review_storage::query_rows;
+
+/// Captured identities for validating declarations without a history scan.
+#[derive(Clone, Debug, Default)]
+pub struct OperationBindingMetadata {
+    pub operation_id: String,
+    pub kind: Option<ReviewOperationKind>,
+    pub account_id: Option<String>,
+    pub repository_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+}
 
 /// Measurements joined only through a captured `operation_id`. Retired detail,
 /// response-only token links, and absent observations are never reconstructed.
@@ -31,6 +44,120 @@ pub struct BoundOperationEffort {
 }
 
 impl UsageReader {
+    /// Exact indexed operation identities plus this reader's already pinned tail.
+    /// Missing identities stay unknown; no path or thread inference is applied.
+    pub fn operation_binding_metadata(
+        &self,
+        operation_ids: &BTreeSet<String>,
+    ) -> Result<Vec<OperationBindingMetadata>> {
+        if operation_ids.len() > 256 {
+            return Err(StorageError::InvalidData(
+                "too many explicit operation bindings".into(),
+            ));
+        }
+        if operation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection =
+            crate::duckdb_connection::open_in_memory().map_err(crate::reader_query::query_error)?;
+        let descriptor =
+            crate::review_projection::load_review_projection_shared(&self.root, &self.manifest)?;
+        let mut operations = descriptor
+            .as_ref()
+            .map_or_else(
+                || Ok(Vec::new()),
+                |descriptor| {
+                    crate::review_projection::load_review_operations(
+                        &self.root,
+                        descriptor,
+                        operation_ids,
+                        &connection,
+                    )
+                },
+            )?
+            .into_iter()
+            .map(|operation| (operation.operation_id.clone(), operation))
+            .collect::<BTreeMap<_, _>>();
+        let tail = crate::report_query::canonical_tail(self, &connection)?;
+        for record in tail.iter().copied().filter(|record| {
+            record
+                .operation_id
+                .as_ref()
+                .is_some_and(|id| operation_ids.contains(id))
+        }) {
+            if crate::review_state::lifecycle(record).is_some() {
+                let id = record.operation_id.as_ref().ok_or_else(|| {
+                    StorageError::InvalidData("operation identity missing".into())
+                })?;
+                let sequence = self.record_sequences[&record.id];
+                if let Some(operation) = operations.get_mut(id) {
+                    operation.merge(sequence, record)?;
+                } else {
+                    operations.insert(
+                        id.clone(),
+                        crate::ReviewOperation::from_fact(sequence, record)?,
+                    );
+                }
+            }
+        }
+        let mut metadata = operations
+            .into_values()
+            .map(|operation| {
+                (
+                    operation.operation_id.clone(),
+                    OperationBindingMetadata {
+                        operation_id: operation.operation_id,
+                        kind: Some(operation.kind),
+                        account_id: operation.account_id,
+                        repository_id: operation.repository_id,
+                        thread_id: operation.thread_id,
+                        turn_id: operation.turn_id,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for record in tail.iter().copied().filter(|record| {
+            record
+                .operation_id
+                .as_ref()
+                .is_some_and(|id| operation_ids.contains(id))
+                && (crate::review_state::lifecycle(record).is_some()
+                    || record.event.as_deref() == Some("token_observation")
+                    || record.provider_total_tokens.is_some())
+        }) {
+            let id = record
+                .operation_id
+                .as_ref()
+                .ok_or_else(|| StorageError::InvalidData("operation identity missing".into()))?;
+            let entry = metadata
+                .entry(id.clone())
+                .or_insert_with(|| OperationBindingMetadata {
+                    operation_id: id.clone(),
+                    ..Default::default()
+                });
+            for (captured, incoming) in [
+                (&mut entry.account_id, &record.account_id),
+                (&mut entry.repository_id, &record.repository_id),
+                (&mut entry.thread_id, &record.thread_id),
+                (&mut entry.turn_id, &record.turn_id),
+            ] {
+                if captured
+                    .as_ref()
+                    .zip(incoming.as_ref())
+                    .is_some_and(|(a, b)| a != b)
+                {
+                    return Err(StorageError::InvalidData(
+                        "conflicting operation identity facts".into(),
+                    ));
+                }
+                if captured.is_none() {
+                    *captured = incoming.clone();
+                }
+            }
+        }
+        Ok(metadata.into_values().collect())
+    }
+
     /// Read at most 256 exact identities from the same pinned review view.
     /// A binding alone does not create an operation, token, or timing fact.
     pub fn bound_operation_effort(

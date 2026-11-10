@@ -56,6 +56,7 @@ mod summary_cache;
 mod token_rollup;
 
 pub use bound_evidence::BoundOperationEffort;
+pub use bound_evidence::OperationBindingMetadata;
 pub use capture::capture_record;
 pub use capture::capture_records;
 pub use duckdb_snapshot::DuckDbSnapshot;

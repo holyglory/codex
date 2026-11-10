@@ -15,57 +15,140 @@ use std::time::UNIX_EPOCH;
 
 use codex_app_server_protocol::LocalUsageOperationBinding;
 use codex_app_server_protocol::LocalUsageWorkContext;
+use codex_app_server_protocol::LocalUsageWorkContextBinding;
 use codex_usage::BoundOperationEffort;
-use serde::Deserialize;
+use codex_usage::OperationBindingMetadata;
 use serde_json::Value;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
 
 const MAX_BYTES: u64 = 512 * 1024;
-const MAX_BINDINGS: usize = 256;
-const MAX_CONTEXTS: usize = 50;
+pub(super) const MAX_BINDINGS: usize = 256;
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Line {
-    #[serde(alias = "schema_version")]
-    schema_version: u32,
-    #[serde(alias = "operation_id")]
-    operation_id: String,
-    #[serde(alias = "captured_at_ms")]
-    captured_at_ms: i64,
-    #[serde(alias = "work_context")]
-    work_context: Context,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Context {
-    #[serde(alias = "schema_version")]
-    schema_version: u32,
-    id: String,
-    #[serde(alias = "repository_id")]
-    repository_id: Option<String>,
-    #[serde(alias = "project_id")]
-    project_id: Option<String>,
-    #[serde(alias = "workstream_id")]
-    workstream_id: Option<String>,
-    #[serde(alias = "outcome_id")]
-    outcome_id: Option<String>,
-}
-
+#[derive(Clone, Default)]
 pub(super) struct Bindings {
     pub(super) revision: String,
+    pub(super) basis: &'static str,
     contexts: BTreeMap<String, LocalUsageWorkContext>,
     operations: BTreeMap<String, LocalUsageOperationBinding>,
 }
 
-pub(super) fn available(home: &Path) -> bool {
-    Bindings::read(home).is_ok_and(|source| source.is_some())
-}
-
 impl Bindings {
+    pub(super) fn merge_request(
+        sidecar: Option<&Self>,
+        declarations: Option<&[LocalUsageWorkContextBinding]>,
+    ) -> Result<Option<Self>, ()> {
+        if declarations.is_some_and(|rows| rows.len() > MAX_BINDINGS) {
+            return Err(());
+        }
+        if sidecar.is_none() && declarations.is_none() {
+            return Ok(None);
+        }
+        let mut source = sidecar.cloned().unwrap_or_default();
+        for declaration in declarations.unwrap_or_default() {
+            source.insert(declaration.clone())?;
+        }
+        if declarations.is_some() {
+            source.basis = if sidecar.is_some() {
+                "request_and_compatibility_declarations"
+            } else {
+                "request_declarations"
+            };
+            source.revision = format!("request-{}", source.operations.len());
+        }
+        Ok(Some(source))
+    }
+
+    fn insert(&mut self, line: LocalUsageWorkContextBinding) -> Result<(), ()> {
+        if line.schema_version != 1
+            || line.work_context.schema_version != 1
+            || line.captured_at_ms < 0
+        {
+            return Err(());
+        }
+        let context = line.work_context;
+        for id in [
+            Some(line.operation_id.as_str()),
+            Some(context.id.as_str()),
+            context.repository_id.as_deref(),
+            context.native_project_id.as_deref(),
+            context.workstream_id.as_deref(),
+            context.outcome_id.as_deref(),
+            context.thread_id.as_deref(),
+            context.turn_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !safe_identifier(id, false) {
+                return Err(());
+            }
+        }
+        if context
+            .experiment_ref
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, true))
+        {
+            return Err(());
+        }
+        if self
+            .contexts
+            .get(&context.id)
+            .is_some_and(|prior| prior != &context)
+        {
+            return Err(());
+        }
+        let binding = LocalUsageOperationBinding {
+            schema_version: 1,
+            operation_id: line.operation_id,
+            work_context_id: context.id.clone(),
+            captured_at_ms: line.captured_at_ms,
+        };
+        if self
+            .operations
+            .get(&binding.operation_id)
+            .is_some_and(|prior| prior != &binding)
+        {
+            return Err(());
+        }
+        self.contexts.insert(context.id.clone(), context);
+        self.operations
+            .insert(binding.operation_id.clone(), binding);
+        if self.operations.len() > MAX_BINDINGS || self.contexts.len() > MAX_BINDINGS {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_metadata(
+        &self,
+        recorded: &[OperationBindingMetadata],
+        repository: Option<&str>,
+    ) -> Result<(), ()> {
+        for fact in recorded {
+            let binding = self.operations.get(&fact.operation_id).ok_or(())?;
+            let context = self.contexts.get(&binding.work_context_id).ok_or(())?;
+            if repository
+                .zip(fact.repository_id.as_deref())
+                .is_some_and(|(wanted, actual)| wanted != actual)
+                || context
+                    .thread_id
+                    .as_ref()
+                    .zip(fact.thread_id.as_ref())
+                    .is_some_and(|(wanted, actual)| wanted != actual)
+                || context
+                    .turn_id
+                    .as_ref()
+                    .zip(fact.turn_id.as_ref())
+                    .is_some_and(|(wanted, actual)| wanted != actual)
+            {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn read(home: &Path) -> Result<Option<Self>, ()> {
         let path = home
             .join(codex_usage::USAGE_DIRECTORY_NAME)
@@ -89,6 +172,7 @@ impl Bindings {
         }
         let mut source = Self {
             revision: String::new(),
+            basis: "explicit_sidecar",
             contexts: BTreeMap::new(),
             operations: BTreeMap::new(),
         };
@@ -100,69 +184,9 @@ impl Bindings {
             if lines > MAX_BINDINGS {
                 return Err(());
             }
-            let line: Line = serde_json::from_str(line).map_err(|_| ())?;
-            if line.schema_version != 1
-                || line.work_context.schema_version != 1
-                || line.captured_at_ms < 0
-            {
-                return Err(());
-            }
+            let line: LocalUsageWorkContextBinding = serde_json::from_str(line).map_err(|_| ())?;
             latest = latest.max(line.captured_at_ms);
-            let context = LocalUsageWorkContext {
-                schema_version: line.work_context.schema_version,
-                id: line.work_context.id,
-                repository_id: line.work_context.repository_id,
-                project_id: line.work_context.project_id,
-                workstream_id: line.work_context.workstream_id,
-                outcome_id: line.work_context.outcome_id,
-            };
-            for id in [
-                Some(line.operation_id.as_str()),
-                Some(context.id.as_str()),
-                context.repository_id.as_deref(),
-                context.project_id.as_deref(),
-                context.workstream_id.as_deref(),
-                context.outcome_id.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                if id.is_empty()
-                    || id.len() > 256
-                    || !id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
-                {
-                    return Err(());
-                }
-            }
-            if source
-                .contexts
-                .get(&context.id)
-                .is_some_and(|prior| prior != &context)
-            {
-                return Err(());
-            }
-            let binding = LocalUsageOperationBinding {
-                schema_version: 1,
-                operation_id: line.operation_id,
-                work_context_id: context.id.clone(),
-                captured_at_ms: line.captured_at_ms,
-            };
-            if source
-                .operations
-                .get(&binding.operation_id)
-                .is_some_and(|prior| prior != &binding)
-            {
-                return Err(());
-            }
-            source.contexts.insert(context.id.clone(), context);
-            source
-                .operations
-                .insert(binding.operation_id.clone(), binding);
-            if source.contexts.len() > MAX_CONTEXTS {
-                return Err(());
-            }
+            source.insert(line)?;
         }
         source.revision = revision(path, Sha256::digest(&bytes).into(), lines, latest)?;
         Ok(Some(source))
@@ -173,13 +197,13 @@ impl Bindings {
     }
 
     /// Return only declarations whose exact operation has scoped evidence.
-    pub(super) fn selected(
+    pub(super) fn selected_ids(
         &self,
-        evidence: &[BoundOperationEffort],
+        ids: &BTreeSet<String>,
     ) -> (Vec<LocalUsageWorkContext>, Vec<LocalUsageOperationBinding>) {
-        let bindings = evidence
+        let bindings = ids
             .iter()
-            .filter_map(|row| self.operations.get(&row.operation_id).cloned())
+            .filter_map(|id| self.operations.get(id).cloned())
             .collect::<Vec<_>>();
         let contexts = bindings
             .iter()
@@ -196,44 +220,61 @@ impl Bindings {
         facts: &Value,
         total: &Value,
         evidence: &[BoundOperationEffort],
+        workstream: Option<&str>,
     ) -> Result<Value, ()> {
         let mut attributed = zero_effort();
         let mut attributed_observations = 0u64;
-        let mut groups = BTreeMap::<String, (Option<String>, Value)>::new();
+        let mut excluded = zero_effort();
+        let mut excluded_observations = 0u64;
+        let mut groups = BTreeMap::<(String, Option<String>), Value>::new();
         for fact in evidence {
             let binding = self.operations.get(&fact.operation_id).ok_or(())?;
             let context = self.contexts.get(&binding.work_context_id).ok_or(())?;
-            let Some(outcome) = &context.outcome_id else {
-                continue;
-            };
-            attributed_observations = attributed_observations
-                .checked_add(fact.token_observations)
-                .ok_or(())?;
             let mut effort = zero_effort();
             effort["operations"] = json!(fact.operations);
             effort["retryOperations"] = json!(fact.retry_operations);
             effort["reworkOperations"] = json!(fact.rework_operations);
             effort["providerTotalTokens"] = json!({"measured":fact.provider_total_tokens,"exact":Value::Null,"unknown":fact.unknown_token_observations});
             effort["activeAgentMs"]["unknown"] = json!(fact.operations);
-            effort["elapsedExecutionMs"] = json!({"measured":fact.execution_interval_sum_ms,"exact":Value::Null,"unknown":fact.unknown_execution_intervals});
+            effort["elapsedExecutionMs"]["unknown"] = json!(fact.operations);
             effort["recordedWaitMs"]["measured"] = json!(fact.recorded_wait_ms);
-            combine(&mut attributed, &effort, false)?;
-            let (workstream, aggregate) = groups
-                .entry(outcome.clone())
-                .or_insert_with(|| (context.workstream_id.clone(), zero_effort()));
-            if workstream != &context.workstream_id {
-                return Err(());
+            if workstream
+                .zip(context.workstream_id.as_deref())
+                .is_some_and(|(selected, actual)| selected != actual)
+            {
+                combine(&mut excluded, &effort, false)?;
+                excluded_observations = excluded_observations
+                    .checked_add(fact.token_observations)
+                    .ok_or(())?;
+                continue;
             }
+            let Some(outcome) = &context.outcome_id else {
+                continue;
+            };
+            if workstream.is_some() && context.workstream_id.is_none() {
+                continue;
+            }
+            attributed_observations = attributed_observations
+                .checked_add(fact.token_observations)
+                .ok_or(())?;
+            combine(&mut attributed, &effort, false)?;
+            let aggregate = groups
+                .entry((outcome.clone(), context.workstream_id.clone()))
+                .or_insert_with(zero_effort);
             combine(aggregate, &effort, false)?;
         }
-        let mut unattributed = total.clone();
+        let mut scoped_total = total.clone();
+        combine(&mut scoped_total, &excluded, true)?;
+        let mut unattributed = scoped_total.clone();
         combine(&mut unattributed, &attributed, true)?;
         let unattributed_observations = facts["coverage"]["rawTokenObservations"]
             .as_u64()
             .ok_or(())?
+            .checked_sub(excluded_observations)
+            .ok_or(())?
             .checked_sub(attributed_observations)
             .ok_or(())?;
-        let rows = groups.into_iter().map(|(outcome_id,(workstream_id,effort))| json!({"outcomeId":outcome_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
+        let rows = groups.into_iter().map(|((outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
         let full = unattributed["operations"] == 0
             && unattributed_observations == 0
             && unattributed["providerTotalTokens"]["measured"] == 0
@@ -244,12 +285,20 @@ impl Bindings {
             && facts["coverage"]["collectionCompleteness"] == "recorded";
         Ok(
             json!({"schemaVersion":1,"coverage":if rows.is_empty() {"unattributed"} else if full {"complete"} else {"partial"},
-            "totals":total,"attributed":attributed,"unattributed":unattributed,
+            "totals":scoped_total,"attributed":attributed,"unattributed":unattributed,
             "unattributedReasons":{"operation_context_or_outcome_unobserved":unattributed["operations"],"token_observation_context_unobserved":unattributed_observations},
             "totalRows":rows.len(),"rows":rows,"nextCursor":Value::Null,
-            "basis":"Explicit version-1 sidecar declarations joined only by captured operation_id; missing or retired operation detail and response-only token links stay unattributed. Operation completion does not prove delivery."}),
+            "basis":"Explicit version-1 request/compatibility declarations joined by captured operation_id. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery."}),
         )
     }
+}
+
+pub(super) fn safe_identifier(id: &str, experiment: bool) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && id.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte) || experiment && byte == b'@'
+        })
 }
 
 // Content digests stay private. A bounded process-local registry gives changed

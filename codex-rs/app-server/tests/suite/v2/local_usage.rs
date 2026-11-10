@@ -5,8 +5,11 @@ use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCMessage;
+use codex_app_server_protocol::LocalUsageRepositoryIdentityParams;
+use codex_app_server_protocol::LocalUsageRepositoryIdentityResponse;
 use codex_app_server_protocol::LocalUsageSummaryParams;
 use codex_app_server_protocol::LocalUsageSummaryResponse;
+use codex_app_server_protocol::LocalUsageWorkContextBinding;
 use codex_app_server_protocol::RequestId;
 use codex_usage::JournalReadLimits;
 use codex_usage::UsageOutcome;
@@ -16,9 +19,494 @@ use codex_usage::UsageStore;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::timeout;
+
+fn fixture_fact(
+    id: &str,
+    thread: &str,
+    turn: &str,
+    repository: &str,
+    base: i64,
+    tokens: u64,
+) -> UsageRecord {
+    let mut fact = UsageRecord::new_millis(format!("{id}-finished"), base + 2_000, tokens, 0)
+        .with_operation(id)
+        .with_repository(repository)
+        .with_thread(thread)
+        .with_account("fixture-account")
+        .with_activity("coding", "implementation");
+    fact.turn_id = Some(turn.into());
+    fact.event = Some("model_request_finished".into());
+    fact.started_at_ms = Some(base + 1_000);
+    fact.ended_at_ms = Some(base + 2_000);
+    fact.duration_ms = Some(1_000);
+    fact.outcome = Some(UsageOutcome::Completed);
+    fact.coverage = Some("recorded".into());
+    fact.provider_total_tokens = Some(tokens);
+    fact
+}
+
+fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "work-contexts.jsonl" || name.to_string_lossy().ends_with(".lock") {
+            continue;
+        }
+        let target = destination.join(name);
+        if entry.file_type()?.is_dir() {
+            copy_fixture_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn export_runtime_fixture(home: &Path, info: &Value) -> Result<Option<PathBuf>> {
+    let Some(root) = std::env::var_os("CODEX_USAGE_API_FIXTURE_DIR").map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if root.exists() && std::fs::read_dir(&root)?.next().is_some() {
+        let prior: Value = serde_json::from_slice(&std::fs::read(root.join("fixture-info.json"))?)?;
+        anyhow::ensure!(
+            prior["fixtureKind"] == "codex-usage-v2-synthetic-v1",
+            "existing fixture destination is not owned by this exporter"
+        );
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        std::fs::rename(
+            &root,
+            root.with_file_name(format!("usage-v2-runtime-fixture-previous-{stamp}")),
+        )?;
+    }
+    copy_fixture_tree(&home.join("usage-v2"), &root.join("usage-v2"))?;
+    std::fs::write(
+        root.join("fixture-info.json"),
+        serde_json::to_vec_pretty(info)?,
+    )?;
+    anyhow::ensure!(
+        !root.join("usage-v2/work-contexts.jsonl").exists(),
+        "runtime fixture must not depend on a compatibility sidecar"
+    );
+    Ok(Some(root))
+}
+
+#[tokio::test]
+async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ipc() -> Result<()> {
+    let home = TempDir::new()?;
+    let repository_path = std::env::var_os("CODEX_USAGE_V2_FIXTURE_REPOSITORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let repository_path = repository_path.canonicalize()?;
+    let repository = codex_core::usage_identity::repository_id(&repository_path)
+        .context("fixture repository is not recognized")?;
+    let base = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )? - 10_000;
+    let mut store = UsageStore::open(home.path())?;
+    for (id, thread, turn, total) in [
+        ("fixture-model", "fixture-thread", "fixture-turn", 120),
+        (
+            "fixture-other",
+            "fixture-other-thread",
+            "fixture-other-turn",
+            40,
+        ),
+        (
+            "fixture-unbound",
+            "fixture-unbound-thread",
+            "fixture-unbound-turn",
+            15,
+        ),
+        (
+            "fixture-unknown-stream",
+            "fixture-unknown-thread",
+            "fixture-unknown-turn",
+            5,
+        ),
+    ] {
+        store.append_record(fixture_fact(id, thread, turn, &repository, base, total))?;
+    }
+    UsagePublisher::open_at(store.root())?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    drop(store);
+    let mut server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(Duration::from_secs(20))
+        .await?;
+    let identity: LocalUsageRepositoryIdentityResponse = server
+        .request(|request_id| ClientRequest::LocalUsageRepositoryIdentity {
+            request_id,
+            params: LocalUsageRepositoryIdentityParams {
+                contract_version: Some(1),
+                path: repository_path.to_string_lossy().into_owned(),
+            },
+        })
+        .await?;
+    assert_eq!(identity.repository_id.as_deref(), Some(repository.as_str()));
+    assert_eq!(identity.format_version, 3);
+    assert!(!serde_json::to_string(&identity)?.contains(repository_path.to_str().unwrap()));
+    let publication_guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.path().join("usage-v2/.snapshot.lock"))?;
+    publication_guard.lock()?;
+    UsageStore::open(home.path())?.append_record(fixture_fact(
+        "fixture-tail",
+        "fixture-tail-thread",
+        "fixture-tail-turn",
+        &repository,
+        base + 500,
+        7,
+    ))?;
+    let info = json!({"fixtureKind":"codex-usage-v2-synthetic-v1","repositoryPath":repository_path,"repositoryId":repository,
+        "windowStartMs":base,"windowEndMs":base+5_000,"capturedAtMs":base+500,
+        "operationId":"fixture-model","threadId":"fixture-thread","turnId":"fixture-turn","nativeProjectId":"fixture-project",
+        "workstreamId":"fixture-workstream","outcomeId":"fixture-outcome","experimentRef":"fixture-experiment@1",
+        "additionalOperations":[{"operationId":"fixture-other","threadId":"fixture-other-thread","turnId":"fixture-other-turn","providerTokens":40},
+            {"operationId":"fixture-unbound","providerTokens":15},{"operationId":"fixture-unknown-stream","providerTokens":5},{"operationId":"fixture-tail","providerTokens":7}],
+        "providerTokens":187});
+    let exported = export_runtime_fixture(home.path(), &info)?;
+    let global_start = Instant::now();
+    let global: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams::default(),
+        })
+        .await?;
+    let metadata_cold_ms = global_start.elapsed().as_millis();
+    assert!(
+        global.report["providerTokens"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        global.report["coverage"]["providerTotals"],
+        "unavailable_unbounded"
+    );
+    assert!(
+        global.snapshot.journal_watermark > global.snapshot.watermark,
+        "test must pin an actual unpublished tail"
+    );
+    let declaration = |id: &str,
+                       op: &str,
+                       thread: &str,
+                       turn: &str,
+                       stream: Option<&str>,
+                       outcome: &str|
+     -> Result<LocalUsageWorkContextBinding> {
+        Ok(serde_json::from_value(
+            json!({"schemaVersion":1,"operationId":op,"capturedAtMs":base+500,"workContext":{
+            "schemaVersion":1,"id":id,"repositoryId":"fixture-coordinator-repo","nativeProjectId":"fixture-project",
+            "workstreamId":stream,"outcomeId":outcome,"threadId":thread,"turnId":turn,"experimentRef":"fixture-experiment@1"}}),
+        )?)
+    };
+    let declarations = vec![
+        declaration(
+            "C1",
+            "fixture-model",
+            "fixture-thread",
+            "fixture-turn",
+            Some("fixture-workstream"),
+            "fixture-outcome",
+        )?,
+        declaration(
+            "C2",
+            "fixture-other",
+            "fixture-other-thread",
+            "fixture-other-turn",
+            Some("other-stream"),
+            "other-outcome",
+        )?,
+        declaration(
+            "C3",
+            "fixture-unknown-stream",
+            "fixture-unknown-thread",
+            "fixture-unknown-turn",
+            None,
+            "unknown-stream-outcome",
+        )?,
+    ];
+    let params = LocalUsageSummaryParams {
+        from_at_ms: Some(base),
+        to_at_ms: Some(base + 5_000),
+        repository_id: Some(repository.clone()),
+        include_review: true,
+        workstream_id: Some("fixture-workstream".into()),
+        work_context_bindings: Some(declarations.clone()),
+        expected_snapshot: Some(global.snapshot.source_watermark.clone()),
+        ..Default::default()
+    };
+    let cold_start = Instant::now();
+    let scoped: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: params.clone(),
+        })
+        .await?;
+    let finite_cold_ms = cold_start.elapsed().as_millis();
+    assert_eq!(
+        scoped.snapshot.source_watermark,
+        global.snapshot.source_watermark
+    );
+    assert_eq!(scoped.report["providerTokens"][0]["measuredTokens"], 187);
+    let review = scoped.review.as_ref().unwrap();
+    assert_eq!(review["totals"]["total_tokens"], 187);
+    assert_eq!(
+        review["outcomes"]["totals"]["providerTotalTokens"]["measured"],
+        147
+    );
+    assert_eq!(
+        review["outcomes"]["attributed"]["providerTotalTokens"]["measured"],
+        120
+    );
+    assert_eq!(
+        review["outcomes"]["unattributed"]["providerTotalTokens"]["measured"],
+        27
+    );
+    assert_eq!(review["outcomes"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        review["outcomes"]["rows"][0]["outcomeId"],
+        "fixture-outcome"
+    );
+    for effort in [
+        &review["outcomes"]["totals"],
+        &review["outcomes"]["attributed"],
+        &review["outcomes"]["unattributed"],
+        &review["outcomes"]["rows"][0]["effort"],
+    ] {
+        assert_eq!(effort["elapsedExecutionMs"]["measured"], 0);
+        assert_eq!(effort["elapsedExecutionMs"]["exact"], Value::Null);
+    }
+    assert!(
+        scoped.report["measuredExecutionIntervalSumMs"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        scoped.work_contexts[0].native_project_id.as_deref(),
+        Some("fixture-project")
+    );
+    assert_eq!(
+        scoped.work_contexts[0].thread_id.as_deref(),
+        Some("fixture-thread")
+    );
+    assert_eq!(
+        scoped.work_contexts[0].experiment_ref.as_deref(),
+        Some("fixture-experiment@1")
+    );
+    let mut warm_max_ms = 0;
+    for _ in 0..3 {
+        let warm_start = Instant::now();
+        let warm: LocalUsageSummaryResponse = server
+            .request(|request_id| ClientRequest::LocalUsageSummary {
+                request_id,
+                params: params.clone(),
+            })
+            .await?;
+        let ms = warm_start.elapsed().as_millis();
+        warm_max_ms = warm_max_ms.max(ms);
+        assert!(ms < 500, "warm isolated RPC exceeded 500ms: {ms}");
+        assert_eq!(warm.review, scoped.review);
+    }
+    let latency = json!({"metadataColdMs":metadata_cold_ms,"finiteReviewColdMs":finite_cold_ms,"warmMaximumMs":warm_max_ms,"warmSamples":3});
+    eprintln!("USAGE_V2_LATENCY {latency}");
+    if let Some(exported) = &exported {
+        std::fs::write(
+            exported.join("latency.json"),
+            serde_json::to_vec_pretty(&latency)?,
+        )?;
+        std::fs::write(
+            exported.join("bound-summary.json"),
+            serde_json::to_vec_pretty(&scoped)?,
+        )?;
+    }
+    UsageStore::open(home.path())?.append_record(fixture_fact(
+        "fixture-late",
+        "fixture-late-thread",
+        "fixture-late-turn",
+        &repository,
+        base + 1_500,
+        11,
+    ))?;
+    for (account, thread, total) in [
+        (Some("fixture-account"), None, 187),
+        (None, Some("fixture-thread"), 120),
+        (None, Some("fixture-tail-thread"), 7),
+    ] {
+        let response: LocalUsageSummaryResponse = server
+            .request(|request_id| ClientRequest::LocalUsageSummary {
+                request_id,
+                params: LocalUsageSummaryParams {
+                    account_id: account.map(str::to_owned),
+                    thread_id: thread.map(str::to_owned),
+                    expected_snapshot: Some(global.snapshot.source_watermark.clone()),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(response.summary["inputTokens"], total);
+        assert_eq!(
+            response.snapshot.journal_watermark,
+            global.snapshot.journal_watermark
+        );
+        assert_eq!(
+            response.snapshot.source_watermark,
+            global.snapshot.source_watermark
+        );
+    }
+    let fresh: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams::default(),
+        })
+        .await?;
+    assert_eq!(fresh.summary["inputTokens"], 198);
+    assert!(fresh.snapshot.journal_watermark > global.snapshot.journal_watermark);
+    let mut unscoped_params = params.clone();
+    unscoped_params.expected_snapshot = Some(fresh.snapshot.source_watermark.clone());
+    unscoped_params.workstream_id = None;
+    let all: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: unscoped_params,
+        })
+        .await?;
+    assert_eq!(
+        all.review.as_ref().unwrap()["outcomes"]["totals"]["providerTotalTokens"]["measured"],
+        198
+    );
+    assert_eq!(
+        all.review.as_ref().unwrap()["outcomes"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    drop(publication_guard);
+    let mut invalids = Vec::new();
+    let mut bad = declarations.clone();
+    bad[0].work_context.thread_id = Some("wrong-thread".into());
+    invalids.push((Some(repository.clone()), bad));
+    let mut bad = declarations.clone();
+    bad[0].work_context.turn_id = Some("wrong-turn".into());
+    invalids.push((Some(repository.clone()), bad));
+    invalids.push((Some("unrelated-producer-repo".into()), declarations.clone()));
+    let mut bad = declarations.clone();
+    let mut conflict = bad[0].clone();
+    conflict.work_context.id = "C9".into();
+    bad.push(conflict);
+    invalids.push((Some(repository.clone()), bad));
+    invalids.push((Some(repository.clone()), vec![declarations[0].clone(); 257]));
+    for (repository_id, work_context_bindings) in invalids {
+        let mut invalid = params.clone();
+        invalid.repository_id = repository_id;
+        invalid.work_context_bindings = Some(work_context_bindings);
+        invalid.expected_snapshot = None;
+        let id = server
+            .send_request("localUsage/summary", Some(serde_json::to_value(invalid)?))
+            .await?;
+        let error = timeout(
+            Duration::from_secs(20),
+            server.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+    }
+    let mut maximum = params.clone();
+    maximum.expected_snapshot = None;
+    maximum.work_context_bindings = Some(
+        (0..256)
+            .map(|index| {
+                let mut line = declarations[0].clone();
+                line.operation_id = format!("unobserved-{index}");
+                line.work_context.id = format!("C{index}");
+                line
+            })
+            .collect(),
+    );
+    let maximum: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: maximum,
+        })
+        .await?;
+    assert!(maximum.operation_bindings.is_empty());
+    tokio::time::sleep(Duration::from_millis(5_100)).await;
+    let id = server
+        .send_request(
+            "localUsage/summary",
+            Some(json!({"expectedSnapshot":global.snapshot.source_watermark})),
+        )
+        .await?;
+    let error = timeout(
+        Duration::from_secs(20),
+        server.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_usage_repository_identity_is_read_only_and_never_echoes_paths() -> Result<()> {
+    let home = TempDir::new()?;
+    let outside = TempDir::new()?;
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(Duration::from_secs(20))
+        .await?;
+    for path in [repository.as_path(), outside.path()] {
+        let response: LocalUsageRepositoryIdentityResponse = server
+            .request(|request_id| ClientRequest::LocalUsageRepositoryIdentity {
+                request_id,
+                params: LocalUsageRepositoryIdentityParams {
+                    path: path.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(
+            response.repository_id,
+            codex_core::usage_identity::repository_id(path)
+        );
+        assert_eq!(response.format_version, 3);
+        assert!(!serde_json::to_string(&response)?.contains(path.to_str().unwrap()));
+    }
+    let id = server
+        .send_request(
+            "localUsage/repositoryIdentity",
+            Some(json!({"path":"private-relative-path"})),
+        )
+        .await?;
+    let error = timeout(
+        Duration::from_secs(20),
+        server.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert!(!serde_json::to_string(&error)?.contains("private-relative-path"));
+    Ok(())
+}
 
 #[tokio::test]
 async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_effort() -> Result<()>
@@ -196,6 +684,8 @@ async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_ef
             request_id,
             params: LocalUsageSummaryParams {
                 repository_id: Some("repo-b".into()),
+                from_at_ms: Some(0),
+                to_at_ms: Some(3_000),
                 include_review: true,
                 ..Default::default()
             },
@@ -231,7 +721,7 @@ async fn local_usage_summary_rejects_unsupported_versions_and_unstable_paginatio
         json!({"contractVersion":99}),
         json!({"recordLimit":51}),
         json!({"worktreeKeys":[]}),
-        json!({"workstreamId":"stream-one"}),
+        json!({"includeReview":true}),
         json!({"fromAt":2,"toAt":1}),
         json!({"recordLimit":1,"recordsAfter":{"observedAtMs":1,"id":"row"}}),
         json!({"expectedSnapshot":"different-snapshot"}),
@@ -355,21 +845,35 @@ async fn local_usage_summary_joins_only_explicit_sidecar_bindings() -> Result<()
             .starts_with("b1-2000-r")
     );
     assert_eq!(std::fs::read_to_string(&sidecar)?, declaration);
-    // Same line count/timestamp, changed bytes: internal hashing must still
-    // invalidate the public readable continuation revision.
+    // The retained view pins compatibility declarations too. A fresh request
+    // observes changed bytes, while a continuation keeps the original view.
     std::fs::write(&sidecar, declaration.replace("outcome-one", "outcome-two"))?;
     let id = server
         .send_request(
             "localUsage/summary",
-            Some(json!({"expectedSnapshot":result.snapshot.source_watermark})),
+            Some(json!({"expectedSnapshot":result.snapshot.source_watermark,"fromAtMs":0,"toAtMs":3000,"includeReview":true,"repositoryId":"repo-a"})),
         )
         .await?;
-    let error = timeout(
-        Duration::from_secs(20),
-        server.read_stream_until_error_message(RequestId::Integer(id)),
-    )
-    .await??;
-    assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+    let pinned: LocalUsageSummaryResponse =
+        timeout(Duration::from_secs(20), server.read_response(id)).await??;
+    assert_eq!(
+        pinned.work_contexts[0].outcome_id.as_deref(),
+        Some("outcome-one")
+    );
+    let fresh: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: params.clone(),
+        })
+        .await?;
+    assert_eq!(
+        fresh.work_contexts[0].outcome_id.as_deref(),
+        Some("outcome-two")
+    );
+    assert_ne!(
+        fresh.snapshot.source_watermark,
+        pinned.snapshot.source_watermark
+    );
     // A conflicting duplicate and unknown content are never partially accepted.
     for invalid in [
         format!(
@@ -385,7 +889,10 @@ async fn local_usage_summary_joins_only_explicit_sidecar_bindings() -> Result<()
     ] {
         std::fs::write(&sidecar, invalid)?;
         let id = server
-            .send_request("localUsage/summary", Some(json!({"includeReview":true})))
+            .send_request(
+                "localUsage/summary",
+                Some(json!({"includeReview":true,"fromAtMs":0,"toAtMs":3000})),
+            )
             .await?;
         let error = timeout(
             Duration::from_secs(20),

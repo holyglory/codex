@@ -70,9 +70,14 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     assert_eq!(platform_os, std::env::consts::OS);
     let capability = local_usage_accounting.expect("local usage capability");
     assert_eq!(capability.supported_versions, vec![1]);
-    assert_eq!(capability.methods, vec!["localUsage/summary"]);
+    assert_eq!(
+        capability.methods,
+        vec!["localUsage/summary", "localUsage/repositoryIdentity"]
+    );
     assert_eq!(capability.storage, "usage-v2");
-    assert!(!capability.supports_work_context_bindings);
+    assert!(capability.supports_work_context_bindings);
+    assert!(capability.supports_workstream_outcomes);
+    assert_eq!(capability.snapshot_retention_ms, 5_000);
     Ok(())
 }
 

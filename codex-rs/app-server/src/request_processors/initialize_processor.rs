@@ -224,11 +224,14 @@ impl InitializeRequestProcessor {
                 codex_app_server_protocol::LocalUsageAccountingCapability {
                     version: 1,
                     supported_versions: vec![1],
-                    methods: vec!["localUsage/summary".into()],
+                    methods: vec![
+                        "localUsage/summary".into(),
+                        "localUsage/repositoryIdentity".into(),
+                    ],
                     storage: "usage-v2".into(),
-                    supports_work_context_bindings: super::local_usage_bindings::available(
-                        &self.config.codex_home,
-                    ),
+                    supports_work_context_bindings: true,
+                    supports_workstream_outcomes: true,
+                    snapshot_retention_ms: 5_000,
                 },
             ),
         };

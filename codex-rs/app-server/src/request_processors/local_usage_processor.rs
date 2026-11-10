@@ -7,6 +7,8 @@ use std::time::UNIX_EPOCH;
 
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LocalUsageCursor;
+use codex_app_server_protocol::LocalUsageRepositoryIdentityParams;
+use codex_app_server_protocol::LocalUsageRepositoryIdentityResponse;
 use codex_app_server_protocol::LocalUsageSnapshot;
 use codex_app_server_protocol::LocalUsageSummaryParams;
 use codex_app_server_protocol::LocalUsageSummaryResponse;
@@ -14,13 +16,16 @@ use codex_usage::Freshness;
 use codex_usage::OperationSelection;
 use codex_usage::RecordCursor;
 use codex_usage::RecordKind;
+use codex_usage::ReviewOperationKind;
 use codex_usage::TimeRange;
 use codex_usage::UsageFilter;
-use codex_usage::UsageReader;
 use serde_json::Value;
 use serde_json::json;
 
 use super::local_usage_bindings::Bindings;
+use super::local_usage_bindings::safe_identifier;
+use super::local_usage_snapshots;
+use super::local_usage_snapshots::ViewError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 
@@ -36,6 +41,28 @@ pub(crate) async fn summary(
         .map_err(|_| internal_error("local usage reader unavailable"))?
 }
 
+pub(crate) async fn repository_identity(
+    params: LocalUsageRepositoryIdentityParams,
+) -> Result<LocalUsageRepositoryIdentityResponse, JSONRPCErrorError> {
+    if params.contract_version.unwrap_or(1) != 1 {
+        return Err(invalid_params("unsupported local usage contract version"));
+    }
+    let path = PathBuf::from(params.path);
+    if !path.is_absolute() || path.as_os_str().len() > 4096 {
+        return Err(invalid_params(
+            "repository identity requires an absolute local path",
+        ));
+    }
+    tokio::task::spawn_blocking(move || LocalUsageRepositoryIdentityResponse {
+        contract_version: 1,
+        source: "usage-v2".into(),
+        repository_id: codex_core::usage_identity::repository_id(&path),
+        format_version: codex_core::usage_identity::REPOSITORY_ID_FORMAT_VERSION,
+    })
+    .await
+    .map_err(|_| internal_error("local repository identity unavailable"))
+}
+
 fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
     if params.contract_version.unwrap_or(1) != 1 {
         return Err(invalid_params("unsupported local usage contract version"));
@@ -45,14 +72,30 @@ fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
             "worktree selection is not captured by usage-v2",
         ));
     }
-    if params.workstream_id.is_some() {
+    if params
+        .workstream_id
+        .as_deref()
+        .is_some_and(|value| !safe_identifier(value, false))
+    {
+        return Err(invalid_params("invalid workstream identifier"));
+    }
+    Bindings::merge_request(None, params.work_context_bindings.as_deref())
+        .map_err(|_| invalid_params("invalid or conflicting work context declarations"))?;
+    if (params.include_review || params.record_limit > 0 || params.operation_limit > 0)
+        && (params.from_at_ms.is_none() || params.to_at_ms.is_none())
+    {
         return Err(invalid_params(
-            "workstream-scoped usage summaries are unavailable",
+            "finite fromAtMs and toAtMs are required for review or details",
         ));
     }
     if params.record_limit > 50 || params.operation_limit > 50 {
         return Err(invalid_params(
             "local usage page limits must be 0 through 50",
+        ));
+    }
+    if params.from_at_ms.is_some() != params.to_at_ms.is_some() {
+        return Err(invalid_params(
+            "fromAtMs and toAtMs must be supplied together",
         ));
     }
     if params.from_at_ms.is_some_and(|value| value < 0)
@@ -101,27 +144,37 @@ fn read(
     codex_home: PathBuf,
     params: LocalUsageSummaryParams,
 ) -> Result<LocalUsageSummaryResponse, JSONRPCErrorError> {
-    let binding_source = Bindings::read(&codex_home).map_err(unavailable)?;
-    let reader = UsageReader::open(codex_home).map_err(unavailable)?;
-    let manifest = reader.manifest();
-    let source_watermark = format!(
-        "usage-v2:{}:{}:{}:{}",
-        manifest.snapshot_generation,
-        manifest.watermark,
-        reader.journal_watermark(),
-        binding_source
-            .as_ref()
-            .map_or("absent", |source| source.revision.as_str())
-    );
-    if params
-        .expected_snapshot
-        .as_ref()
-        .is_some_and(|expected| expected != &source_watermark)
-    {
-        return Err(invalid_params(
-            "local usage snapshot changed; restart pagination",
-        ));
+    let view = local_usage_snapshots::open(&codex_home, params.expected_snapshot.as_deref())
+        .map_err(|error| match error {
+            ViewError::Expired => {
+                invalid_params("local usage snapshot changed; restart pagination")
+            }
+            ViewError::Unavailable => unavailable(()),
+        })?;
+    if let Some(mut response) = view.response(&params).map_err(unavailable)? {
+        response.generated_at = now_ms()?;
+        return Ok(response);
     }
+    let binding_source = Bindings::merge_request(
+        view.sidecar.as_ref(),
+        params.work_context_bindings.as_deref(),
+    )
+    .map_err(|_| invalid_params("invalid or conflicting work context declarations"))?;
+    let reader = &view.reader;
+    let manifest = reader.manifest();
+    let recorded = if let Some(source) = &binding_source {
+        let recorded = reader
+            .operation_binding_metadata(&source.operation_ids())
+            .map_err(unavailable)?;
+        source
+            .validate_metadata(&recorded, params.repository_id.as_deref())
+            .map_err(|_| {
+                invalid_params("work context conflicts with recorded operation identity")
+            })?;
+        recorded
+    } else {
+        Vec::new()
+    };
     let range = if params.from_at_ms.is_none() && params.to_at_ms.is_none() {
         TimeRange::all()
     } else {
@@ -138,19 +191,21 @@ fn read(
         ..Default::default()
     };
     let native_summary = reader.summary(range, &filter).map_err(unavailable)?;
-    let facts = reader
-        .performance_review(range, &filter)
-        .map_err(unavailable)?;
-    let generated_at = u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| internal_error("local usage clock unavailable"))?
-            .as_millis(),
-    )
-    .map_err(|_| internal_error("local usage clock unavailable"))?;
+    // Unbounded requests stay on the precomputed summary path. Rich facts are
+    // an explicitly finite-window query, never a foreground full-history scan.
+    let facts = if params.from_at_ms.is_some() && params.to_at_ms.is_some() {
+        Some(
+            reader
+                .performance_review(range, &filter)
+                .map_err(unavailable)?,
+        )
+    } else {
+        None
+    };
+    let generated_at = now_ms()?;
     let snapshot = LocalUsageSnapshot {
-        source_watermark,
-        generated_at,
+        source_watermark: view.watermark.clone(),
+        generated_at: view.captured_at_ms,
         generation: manifest.snapshot_generation,
         watermark: manifest.watermark,
         journal_watermark: reader.journal_watermark(),
@@ -166,47 +221,102 @@ fn read(
         pending_corrections: manifest.pending_corrections.len() as u64,
         refresh_id: None,
     };
-    let mut report = report(&params, &facts, &native_summary, &snapshot);
-    let mut review = params
-        .include_review
-        .then(|| review(&facts, &report, &native_summary, &snapshot));
+    let mut report = facts.as_ref().map_or_else(
+        || metadata_report(&params, &native_summary),
+        |facts| report(&params, facts, &native_summary, &snapshot),
+    );
+    let mut review = if params.include_review {
+        facts
+            .as_ref()
+            .map(|facts| review(facts, &report, &native_summary, &snapshot))
+    } else {
+        None
+    };
     let (work_contexts, operation_bindings) = if let Some(source) = &binding_source {
-        let evidence = reader
-            .bound_operation_effort(range, &filter, &source.operation_ids())
-            .map_err(unavailable)?;
-        let bound = evidence
-            .iter()
-            .try_fold(0u64, |sum, fact| sum.checked_add(fact.operations))
-            .ok_or_else(|| unavailable(()))?;
+        let evidence = if facts.is_some() {
+            reader
+                .bound_operation_effort(range, &filter, &source.operation_ids())
+                .map_err(unavailable)?
+        } else {
+            Vec::new()
+        };
+        let selected = if facts.is_some() {
+            evidence
+                .iter()
+                .map(|fact| fact.operation_id.clone())
+                .collect()
+        } else {
+            recorded
+                .iter()
+                .filter(|fact| {
+                    filter
+                        .account_id
+                        .as_ref()
+                        .is_none_or(|id| fact.account_id.as_ref() == Some(id))
+                        && filter
+                            .repository_id
+                            .as_ref()
+                            .is_none_or(|id| fact.repository_id.as_ref() == Some(id))
+                        && filter
+                            .thread_id
+                            .as_ref()
+                            .is_none_or(|id| fact.thread_id.as_ref() == Some(id))
+                })
+                .map(|fact| fact.operation_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let bound = if facts.is_some() {
+            evidence
+                .iter()
+                .try_fold(0u64, |sum, fact| sum.checked_add(fact.operations))
+                .ok_or_else(|| unavailable(()))?
+        } else {
+            recorded
+                .iter()
+                .filter(|fact| {
+                    selected.contains(&fact.operation_id)
+                        && fact
+                            .kind
+                            .is_some_and(|kind| kind != ReviewOperationKind::Wait)
+                })
+                .count() as u64
+        };
         let unknown = count(&native_summary["counts"]["operations"])
             .checked_sub(bound)
             .ok_or_else(|| unavailable(()))?;
-        let coverage = if evidence.is_empty() {
+        let coverage = if selected.is_empty() {
             "unattributed"
         } else if unknown == 0 {
             "recorded"
         } else {
             "partial"
         };
-        report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":"explicit_sidecar","boundOperations":bound,"unknownOperations":unknown,"sourceRevision":source.revision});
+        report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":source.basis,"boundOperations":bound,"unknownOperations":unknown,"sourceRevision":source.revision});
         report["coverage"]["workBindings"] = json!(coverage);
-        if let Some(review) = &mut review {
+        if let Some(review) = &mut review
+            && let Some(facts) = &facts
+        {
             review["outcomes"] = source
-                .outcomes(&facts, &review["outcomes"]["totals"], &evidence)
+                .outcomes(
+                    facts,
+                    &review["outcomes"]["totals"],
+                    &evidence,
+                    params.workstream_id.as_deref(),
+                )
                 .map_err(unavailable)?;
             review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] = json!(unknown);
             review["semantics"]["coverage"] = json!(
-                "Work-context attribution uses only explicit sidecar operation IDs. Missing or retired evidence stays unattributed. Completed operations do not prove delivery."
+                "Work-context attribution uses only explicit request/compatibility operation IDs. Missing or retired evidence stays unattributed. Completed operations do not prove delivery."
             );
         }
-        source.selected(&evidence)
+        source.selected_ids(&selected)
     } else {
         (Vec::new(), Vec::new())
     };
     let (observations, next_records_cursor) = if params.record_limit == 0 {
         (None, None)
     } else {
-        let after = params.records_after.map(cursor);
+        let after = params.records_after.clone().map(cursor);
         let page = reader
             .page(
                 range,
@@ -230,7 +340,7 @@ fn read(
     let (operations, next_operations_cursor) = if params.operation_limit == 0 {
         (None, None)
     } else {
-        let after = params.operations_after.map(cursor);
+        let after = params.operations_after.clone().map(cursor);
         let page = reader
             .operation_page(
                 range,
@@ -266,12 +376,42 @@ fn read(
         work_contexts,
         operation_bindings,
     };
-    if serde_json::to_vec(&response).map_err(unavailable)?.len() > MAX_RESPONSE_BYTES {
+    let encoded_bytes = serde_json::to_vec(&response).map_err(unavailable)?.len();
+    if encoded_bytes > MAX_RESPONSE_BYTES {
         return Err(internal_error(
             "local usage response exceeds byte limit; request a narrower scope",
         ));
     }
+    view.remember(&params, &response, encoded_bytes)
+        .map_err(unavailable)?;
     Ok(response)
+}
+
+pub(super) fn now_ms() -> Result<u64, JSONRPCErrorError> {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| internal_error("local usage clock unavailable"))?
+            .as_millis(),
+    )
+    .map_err(|_| internal_error("local usage clock unavailable"))
+}
+
+fn metadata_report(params: &LocalUsageSummaryParams, summary: &Value) -> Value {
+    let (scope, id) = if let Some(id) = &params.repository_id {
+        ("repository", Some(id))
+    } else if let Some(id) = &params.thread_id {
+        ("thread", Some(id))
+    } else if let Some(id) = &params.account_id {
+        ("account", Some(id))
+    } else {
+        ("all", None)
+    };
+    json!({"schemaVersion":1,"kind":"usageSummary","databaseSchemaVersion":codex_usage::MANIFEST_FORMAT_VERSION,"taxonomyVersion":codex_usage::USAGE_TAXONOMY_VERSION,
+        "scope":{"type":scope,"id":id},"timeRange":Value::Null,"counts":summary["counts"],"providerTokens":[],"providerTokensByActivity":[],
+        "coverage":{"state":if summary["records"] == 0 {"unobserved"} else {"partial"},"hasGaps":true,"providerTotals":"unavailable_unbounded","performance":"requires_finite_range","workBindings":"unattributed","details":summary["coverage"]},
+        "measuredExecutionIntervalSumMs":Value::Null,"workBindings":{"coverage":"unattributed","basis":"unobserved","boundOperations":0,"unknownOperations":summary["counts"]["operations"]},
+        "filters":{"accountId":params.account_id,"repositoryId":params.repository_id,"threadId":params.thread_id},"formulas":summary["formulas"]})
 }
 
 fn cursor(value: LocalUsageCursor) -> RecordCursor {
@@ -373,6 +513,8 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
     let mut effort = facts["outcomes"]["totals"].clone();
     // These are counts of observed links, not estimates for missing links.
     effort["retryOperations"] = json!(count(&effort["retryOperations"]));
+    // The reader's interval sums are diagnostic effort, not a wall union.
+    effort["elapsedExecutionMs"] = json!({"measured":0,"exact":Value::Null,"unknown":operations});
     effort["recordedWaitMs"]["unknown"] = json!(0);
     let zero_measurement = json!({"measured":0,"exact":Value::Null,"unknown":0});
     let attributed = json!({"operations":0,"retryOperations":0,"reworkOperations":0,
@@ -425,7 +567,7 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
             "summed_agent_active":{"measured_ms":0,"unknown_intervals":operations},"phases":[]},
         "tools":{"outcomes":summary["tools"]["outcomes"],"families":families},
         "semantics":{"tokens":"Provider totals are reported, not inferred. Cached input and reasoning output are subsets; do not add them again.",
-            "time":"Wall-clock, delivery, and active-agent intervals are unobserved. report.measuredExecutionIntervalSumMs and outcomes.elapsedExecutionMs retain sums of measured operation intervals; overlap is not wall-clock or active-agent time.",
+            "time":"Wall-clock, delivery, and active-agent intervals are unobserved. Only report.measuredExecutionIntervalSumMs retains operation interval sums; overlap is not measured elapsed wall time.",
             "coverage":"Missing work bindings remain unattributed. No task, workstream, or delivery outcome is inferred. Retry/wait counts include observed links only; unobserved families are listed in report.coverage.details."},
         "outcomes":{"schemaVersion":1,"coverage":"unattributed","totals":effort,"attributed":attributed,"unattributed":effort,
             "unattributedReasons":{"work_binding_unobserved":operations},"rows":[],"totalRows":0,"nextCursor":Value::Null,
