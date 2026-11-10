@@ -184,6 +184,14 @@ class Rpc:
 def verify(plan):
     endpoint = Path(plan["codexHome"]) / "app-server-control/app-server-control.sock"
     rpc = Rpc(endpoint)
+    try:
+        verify_connection(rpc, plan)
+    finally:
+        rpc.connection.close()
+
+
+def verify_connection(rpc, plan):
+    endpoint = Path(plan["codexHome"]) / "app-server-control/app-server-control.sock"
     initialized = rpc.call(
         "initialize",
         {
@@ -202,11 +210,48 @@ def verify(plan):
         or capability.get("supportsCreditUsage") is not True
     ):
         raise RuntimeError("account-credit-capability-missing")
+    usage = initialized.get("localUsageAccounting")
     if (
-        "localUsageAccounting" not in initialized
-        or initialized["localUsageAccounting"] is not None
+        not isinstance(usage, dict)
+        or type(usage.get("version")) is not int
+        or usage["version"] != 1
+        or usage.get("storage") != "usage-v2"
+        or not isinstance(usage.get("supportedVersions"), list)
+        or 1 not in usage["supportedVersions"]
+        or not isinstance(usage.get("methods"), list)
+        or "localUsage/summary" not in usage["methods"]
     ):
-        raise RuntimeError("legacy-usage-capability-not-null")
+        raise RuntimeError("usage-v2-capability-invalid")
+    summary = rpc.call("localUsage/summary", {"contractVersion": 1})
+    report = summary.get("report", {})
+    snapshot = summary.get("snapshot", {})
+    native = summary.get("summary", {})
+    if (
+        type(summary.get("contractVersion")) is not int
+        or summary["contractVersion"] != 1
+        or summary.get("source") != "usage-v2"
+        or report.get("schemaVersion") != 1
+        or report.get("kind") != "usageSummary"
+        or report.get("databaseSchemaVersion") != 3
+        or report.get("scope") != {"type": "all", "id": None}
+        or report.get("coverage", {}).get("state") not in {"complete", "partial", "unobserved"}
+        or native.get("schemaVersion") != 1
+        or native.get("kind") != "usageSummary"
+        or any(type(native.get(key)) is not int for key in
+               ("records", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"))
+        or any(type(report.get("counts", {}).get(key)) is not int or report["counts"][key] < 0
+               for key in ("operations", "modelRequests", "tools"))
+        or any(type(snapshot.get(key)) is not int or snapshot[key] < 0 for key in
+               ("generation", "watermark", "journalWatermark", "generatedAt", "watermarkAtMs", "updatedAtMs", "pendingEntries", "pendingCorrections"))
+        or type(summary.get("generatedAt")) is not int
+        or snapshot.get("generatedAt", 0) > summary.get("generatedAt", 0)
+        or snapshot.get("watermark", 0) > snapshot.get("journalWatermark", 0)
+        or snapshot.get("freshness") not in {"unknown", "fresh", "stale"}
+        or not isinstance(snapshot.get("sourceWatermark"), str)
+        or not snapshot["sourceWatermark"]
+        or len(snapshot["sourceWatermark"]) > 256
+    ):
+        raise RuntimeError("usage-v2-summary-invalid")
     models = rpc.call("model/list", {"limit": 1})
     rpc.call("skills/list", {"cwds": [plan["verificationCwd"]]})
     profiles = rpc.call("accountProfile/list", {"limit": 25})
@@ -233,7 +278,11 @@ def verify(plan):
         "accountProfileList": True,
         "creditCapability": True,
         "creditProfileFields": True,
-        "legacyUsageCapabilityNull": True,
+        "localUsageCapability": True,
+        "localUsageSummary": True,
+        "usageContractVersion": 1,
+        "usageStorageFormatVersion": 3,
+        "usageFreshness": snapshot["freshness"],
         "accountAuthStatusAgrees": True,
         "realModelTurn": False,
         "usageToolRequested": False,
@@ -323,7 +372,6 @@ def verify(plan):
                 second.connection.close()
             proof["originalChatResumed"] = True
             proof["secondClientReattached"] = True
-    rpc.connection.close()
     save(Path(plan["state"]) / "rpc.json", proof)
 
 
