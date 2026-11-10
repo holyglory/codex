@@ -273,7 +273,9 @@ class Owner:
             root = self.task_codex_home / "packages/standalone"
             select_release(root, self.selected)
             self.event("candidate-already-serving", serving=observed)
-            self.verify_serving(observed, "desktop-owned" if not observed["managed"] else "managed")
+            self.verify_serving(
+                observed, "desktop-owned" if not observed["managed"] else "managed"
+            )
         if observed:
             if not expected or any(
                 observed[key] != expected[key]

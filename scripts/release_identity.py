@@ -325,9 +325,7 @@ def version() -> tuple[str, str]:
 
 def verify_new_downstream_version(source: str) -> None:
     """Reject a downstream version that has already been tagged for this upstream release."""
-    match = re.fullmatch(
-        r"(?P<base>\d+\.\d+\.\d+)\+multi\.(?P<revision>\d+)", source
-    )
+    match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)\+multi\.(?P<revision>\d+)", source)
     if match is None:
         raise ValueError("Expected a Rust version with a downstream +multi revision")
     revision = int(match.group("revision"))
