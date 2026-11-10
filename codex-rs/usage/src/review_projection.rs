@@ -283,6 +283,25 @@ pub(crate) fn publish_review_projection(
         .into_iter()
         .map(|partition| (partition.partition, partition))
         .collect::<BTreeMap<_, _>>();
+    // A started lifecycle fact creates a new canonical operation address.
+    // When the exact index has reached its bounded run cap, reject that
+    // publication before probing every historical run. Existing operation
+    // updates still use the exact lookup below, while a new start can wait
+    // for one bounded recovery merge without making capture wait on DuckDB.
+    let index_at_capacity = operation_index
+        .as_ref()
+        .is_some_and(|index| index.runs.len() >= crate::id_index::MAX_ID_RUNS);
+    if index_at_capacity
+        && records.iter().any(|(_, record)| {
+            lifecycle(record).is_some_and(|(_, finished)| !finished)
+                && record
+                    .operation_id
+                    .as_ref()
+                    .is_some_and(|id| updates.contains_key(id))
+        })
+    {
+        return Err(StorageError::OperationIndexAtCapacity);
+    }
     let addresses = find_addresses(
         root,
         &partitions,
