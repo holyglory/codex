@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::JournalCheckpoint;
 use crate::Result;
+use crate::StorageError;
 use crate::UsageManifest;
 use crate::UsageRecord;
 use crate::id_index::id_hash;
@@ -296,9 +297,7 @@ pub(crate) fn publish_review_projection(
         .is_some_and(|index| index.runs.len() >= crate::id_index::MAX_ID_RUNS)
         && updates.keys().any(|id| !addresses.contains_key(id))
     {
-        return Err(invalid(
-            "operation-id publication awaits bounded run maintenance",
-        ));
+        return Err(StorageError::OperationIndexAtCapacity);
     }
     let mut affected = BTreeMap::<u64, Vec<(u64, &UsageRecord)>>::new();
     for (id, mut facts) in updates {

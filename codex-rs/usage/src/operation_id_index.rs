@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::JournalCheckpoint;
 use crate::Result;
+use crate::StorageError;
 use crate::id_index::ID_HASH_VERSION;
 use crate::id_index::IdRunDescriptor;
 use crate::id_index::MAX_ID_RUNS;
@@ -135,9 +136,7 @@ pub(crate) fn publish(
     mut entries: Vec<OperationIdEntry>,
 ) -> Result<String> {
     if !entries.is_empty() && index.runs.len() >= MAX_ID_RUNS {
-        return Err(invalid(
-            "operation-id publication awaits bounded run maintenance",
-        ));
+        return Err(StorageError::OperationIndexAtCapacity);
     }
     let mut ids = BTreeSet::new();
     for entry in &entries {

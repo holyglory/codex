@@ -321,14 +321,20 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
     journal
         .append_record(late)
         .expect("capture remains append-only at cap");
-    assert!(
-        publisher
-            .publish_batch(JournalReadLimits {
-                max_bytes: 64 * 1024,
-                max_entries: 16
-            })
-            .is_err()
+    let error = publisher
+        .publish_batch(JournalReadLimits {
+            max_bytes: 64 * 1024,
+            max_entries: 16,
+        })
+        .expect_err("full operation index blocks publication");
+    assert_eq!(
+        error.to_string(),
+        "invalid usage storage data: operation-id publication awaits bounded run maintenance"
     );
+    assert!(matches!(
+        error,
+        crate::StorageError::OperationIndexAtCapacity
+    ));
     assert_eq!(
         ManifestStore::new(root.join("manifest.json"))
             .load()
@@ -342,6 +348,34 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             .iter()
             .any(|record| record.id == "after-cap")
     );
+    crate::retention::Maintenance::default()
+        .resume_publication(root)
+        .expect("bounded maintenance releases publication capacity");
+    let maintained = ManifestStore::new(root.join("manifest.json"))
+        .load()
+        .expect("maintenance snapshot");
+    let maintained_review = review_projection::load_review_projection(root, &maintained)
+        .expect("maintenance metadata")
+        .expect("maintenance review");
+    let maintained_index = operation_id_index::load(root, &maintained_review)
+        .expect("maintenance index")
+        .expect("fresh maintenance index");
+    assert_eq!(
+        maintained_index.runs.len(),
+        crate::id_index::MAX_ID_RUNS - MAX_COMPACTION_INPUTS + 1,
+        "yield publication capacity before draining the compaction backlog"
+    );
+    let resumed = publisher
+        .publish_batch(JournalReadLimits {
+            max_bytes: 64 * 1024,
+            max_entries: 16,
+        })
+        .expect("publication resumes with remaining maintenance work");
+    assert!(resumed.watermark > manifest.watermark);
+    // Exercise automatic recovery from the same full immutable index below.
+    ManifestStore::new(root.join("manifest.json"))
+        .save(&manifest)
+        .expect("restore full-run fixture for background recovery");
     let base_target = journal.checkpoint().expect("durable target").sequence;
     let captured = Arc::new(AtomicU64::new(/*v*/ 0));
     let capture_progress = Arc::clone(&captured);

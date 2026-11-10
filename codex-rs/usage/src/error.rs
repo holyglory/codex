@@ -9,6 +9,8 @@ pub enum StorageError {
     Json(serde_json::Error),
     /// A decoded payload violated a storage invariant.
     InvalidData(String),
+    /// Publication needs a bounded operation-index merge to free run capacity.
+    OperationIndexAtCapacity,
     /// A requested columnar backend is not linked into this build yet.
     UnsupportedFormat(&'static str),
     /// An Arrow or Parquet codec rejected a segment payload.
@@ -21,6 +23,9 @@ impl fmt::Display for StorageError {
             Self::Io(error) => write!(f, "usage storage I/O error: {error}"),
             Self::Json(error) => write!(f, "usage storage JSON error: {error}"),
             Self::InvalidData(message) => write!(f, "invalid usage storage data: {message}"),
+            Self::OperationIndexAtCapacity => f.write_str(
+                "invalid usage storage data: operation-id publication awaits bounded run maintenance",
+            ),
             Self::UnsupportedFormat(format) => {
                 write!(f, "usage storage format is not available: {format}")
             }
@@ -34,7 +39,10 @@ impl std::error::Error for StorageError {
         match self {
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
-            Self::InvalidData(_) | Self::UnsupportedFormat(_) | Self::Columnar(_) => None,
+            Self::InvalidData(_)
+            | Self::OperationIndexAtCapacity
+            | Self::UnsupportedFormat(_)
+            | Self::Columnar(_) => None,
         }
     }
 }

@@ -52,6 +52,15 @@ pub(crate) struct Maintenance {
     operations: crate::operation_id_maintenance::Maintenance,
 }
 
+impl Maintenance {
+    /// Yield back to the publisher after one bounded operation-index step.
+    /// A retained merge can continue on the next recovery request without
+    /// making publication wait for unrelated periodic retention work.
+    pub(crate) fn resume_publication(&mut self, root: &Path) -> Result<bool> {
+        self.operations.step(root, /*max_entries*/ 16_384)
+    }
+}
+
 pub(crate) fn maintain(
     root: &Path,
     policy: RetentionPolicy,
@@ -66,7 +75,7 @@ pub(crate) fn maintain(
         // publisher advance at all. Service it before the more expensive
         // rollup scans so a bounded maintenance wake cannot spend its whole
         // budget on unrelated retention work while publication is blocked.
-        let operation_progress = maintenance.operations.step(root, /*max_entries*/ 16_384)?;
+        let operation_progress = maintenance.resume_publication(root)?;
         if operation_progress {
             if started.elapsed() >= std::time::Duration::from_secs(10) {
                 break;

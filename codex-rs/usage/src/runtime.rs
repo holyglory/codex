@@ -24,7 +24,14 @@ struct PublisherRegistration {
     signal: Weak<PublisherSignal>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MaintenanceKind {
+    PublicationRecovery,
+    Retention,
+}
+
 struct MaintenanceRequest {
+    kind: MaintenanceKind,
     completion: mpsc::SyncSender<()>,
 }
 
@@ -141,15 +148,19 @@ impl UsagePublisherRuntime {
                         .unwrap_or_default()
                         .as_millis()
                         .min(i64::MAX as u128) as i64;
-                    if crate::retention::maintain(
-                        &maintenance_root,
-                        policy,
-                        now_ms,
-                        &mut retention_maintenance,
-                    )
-                    .is_err()
-                    {
-                        tracing::debug!("usage retention deferred after failure");
+                    let result = match request.kind {
+                        MaintenanceKind::PublicationRecovery => retention_maintenance
+                            .resume_publication(&maintenance_root)
+                            .map(|_| ()),
+                        MaintenanceKind::Retention => crate::retention::maintain(
+                            &maintenance_root,
+                            policy,
+                            now_ms,
+                            &mut retention_maintenance,
+                        ),
+                    };
+                    if result.is_err() {
+                        tracing::debug!("usage maintenance deferred after failure");
                     }
                     let _ = request.completion.send(());
                 }
@@ -202,19 +213,22 @@ fn publish_loop(
     let mut had_failure = false;
     let mut catch_up = false;
     let mut warm = Some(warm);
-    let mut handoff: Option<mpsc::Receiver<()>> = None;
+    let mut handoff: Option<(MaintenanceKind, mpsc::Receiver<()>)> = None;
     let mut shutdown_requested = false;
     let mut pending_wake = false;
     // Keep ordinary startup/prewarming on its established periodic cadence;
     // publication errors request maintenance immediately below.
     let mut next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
     loop {
-        if let Some(completion) = handoff.as_ref() {
+        if let Some((kind, completion)) = handoff.as_ref() {
+            let kind = *kind;
             match completion.try_recv() {
                 Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
                     handoff = None;
                     catch_up = true;
-                    next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                    if matches!(kind, MaintenanceKind::Retention) {
+                        next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                    }
                     if shutdown_requested && pending_wake {
                         let _ = UsagePublisher::open_at(&root)
                             .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
@@ -256,7 +270,7 @@ fn publish_loop(
         let maintenance_due = std::time::Instant::now() >= next_maintenance;
         let result = UsagePublisher::open_at(&root)
             .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
-        let mut maintenance_requested = maintenance_due;
+        let mut maintenance_requested = maintenance_due.then_some(MaintenanceKind::Retention);
         match result {
             Ok(manifest) => {
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
@@ -271,12 +285,19 @@ fn publish_loop(
                 }
                 had_failure = false;
             }
-            Err(_) => {
+            Err(error) => {
                 catch_up = false;
-                // A failed bounded publication often means operation-id
-                // maintenance must run before the next retry. Queue it after
-                // publish_batch releases the snapshot lock.
-                maintenance_requested = true;
+                // Only a full operation index can use the short recovery
+                // handoff. Other failures retain full maintenance, including
+                // retention and reclamation, before publication retries.
+                maintenance_requested = Some(match error {
+                    StorageError::OperationIndexAtCapacity => MaintenanceKind::PublicationRecovery,
+                    StorageError::Io(_)
+                    | StorageError::Json(_)
+                    | StorageError::InvalidData(_)
+                    | StorageError::UnsupportedFormat(_)
+                    | StorageError::Columnar(_) => MaintenanceKind::Retention,
+                });
                 if !had_failure {
                     tracing::warn!(
                         "usage snapshot publication failed; durable journal remains available"
@@ -285,17 +306,17 @@ fn publish_loop(
                 }
             }
         }
-        if maintenance_requested {
+        if let Some(kind) = maintenance_requested {
             // Queue only after publication has released its lock, then wait
-            // for one bounded maintenance pass before allowing another
-            // publication attempt. Capture and report readers use separate
-            // locks and remain independent while this handoff is in flight.
+            // for one recovery step or a scheduled retention pass. Recovery
+            // releases publication as soon as one merge frees run capacity.
+            // Capture and report readers remain independent of this handoff.
             let (completion, completed) = mpsc::sync_channel(/*bound*/ 0);
-            let mut request = MaintenanceRequest { completion };
+            let mut request = MaintenanceRequest { kind, completion };
             loop {
                 match maintenance.try_send(request) {
                     Ok(()) => {
-                        handoff = Some(completed);
+                        handoff = Some((kind, completed));
                         break;
                     }
                     Err(mpsc::TrySendError::Full(requested)) => {
@@ -312,7 +333,9 @@ fn publish_loop(
                     }
                     Err(mpsc::TrySendError::Disconnected(_)) => {
                         catch_up = true;
-                        next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                        if matches!(kind, MaintenanceKind::Retention) {
+                            next_maintenance = std::time::Instant::now() + Duration::from_secs(60);
+                        }
                         break;
                     }
                 }
@@ -345,3 +368,7 @@ fn prewarm_recent_chats(root: PathBuf, signal: Weak<PublisherOwner>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;
