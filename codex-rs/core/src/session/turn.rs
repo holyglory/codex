@@ -174,7 +174,7 @@ pub(crate) struct McpStartupRequirements {
 ///
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     mut input: Vec<TurnInput>,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
@@ -478,6 +478,7 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
+    let mut sampling_retry_state = ResponsesStreamRetryState::default();
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -551,6 +552,7 @@ pub(crate) async fn run_turn(
                 .await?
             }
         };
+        let mut response_started = false;
         let sampling_request_result: CodexResult<_> = async {
             super::time_reminder::maybe_record_current_time_reminder(
                 sess.as_ref(),
@@ -597,12 +599,34 @@ pub(crate) async fn run_turn(
                 &mut client_session,
                 sampling_request_input,
                 cancellation_token.child_token(),
+                &mut sampling_retry_state,
+                &mut response_started,
             )
             .await
         }
         .await;
+        // Keep profile probing out of the common turn future's inline storage.
+        if let Err(error) = &sampling_request_result
+            && matches!(error.details(), CodexErrorDetails::UsageLimitReached(_))
+            && !response_started
+            && let Some(next_turn) = Box::pin(sess.failover_turn_auth(&turn_context))
+                .or_cancel(&cancellation_token)
+                .await?
+        {
+            let next_turn = Arc::new(next_turn);
+            let next_client_session = next_turn.model_client(&sess)?.new_session();
+            sess.publish_failover_turn_auth(&turn_context, &next_turn)
+                .or_cancel(&cancellation_token)
+                .await??;
+            turn_context = next_turn;
+            client_session = next_client_session;
+            turn_context.turn_timing_state.record_sampling_retry();
+            can_drain_pending_input = false;
+            continue;
+        }
         match sampling_request_result {
             Ok((sampling_request_output, notify_messages)) => {
+                sampling_retry_state = ResponsesStreamRetryState::default();
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -1752,6 +1776,8 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
+    retry_state: &mut ResponsesStreamRetryState,
+    response_started: &mut bool,
 ) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
@@ -1783,7 +1809,6 @@ async fn run_sampling_request(
         &step_context.session_telemetry,
         incremental_tools,
     );
-    let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
     let mut notify_messages = Vec::new();
     let mut executed_tool_calls_by_output = HashMap::new();
@@ -1840,6 +1865,7 @@ async fn run_sampling_request(
             prompt,
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
+            response_started,
         )
         .await
         {
@@ -1856,6 +1882,7 @@ async fn run_sampling_request(
                     if let Some(rate_limits) = rate_limits {
                         sess.update_rate_limits(&turn_context, *rate_limits).await;
                     }
+                    sess.record_usage_limit_rejection(&turn_context, e);
                     return Err(err);
                 }
                 _ => err,
@@ -1863,7 +1890,7 @@ async fn run_sampling_request(
         };
 
         let retry = handle_response_stream_error(
-            &mut retry_state,
+            retry_state,
             max_retries,
             err,
             client_session,
@@ -2691,6 +2718,7 @@ async fn try_run_sampling_request(
     prompt: Prompt,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
+    response_started: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
@@ -2927,6 +2955,28 @@ async fn try_run_sampling_request(
             .session_telemetry
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
+        *response_started |= match &event {
+            ResponseEvent::Created { .. }
+            | ResponseEvent::SafetyBuffering(_)
+            | ResponseEvent::ModelVerifications(_)
+            | ResponseEvent::TurnModerationMetadata(_)
+            | ResponseEvent::GuardianAssessment(_)
+            | ResponseEvent::OutputItemDone(_)
+            | ResponseEvent::OutputItemAdded(_)
+            | ResponseEvent::Completed { .. }
+            | ResponseEvent::OutputTextDelta(_)
+            | ResponseEvent::ToolCallInputDelta { .. }
+            | ResponseEvent::ReasoningSummaryDelta { .. }
+            | ResponseEvent::ReasoningSummaryDone { .. }
+            | ResponseEvent::ReasoningContentDelta { .. }
+            | ResponseEvent::ReasoningSummaryPartAdded { .. } => true,
+            // Error response headers can precede a clean usage-limit rejection, including
+            // WebSocket error frames. They do not prove that model generation started.
+            ResponseEvent::ServerModel(_)
+            | ResponseEvent::ServerReasoningIncluded(_)
+            | ResponseEvent::RateLimits(_)
+            | ResponseEvent::ModelsEtag(_) => false,
+        };
 
         match event {
             ResponseEvent::Created { response_id } => {
@@ -3227,7 +3277,8 @@ async fn try_run_sampling_request(
             ResponseEvent::RateLimits(snapshot) => {
                 // Update internal state with latest rate limits, but defer sending until
                 // token usage is available to avoid duplicate TokenCount events.
-                sess.record_rate_limits_info(snapshot).await;
+                sess.record_rate_limits_for_turn(&turn_context, snapshot)
+                    .await;
                 should_emit_token_count = true;
             }
             ResponseEvent::ModelsEtag(etag) => {

@@ -15,7 +15,7 @@ fn context(home: &std::path::Path) -> Arc<CaptureContext> {
         account_id: None,
         repository_id: None,
         activity: Arc::default(),
-        tool_operations: Mutex::default(),
+        tool_operations: Arc::default(),
     })
 }
 

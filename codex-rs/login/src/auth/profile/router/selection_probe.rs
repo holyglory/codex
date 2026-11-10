@@ -5,7 +5,9 @@ use chrono::Utc;
 use codex_account_registry::AccountId;
 use codex_account_registry::AccountRegistry;
 use codex_account_selection::AccountLimitCache;
+use codex_account_selection::CacheUpdate;
 use codex_account_selection::Eligibility;
+use codex_account_selection::LimitCacheError;
 use codex_account_selection::SelectionError;
 use codex_account_selection::supports_automatic_selection;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -34,6 +36,23 @@ enum SelectionStateDisposition {
 }
 
 impl SharedProfileAuthRouter {
+    /// Atomically replaces stale availability with an explicit provider usage rejection.
+    /// A same-second preflight or concurrent observation cannot occupy a clear/write gap.
+    pub fn record_usage_limit_rejection(
+        &self,
+        account_id: AccountId,
+        observed_at: i64,
+        snapshot: RateLimitSnapshot,
+    ) -> Result<CacheUpdate, LimitCacheError> {
+        let mut cache = self
+            .inner
+            .limit_cache
+            .lock()
+            .map_err(|_| LimitCacheError::ConflictingObservation)?;
+        cache.remove(&account_id);
+        cache.update(account_id, observed_at, vec![snapshot])
+    }
+
     /// Acquires a turn lease after explicitly probing unknown automatic-selection candidates.
     ///
     /// The probe is opt-in so callers without a reviewed, read-only availability check retain the

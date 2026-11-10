@@ -150,6 +150,13 @@ async fn usage_limit_failover_excludes_rejected_profiles_and_respects_process_pi
         .expect("configured profile router");
     assert_eq!(first.account_id(), &account_a.id);
 
+    shared
+        .record_usage_limit_rejection(
+            account_a.id.clone(),
+            observed_at,
+            limits(/*used_percent*/ 100.0),
+        )
+        .expect("rejection replaces the same-second availability probe");
     let mut excluded = HashSet::from([account_a.id.clone()]);
     let second = shared
         .lease_for_usage_limit_failover_with_external_auth_and_probe(

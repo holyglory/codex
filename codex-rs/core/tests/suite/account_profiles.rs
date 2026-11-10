@@ -27,6 +27,9 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+#[path = "account_failover_tests.rs"]
+mod failover;
+
 fn seed_profiles(home: &Path, mode: AuthMode) -> Result<Vec<AccountMetadata>> {
     let mut accounts = Vec::new();
     for alias in ["a", "b"] {

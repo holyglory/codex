@@ -790,6 +790,30 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
             },
         )
         .await;
+    turn.extension_data.insert(crate::guardian::ParentResponse {
+        id: "original-account-response".to_string(),
+        routing_affinity: None,
+    });
+    let backup = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("backup"));
+    let replacement = Arc::new(turn.with_auth_manager(Arc::clone(&backup)));
+    replacement
+        .extension_data
+        .insert(crate::guardian::ParentResponse {
+            id: "backup-account-response".to_string(),
+            routing_affinity: None,
+        });
+    session
+        .publish_failover_turn_auth(&turn, &replacement)
+        .await
+        .expect("publish backup context");
+    let error = session
+        .publish_failover_turn_auth(&turn, &replacement)
+        .await
+        .expect_err("stale account context must not replace the active task");
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::TurnAborted
+    ));
     // Inject later-step authority directly while live policy changes remain gated.
     {
         let active = session.active_turn.lock().await;
@@ -809,6 +833,41 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
         });
         task.turn_context.next_step_settings.store(settings);
     }
+    let (current, settings, environments, _) = session
+        .active_turn_context_and_strict_auto_review()
+        .await
+        .expect("current callback context");
+    let review = crate::guardian::GuardianReviewContext::from_resolved_settings(
+        current,
+        &settings,
+        &environments,
+    );
+    assert!(Arc::ptr_eq(
+        review.turn().auth_manager.as_ref().expect("backup owner"),
+        &backup
+    ));
+    assert!(Arc::ptr_eq(
+        &review
+            .turn()
+            .provider
+            .auth_manager()
+            .expect("backup provider"),
+        &backup
+    ));
+    assert_eq!(
+        review
+            .parent_response
+            .as_ref()
+            .map(|response| response.id.as_str()),
+        Some("backup-account-response")
+    );
+    assert_eq!(
+        turn.extension_data
+            .get::<crate::guardian::ParentResponse>()
+            .as_ref()
+            .map(|response| response.id.as_str()),
+        Some("original-account-response")
+    );
     let decision = session
         .services
         .network_approval

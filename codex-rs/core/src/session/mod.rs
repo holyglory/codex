@@ -5471,22 +5471,8 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
-        if let Some(router) = self
-            .services
-            .thread_extension_data
-            .get::<codex_login::SharedProfileAuthRouter>()
-            && let Some(id) = turn_context
-                .auth_manager
-                .as_ref()
-                .and_then(|manager| manager.local_profile_id())
-        {
-            let _ = router.observe_rate_limits(
-                id.clone(),
-                Utc::now().timestamp(),
-                vec![new_rate_limits.clone()],
-            );
-        }
-        self.record_rate_limits_info(new_rate_limits).await;
+        self.record_rate_limits_for_turn(turn_context, new_rate_limits)
+            .await;
         self.send_token_count_event(turn_context).await;
     }
 

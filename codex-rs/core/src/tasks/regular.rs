@@ -113,9 +113,18 @@ impl SessionTask for RegularTask {
         let mut prewarmed_client_session = prewarmed_client_session;
         let mut mcp_startup_requirements = McpStartupRequirements::default();
         loop {
+            let current_context = sess
+                .turn_context_for_sub_id(&ctx.sub_id)
+                .await
+                .ok_or(codex_protocol::error::CodexErr::TurnAborted)?;
+            if cancellation_token.is_cancelled()
+                || !Arc::ptr_eq(&current_context.turn_timing_state, &ctx.turn_timing_state)
+            {
+                return Err(codex_protocol::error::CodexErr::TurnAborted);
+            }
             let last_agent_message = run_turn(
                 Arc::clone(&sess),
-                Arc::clone(&ctx),
+                current_context,
                 next_input,
                 &mut mcp_startup_requirements,
                 prewarmed_client_session.take(),

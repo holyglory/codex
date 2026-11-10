@@ -50,8 +50,8 @@ struct ThreadCapture {
 
 struct TurnCapture {
     context: Arc<CaptureContext>,
-    operation: Mutex<Option<Operation>>,
-    failed: AtomicBool,
+    operation: Arc<Mutex<Option<Operation>>>,
+    failed: Arc<AtomicBool>,
 }
 
 pub(crate) struct CapturedModelClient(pub(crate) ModelClient);
@@ -66,7 +66,7 @@ struct CaptureContext {
     account_id: Option<String>,
     repository_id: Option<String>,
     activity: Arc<activity::ActivityState>,
-    tool_operations: Mutex<HashMap<String, String>>,
+    tool_operations: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl CaptureContext {
@@ -139,7 +139,7 @@ impl TurnContext {
             account_id: self.local_profile_id(),
             repository_id: crate::usage_identity::repository_id(self.config.cwd.as_path()),
             activity: Arc::clone(&thread.context.activity),
-            tool_operations: Mutex::default(),
+            tool_operations: Arc::default(),
         });
         entities::repository_seen(&context);
         if let Ok(mut client) = self.model_client(session) {
@@ -150,8 +150,36 @@ impl TurnContext {
         }
         self.extension_data.insert(TurnCapture {
             context,
-            operation: Mutex::new(/*t*/ None),
-            failed: AtomicBool::new(false),
+            operation: Arc::default(),
+            failed: Arc::default(),
+        });
+    }
+
+    pub(crate) fn retarget_usage_capture(&self, session: &Session) {
+        self.extension_data.remove::<CapturedModelClient>();
+        let Some(previous) = self.extension_data.get::<TurnCapture>() else {
+            return;
+        };
+        let context = Arc::new(CaptureContext {
+            sink: Arc::clone(&previous.context.sink),
+            thread_id: previous.context.thread_id.clone(),
+            parent_thread_id: previous.context.parent_thread_id.clone(),
+            turn_id: previous.context.turn_id.clone(),
+            account_id: self.local_profile_id(),
+            repository_id: previous.context.repository_id.clone(),
+            activity: Arc::clone(&previous.context.activity),
+            tool_operations: Arc::clone(&previous.context.tool_operations),
+        });
+        if let Ok(mut client) = self.model_client(session) {
+            client
+                .request_contributors
+                .push(Arc::new(model::CaptureRequests(Arc::clone(&context))));
+            self.extension_data.insert(CapturedModelClient(client));
+        }
+        self.extension_data.insert(TurnCapture {
+            context,
+            operation: Arc::clone(&previous.operation),
+            failed: Arc::clone(&previous.failed),
         });
     }
 }

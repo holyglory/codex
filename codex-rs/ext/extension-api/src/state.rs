@@ -51,6 +51,16 @@ pub struct ExtensionData {
     entries: Mutex<HashMap<TypeId, ErasedData>>,
 }
 
+impl Clone for ExtensionData {
+    /// Freezes the attachment map while retaining shared ownership of its values.
+    fn clone(&self) -> Self {
+        Self {
+            level_id: self.level_id.clone(),
+            entries: Mutex::new(self.entries().clone()),
+        }
+    }
+}
+
 impl ExtensionData {
     /// Creates an empty attachment map for one host-owned scope.
     pub fn new(level_id: impl Into<String>) -> Self {

@@ -13,6 +13,12 @@ fn typed_values_can_be_inserted_replaced_and_removed() {
 
     assert_eq!(data.insert(/*value*/ 41_u64), None);
     assert_eq!(data.insert("alpha".to_string()), None);
+    let fork = data.clone();
+    assert_eq!(fork.level_id(), data.level_id());
+    assert!(Arc::ptr_eq(
+        &fork.get::<u64>().expect("fork value"),
+        &data.get::<u64>().expect("original value")
+    ));
     assert_eq!(data.get::<u64>().as_deref(), Some(&41));
     assert_eq!(
         data.get::<String>().map(|value| value.as_str().to_string()),
@@ -21,12 +27,17 @@ fn typed_values_can_be_inserted_replaced_and_removed() {
 
     assert_eq!(data.insert(/*value*/ 42_u64).as_deref(), Some(&41));
     assert_eq!(data.get::<u64>().as_deref(), Some(&42));
+    assert_eq!(fork.get::<u64>().as_deref(), Some(&41));
     assert_eq!(
         data.remove::<String>()
             .map(|value| value.as_str().to_string()),
         Some("alpha".to_string())
     );
     assert_eq!(data.get::<String>(), None);
+    assert_eq!(
+        fork.get::<String>().as_deref().map(String::as_str),
+        Some("alpha")
+    );
     assert_eq!(data.get::<u64>().as_deref(), Some(&42));
 }
 

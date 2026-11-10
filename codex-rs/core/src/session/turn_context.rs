@@ -52,6 +52,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tracing::instrument;
 
+#[path = "turn_context_account_routing.rs"]
+mod account_routing;
+
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
 pub(crate) type ShellSnapshotCache =
     Arc<Mutex<HashMap<ShellSnapshotCacheKey, Arc<ShellSnapshotFile>>>>;
@@ -341,7 +344,7 @@ pub struct TurnContext {
     pub(crate) disabled_plugin_ids: Vec<String>,
     pub(super) active_host_plugin_identities: Option<Vec<PluginIdentity>>,
     /// Settings for the next step; environments are owned by `ThreadEnvironments`.
-    pub(super) next_step_settings: ArcSwap<ResolvedStepSettings>,
+    pub(super) next_step_settings: Arc<ArcSwap<ResolvedStepSettings>>,
     /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
@@ -432,7 +435,7 @@ impl TurnContext {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
@@ -843,7 +846,7 @@ impl TurnContext {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
@@ -1127,7 +1130,7 @@ impl Session {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry: session_telemetry_for_context,
             provider,
             session_source,

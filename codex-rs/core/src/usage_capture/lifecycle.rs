@@ -38,7 +38,7 @@ impl ThreadLifecycleContributor<Config> for CaptureLifecycle {
                     account_id: None,
                     repository_id: None,
                     activity: Arc::default(),
-                    tool_operations: Mutex::default(),
+                    tool_operations: Arc::default(),
                 });
                 let operation =
                     Operation::start(Arc::clone(&context), "thread_started", "thread_stopped");
