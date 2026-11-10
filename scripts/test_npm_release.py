@@ -288,6 +288,17 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                     result["packaging_only_paths"],
                 )
 
+                account_routing = root / "codex-rs/core/src/session/account_routing.rs"
+                account_routing.parent.mkdir(parents=True, exist_ok=True)
+                account_routing.write_text("account continuation fix\n")
+                packaging = commit("managed account failover fix")
+                result = verify_hosted_v8_source(producer, packaging)
+                self.assertEqual(result["v8_inputs"]["schema"], 1)
+                self.assertIn(
+                    str(account_routing.relative_to(root)),
+                    result["packaging_only_paths"],
+                )
+
                 unrelated_app_server = root / "codex-rs/app-server/src/lib.rs"
                 unrelated_app_server.write_text("unrelated app-server change\n")
                 changed_app_server = commit("unapproved app-server change")

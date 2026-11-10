@@ -21,9 +21,13 @@ TARGET = "x86_64-unknown-linux-gnu"
 VERSION = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())["workspace"][
     "package"
 ]["version"]
-RELEASE_TARGET = Path("/mnt/build-storage/codex/rebase166-release-target")
+RELEASE_TARGET = Path(
+    os.environ.get(
+        "CODEX_MULTI_RELEASE_TARGET_DIRECTORY",
+        "/mnt/build-storage/codex/rebase166-release-target",
+    )
+).resolve()
 BULK_ROOT = Path("/mnt/build-storage/codex/rebase166-package-work")
-WORKTREE_ID = "wdcb50e621f3f9f8c"
 ARTIFACT = "native-linux-gnu"
 
 
@@ -260,11 +264,11 @@ def golden(work):
         [
             "python3",
             "-m",
-            "scripts.account_cli_compat.credits",
+            "scripts.account_cli_compat.captured_credits",
             "--binary",
             work / "cli/bin/codex",
-            "--reference-binary",
-            "/home/holyglory/.codex/packages/standalone/releases/0.162.1+multi.4-x86_64-unknown-linux-gnu-local-usage-recovery-571ba85a/bin/codex",
+            "--reference",
+            "/mnt/build-storage/codex/rebase166-package-work/t20261108T222308Z-28e3a5/account-credit-golden.json",
             "--source-root",
             ROOT,
             "--output",
@@ -276,6 +280,11 @@ def golden(work):
 
 def qualify(run_id, work):
     identity = verify_source(work)
+    worktree_id = os.environ.get("CODEX_MULTI_NATIVE_WORKTREE_ID", "")
+    if not re.fullmatch(r"w[0-9a-f]{16}", worktree_id):
+        raise RuntimeError(
+            "Qualification requires the actual registered worktree identity"
+        )
     base_run = os.environ.get("CODEX_MULTI_BASE_VALIDATION_RUN", run_id)
     auth_run = os.environ.get("CODEX_MULTI_AUTH_VALIDATION_RUN", run_id)
     smoke_proof = json.loads((work / "smoke.json").read_text())
@@ -458,7 +467,7 @@ def qualify(run_id, work):
             "file": "package/bin/codex",
             "observed_sha256": digest(executable),
             "checked_at_ms": time.time_ns() // 1_000_000,
-            "access": f"artifact://{WORKTREE_ID}/{run_id}/{check}/{ARTIFACT}/package/bin/codex",
+            "access": f"artifact://{worktree_id}/{run_id}/{check}/{ARTIFACT}/package/bin/codex",
             "observation": "executable_smoke_passed",
         },
     )
