@@ -150,16 +150,30 @@ impl UsageJournal {
 
     /// Append an ordered batch, synchronizing every returned position together.
     pub fn append_batch(&self, payloads: Vec<JournalPayload>) -> Result<Vec<JournalPosition>> {
+        #[cfg(test)]
+        let mut profile = crate::performance_tests::RecoveryProfile::for_root(
+            self.path.parent().unwrap_or_else(|| Path::new(".")), "journal-append",
+        );
         if payloads.is_empty() {
             return Ok(Vec::new());
         }
         let writer_lock = storage_file::open_read_write(&self.path.with_extension("lock"))?;
+        #[cfg(test)]
+        profile.mark("writer-open");
         writer_lock.lock()?;
+        #[cfg(test)]
+        profile.mark("writer-lock");
         let mut file = storage_file::open_append(&self.path)?;
+        #[cfg(test)]
+        profile.mark("file-open");
         file.lock()?;
+        #[cfg(test)]
+        profile.mark("file-lock");
         let length = file.metadata()?.len();
         let base = JournalBase::read(&mut file)?;
         let mut checkpoint = tail_checkpoint(&mut file, length)?;
+        #[cfg(test)]
+        profile.mark("tail-checkpoint");
         #[cfg(unix)]
         let needs_directory_sync = checkpoint.byte_offset == 0;
         checkpoint
@@ -195,6 +209,8 @@ impl UsageJournal {
             };
         }
         file.sync_data()?;
+        #[cfg(test)]
+        profile.mark("append-sync");
         #[cfg(unix)]
         if needs_directory_sync {
             let parent = self
@@ -262,6 +278,10 @@ impl UsageJournal {
         target: JournalCheckpoint,
         limits: JournalReadLimits,
     ) -> Result<JournalReadBatch> {
+        #[cfg(test)]
+        let mut profile = crate::performance_tests::RecoveryProfile::for_root(
+            self.path.parent().unwrap_or_else(|| Path::new(".")), "journal-read",
+        );
         validate_read(after, target, limits)?;
         let mut batch = JournalReadBatch {
             entries: Vec::new(),
@@ -274,7 +294,11 @@ impl UsageJournal {
         }
         let mut file = File::open(&self.path)?;
         storage_file::protect_existing(&self.path)?;
+        #[cfg(test)]
+        profile.mark("file-open");
         file.lock_shared()?;
+        #[cfg(test)]
+        profile.mark("file-lock");
         let base = JournalBase::read(&mut file)?;
         if after.sequence < base.checkpoint.sequence {
             return Err(StorageError::InvalidData(
@@ -420,15 +444,25 @@ impl UsageJournal {
     }
 
     fn snapshot(&self) -> Result<Option<(File, JournalCheckpoint)>> {
+        #[cfg(test)]
+        let mut profile = crate::performance_tests::RecoveryProfile::for_root(
+            self.path.parent().unwrap_or_else(|| Path::new(".")), "journal-snapshot",
+        );
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         storage_file::protect_existing(&self.path)?;
+        #[cfg(test)]
+        profile.mark("file-open");
         file.lock_shared()?;
+        #[cfg(test)]
+        profile.mark("file-lock");
         let length = file.metadata()?.len();
         let checkpoint = tail_checkpoint(&mut file, length)?;
+        #[cfg(test)]
+        profile.mark("tail-checkpoint");
         Ok(Some((file, checkpoint)))
     }
 

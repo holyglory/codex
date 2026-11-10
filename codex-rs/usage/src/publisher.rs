@@ -51,6 +51,8 @@ impl UsagePublisher {
     /// Validate published metadata without decoding historical operation rows.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
+        #[cfg(test)]
+        let _open = crate::publication_diagnostics::measure(&root, "publisher", "open");
         let manifests = ManifestStore::new(root.join("manifest.json"));
         validate_manifest(&manifests.load()?)?;
         Ok(Self {
@@ -64,13 +66,20 @@ impl UsagePublisher {
     /// A failed attempt leaves its files unreferenced and its journal entries intact.
     pub fn publish_batch(&mut self, limits: JournalReadLimits) -> Result<UsageManifest> {
         #[cfg(test)]
-        let mut profile = crate::performance_tests::RecoveryProfile::new("publisher");
+        let mut profile = crate::performance_tests::RecoveryProfile::for_root(&self.root, "publisher");
         let directory = self.root.join("segments");
         storage_file::ensure_usage_directory(&self.root)?;
         let lock = storage_file::open_read_write(&self.root.join(".snapshot.lock"))?;
         lock.lock()?;
+        #[cfg(test)]
+        profile.mark("snapshot-lock");
         // Reload after locking so independently opened publishers cannot regress a generation.
         let mut manifest = self.manifests.load()?;
+        #[cfg(test)]
+        {
+            crate::publication_diagnostics::value(&self.root, "publisher-generation", manifest.snapshot_generation);
+            crate::publication_diagnostics::value(&self.root, "publisher-watermark", manifest.watermark);
+        }
         validate_manifest(&manifest)?;
         let target = self.journal.checkpoint()?;
         let batch = self.journal.read_batch(
@@ -107,6 +116,8 @@ impl UsagePublisher {
                 .as_nanos()
         );
         let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+        #[cfg(test)]
+        profile.mark("duckdb-open");
         let index_complete = manifest.membership_file.is_some()
             || !manifest.membership_files.is_empty()
             || manifest.segment_files.is_empty();

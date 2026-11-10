@@ -44,10 +44,14 @@ impl Maintenance {
     /// Consume at most max_entries input addresses, including retired entries.
     /// The pinned job survives publisher appends and lock contention.
     pub(crate) fn step(&mut self, root: &Path, max_entries: usize) -> Result<bool> {
+        #[cfg(test)]
+        let mut profile = crate::performance_tests::RecoveryProfile::for_root(root, "operation-step");
         if max_entries == 0 {
             return Err(invalid("operation-id step needs a positive budget"));
         }
         let pin = SnapshotPin::acquire(root)?;
+        #[cfg(test)]
+        profile.mark("snapshot-pin");
         let store = ManifestStore::new(root.join("manifest.json"));
         let manifest = store.load()?;
         let Some(source) = review_projection::load_review_projection_shared(root, &manifest)?
@@ -57,6 +61,10 @@ impl Maintenance {
         let Some(index) = operation_id_index::load(root, &source)? else {
             return Ok(false);
         };
+        #[cfg(test)]
+        crate::publication_diagnostics::value(root, "operation-run-count", index.runs.len() as u64);
+        #[cfg(test)]
+        profile.mark("source-metadata");
         if self
             .job
             .as_ref()
@@ -73,9 +81,13 @@ impl Maintenance {
         let Some(job) = self.job.as_mut() else {
             return Ok(false);
         };
+        #[cfg(test)]
+        profile.mark("job-start");
         if !job.step(max_entries)? {
             return Ok(true);
         }
+        #[cfg(test)]
+        profile.mark("stream-merge");
 
         let lock = storage_file::open_read_write(&root.join(".snapshot.lock"))?;
         match lock.try_lock() {
@@ -83,6 +95,8 @@ impl Maintenance {
             Err(TryLockError::WouldBlock) => return Ok(false),
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
+        #[cfg(test)]
+        profile.mark("snapshot-lock");
         let mut current = store.load()?;
         let Some(mut review) = review_projection::load_review_projection(root, &current)? else {
             self.job = None;
@@ -118,6 +132,8 @@ impl Maintenance {
         std::fs::File::open(root.join("segments"))?.sync_all()?;
         current.mark_snapshot(current.watermark, current.freshness);
         store.save(&current)?;
+        #[cfg(test)]
+        profile.mark("install");
         self.job = None;
         Ok(true)
     }

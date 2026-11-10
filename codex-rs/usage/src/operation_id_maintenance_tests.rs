@@ -243,6 +243,7 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
     let root_path = directory.path().join(crate::USAGE_DIRECTORY_NAME);
     std::fs::create_dir_all(&root_path).expect("usage root");
     let root = root_path.as_path();
+    let diagnostics = crate::publication_diagnostics::Session::start(root);
     let now_ms = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
@@ -277,6 +278,7 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
         .expect("index")
         .expect("fresh index");
     index.runs.clear();
+    let fixture_runs = crate::publication_diagnostics::measure(root, "fixture", "index-runs");
     for i in 0..crate::id_index::MAX_ID_RUNS {
         let mut writer = RunWriter::new(
             root,
@@ -297,6 +299,7 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             retired_through: 0,
         });
     }
+    drop(fixture_runs);
     review.operation_id_index_file =
         Some(operation_id_index::write(root, &index, "at-cap").expect("cap is valid"));
     let mut invalid = index.clone();
@@ -376,7 +379,13 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
     ManifestStore::new(root.join("manifest.json"))
         .save(&manifest)
         .expect("restore full-run fixture for background recovery");
+    eprintln!("usage-maintenance-fixture {}", serde_json::json!({
+        "restoredGeneration":manifest.snapshot_generation,"restoredWatermark":manifest.watermark,
+        "intermediateGeneration":resumed.snapshot_generation,"intermediateWatermark":resumed.watermark,
+        "initialRuns":index.runs.len(),"maintainedRuns":maintained_index.runs.len()
+    }));
     let base_target = journal.checkpoint().expect("durable target").sequence;
+    diagnostics.report("before-capture");
     let captured = Arc::new(AtomicU64::new(/*v*/ 0));
     let capture_progress = Arc::clone(&captured);
     let capture_home = directory.path().to_path_buf();
@@ -414,21 +423,30 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             .expect("capture starts before the publisher");
         let _runtime = crate::UsagePublisherRuntime::start(directory.path())
             .expect("runtime maintenance starts");
+        let observing = std::time::Instant::now();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 10);
-        let progressed_during_capture = loop {
+        let (progressed_during_capture, observed_manifest) = loop {
             let manifest = ManifestStore::new(root.join("manifest.json"))
                 .load()
                 .expect("runtime manifest");
             if manifest.watermark > base_target && !capture_thread.is_finished() {
-                break true;
+                break (true, manifest);
             }
             if std::time::Instant::now() >= deadline || capture_thread.is_finished() {
-                break false;
+                break (false, manifest);
             }
             std::thread::sleep(std::time::Duration::from_millis(/*millis*/ 25));
         };
+        eprintln!("usage-maintenance-observation {}", serde_json::json!({
+            "elapsedMs":observing.elapsed().as_millis(),"publishedDuringCapture":progressed_during_capture,
+            "captureFinished":capture_thread.is_finished(),"captured":captured.load(Ordering::Acquire),
+            "baseTarget":base_target,"observedWatermark":observed_manifest.watermark,
+            "observedGeneration":observed_manifest.snapshot_generation
+        }));
+        diagnostics.report("observation-ended");
         drop(stop_capture);
         capture_thread.join().expect("live capture thread");
+        diagnostics.report("before-capture-assertion");
         assert!(
             progressed_during_capture,
             "publication must resume during capture"

@@ -137,3 +137,6 @@ mod tests;
 #[cfg(test)]
 #[path = "performance_tests.rs"]
 mod performance_tests;
+
+#[cfg(test)]
+mod publication_diagnostics;

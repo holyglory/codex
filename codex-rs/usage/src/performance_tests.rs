@@ -38,6 +38,8 @@ pub(crate) struct RecoveryProfile {
     component: &'static str,
     started: Option<Instant>,
     previous: Option<Instant>,
+    diagnostic_root: Option<PathBuf>,
+    _measurement: Option<crate::publication_diagnostics::Measurement>,
 }
 
 impl RecoveryProfile {
@@ -48,12 +50,31 @@ impl RecoveryProfile {
             component,
             started,
             previous: started,
+            diagnostic_root: None,
+            _measurement: None,
         }
     }
 
-    pub(crate) fn mark(&mut self, stage: &str) {
+    pub(crate) fn for_root(root: &Path, component: &'static str) -> Self {
+        let mut profile = Self::new(component);
+        profile._measurement = crate::publication_diagnostics::measure(root, component, "total");
+        if profile._measurement.is_some() {
+            let now = Instant::now();
+            profile.started = Some(now);
+            profile.previous = Some(now);
+            profile.diagnostic_root = Some(root.to_path_buf());
+        }
+        profile
+    }
+
+    pub(crate) fn mark(&mut self, stage: &'static str) {
         if let (Some(started), Some(previous)) = (self.started, self.previous) {
             let now = Instant::now();
+            if let Some(root) = &self.diagnostic_root {
+                crate::publication_diagnostics::record(root, self.component, stage, previous);
+                self.previous = Some(now);
+                return;
+            }
             eprintln!(
                 "usage-recovery-profile {}",
                 json!({"component":self.component,"stage":stage,
@@ -61,6 +82,14 @@ impl RecoveryProfile {
                     "totalMs":milliseconds(now.duration_since(started))})
             );
             self.previous = Some(now);
+        }
+    }
+}
+
+impl Drop for RecoveryProfile {
+    fn drop(&mut self) {
+        if let (Some(root), Some(previous)) = (&self.diagnostic_root, self.previous) {
+            crate::publication_diagnostics::record(root, self.component, "return", previous);
         }
     }
 }

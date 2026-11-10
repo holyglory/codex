@@ -204,7 +204,7 @@ pub(crate) fn publish_review_projection(
     connection: &Connection,
 ) -> Result<(String, BTreeMap<String, ReviewCounts>)> {
     #[cfg(test)]
-    let mut profile = crate::performance_tests::RecoveryProfile::new("review-projection");
+    let mut profile = crate::performance_tests::RecoveryProfile::for_root(root, "review-projection");
     let prior = JournalCheckpoint {
         sequence: manifest.watermark,
         byte_offset: manifest.journal_byte_offset,
@@ -597,7 +597,7 @@ fn find_addresses(
         );
     }
     #[cfg(test)]
-    let mut profile = crate::performance_tests::RecoveryProfile::new("operation-addresses");
+    let mut profile = crate::performance_tests::RecoveryProfile::for_root(root, "operation-addresses");
     if ids.is_empty() || partitions.is_empty() {
         return Ok(BTreeMap::new());
     }

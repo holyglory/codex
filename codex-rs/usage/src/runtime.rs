@@ -106,6 +106,8 @@ impl UsagePublisherRuntime {
     ) -> Result<Self> {
         policy.validate()?;
         let root = codex_home.into().join(USAGE_DIRECTORY_NAME);
+        #[cfg(test)]
+        let _start = crate::publication_diagnostics::measure(&root, "runtime", "start");
         let mut publishers = PUBLISHERS
             .get_or_init(Mutex::default)
             .lock()
@@ -143,6 +145,10 @@ impl UsagePublisherRuntime {
             .spawn(move || {
                 let mut retention_maintenance = crate::retention::Maintenance::default();
                 while let Ok(request) = maintain.recv() {
+                    #[cfg(test)]
+                    let _request = crate::publication_diagnostics::measure(
+                        &maintenance_root, "maintenance", "request",
+                    );
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -160,7 +166,15 @@ impl UsagePublisherRuntime {
                         ),
                     };
                     if result.is_err() {
+                        #[cfg(test)]
+                        drop(crate::publication_diagnostics::measure(
+                            &maintenance_root, "maintenance", "failed",
+                        ));
                         tracing::debug!("usage maintenance deferred after failure");
+                    }
+                    #[cfg(test)]
+                    if let Err(error) = &result {
+                        crate::publication_diagnostics::error(&maintenance_root, "maintenance", error);
                     }
                     let _ = request.completion.send(());
                 }
@@ -214,6 +228,8 @@ fn publish_loop(
     let mut catch_up = false;
     let mut warm = Some(warm);
     let mut handoff: Option<(MaintenanceKind, mpsc::Receiver<()>)> = None;
+    #[cfg(test)]
+    let mut diagnostic_handoff = None;
     let mut shutdown_requested = false;
     let mut pending_wake = false;
     // Keep ordinary startup/prewarming on its established periodic cadence;
@@ -224,6 +240,8 @@ fn publish_loop(
             let kind = *kind;
             match completion.try_recv() {
                 Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                    #[cfg(test)]
+                    drop(diagnostic_handoff.take());
                     handoff = None;
                     catch_up = true;
                     if matches!(kind, MaintenanceKind::Retention) {
@@ -263,16 +281,24 @@ fn publish_loop(
         } else {
             Duration::from_secs(1)
         };
+        #[cfg(test)]
+        let notification = crate::publication_diagnostics::measure(&root, "runtime", "notification-wait");
         match receiver.recv_timeout(wait) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
+        #[cfg(test)]
+        drop(notification);
         let maintenance_due = std::time::Instant::now() >= next_maintenance;
         let result = UsagePublisher::open_at(&root)
             .and_then(|mut publisher| publisher.publish_batch(PUBLICATION_LIMITS));
         let mut maintenance_requested = maintenance_due.then_some(MaintenanceKind::Retention);
         match result {
             Ok(manifest) => {
+                #[cfg(test)]
+                crate::publication_diagnostics::value(&root, "runtime-published-watermark", manifest.watermark);
+                #[cfg(test)]
+                drop(crate::publication_diagnostics::measure(&root, "runtime", "published"));
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
                     .checkpoint()
                     .is_ok_and(|end| end.sequence > manifest.watermark);
@@ -286,6 +312,17 @@ fn publish_loop(
                 had_failure = false;
             }
             Err(error) => {
+                #[cfg(test)]
+                crate::publication_diagnostics::error(&root, "publication", &error);
+                #[cfg(test)]
+                drop(crate::publication_diagnostics::measure(&root, "runtime", match &error {
+                    StorageError::OperationIndexAtCapacity => "publication-cap",
+                    StorageError::Io(_)
+                    | StorageError::Json(_)
+                    | StorageError::InvalidData(_)
+                    | StorageError::UnsupportedFormat(_)
+                    | StorageError::Columnar(_) => "publication-other-error",
+                }));
                 catch_up = false;
                 // Only a full operation index can use the short recovery
                 // handoff. Other failures retain full maintenance, including
@@ -313,9 +350,13 @@ fn publish_loop(
             // Capture and report readers remain independent of this handoff.
             let (completion, completed) = mpsc::sync_channel(/*bound*/ 0);
             let mut request = MaintenanceRequest { kind, completion };
+            #[cfg(test)]
+            let _queue = crate::publication_diagnostics::measure(&root, "runtime", "request-queue");
             loop {
                 match maintenance.try_send(request) {
                     Ok(()) => {
+                        #[cfg(test)]
+                        { diagnostic_handoff = crate::publication_diagnostics::measure(&root, "runtime", "maintenance-handoff"); }
                         handoff = Some((kind, completed));
                         break;
                     }
