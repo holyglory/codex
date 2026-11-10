@@ -164,7 +164,9 @@ class LocalDeployRpcTests(unittest.TestCase):
                     self.assertIsNone(process.poll(), "candidate exited before creating its local endpoint")
                     time.sleep(0.05)
                 self.assertTrue(endpoint.exists())
-                verify(self.plan(home))
+                candidate_plan = self.plan(home)
+                candidate_plan["version"] = os.environ.get("CODEX_MULTI_VERIFY_VERSION", candidate_plan["version"])
+                verify(candidate_plan)
                 proof = json.loads((home / "proof/rpc.json").read_text())
                 self.assertTrue(proof["localUsageSummary"])
             finally:

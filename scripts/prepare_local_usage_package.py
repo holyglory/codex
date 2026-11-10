@@ -68,7 +68,8 @@ def verify():
     if package_digest(package) != manifest["packageSha256"]:
         raise RuntimeError("assembled-package-changed")
     run([sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_local_deploy_rpc.py", "-v"],
-        env={**os.environ, "CODEX_MULTI_VERIFY_BINARY": str(package / "bin/codex")})
+        env={**os.environ, "CODEX_MULTI_VERIFY_BINARY": str(package / "bin/codex"),
+             "CODEX_MULTI_VERIFY_VERSION": manifest["version"]})
     save(work / "verified.json", {"result": "passed", "version": manifest["version"], "sourceCommit": manifest["sourceCommit"],
          "packageSha256": manifest["packageSha256"], "usageContractVersion": 1, "usageStorageFormatVersion": 3,
          "liveInstallationChanged": False})
