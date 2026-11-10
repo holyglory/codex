@@ -99,7 +99,7 @@ def prepare():
             "package": str(PACKAGE),
             "packageSha256": tree,
             "executableSha256": EXE_SHA,
-            "version": "0.166.0+multi.4",
+            "version": "0.166.0+multi.5",
             "artifactTreeSha256": ARTIFACT_TREE_SHA,
             "state": str(state),
             "codexHome": str(codex_home),
