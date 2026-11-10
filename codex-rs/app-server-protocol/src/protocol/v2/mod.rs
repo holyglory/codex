@@ -65,7 +65,7 @@ pub use fs::*;
 pub use gcp::*;
 pub use hook::*;
 pub use item::*;
-pub use local_usage::LocalUsageAccountingCapability;
+pub use local_usage::*;
 pub use mcp::*;
 pub use memory::*;
 pub use model::*;

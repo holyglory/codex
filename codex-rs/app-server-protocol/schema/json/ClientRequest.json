@@ -2012,6 +2012,266 @@
       ],
       "type": "string"
     },
+    "LocalUsageCursor": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "observedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "observedAtMs"
+      ],
+      "type": "object"
+    },
+    "LocalUsageRepositoryIdentityParams": {
+      "properties": {
+        "contractVersion": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Private local input; never echoed in the response or error.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "LocalUsageSummaryParams": {
+      "description": "Read one consistent usage-v2 snapshot. No legacy usage database is opened.",
+      "properties": {
+        "accountId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contractVersion": {
+          "default": null,
+          "description": "Omission selects version 1; unsupported versions are rejected.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expectedSnapshot": {
+          "default": null,
+          "description": "Required with a continuation, so paging never silently mixes snapshots.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fromAtMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "includeReview": {
+          "default": false,
+          "type": "boolean"
+        },
+        "includeUnassigned": {
+          "default": false,
+          "description": "Compatibility flag, meaningful only alongside a worktree selector.",
+          "type": "boolean"
+        },
+        "operationLimit": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "operationsAfter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recordLimit": {
+          "default": 0,
+          "description": "Zero/omission excludes detail; a requested page is limited to 50 rows.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "recordsAfter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "repositoryId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "toAtMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workContextBindings": {
+          "default": null,
+          "description": "Explicit authority declarations; at most 256, never persisted by this RPC.",
+          "items": {
+            "$ref": "#/definitions/LocalUsageWorkContextBinding"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "workstreamId": {
+          "default": null,
+          "description": "Select outcome accounting only. Repository report/totals retain scope.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktreeKeys": {
+          "default": null,
+          "description": "Reserved compatibility selector; non-null is rejected until captured.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "LocalUsageWorkContext": {
+      "additionalProperties": false,
+      "description": "Only explicitly captured bindings may populate this versioned extension. Repository/thread identity or operation completion never implies a binding.",
+      "properties": {
+        "experimentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "nativeProjectId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcomeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repositoryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workstreamId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "schemaVersion"
+      ],
+      "type": "object"
+    },
+    "LocalUsageWorkContextBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "capturedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "workContext": {
+          "$ref": "#/definitions/LocalUsageWorkContext"
+        }
+      },
+      "required": [
+        "capturedAtMs",
+        "operationId",
+        "schemaVersion",
+        "workContext"
+      ],
+      "type": "object"
+    },
     "LoginAccountParams": {
       "oneOf": [
         {
@@ -8044,6 +8304,54 @@
         "params"
       ],
       "title": "Model/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "localUsage/summary"
+          ],
+          "title": "LocalUsage/summaryRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/LocalUsageSummaryParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "LocalUsage/summaryRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "localUsage/repositoryIdentity"
+          ],
+          "title": "LocalUsage/repositoryIdentityRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/LocalUsageRepositoryIdentityParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "LocalUsage/repositoryIdentityRequest",
       "type": "object"
     },
     {
