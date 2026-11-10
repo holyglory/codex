@@ -111,18 +111,25 @@
       "type": "object"
     },
     "LocalUsageWorkContext": {
+      "additionalProperties": false,
       "description": "Only explicitly captured bindings may populate this versioned extension. Repository/thread identity or operation completion never implies a binding.",
       "properties": {
-        "id": {
-          "type": "string"
-        },
-        "outcomeId": {
+        "experimentRef": {
           "type": [
             "string",
             "null"
           ]
         },
-        "projectId": {
+        "id": {
+          "type": "string"
+        },
+        "nativeProjectId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcomeId": {
           "type": [
             "string",
             "null"
@@ -138,6 +145,18 @@
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "workstreamId": {
           "type": [

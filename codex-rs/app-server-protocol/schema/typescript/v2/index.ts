@@ -260,10 +260,13 @@ export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse"
 export type { LocalUsageAccountingCapability } from "./LocalUsageAccountingCapability";
 export type { LocalUsageCursor } from "./LocalUsageCursor";
 export type { LocalUsageOperationBinding } from "./LocalUsageOperationBinding";
+export type { LocalUsageRepositoryIdentityParams } from "./LocalUsageRepositoryIdentityParams";
+export type { LocalUsageRepositoryIdentityResponse } from "./LocalUsageRepositoryIdentityResponse";
 export type { LocalUsageSnapshot } from "./LocalUsageSnapshot";
 export type { LocalUsageSummaryParams } from "./LocalUsageSummaryParams";
 export type { LocalUsageSummaryResponse } from "./LocalUsageSummaryResponse";
 export type { LocalUsageWorkContext } from "./LocalUsageWorkContext";
+export type { LocalUsageWorkContextBinding } from "./LocalUsageWorkContextBinding";
 export type { LoginAccountParams } from "./LoginAccountParams";
 export type { LoginAccountResponse } from "./LoginAccountResponse";
 export type { LoginAppBrand } from "./LoginAppBrand";

@@ -98,6 +98,17 @@ fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
             "fromAtMs and toAtMs must be supplied together",
         ));
     }
+    if params.from_at_ms.is_none()
+        && [&params.account_id, &params.repository_id, &params.thread_id]
+            .into_iter()
+            .filter(|id| id.is_some())
+            .count()
+            > 1
+    {
+        return Err(invalid_params(
+            "finite fromAtMs and toAtMs are required for combined identity filters",
+        ));
+    }
     if params.from_at_ms.is_some_and(|value| value < 0)
         || params.to_at_ms.is_some_and(|value| value < 0)
         || params
@@ -190,6 +201,14 @@ fn read(
         thread_id: params.thread_id.clone(),
         ..Default::default()
     };
+    if range == TimeRange::all() && !reader.can_read_metadata_summary(&filter) {
+        let mut error =
+            internal_error("unbounded usage metadata is awaiting correction publication");
+        error.data = Some(
+            json!({"source":"usage-v2","coverage":"unavailable","reason":"metadata_corrections_pending","retryable":true}),
+        );
+        return Err(error);
+    }
     let native_summary = reader.summary(range, &filter).map_err(unavailable)?;
     // Unbounded requests stay on the precomputed summary path. Rich facts are
     // an explicitly finite-window query, never a foreground full-history scan.
@@ -291,7 +310,7 @@ fn read(
         } else {
             "partial"
         };
-        report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":source.basis,"boundOperations":bound,"unknownOperations":unknown,"sourceRevision":source.revision});
+        report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":source.basis,"boundOperations":bound,"unknownOperations":unknown,"declaredOperations":source.operation_ids().len(),"matchedDeclarations":selected.len(),"unmatchedDeclarations":source.operation_ids().len().saturating_sub(selected.len()),"sourceRevision":source.revision});
         report["coverage"]["workBindings"] = json!(coverage);
         if let Some(review) = &mut review
             && let Some(facts) = &facts

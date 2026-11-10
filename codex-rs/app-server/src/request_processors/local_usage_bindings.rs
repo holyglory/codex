@@ -276,6 +276,10 @@ impl Bindings {
             .ok_or(())?;
         let rows = groups.into_iter().map(|((outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
         let full = unattributed["operations"] == 0
+            && scoped_total["providerTotalTokens"]["unknown"] == 0
+            && scoped_total["activeAgentMs"]["unknown"] == 0
+            && scoped_total["elapsedExecutionMs"]["unknown"] == 0
+            && scoped_total["recordedWaitMs"]["unknown"] == 0
             && unattributed_observations == 0
             && unattributed["providerTotalTokens"]["measured"] == 0
             && unattributed["providerTotalTokens"]["unknown"] == 0

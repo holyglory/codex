@@ -4,6 +4,6 @@
 
 export type LocalUsageAccountingCapability = { version: number, supportedVersions: Array<number>, methods: Array<string>, storage: string,
 /**
- * False until the producer captures explicit work-context bindings.
+ * Accepts explicit read-only workContextBindings supplied on each request.
  */
-supportsWorkContextBindings: boolean, };
+supportsWorkContextBindings: boolean, supportsWorkstreamOutcomes: boolean, snapshotRetentionMs: number, };

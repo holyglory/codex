@@ -6,4 +6,4 @@
  * Only explicitly captured bindings may populate this versioned extension.
  * Repository/thread identity or operation completion never implies a binding.
  */
-export type LocalUsageWorkContext = { schemaVersion: number, id: string, repositoryId: string | null, projectId: string | null, workstreamId: string | null, outcomeId: string | null, };
+export type LocalUsageWorkContext = { schemaVersion: number, id: string, repositoryId: string | null, nativeProjectId: string | null, workstreamId: string | null, outcomeId: string | null, threadId: string | null, turnId: string | null, experimentRef: string | null, };

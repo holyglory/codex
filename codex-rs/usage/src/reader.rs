@@ -296,10 +296,25 @@ impl UsageReader {
         )
     }
 
-    /// Read mergeable totals without decoding historical observations in Rust.
+    /// Whether all-time single-scope summaries can use only published metadata
+    /// and the bounded pinned tail, without a historical correction query.
+    pub fn can_read_metadata_summary(&self, filter: &UsageFilter) -> bool {
+        self.corrections.is_empty()
+            && (self.manifest.correction_files.is_empty()
+                || self.manifest.summaries_include_corrections)
+            && filter.model.is_none()
+            && filter.thread_ids.is_none()
+            && [&filter.account_id, &filter.repository_id, &filter.thread_id]
+                .into_iter()
+                .filter(|id| id.is_some())
+                .count()
+                <= 1
+    }
+
+    /// Read exact totals; callers requiring metadata-only work must first check
+    /// `can_read_metadata_summary` for an all-time single-scope request.
     /// Historical windows include only aggregate buckets wholly contained in
-    /// the window. Summary/tool responses expose partial retention coverage;
-    /// all-time queries retain every aggregate regardless of bucket width.
+    /// the window; coverage discloses partial retention.
     pub fn totals(&self, range: TimeRange, filter: &UsageFilter) -> Result<UsageTotals> {
         if range == TimeRange::all()
             && self.corrections.is_empty()

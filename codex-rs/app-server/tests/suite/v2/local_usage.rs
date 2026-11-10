@@ -12,6 +12,8 @@ use codex_app_server_protocol::LocalUsageSummaryResponse;
 use codex_app_server_protocol::LocalUsageWorkContextBinding;
 use codex_app_server_protocol::RequestId;
 use codex_usage::JournalReadLimits;
+use codex_usage::UsageCorrection;
+use codex_usage::UsageJournal;
 use codex_usage::UsageOutcome;
 use codex_usage::UsagePublisher;
 use codex_usage::UsageRecord;
@@ -164,7 +166,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         .write(true)
         .open(home.path().join("usage-v2/.snapshot.lock"))?;
     publication_guard.lock()?;
-    UsageStore::open(home.path())?.append_record(fixture_fact(
+    UsageJournal::new(home.path().join("usage-v2/events.jsonl")).append_record(fixture_fact(
         "fixture-tail",
         "fixture-tail-thread",
         "fixture-tail-turn",
@@ -264,6 +266,10 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         global.snapshot.source_watermark
     );
     assert_eq!(scoped.report["providerTokens"][0]["measuredTokens"], 187);
+    assert_ne!(
+        scoped.work_contexts[0].repository_id.as_deref(),
+        Some(repository.as_str())
+    );
     let review = scoped.review.as_ref().unwrap();
     assert_eq!(review["totals"]["total_tokens"], 187);
     assert_eq!(
@@ -336,7 +342,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
             serde_json::to_vec_pretty(&scoped)?,
         )?;
     }
-    UsageStore::open(home.path())?.append_record(fixture_fact(
+    UsageJournal::new(home.path().join("usage-v2/events.jsonl")).append_record(fixture_fact(
         "fixture-late",
         "fixture-late-thread",
         "fixture-late-turn",
@@ -406,6 +412,9 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     let mut bad = declarations.clone();
     bad[0].work_context.turn_id = Some("wrong-turn".into());
     invalids.push((Some(repository.clone()), bad));
+    let mut bad = declarations.clone();
+    bad[0].work_context.experiment_ref = Some("invalid ref".into());
+    invalids.push((Some(repository.clone()), bad));
     invalids.push((Some("unrelated-producer-repo".into()), declarations.clone()));
     let mut bad = declarations.clone();
     let mut conflict = bad[0].clone();
@@ -447,11 +456,65 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         })
         .await?;
     assert!(maximum.operation_bindings.is_empty());
+    // A pending correction cannot send an unbounded read down the historical
+    // fallback. It reports source availability, while finite queries still work.
+    let correction_guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.path().join("usage-v2/.snapshot.lock"))?;
+    correction_guard.lock()?;
+    UsageJournal::new(home.path().join("usage-v2/events.jsonl")).append_correction(
+        UsageCorrection::new(
+            "fixture-correction",
+            "fixture-model-finished",
+            (base + 4_000).div_euclid(1_000),
+            1,
+            0,
+            "fixture correction",
+        ),
+    )?;
+    let id = server
+        .send_request("localUsage/summary", Some(json!({})))
+        .await?;
+    let unavailable = timeout(
+        Duration::from_secs(20),
+        server.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert_eq!(unavailable.error.code, -32603);
+    assert_eq!(
+        unavailable.error.data.as_ref().unwrap()["coverage"],
+        "unavailable"
+    );
+    assert_eq!(
+        unavailable.error.data.as_ref().unwrap()["reason"],
+        "metadata_corrections_pending"
+    );
+    let pinned: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams {
+                expected_snapshot: Some(maximum.snapshot.source_watermark.clone()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(pinned.summary["inputTokens"], 198);
+    let mut finite = params.clone();
+    finite.expected_snapshot = None;
+    let finite: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: finite,
+        })
+        .await?;
+    assert_eq!(finite.summary["inputTokens"], 199);
+    drop(correction_guard);
     tokio::time::sleep(Duration::from_millis(5_100)).await;
     let id = server
         .send_request(
             "localUsage/summary",
-            Some(json!({"expectedSnapshot":global.snapshot.source_watermark})),
+            Some(json!({"expectedSnapshot":maximum.snapshot.source_watermark})),
         )
         .await?;
     let error = timeout(
@@ -722,9 +785,11 @@ async fn local_usage_summary_rejects_unsupported_versions_and_unstable_paginatio
         json!({"recordLimit":51}),
         json!({"worktreeKeys":[]}),
         json!({"includeReview":true}),
+        json!({"repositoryId":"repo-a","threadId":"thread-a"}),
         json!({"fromAt":2,"toAt":1}),
         json!({"recordLimit":1,"recordsAfter":{"observedAtMs":1,"id":"row"}}),
         json!({"expectedSnapshot":"different-snapshot"}),
+        json!({"workContextBindings":[{"schemaVersion":"must-not-escape","operationId":"op","capturedAtMs":0,"workContext":{}}]}),
     ] {
         let id = server
             .send_request("localUsage/summary", Some(params))
@@ -736,6 +801,7 @@ async fn local_usage_summary_rejects_unsupported_versions_and_unstable_paginatio
         .await??;
         assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
         assert!(!serde_json::to_string(&error)?.contains(home.path().to_str().unwrap()));
+        assert!(!serde_json::to_string(&error)?.contains("must-not-escape"));
     }
     let id = server
         .send_request(

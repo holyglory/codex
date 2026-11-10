@@ -14,6 +14,12 @@
           },
           "type": "array"
         },
+        "snapshotRetentionMs": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "storage": {
           "default": "",
           "type": "string"
@@ -29,7 +35,11 @@
         },
         "supportsWorkContextBindings": {
           "default": false,
-          "description": "False until the producer captures explicit work-context bindings.",
+          "description": "Accepts explicit read-only workContextBindings supplied on each request.",
+          "type": "boolean"
+        },
+        "supportsWorkstreamOutcomes": {
+          "default": false,
           "type": "boolean"
         },
         "version": {

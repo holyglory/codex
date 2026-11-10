@@ -5,23 +5,25 @@ The app-server exposes a read-only JSON-RPC method named exactly
 snapshot through `codex_usage::UsageReader`. It never opens or migrates a retired
 SQLite usage database, starts a rebuild, or requests an account credential.
 
-With no binding sidecar, `initialize.result.localUsageAccounting` advertises:
+`initialize.result.localUsageAccounting` advertises:
 
 ```json
 {
   "version": 1,
   "supportedVersions": [1],
-  "methods": ["localUsage/summary"],
+  "methods": ["localUsage/summary", "localUsage/repositoryIdentity"],
   "storage": "usage-v2",
-  "supportsWorkContextBindings": false
+  "supportsWorkContextBindings": true,
+  "supportsWorkstreamOutcomes": true,
+  "snapshotRetentionMs": 5000
 }
 ```
 
 Clients select `contractVersion: 1` on each request. Omission selects version 1;
 other versions fail with invalid params. This extension follows normal
 app-server initialization and transport authorization.
-`supportsWorkContextBindings` is true only when a valid optional sidecar is
-present at initialization. That flag does not claim every operation is bound.
+Explicit declarations can be supplied on each request without a sidecar. This
+capability does not claim every recorded operation is bound.
 
 ```json
 {
@@ -41,14 +43,24 @@ present at initialization. That flag does not claim every operation is bound.
 
 `accountId`, `repositoryId`, and `threadId` restrict recorded identities; combined
 filters intersect. With no identity filter, the summary is global. Times are UTC
-milliseconds, start inclusive and end exclusive. Omitted bounds mean all time.
+milliseconds, start inclusive and end exclusive. Supply both time bounds or
+neither. Unbounded summaries use precomputed metadata only: provider totals and
+performance dimensions are unavailable there, with empty `providerTokens` and
+explicit coverage. They never trigger a full-history performance query. Reviews
+and detail pages require finite `fromAtMs` and `toAtMs` bounds.
+Combined identity filters also require a finite range. If unpublished token
+corrections make the metadata fast path unsafe, an unbounded request returns a
+source-unavailable error (`-32603`, data reason `metadata_corrections_pending`,
+coverage `unavailable`); it does not infer a caller error or invent totals.
 `schemaVersion`, `repositoryKey`, `fromAt`, and `toAt` are accepted aliases for
 `contractVersion`, `repositoryId`, `fromAtMs`, and `toAtMs` respectively. Non-null
 `worktreeKeys` is rejected because this producer has no worktree-selection
 source. The legacy `includeUnassigned` flag has no effect without that selector.
-Non-null `workstreamId` is also recognized and rejected: complete workstream
-filtering is not supported. Consumers must mark that scoped summary unavailable;
-they must not treat the repository-wide response as a workstream summary.
+`workstreamId` selects only `review.outcomes`: totals and rows include that
+stream plus explicitly unattributed unknown-stream work. Known other streams
+are excluded. Repository `report`, native `summary`, and top-level review totals
+retain their repository scope. An outcome without a declared stream remains
+unattributed in a stream-filtered review.
 
 The result keeps the existing `generatedAt`, `report`, and `snapshot` envelope:
 
@@ -89,10 +101,12 @@ explicit producer ID. This method does not resolve raw filesystem paths.
 The reader includes a complete bounded journal tail or leaves it out as a whole
 and reports stale data with pending entries. Retention and missing facts remain
 visible in coverage. Provider total tokens are never inferred from token
-components. Cached input and reasoning output are subsets. Review execution
-interval sums appear as `report.measuredExecutionIntervalSumMs` and outcome
-effort, and must not be interpreted as elapsed wall time or active agent time.
-The review's wall-clock, delivery, and active-agent time fields remain unknown.
+components. Cached input and reasoning output are subsets. Execution interval
+sums appear only as `report.measuredExecutionIntervalSumMs` and must not be
+interpreted as elapsed wall time. Review/outcome `elapsedExecutionMs` remains
+unknown (`measured: 0`, `exact: null`, with missing interval counts), rather than
+claiming an interval sum is a wall-clock union. Delivery and active-agent time
+also remain unknown.
 The API omits prompts, command arguments, tool output,
 credentials, raw repository paths/remotes, and operating-system process IDs.
 Storage errors return a fixed message without private paths.
@@ -100,27 +114,42 @@ Storage errors return a fixed message without private paths.
 Detail pages are opt-in, with zero as the default and at most 50 rows per page;
 the complete encoded response is limited to 2 MiB. A continuation supplies its
 cursor and `expectedSnapshot` equal to the prior `snapshot.sourceWatermark`.
-If publication or capture changes that identity, the request fails and the
-client restarts pagination. The API does not keep a server-side query lease.
-Continuations repeat the original scope and time filters.
+The producer retains at most four actual immutable readers for up to five
+seconds, including captured tail records and compatibility declarations. Global,
+account, repository, and thread queries can reuse the same `expectedSnapshot`
+while publication/capture continues. The journal watermark is preserved. An
+expired or evicted view fails explicitly and the caller starts a new query.
+Omitting `expectedSnapshot` opens a fresh view. Each view also caches up to eight
+identical scoped responses within an 8 MiB byte bound for warm IPC retries.
+An idle cache-owned expiry timer releases the file pins; it does not perform
+capture, reviews, or work scheduling. Continuations repeat scope/time filters.
 
-An optional `usage-v2/work-contexts.jsonl` supplies explicit declarations. This
-read-only API never creates or edits it. Each line has exactly this versioned
-shape (snake_case aliases for these field names are accepted):
+`workContextBindings` is an optional request array, bounded to 256 declarations
+and 256 distinct contexts. Every entry has this strict versioned shape:
 
 ```json
-{"schemaVersion":1,"operationId":"recorded-operation-id","capturedAtMs":2000,"workContext":{"schemaVersion":1,"id":"context-one","repositoryId":"coordinator-repo","projectId":"project-one","workstreamId":"stream-one","outcomeId":"outcome-one"}}
+{"schemaVersion":1,"operationId":"recorded-operation-id","capturedAtMs":2000,"workContext":{"schemaVersion":1,"id":"C1","repositoryId":"coordinator-repo","nativeProjectId":"project-one","workstreamId":"stream-one","outcomeId":"outcome-one","threadId":"recorded-thread","turnId":"recorded-turn","experimentRef":"experiment-one@1"}}
 ```
 
-The context's repository/project/workstream/outcome IDs are declared external
-identities, not guessed translations of the producer's repository or thread ID.
+`nativeProjectId` is canonical; `projectId` remains a backward input alias.
+Snake-case aliases are also accepted. The context's `repositoryId` is the
+Coordinator authority repository ID; the summary filter is the separate producer
+repository key. The collector validates its authority scope before sending
+declarations. The producer validates recorded operation repository against the
+summary key, and checks supplied thread/turn against recorded facts when known.
+These repository namespaces are never equated. Contexts are declared external
+identities, not inferred translations of the producer's repository or thread ID.
 Context IDs must have one consistent definition, and an operation may have only
 one consistent binding. IDs allow ASCII letters, numbers, hyphens, underscores,
-periods, and colons, with a maximum length of 256. All schemas must be version 1,
+periods, and colons, with a maximum length of 256; `experimentRef` also permits
+`@`. All schemas must be version 1,
 capture times must be nonnegative, and unknown fields or conflicting duplicate
 bindings fail closed with a fixed error that omits private content and paths.
-The source is bounded to 512 KiB, 256 nonempty lines, and 50 contexts. Writers
-should publish complete files by atomic replacement.
+The endpoint never persists request declarations into canonical usage. Optional
+`usage-v2/work-contexts.jsonl` remains a compatibility input, using the same
+entry schema, bounded to 512 KiB and 256 nonempty lines. Only identical consistent
+declarations merge; conflicts fail closed and never overwrite either source.
+The API never creates/edits that file. Writers should use atomic replacement.
 
 The response joins declarations to actual scoped facts using only exact
 `operation_id` equality. It returns those `operationBindings` and `workContexts`,
@@ -128,15 +157,15 @@ and groups measured effort under `review.outcomes.rows` by declared outcome ID.
 An outcome row also carries its declared `workstreamId`. Contexts without an
 outcome ID, missing or retired operation facts, response-only token links, and
 operations without bindings stay unattributed. Binding declarations alone never
-create operations, tokens, time, or delivery receipts. With no sidecar, the
-binding arrays remain empty and all effort remains unattributed.
+create operations, tokens, time, or delivery receipts. With neither request
+bindings nor a compatibility source, arrays stay empty and effort unattributed.
 
-`report.workBindings` identifies the `explicit_sidecar` basis, bound/unknown
-operation counts, and a readable `sourceRevision`. That revision includes line
-count, latest capture time, a process revision counter, and session timestamp.
-Content hashing is private; changed bytes receive a new revision even when line
-counts and capture times are unchanged. The composite `snapshot.sourceWatermark`
-includes that revision, so sidecar changes invalidate continuations too. The
+`report.workBindings` identifies the declaration basis, bound/unknown operation
+counts, matched/unmatched declaration counts, and a readable source revision.
+Content hashes remain private. A retained view pins compatibility input; request
+declarations are an explicit overlay and are included in the response-cache key,
+not written into usage or guessed from a snapshot token. Fresh views observe
+later compatibility changes. The
 native `summary` remains the underlying storage reader's view; composite binding
 coverage belongs to `report.workBindings` and `review.outcomes`.
 
@@ -145,8 +174,21 @@ measured facts that could be explicitly joined. These are accounting coverage
 states, not proof of a delivered outcome. Missing measurements stay unknown.
 The retained source fixture is
 `codex-rs/app-server/tests/fixtures/local_usage/work-contexts.jsonl`; the RPC tests
-cover both the absent-source case and a bound outcome alongside unbound effort.
+cover compatibility input, request-only full contexts, scope filtering, exact
+identity conflicts, journal late facts, cache expiry, and isolated IPC latency.
 `codex-rs/app-server/tests/fixtures/local_usage/bound-summary.json` retains an
-actual app-server RPC response from the isolated test data: 120 measured tokens
-are explicitly bound to `outcome-one`, while 15 remain unattributed. Its capture
+actual app-server RPC response from isolated synthetic test data. Its capture
 and revision timestamps are test-run metadata, not production usage evidence.
+
+`localUsage/repositoryIdentity` accepts `{contractVersion: 1, path: <local absolute
+path>}` and uses the same read-only native identity helper as capture. It returns
+`{contractVersion: 1, source: "usage-v2", repositoryId: <opaque ID or null>,
+formatVersion: 3}`. The path is private input and never appears in response or
+error. Linked worktrees share the validated Git common-directory identity.
+
+For real cross-component acceptance, `CODEX_USAGE_API_FIXTURE_DIR` exports an
+isolated synthetic store without a sidecar, plus private `fixture-info.json`,
+`bound-summary.json`, and `latency.json`. `CODEX_USAGE_V2_FIXTURE_REPOSITORY`
+selects its authorized source repository path. Fixture timestamps are near the
+test run so live retention cannot retire them during acceptance. Copy this
+fixture into a new isolated home before starting a companion app-server.

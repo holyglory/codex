@@ -118,9 +118,17 @@ const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 
 fn deserialize_client_request(request: JSONRPCRequest) -> Result<ClientRequest, JSONRPCErrorError> {
     reject_obsolete_request_fields(&request)?;
-
-    ClientRequest::try_from(request)
-        .map_err(|err| invalid_request(format!("Invalid request: {err}")))
+    let local_usage = matches!(
+        request.method.as_str(),
+        "localUsage/summary" | "localUsage/repositoryIdentity"
+    );
+    ClientRequest::try_from(request).map_err(|err| {
+        if local_usage {
+            invalid_params("invalid local usage request schema")
+        } else {
+            invalid_request(format!("Invalid request: {err}"))
+        }
+    })
 }
 
 fn reject_obsolete_request_fields(request: &JSONRPCRequest) -> Result<(), JSONRPCErrorError> {
