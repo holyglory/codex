@@ -35,8 +35,22 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+#[derive(Clone, Copy)]
+enum LimitPhase {
+    Sampling,
+    PreTurn,
+    PostTurnGoal,
+}
+
+#[test_case::test_case(LimitPhase::Sampling; "sampling")]
+#[test_case::test_case(LimitPhase::PreTurn; "required pre turn compaction")]
+#[test_case::test_case(LimitPhase::PostTurnGoal; "post turn goal continuation")]
 #[tokio::test]
-async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Result<()> {
+async fn weekly_limit_continues_the_same_chat_turn_on_another_account(
+    phase: LimitPhase,
+) -> Result<()> {
+    let pre_turn = matches!(phase, LimitPhase::PreTurn);
+    let post_turn_goal = matches!(phase, LimitPhase::PostTurnGoal);
     let server = responses::start_mock_server().await;
     let home = TempDir::new()?;
     let fixture_home = TempDir::new()?;
@@ -83,7 +97,17 @@ async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Resul
             "cli_auth_credentials_store = \"file\"\nchatgpt_base_url = \"{}/backend-api\"",
             server.uri()
         ))
+        .with_root_config(if pre_turn {
+            "model_auto_compact_token_limit = 100000\nmodel_post_turn_compact_threshold_percent = 0"
+        } else if post_turn_goal {
+            "model_auto_compact_token_limit = 100000\nmodel_post_turn_compact_threshold_percent = 1"
+        } else {
+            ""
+        })
+        .enable_feature(Feature::Goals)
         .disable_feature(Feature::UseAgentIdentity)
+        .disable_feature(Feature::AsyncCompaction)
+        .disable_feature(Feature::EnableRequestCompression)
         .write(home.path())?;
 
     // Capacity can change after the pre-turn probe, while a chat is still running.
@@ -104,22 +128,76 @@ async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Resul
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .and(header("authorization", "Bearer alpha-access"))
-        .respond_with(ResponseTemplate::new(/*s*/ 429).set_body_json(json!({
-            "error": {"type": "usage_limit_reached", "plan_type": "pro",
-                "resets_at": 2000000000, "limit_window_minutes": 10080}
-        })))
-        .expect(/*r*/ 1)
+        .respond_with({
+            let requests = std::sync::atomic::AtomicUsize::new(0);
+            move |_: &wiremock::Request| {
+                let index = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if post_turn_goal && index == 0 {
+                    return responses::sse_response(responses::sse(vec![
+                        responses::ev_function_call("goal", "create_goal", "{\"objective\":\"Continue this work after a weekly limit, then complete the goal\"}"),
+                        responses::ev_completed("created-goal"),
+                    ]));
+                }
+                if post_turn_goal && index == 1 {
+                    return responses::sse_response(responses::sse(vec![
+                        responses::ev_assistant_message("progress", "Work continued"),
+                        responses::ev_completed_with_tokens("progress", /*total_tokens*/ 200_000),
+                    ]));
+                }
+                if pre_turn && index == 0 {
+                    return responses::sse_response(responses::sse(vec![
+                        responses::ev_assistant_message("seed", "Before compaction"),
+                        responses::ev_completed_with_tokens("seed", /*total_tokens*/ 200_000),
+                    ]));
+                }
+                ResponseTemplate::new(/*s*/ 429).set_body_json(json!({
+                    "error": {"type": "usage_limit_reached", "plan_type": "pro",
+                        "resets_at": 2000000000, "limit_window_minutes": 10080}
+                }))
+            }
+        })
+        .expect(/*r*/ if post_turn_goal { 3 } else if pre_turn { 2 } else { 1 })
         .mount(&server)
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .and(header("authorization", "Bearer beta-access"))
-        .respond_with(responses::sse_response(responses::sse(vec![
-            responses::ev_response_created("backup-response"),
-            responses::ev_assistant_message("backup-message", "Work continued"),
-            responses::ev_completed("backup-response"),
-        ])))
-        .expect(/*r*/ 2)
+        .respond_with({
+            let requests = std::sync::atomic::AtomicUsize::new(0);
+            move |request: &wiremock::Request| {
+                let is_compaction = request
+                    .body_json::<serde_json::Value>()
+                    .expect("request JSON")["input"]
+                    .as_array()
+                    .expect("request input")
+                    .iter()
+                    .any(|item| item["type"] == "compaction_trigger");
+                if is_compaction {
+                    return responses::sse_response(responses::sse(vec![
+                        json!({"type":"response.output_item.done", "item": {
+                        "type":"compaction", "encrypted_content":"retained history"}}),
+                        responses::ev_completed("compact"),
+                    ]));
+                }
+                if post_turn_goal && requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    return responses::sse_response(responses::sse(vec![
+                        responses::ev_function_call(
+                            "complete",
+                            "update_goal",
+                            "{\"status\":\"complete\"}",
+                        ),
+                        responses::ev_completed("completed-goal"),
+                    ]));
+                }
+                responses::sse_response(responses::sse(vec![
+                    responses::ev_response_created("backup-response"),
+                    responses::ev_assistant_message("backup-message", "Work continued"),
+                    responses::ev_completed("backup-response"),
+                ]))
+            }
+        })
+        .expect(/*r*/ if pre_turn || post_turn_goal { 3 } else { 2 })
         .mount(&server)
         .await;
 
@@ -133,13 +211,31 @@ async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Resul
         .start_thread(ThreadStartParams::default())
         .await?
         .thread;
+    if pre_turn {
+        let _: TurnStartResponse = app_server
+            .request(|request_id| ClientRequest::TurnStart {
+                request_id,
+                params: TurnStartParams {
+                    thread_id: thread.id.clone(),
+                    input: vec![UserInput::Text {
+                        text: "Seed the history".into(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..Default::default()
+                },
+            })
+            .await?;
+        let seeded: TurnCompletedNotification =
+            app_server.read_notification("turn/completed").await?;
+        assert_eq!(seeded.turn.status, TurnStatus::Completed);
+    }
     let TurnStartResponse { turn } = app_server
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
-                    text: "Continue my work".into(),
+                    text: if post_turn_goal { "Create the goal, continue this work after a weekly limit, then mark it complete" } else { "Continue my work" }.into(),
                     text_elements: Vec::new(),
                 }],
                 ..Default::default()
@@ -176,6 +272,36 @@ async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Resul
             .iter()
             .any(|method| method == "error")
     );
+    if post_turn_goal {
+        let continued: TurnCompletedNotification = timeout(
+            Duration::from_secs(/*secs*/ 30),
+            app_server.read_notification("turn/completed"),
+        )
+        .await??;
+        assert_eq!(
+            (
+                &continued.thread_id,
+                &continued.turn.status,
+                &continued.turn.error
+            ),
+            (&thread.id, &TurnStatus::Completed, &None)
+        );
+        assert_ne!(continued.turn.id, turn.id);
+        let request = app_server
+            .send_raw_request("thread/goal/get", Some(json!({"threadId":thread.id})))
+            .await?;
+        let goal: codex_app_server_protocol::ThreadGoalGetResponse =
+            app_server.read_response(request).await?;
+        assert_eq!(
+            goal.goal
+                .expect("active goal must continue to completion")
+                .status,
+            codex_app_server_protocol::ThreadGoalStatus::Complete
+        );
+        server.verify().await;
+        app_server.shutdown_gracefully().await?;
+        return Ok(());
+    }
     let TurnStartResponse { turn: next_turn } = app_server
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
@@ -220,14 +346,19 @@ async fn weekly_limit_continues_the_same_chat_turn_on_another_account() -> Resul
                 .map(str::to_string)
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let expected = if pre_turn {
+        vec!["alpha", "alpha", "beta", "beta", "beta"]
+    } else {
+        vec!["alpha", "beta", "beta"]
+    };
     assert_eq!(
         owners,
-        vec![
-            "Bearer alpha-access",
-            "Bearer beta-access",
-            "Bearer beta-access"
-        ]
+        expected
+            .iter()
+            .map(|alias| format!("Bearer {alias}-access"))
+            .collect::<Vec<_>>()
     );
+    server.verify().await;
     app_server.shutdown_gracefully().await?;
     Ok(())
 }
