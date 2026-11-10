@@ -123,7 +123,10 @@ fn bloom_routes_missing_hashes_without_opening_exact_run_pages() {
     let hint = crate::id_index_bloom::load(root, run).expect("valid optional hint");
     let missing = (0..4096)
         .map(|index| format!("absent-{index}"))
-        .find(|id| !hint.might_contain(id_hash(id)))
+        .find(|id| {
+            let hash = id_hash(id);
+            (run.min_hash..=run.max_hash).contains(&hash) && !hint.might_contain(hash)
+        })
         .expect("a definitely absent routing hash");
     let mut requested = entries
         .iter()
@@ -432,6 +435,30 @@ fn exact_lookup_scans_full_collision_groups_across_fence_boundaries() {
             Err(StorageError::InvalidData(message))
                 if message == "conflicting record-id facts at one sequence"
         ));
+
+        let mut legacy = conflicting_descriptor.clone();
+        for run in &mut legacy.runs {
+            run.bloom_file = None;
+        }
+        fs::rename(root.join("segments"), root.join("unavailable-segments"))
+            .expect("make all immutable files unavailable");
+        for descriptor in [conflicting_descriptor, legacy] {
+            assert_eq!(
+                lookup_ids_with_hash(root, &descriptor, &ids(&["before", "after"]), hash_id)
+                    .expect("hash bounds exclude runs without any file access"),
+                IdLookup {
+                    found: BTreeMap::new(),
+                    watermark: descriptor.watermark,
+                    complete_from_sequence: 1,
+                }
+            );
+            for id in ["collision-001", "tail"] {
+                assert!(
+                    lookup_ids_with_hash(root, &descriptor, &ids(&[id]), hash_id).is_err(),
+                    "inclusive bounds still require exact files for {id}"
+                );
+            }
+        }
     }
 }
 

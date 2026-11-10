@@ -42,14 +42,19 @@ pub(crate) fn lookup<'a, T: ExactIdEntry>(
         by_hash.entry(hash_id(id)).or_default().push(id);
     }
     for run in runs {
+        // The pinned descriptor already rules out hashes outside this run.
+        // Route those before opening even an optional on-disk hint.
+        let mut candidates = by_hash
+            .range(run.min_hash..=run.max_hash)
+            .map(|(hash, _)| *hash)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
         let bloom = crate::id_index_bloom::load(root, run);
         #[cfg(test)]
         profile.mark("bloom-read");
-        let candidates = by_hash
-            .keys()
-            .copied()
-            .filter(|hash| bloom.as_ref().is_none_or(|hint| hint.might_contain(*hash)))
-            .collect::<Vec<_>>();
+        candidates.retain(|hash| bloom.as_ref().is_none_or(|hint| hint.might_contain(*hash)));
         if candidates.is_empty() {
             continue;
         }

@@ -201,6 +201,25 @@ fn merge_filters_retired_sequence_before_selecting_same_id_and_rejects_live_dupl
     source.partitions[0].operation_count = 1;
     source.partitions[0].open_operations = 1;
     source.retired_operation_rows = 1;
+    let exact_index = operation_id_index::OperationIdIndex {
+        version: 1,
+        hash_version: crate::id_index::ID_HASH_VERSION,
+        watermark: source.watermark,
+        complete_from_sequence: 1,
+        runs: inputs.clone(),
+    };
+    let ids = BTreeSet::from(["repeat".into()]);
+    let partitions = source
+        .partitions
+        .iter()
+        .cloned()
+        .map(|partition| (partition.partition, partition))
+        .collect();
+    assert_eq!(
+        operation_id_index::find_addresses(root, &exact_index, &partitions, &ids)
+            .expect("exact lookup ignores the retired incarnation"),
+        BTreeMap::from([("repeat".into(), 3)])
+    );
     let mut job = Job::start(
         root,
         Arc::new(source.clone()),
@@ -227,6 +246,17 @@ fn merge_filters_retired_sequence_before_selecting_same_id_and_rejects_live_dupl
         (Some(entries[1].clone()), None)
     );
     source.partitions[0].operation_sequences = None;
+    let partitions = source
+        .partitions
+        .iter()
+        .cloned()
+        .map(|partition| (partition.partition, partition))
+        .collect();
+    assert!(matches!(
+        operation_id_index::find_addresses(root, &exact_index, &partitions, &ids),
+        Err(crate::StorageError::InvalidData(message))
+            if message == "conflicting current operation addresses"
+    ));
     let mut duplicate = Job::start(
         root,
         Arc::new(source),
@@ -308,6 +338,35 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
     ManifestStore::new(root.join("manifest.json"))
         .save(&manifest)
         .expect("install real cap fixture");
+    let mut late_start = UsageRecord::new_millis(
+        "cap-0:late-start",
+        /*observed_at_ms*/ now_ms + 1,
+        /*input_tokens*/ 0,
+        /*output_tokens*/ 0,
+    )
+    .with_operation("cap-0");
+    late_start.event = Some("tool_started".into());
+    late_start.started_at_ms = Some(now_ms);
+    journal
+        .append_record(late_start)
+        .expect("late start capture");
+    let updated = publisher
+        .publish_batch(JournalReadLimits {
+            max_bytes: 64 * 1024,
+            max_entries: 16,
+        })
+        .expect("existing operation updates still publish at the run cap");
+    let updated_review = review_projection::load_review_projection(root, &updated)
+        .expect("updated metadata")
+        .expect("updated review");
+    let updated_index = operation_id_index::load(root, &updated_review)
+        .expect("updated index")
+        .expect("updated exact coverage");
+    assert_eq!(
+        (updated.watermark, updated_index.runs),
+        (manifest.watermark + 1, index.runs)
+    );
+    manifest = updated;
     let pinned = UsageReader::open_at(root).expect("snapshot at cap");
     let mut late = UsageRecord::new_millis(
         "after-cap",
@@ -478,7 +537,7 @@ fn run_cap_preserves_capture_and_snapshot_until_bounded_maintenance_unblocks_pub
             .expect("exact resumed addresses"),
         BTreeMap::from([
             ("cap-0".into(), 1),
-            ("after-cap".into(), crate::id_index::MAX_ID_RUNS as u64 + 1)
+            ("after-cap".into(), manifest.watermark + 1)
         ])
     );
     assert_eq!(pinned.manifest(), &manifest);
