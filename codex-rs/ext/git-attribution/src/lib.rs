@@ -46,11 +46,18 @@ impl ContextContributor for GitAttributionExtension {
                 let policy = match cached_attribution_policy(
                     input.thread_store,
                     input.turn_store,
+                    &auth_manager,
                     current_auth_generation,
                 ) {
                     Some(policy) => policy,
-                    None if retry_deferred(input.thread_store, current_auth_generation) => {
+                    None if retry_deferred(
+                        input.thread_store,
+                        &auth_manager,
+                        current_auth_generation,
+                    ) =>
+                    {
                         GitAttributionPolicy {
+                            auth_manager: Arc::downgrade(&auth_manager),
                             auth_generation: current_auth_generation,
                             enabled: false,
                         }
@@ -69,6 +76,7 @@ impl ContextContributor for GitAttributionExtension {
                             }
                             Ok(None) => {
                                 let policy = GitAttributionPolicy {
+                                    auth_manager: Arc::downgrade(&auth_manager),
                                     auth_generation: current_auth_generation,
                                     enabled: false,
                                 };
@@ -79,11 +87,13 @@ impl ContextContributor for GitAttributionExtension {
                                 let auth_generation = auth_generation(auth_manager.as_ref());
                                 if auth_generation == current_auth_generation {
                                     input.thread_store.insert(GitAttributionRetry {
+                                        auth_manager: Arc::downgrade(&auth_manager),
                                         auth_generation,
                                         retry_at: Instant::now() + POLICY_RETRY_DELAY,
                                     });
                                 }
                                 GitAttributionPolicy {
+                                    auth_manager: Arc::downgrade(&auth_manager),
                                     auth_generation: current_auth_generation,
                                     enabled: false,
                                 }

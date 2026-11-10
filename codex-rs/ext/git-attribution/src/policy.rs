@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Weak;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,35 +11,48 @@ use tokio::time::timeout;
 
 #[derive(Clone, Debug)]
 pub(super) struct GitAttributionPolicy {
+    pub(super) auth_manager: Weak<AuthManager>,
     pub(super) auth_generation: u64,
     pub(super) enabled: bool,
 }
 
 pub(super) struct GitAttributionRetry {
+    pub(super) auth_manager: Weak<AuthManager>,
     pub(super) auth_generation: u64,
     pub(super) retry_at: Instant,
 }
 
-pub(super) fn retry_deferred(thread_store: &ExtensionData, auth_generation: u64) -> bool {
+pub(super) fn retry_deferred(
+    thread_store: &ExtensionData,
+    auth_manager: &Arc<AuthManager>,
+    auth_generation: u64,
+) -> bool {
     thread_store
         .get::<GitAttributionRetry>()
         .is_some_and(|retry| {
-            retry.auth_generation == auth_generation && retry.retry_at > Instant::now()
+            retry.auth_generation == auth_generation
+                && same_auth_manager(&retry.auth_manager, auth_manager)
+                && retry.retry_at > Instant::now()
         })
 }
 
 pub(super) fn cached_attribution_policy(
     thread_store: &ExtensionData,
     turn_store: &ExtensionData,
+    auth_manager: &Arc<AuthManager>,
     auth_generation: u64,
 ) -> Option<GitAttributionPolicy> {
     thread_store
         .get::<GitAttributionPolicy>()
-        .filter(|policy| policy.auth_generation == auth_generation)
+        .filter(|policy| {
+            policy.auth_generation == auth_generation
+                && same_auth_manager(&policy.auth_manager, auth_manager)
+        })
         .or_else(|| {
-            turn_store
-                .get::<GitAttributionPolicy>()
-                .filter(|policy| policy.auth_generation == auth_generation)
+            turn_store.get::<GitAttributionPolicy>().filter(|policy| {
+                policy.auth_generation == auth_generation
+                    && same_auth_manager(&policy.auth_manager, auth_manager)
+            })
         })
         .map(|policy| policy.as_ref().clone())
 }
@@ -93,6 +107,7 @@ pub(super) async fn resolve_attribution_policy(
                 continue;
             }
             return enabled.map(|enabled| GitAttributionPolicy {
+                auth_manager: Arc::downgrade(auth_manager),
                 auth_generation: auth_generation_at_start,
                 enabled,
             });
@@ -103,4 +118,10 @@ pub(super) async fn resolve_attribution_policy(
 
 pub(super) fn auth_generation(auth_manager: &AuthManager) -> u64 {
     *auth_manager.auth_change_receiver().borrow()
+}
+
+fn same_auth_manager(cached: &Weak<AuthManager>, current: &Arc<AuthManager>) -> bool {
+    cached
+        .upgrade()
+        .is_some_and(|owner| Arc::ptr_eq(&owner, current))
 }
