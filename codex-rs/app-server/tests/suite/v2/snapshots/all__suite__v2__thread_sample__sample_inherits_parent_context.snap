@@ -16,14 +16,15 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=dbb8e3a8d2cf8bec):
-        - namespace/functions; hash=9efe1c7382c4c2dc
+00:additional_tools/developer (3; hash=4b50edba86b0a299):
+        - namespace/functions; hash=f773ad4c14a8f49b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
           - function/usage_stats
           - function/usage_activity
+          - function/usage_work
           - function/account_management
           - function/view_image
           - function/get_goal
@@ -80,14 +81,15 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=dbb8e3a8d2cf8bec):
-        - namespace/functions; hash=9efe1c7382c4c2dc
+00:additional_tools/developer (3; hash=4b50edba86b0a299):
+        - namespace/functions; hash=f773ad4c14a8f49b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
           - function/usage_stats
           - function/usage_activity
+          - function/usage_work
           - function/account_management
           - function/view_image
           - function/get_goal
@@ -143,14 +145,15 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=dbb8e3a8d2cf8bec):
-        - namespace/functions; hash=9efe1c7382c4c2dc
+00:additional_tools/developer (3; hash=4b50edba86b0a299):
+        - namespace/functions; hash=f773ad4c14a8f49b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
           - function/usage_stats
           - function/usage_activity
+          - function/usage_work
           - function/account_management
           - function/view_image
           - function/get_goal

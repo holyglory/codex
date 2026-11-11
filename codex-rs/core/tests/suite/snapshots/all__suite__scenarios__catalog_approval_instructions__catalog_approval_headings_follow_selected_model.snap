@@ -16,14 +16,15 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=23df2f41ec1551b8):
-        - namespace/functions; hash=2908a4f93c20076e
+00:additional_tools/developer (2; hash=21870ae2b82e2e2d):
+        - namespace/functions; hash=64fd0b0ca9bdfa33
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
           - function/usage_stats
           - function/usage_activity
+          - function/usage_work
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
@@ -67,14 +68,15 @@ Settings:
 Settings: relative to window 1
   model: "catalog-approval-headings-b"
 -- request 2 (turn) --
-00:additional_tools/developer (2; hash=23df2f41ec1551b8):
-        - namespace/functions; hash=2908a4f93c20076e
+00:additional_tools/developer (2; hash=21870ae2b82e2e2d):
+        - namespace/functions; hash=64fd0b0ca9bdfa33
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
           - function/usage_stats
           - function/usage_activity
+          - function/usage_work
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f

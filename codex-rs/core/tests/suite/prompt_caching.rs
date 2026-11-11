@@ -275,6 +275,7 @@ async fn prompt_tools_are_consistent_across_requests(
         "request_user_input",
         "usage_stats",
         "usage_activity",
+        "usage_work",
         "account_management",
         "apply_patch",
         "view_image",

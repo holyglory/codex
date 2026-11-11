@@ -15,7 +15,7 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (14; hash=4612d2a51c3cebf5):
+  tools (15; hash=93b10bfc02efec4a):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
     - function/list_mcp_resources: Lists resources provided by MCP servers. Resources allow servers to share data that provides cont...; args=[cursor, server]; hash=6792edaff13561bd
@@ -24,6 +24,7 @@ Settings:
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/usage_stats: Read the private, content-free local usage collector. Summaries retain totals and paginate detail...; args=[account, action, agent_id, cursor_id, cursor_sort_value, detail, from_at_ms, include_descendants, limit, outcome_cursor, outcome_limit, repository, root_thread_id, scope, thread_id, to_at_ms]; hash=3898fa7bfd64d957
     - function/usage_activity: Declare the category for upcoming work or append an enum-only correction to stored usage. Use set...; args=[action, activity, phase, relation, target_id]; hash=e07840f96593a0c5
+    - function/usage_work: Declare the project, workstream and outcome for this thread only when its job changes. Use status...; args=[action, expected_revision, native_project_id, outcome_id, workstream_id]; hash=912e936e06653d6e
     - function/account_management: Manage existing local account profiles and inspect current service limits. Use list before mutati...; args=[account, action, expected_generation, limit, mode, new_alias, offset, priority, refresh_service_usage]; hash=f51496ac6a2b4646
     - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
@@ -144,7 +145,7 @@ Settings:
 
 ## Window 2 (after request 1)
 Settings: relative to window 1
-  tools (14; hash=8f91a5944b345b68):
+  tools (15; hash=90fa506a79cb0e09):
     ~ web_search; hash=e214d4db1bc49e89
 -- request 2 (turn) --
 00:message/developer:

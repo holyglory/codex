@@ -7,8 +7,8 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=42d0a12b38889259):
-        - namespace/functions; hash=73c4251d48c8981b
+00:additional_tools/developer (3; hash=796de269839242ec):
+        - namespace/functions; hash=f9395677ea925eda
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -43,8 +43,8 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 2 (after request 1: input diverged at item 06)
 -- request 2 (turn) --
-00:additional_tools/developer (3; hash=42d0a12b38889259):
-        - namespace/functions; hash=73c4251d48c8981b
+00:additional_tools/developer (3; hash=796de269839242ec):
+        - namespace/functions; hash=f9395677ea925eda
           - custom/exec
           - function/wait
           - function/request_user_input
