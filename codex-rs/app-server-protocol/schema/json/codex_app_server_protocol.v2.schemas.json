@@ -11120,7 +11120,6 @@
           ]
         },
         "workContextBindings": {
-          "default": null,
           "description": "Explicit authority declarations; at most 256, never persisted by this RPC.",
           "items": {
             "$ref": "#/definitions/LocalUsageWorkContextBinding"
@@ -11139,7 +11138,6 @@
           ]
         },
         "worktreeKeys": {
-          "default": null,
           "description": "Reserved compatibility selector; non-null is rejected until captured.",
           "items": {
             "type": "string"

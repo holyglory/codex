@@ -2299,6 +2299,88 @@ class LocalShellStatus(Enum):
     incomplete = "incomplete"
 
 
+class LocalUsageCursor(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: str
+    observed_at_ms: Annotated[int, Field(alias="observedAtMs")]
+
+
+class LocalUsageOperationBinding(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    operation_id: Annotated[str, Field(alias="operationId")]
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    work_context_id: Annotated[str, Field(alias="workContextId")]
+
+
+class LocalUsageRepositoryIdentityParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    contract_version: Annotated[int | None, Field(alias="contractVersion", ge=0)] = None
+    path: Annotated[
+        str, Field(description="Private local input; never echoed in the response or error.")
+    ]
+
+
+class LocalUsageRepositoryIdentityResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    contract_version: Annotated[int, Field(alias="contractVersion", ge=0)]
+    format_version: Annotated[int, Field(alias="formatVersion", ge=0)]
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    source: str
+
+
+class LocalUsageSnapshot(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    freshness: str
+    generated_at: Annotated[int, Field(alias="generatedAt", ge=0)]
+    generation: Annotated[int, Field(ge=0)]
+    journal_watermark: Annotated[int, Field(alias="journalWatermark", ge=0)]
+    pending_corrections: Annotated[int, Field(alias="pendingCorrections", ge=0)]
+    pending_entries: Annotated[int, Field(alias="pendingEntries", ge=0)]
+    refresh_id: Annotated[str | None, Field(alias="refreshId")] = None
+    source_watermark: Annotated[str, Field(alias="sourceWatermark")]
+    updated_at_ms: Annotated[int, Field(alias="updatedAtMs")]
+    watermark: Annotated[int, Field(ge=0)]
+    watermark_at_ms: Annotated[int, Field(alias="watermarkAtMs")]
+
+
+class LocalUsageWorkContext(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    experiment_ref: Annotated[str | None, Field(alias="experimentRef")] = None
+    id: str
+    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    turn_id: Annotated[str | None, Field(alias="turnId")] = None
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageWorkContextBinding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    operation_id: Annotated[str, Field(alias="operationId")]
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    work_context: Annotated[LocalUsageWorkContext, Field(alias="workContext")]
+
+
 class ApiKeyLoginAccountParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7910,6 +7992,18 @@ class ModelListRequest(BaseModel):
     params: ModelListParams
 
 
+class LocalUsageRepositoryIdentityRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/repositoryIdentity"],
+        Field(title="LocalUsage/repositoryIdentityRequestMethod"),
+    ]
+    params: LocalUsageRepositoryIdentityParams
+
+
 class AccountGatewayOAuthReadRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9129,6 +9223,95 @@ class ListMcpServerStatusParams(BaseModel):
         ),
     ] = None
     thread_id: Annotated[str | None, Field(alias="threadId")] = None
+
+
+class LocalUsageSummaryParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str | None, Field(alias="accountId")] = None
+    contract_version: Annotated[
+        int | None,
+        Field(
+            alias="contractVersion",
+            description="Omission selects version 1; unsupported versions are rejected.",
+            ge=0,
+        ),
+    ] = None
+    expected_snapshot: Annotated[
+        str | None,
+        Field(
+            alias="expectedSnapshot",
+            description="Required with a continuation, so paging never silently mixes snapshots.",
+        ),
+    ] = None
+    from_at_ms: Annotated[int | None, Field(alias="fromAtMs")] = None
+    include_review: Annotated[bool | None, Field(alias="includeReview")] = False
+    include_unassigned: Annotated[
+        bool | None,
+        Field(
+            alias="includeUnassigned",
+            description="Compatibility flag, meaningful only alongside a worktree selector.",
+        ),
+    ] = False
+    operation_limit: Annotated[int | None, Field(alias="operationLimit", ge=0)] = 0
+    operations_after: Annotated[LocalUsageCursor | None, Field(alias="operationsAfter")] = None
+    record_limit: Annotated[
+        int | None,
+        Field(
+            alias="recordLimit",
+            description="Zero/omission excludes detail; a requested page is limited to 50 rows.",
+            ge=0,
+        ),
+    ] = 0
+    records_after: Annotated[LocalUsageCursor | None, Field(alias="recordsAfter")] = None
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    to_at_ms: Annotated[int | None, Field(alias="toAtMs")] = None
+    work_context_bindings: Annotated[
+        list[LocalUsageWorkContextBinding] | None,
+        Field(
+            alias="workContextBindings",
+            description="Explicit authority declarations; at most 256, never persisted by this RPC.",
+        ),
+    ] = None
+    workstream_id: Annotated[
+        str | None,
+        Field(
+            alias="workstreamId",
+            description="Select outcome accounting only. Repository report/totals retain scope.",
+        ),
+    ] = None
+    worktree_keys: Annotated[
+        list[str] | None,
+        Field(
+            alias="worktreeKeys",
+            description="Reserved compatibility selector; non-null is rejected until captured.",
+        ),
+    ] = None
+
+
+class LocalUsageSummaryResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    contract_version: Annotated[int, Field(alias="contractVersion", ge=0)]
+    generated_at: Annotated[int, Field(alias="generatedAt", ge=0)]
+    next_operations_cursor: Annotated[
+        LocalUsageCursor | None, Field(alias="nextOperationsCursor")
+    ] = None
+    next_records_cursor: Annotated[LocalUsageCursor | None, Field(alias="nextRecordsCursor")] = None
+    observations: list[Any] | None = None
+    operation_bindings: Annotated[
+        list[LocalUsageOperationBinding], Field(alias="operationBindings")
+    ]
+    operations: list[Any] | None = None
+    report: Any
+    review: Any | None = None
+    snapshot: LocalUsageSnapshot
+    source: str
+    summary: Any
+    work_contexts: Annotated[list[LocalUsageWorkContext], Field(alias="workContexts")]
 
 
 class ChatgptLoginAccountParams(BaseModel):
@@ -11409,6 +11592,15 @@ class ReviewStartRequest(BaseModel):
     params: ReviewStartParams
 
 
+class LocalUsageSummaryRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["localUsage/summary"], Field(title="LocalUsage/summaryRequestMethod")]
+    params: LocalUsageSummaryParams
+
+
 class McpServerStatusListRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13476,6 +13668,8 @@ class ClientRequest(
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
+        | LocalUsageSummaryRequest
+        | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
         | AccountGatewayOAuthCancelRequest
@@ -13585,6 +13779,8 @@ class ClientRequest(
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
+        | LocalUsageSummaryRequest
+        | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
         | AccountGatewayOAuthCancelRequest

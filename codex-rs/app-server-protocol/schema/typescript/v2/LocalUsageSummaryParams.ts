@@ -11,19 +11,19 @@ export type LocalUsageSummaryParams = {
 /**
  * Omission selects version 1; unsupported versions are rejected.
  */
-contractVersion: number | null, fromAtMs: bigint | null, toAtMs: bigint | null, accountId: string | null, repositoryId: string | null, threadId: string | null,
+contractVersion?: number | null, fromAtMs?: bigint | null, toAtMs?: bigint | null, accountId?: string | null, repositoryId?: string | null, threadId?: string | null,
 /**
  * Select outcome accounting only. Repository report/totals retain scope.
  */
-workstreamId: string | null,
+workstreamId?: string | null,
 /**
  * Explicit authority declarations; at most 256, never persisted by this RPC.
  */
-workContextBindings: Array<LocalUsageWorkContextBinding> | null,
+workContextBindings?: Array<LocalUsageWorkContextBinding> | null,
 /**
  * Reserved compatibility selector; non-null is rejected until captured.
  */
-worktreeKeys: Array<string> | null,
+worktreeKeys?: Array<string> | null,
 /**
  * Compatibility flag, meaningful only alongside a worktree selector.
  */
@@ -31,8 +31,8 @@ includeUnassigned: boolean, includeReview: boolean,
 /**
  * Zero/omission excludes detail; a requested page is limited to 50 rows.
  */
-recordLimit: number, operationLimit: number, recordsAfter: LocalUsageCursor | null, operationsAfter: LocalUsageCursor | null,
+recordLimit: number, operationLimit: number, recordsAfter?: LocalUsageCursor | null, operationsAfter?: LocalUsageCursor | null,
 /**
  * Required with a continuation, so paging never silently mixes snapshots.
  */
-expectedSnapshot: string | null, };
+expectedSnapshot?: string | null, };
