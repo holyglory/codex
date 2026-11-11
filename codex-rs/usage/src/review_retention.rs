@@ -94,8 +94,20 @@ impl ReviewRetentionJob {
         {
             return Ok(false);
         }
+        let coverage = crate::review_projection::work_assignment_coverage_sequence(
+            &self.root,
+            &self.prepared,
+        )?;
         store.save(&self.prepared)?;
-        Ok(self.progress)
+        let root = self.root.clone();
+        let progress = self.progress;
+        drop(journal_lock);
+        drop(lock);
+        drop(self._pin);
+        let pruned = coverage
+            .and_then(|sequence| crate::work_binding_store::prune_before(&root, sequence).ok())
+            .unwrap_or(false);
+        Ok(progress || pruned)
     }
 }
 
@@ -124,6 +136,16 @@ fn retire(
         return Ok(false);
     };
     let original = descriptor.clone();
+    if descriptor.work_assignment_coverage_sequence.is_none()
+        && descriptor.work_assignment_pending_partitions.is_empty()
+    {
+        descriptor.work_assignment_pending_partitions.extend(
+            descriptor
+                .partitions
+                .iter()
+                .map(|partition| partition.partition),
+        );
+    }
     if descriptor.retention_scan_remaining == 0 {
         descriptor.retention_scan_offset = 0;
         descriptor.retention_scan_remaining = descriptor
@@ -158,6 +180,8 @@ fn retire(
     };
     let mut retired_operations = 0_u64;
     let mut retired_operation_ids = BTreeSet::new();
+    let mut assignment_ready = true;
+    let mut assignment_changed = false;
     if let Some(partition) = descriptor.partitions.get(index).cloned() {
         let source = parquet_source(root, std::slice::from_ref(&partition.file))?;
         let mut rows = query_rows::<ReviewOperation>(
@@ -165,97 +189,130 @@ fn retire(
             &format!("SELECT * FROM {source}"),
             REVIEW_PARTITION_SIZE as usize,
         )?;
-        let expired = |row: &ReviewOperation| {
-            row.terminal_observed
-                && (row
-                    .ended_at_ms
-                    .or(row.started_at_ms)
-                    .unwrap_or(row.observed_at_ms)
-                    < cutoff
-                    || row
-                        .thread_id
-                        .as_deref()
-                        .is_some_and(|id| inactive_threads.contains(id)))
-        };
-        let candidates = rows
-            .iter()
-            .filter(|row| expired(row))
-            .cloned()
-            .collect::<Vec<_>>();
-        let referenced = crate::review_aggregate::referenced_operations(
-            root,
-            &connection,
-            &descriptor,
-            &candidates,
-        )?;
-        let mut retired = Vec::new();
-        rows.retain(|row| {
-            let retire = expired(row) && !referenced.contains(&row.operation_id);
-            if retire {
-                retired_operation_ids.insert(row.operation_id.clone());
-                retired.push(row.clone());
+        if descriptor
+            .work_assignment_pending_partitions
+            .contains(&partition.partition)
+        {
+            let before = rows.clone();
+            match crate::assign_work_dimensions(root, &mut rows, &[]) {
+                crate::WorkAssignmentCoverage::Complete => {
+                    descriptor
+                        .work_assignment_pending_partitions
+                        .remove(&partition.partition);
+                    assignment_changed = rows != before;
+                }
+                crate::WorkAssignmentCoverage::Unavailable => {
+                    assignment_ready = false;
+                }
             }
-            !retire
-        });
-        retired_operations = retired_operation_ids.len() as u64;
-        if retired_operations != 0 {
-            crate::review_aggregate::retain_operations(
+            if descriptor.work_assignment_pending_partitions.is_empty() {
+                descriptor.work_assignment_coverage_sequence = Some(
+                    descriptor
+                        .work_assignment_coverage_sequence
+                        .unwrap_or_default()
+                        .max(descriptor.watermark.sequence),
+                );
+            }
+        }
+        if assignment_ready {
+            let assignment_partition = partition.partition;
+            let expired = |row: &ReviewOperation| {
+                row.terminal_observed
+                    && (row
+                        .ended_at_ms
+                        .or(row.started_at_ms)
+                        .unwrap_or(row.observed_at_ms)
+                        < cutoff
+                        || row
+                            .thread_id
+                            .as_deref()
+                            .is_some_and(|id| inactive_threads.contains(id)))
+            };
+            let candidates = rows
+                .iter()
+                .filter(|row| expired(row))
+                .cloned()
+                .collect::<Vec<_>>();
+            let referenced = crate::review_aggregate::referenced_operations(
                 root,
                 &connection,
-                &mut descriptor,
-                &retired,
-                &inactive,
-                stamp,
+                &descriptor,
+                &candidates,
             )?;
-            if rows.is_empty() {
-                descriptor.partitions.remove(index);
-                for partitions in descriptor.dimension_partitions.values_mut() {
-                    partitions.retain(|value| *value != partition.partition);
+            let mut retired = Vec::new();
+            rows.retain(|row| {
+                let retire = expired(row) && !referenced.contains(&row.operation_id);
+                if retire {
+                    retired_operation_ids.insert(row.operation_id.clone());
+                    retired.push(row.clone());
                 }
-            } else {
-                let mut retained = partition;
-                retained.file = format!("review-operation-retained-{stamp}.parquet");
-                retained.operation_index_file =
-                    format!("review-operation-index-retained-{stamp}.parquet");
-                retained.membership_file = format!("review-membership-retained-{stamp}.parquet");
-                write_operation_rows(root, &retained.file, &rows)?;
-                let source = parquet_source(root, std::slice::from_ref(&retained.file))?;
-                write_query(
+                !retire
+            });
+            retired_operations = retired_operation_ids.len() as u64;
+            if retired_operations != 0 {
+                crate::review_aggregate::retain_operations(
+                    root,
                     &connection,
-                    root,
-                    &retained.operation_index_file,
-                    &format!(
-                        "SELECT operation_id, first_sequence FROM {source} ORDER BY operation_id"
-                    ),
+                    &mut descriptor,
+                    &retired,
+                    &inactive,
+                    stamp,
                 )?;
-                retained.bounds = write_membership(
-                    root,
-                    &retained.membership_file,
-                    &retained.file,
-                    rows.iter().map(|row| IndexedInterval {
-                        account_id: row.account_id.as_deref(),
-                        thread_id: row.thread_id.as_deref(),
-                        repository_id: row.repository_id.as_deref(),
-                        model: row.model.as_deref(),
-                        start: row.started_at_ms,
-                        end: row.ended_at_ms,
-                    }),
-                )?;
-                retained.operation_count = rows.len() as u32;
-                retained.open_operations =
-                    rows.iter().filter(|row| !row.terminal_observed).count() as u32;
-                retained.operation_id_bloom = operation_bloom(&rows);
-                retained.operation_sequences =
-                    Some(crate::operation_id_index::live_sequences(&rows));
-                descriptor.partitions[index] = retained;
             }
-            // Per-partition memberships now name the rewritten file. The old
-            // cumulative index cannot safely route queries to it.
-            descriptor.membership_index_file = None;
+            if retired_operations != 0 || assignment_changed {
+                if rows.is_empty() {
+                    descriptor.partitions.remove(index);
+                    for partitions in descriptor.dimension_partitions.values_mut() {
+                        partitions.retain(|value| *value != assignment_partition);
+                    }
+                } else {
+                    let mut retained = partition;
+                    retained.file = format!("review-operation-retained-{stamp}.parquet");
+                    retained.operation_index_file =
+                        format!("review-operation-index-retained-{stamp}.parquet");
+                    retained.membership_file =
+                        format!("review-membership-retained-{stamp}.parquet");
+                    write_operation_rows(root, &retained.file, &rows)?;
+                    let source = parquet_source(root, std::slice::from_ref(&retained.file))?;
+                    write_query(
+                        &connection,
+                        root,
+                        &retained.operation_index_file,
+                        &format!(
+                            "SELECT operation_id, first_sequence FROM {source} ORDER BY operation_id"
+                        ),
+                    )?;
+                    retained.bounds = write_membership(
+                        root,
+                        &retained.membership_file,
+                        &retained.file,
+                        rows.iter().map(|row| IndexedInterval {
+                            account_id: row.account_id.as_deref(),
+                            thread_id: row.thread_id.as_deref(),
+                            repository_id: row.repository_id.as_deref(),
+                            model: row.model.as_deref(),
+                            start: row.started_at_ms,
+                            end: row.ended_at_ms,
+                        }),
+                    )?;
+                    retained.operation_count = rows.len() as u32;
+                    retained.open_operations =
+                        rows.iter().filter(|row| !row.terminal_observed).count() as u32;
+                    retained.operation_id_bloom = operation_bloom(&rows);
+                    retained.operation_sequences =
+                        Some(crate::operation_id_index::live_sequences(&rows));
+                    descriptor.partitions[index] = retained;
+                }
+                // Per-partition memberships now name the rewritten file. The old
+                // cumulative index cannot safely route queries to it.
+                descriptor.membership_index_file = None;
+            }
         }
     }
     let mut retired_contributions = 0_u64;
-    if let Some(fragment) = descriptor.contribution_fragments.get(index).cloned() {
+    if assignment_ready
+        && let Some(fragment) = descriptor.contribution_fragments.get(index).cloned()
+    {
         let previous_file = fragment.file.clone();
         let source = format!(
             "({})",
@@ -379,7 +436,7 @@ fn retire(
         }
     }
     let mut retired_classifications = 0_u64;
-    if let Some(file) = descriptor.classification_files.get(index).cloned() {
+    if assignment_ready && let Some(file) = descriptor.classification_files.get(index).cloned() {
         let source = parquet_source(root, std::slice::from_ref(&file))?;
         let indexes = descriptor
             .partitions
@@ -435,7 +492,7 @@ fn retire(
         .cloned()
         .collect::<Vec<_>>();
     let mut merged = false;
-    if !inputs.is_empty() {
+    if assignment_ready && !inputs.is_empty() {
         let source = format!(
             "({})",
             crate::reader_query::parquet_source(
@@ -464,13 +521,15 @@ fn retire(
             merged = true;
         }
     }
-    merged |= crate::review_aggregate::merge_operation_rollups(
-        root,
-        &connection,
-        &mut descriptor,
-        &inactive,
-        stamp,
-    )?;
+    if assignment_ready {
+        merged |= crate::review_aggregate::merge_operation_rollups(
+            root,
+            &connection,
+            &mut descriptor,
+            &inactive,
+            stamp,
+        )?;
+    }
     descriptor.review_retention_cutoff_at_ms = Some(cutoff);
     descriptor.retired_operation_rows = descriptor
         .retired_operation_rows
