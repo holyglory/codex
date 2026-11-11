@@ -147,7 +147,14 @@ impl Resolver<'_> {
                 self.unavailable = true;
                 return None;
             }
-            let binding = self.lookup.as_ref()?.lookup(thread,row.first).ok()?;
+            let binding = match self.lookup.as_ref()?.lookup(thread,row.first) {
+                Ok(binding) => binding,
+                Err(_) => {
+                    self.unavailable = true;
+                    self.binding_unavailable = true;
+                    return None;
+                }
+            };
             binding.and_then(|binding| {
                 let update = &binding.update;
                 update.native_project_id.as_ref().map(|project| Assignment {
