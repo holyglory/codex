@@ -451,7 +451,22 @@ pub(crate) fn append(
 }
 
 pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBindingTransition>> {
-    if read_active(root)?.is_some() {
+    if let Some(active) = read_active(root)? {
+        // A durable append can precede the current/index checkpoint. Ordinary
+        // reads compare only bounded metadata; replay the active page only
+        // when its bytes differ, after rechecking under the writer lock.
+        let _events = if fs::metadata(page_path(root, &active.file)?)?.len() != active.bytes {
+            let events = storage_file::open_read_write(&root.join("events.lock"))?;
+            events.lock()?;
+            let active = read_active(root)?
+                .ok_or_else(|| invalid("work binding active page missing during recovery"))?;
+            if fs::metadata(page_path(root, &active.file)?)?.len() != active.bytes {
+                recover_active(root, &active)?;
+            }
+            Some(events)
+        } else {
+            None
+        };
         if let Some(current) = crate::work_binding_index::read_current(root, thread_id)? {
             return Ok(Some(current));
         }
@@ -587,7 +602,7 @@ fn write_current(root: &Path, transition: &WorkBindingTransition) -> Result<()> 
 
 fn write_current_if_newer(root: &Path, transition: &WorkBindingTransition) -> Result<()> {
     if crate::work_binding_index::read_current(root, &transition.update.thread_id)?.is_some_and(
-        |current| current.effective_capture_sequence >= transition.effective_capture_sequence,
+        |current| current.update.transition_sequence >= transition.update.transition_sequence,
     ) {
         return Ok(());
     }

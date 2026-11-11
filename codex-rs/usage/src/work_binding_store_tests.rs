@@ -122,6 +122,51 @@ fn rotation_accepts_repeated_capture_boundaries_without_usage_facts() -> crate::
         300
     );
     assert_eq!(read_work_binding_transitions(home.path())?.len(), 300);
+    for (revision, outcome) in [(301, Some("b")), (302, None)] {
+        let active = read_active(&root)?.expect("committed active checkpoint");
+        let scope = read_scope(&root, "thread")?.expect("committed scope checkpoint");
+        let current = crate::work_binding_index::read_current(&root, "thread")?
+            .expect("committed current checkpoint");
+        let accepted =
+            capture_work_binding_transition(home.path(), update("thread", revision, outcome))?;
+        assert_eq!(
+            accepted.effective_capture_sequence,
+            current.effective_capture_sequence
+        );
+        // Keep the real durable append and restore only its earlier metadata
+        // checkpoint, reproducing a crash before current/index installation.
+        write_atomic(&active_path(&root), &active)?;
+        write_atomic(&scope_path(&root, "thread"), &scope)?;
+        write_atomic(&current_path(&root, "thread"), &current)?;
+        assert_eq!(
+            read_current_work_binding(home.path(), "thread")?,
+            Some(accepted.clone())
+        );
+        assert_eq!(
+            read_scope(&root, "thread")?
+                .expect("recovered scope")
+                .latest_revision,
+            revision
+        );
+        let recovered = read_active(&root)?.expect("recovered active checkpoint");
+        assert_eq!(
+            fs::metadata(page_path(&root, &recovered.file)?)?.len(),
+            recovered.bytes
+        );
+        assert_eq!(
+            capture_work_binding_transition(home.path(), accepted.update.clone())?,
+            accepted
+        );
+    }
+    assert_eq!(read_work_binding_transitions(home.path())?.len(), 302);
+    assert_eq!(
+        lookup
+            .lookup("thread", u64::MAX)?
+            .expect("original pinned current")
+            .update
+            .transition_sequence,
+        300
+    );
     Ok(())
 }
 
