@@ -155,6 +155,14 @@ impl WorkBindingLookup {
         Ok(None)
     }
 
+    /// Presence in this pinned generation, without reading historical pages.
+    /// Availability is established while opening the bounded active metadata.
+    pub(crate) fn has_transitions(&self) -> bool {
+        !self.active_rows.is_empty()
+            || self.active_generation > 1
+            || self.legacy.as_ref().is_some_and(|rows| !rows.is_empty())
+    }
+
     pub(crate) fn read_all(&self) -> Result<Vec<WorkBindingTransition>> {
         if let Some(rows) = &self.legacy {
             return Ok((**rows).clone());

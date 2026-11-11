@@ -250,7 +250,9 @@ impl UsageReader {
         )?;
         if !sparse.is_empty() {
             crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
-        } else if self.work_binding_coverage() == "unavailable" {
+        } else if query.work_assignment_coverage == crate::WorkAssignmentCoverage::Unavailable
+            || self.work_binding_coverage() == "unavailable"
+        {
             report["workBindings"]["coverage"] = json!("unavailable");
             report["workBindings"]["basis"] = json!("binding_metadata_unavailable");
             report["outcomes"]["coverage"] = json!("unattributed");
@@ -259,6 +261,9 @@ impl UsageReader {
             );
         } else if self.work_binding_coverage() == "recorded" {
             crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
+        }
+        if query.work_assignment_coverage == crate::WorkAssignmentCoverage::Unavailable {
+            report["workBindings"]["metadataCoverage"] = json!("unavailable");
         }
         Ok(report)
     }

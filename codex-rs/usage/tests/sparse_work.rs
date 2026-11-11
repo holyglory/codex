@@ -60,6 +60,77 @@ fn operation(home: &Path, id: &str, at: i64, tokens: u64) -> codex_usage::Result
     Ok(())
 }
 
+#[test]
+fn unrelated_scope_review_ignores_corrupt_history_and_keeps_scoped_errors()
+-> codex_usage::Result<()> {
+    let home = tempfile::tempdir()?;
+    let root = home.path().join("usage-v2");
+    capture_work_binding_transition(home.path(), assignment(/*sequence*/ 1, Some("a")))?;
+    operation(home.path(), "known", /*at*/ 1_000, /*tokens*/ 7)?;
+    UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    operation(
+        home.path(),
+        "pending",
+        /*at*/ 2_000,
+        /*tokens*/ 13,
+    )?;
+    // Move the first scope's assignment into an immutable historical page.
+    // All controls use the real capture API; no runtime history is rewritten.
+    for sequence in 2..=257 {
+        capture_work_binding_transition(home.path(), assignment(sequence, Some("a")))?;
+    }
+    let store = root.join("work-binding-store");
+    let active: Value = serde_json::from_slice(&std::fs::read(store.join("active.json"))?)?;
+    let historical = store.join("pages/page-00000000000000000001.jsonl");
+    assert_ne!(active["file"], "pages/page-00000000000000000001.jsonl");
+    std::fs::write(&historical, b"{corrupt-history}\n")?;
+    let begin = start("unrelated", /*at*/ 3_000).with_thread("unrelated-thread");
+    capture_records(
+        home.path(),
+        vec![begin.clone(), finish(begin, /*at*/ 3_001, /*tokens*/ 11)],
+    )?;
+    let reader = UsageReader::open(home.path())?;
+    let unrelated = reader.performance_review(
+        TimeRange::all(),
+        &UsageFilter::default().for_thread("unrelated-thread"),
+    )?;
+    assert_eq!(
+        json!({"coverage":unrelated["workBindings"]["coverage"],
+        "metadata":unrelated["workBindings"]["metadataCoverage"],
+        "operations":unrelated["counts"]["operations"],
+        "tokens":unrelated["outcomes"]["totals"]["providerTotalTokens"]["measured"]}),
+        json!({"coverage":"unattributed","metadata":null,"operations":1,"tokens":11})
+    );
+    // The same damaged page is required by this scope's unassigned tail.
+    // Its error remains visible while the earlier canonical assignment survives.
+    let requested = reader.performance_review(
+        TimeRange::all(),
+        &UsageFilter::default().for_thread("thread"),
+    )?;
+    assert_eq!(
+        json!({"coverage":requested["workBindings"]["coverage"],
+        "metadata":requested["workBindings"]["metadataCoverage"],
+        "known":requested["outcomes"]["attributed"]["providerTotalTokens"]["measured"],
+        "unknown":requested["outcomes"]["unattributed"]["providerTotalTokens"]["measured"]}),
+        json!({"coverage":"partial","metadata":"unavailable","known":7,"unknown":13})
+    );
+    std::fs::write(store.join("active.json"), b"{corrupt-active}\n")?;
+    let unavailable = UsageReader::open(home.path())?.performance_review(
+        TimeRange::all(),
+        &UsageFilter::default().for_thread("unrelated-thread"),
+    )?;
+    assert_eq!(
+        json!({"coverage":unavailable["workBindings"]["coverage"],
+        "metadata":unavailable["workBindings"]["metadataCoverage"],
+        "tokens":unavailable["outcomes"]["totals"]["providerTotalTokens"]["measured"]}),
+        json!({"coverage":"unavailable","metadata":"unavailable","tokens":11})
+    );
+    Ok(())
+}
+
 fn totals(report: &Value) -> Value {
     json!({"bound":report["workBindings"]["boundOperations"],
         "unknown":report["workBindings"]["unknownOperations"],

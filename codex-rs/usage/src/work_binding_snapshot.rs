@@ -38,13 +38,13 @@ impl WorkBindingSnapshot {
     }
 
     pub(crate) fn coverage(&self) -> &'static str {
+        if self.loaded.get().is_some_and(Option::is_none) {
+            return "unavailable";
+        }
         match &self.source {
             Source::Unavailable => "unavailable",
-            Source::Lookup(_) => match self.loaded() {
-                Some(rows) if rows.is_empty() => "unobserved",
-                Some(_) => "recorded",
-                None => "unavailable",
-            },
+            Source::Lookup(lookup) if lookup.has_transitions() => "recorded",
+            Source::Lookup(_) => "unobserved",
         }
     }
 

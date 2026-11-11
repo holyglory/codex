@@ -38,6 +38,7 @@ pub(crate) struct ReportQuery {
     pub(crate) contributions: String,
     work_operations: String,
     pub(crate) complete_from_sequence: u64,
+    pub(crate) work_assignment_coverage: crate::WorkAssignmentCoverage,
 }
 
 impl ReportQuery {
@@ -121,8 +122,33 @@ impl ReportQuery {
         } else {
             parquet_source(&directory, &operation_files, &operation_columns)?
         };
-        let mut states = states.into_values().collect::<Vec<_>>();
-        crate::assign_work_dimensions(&reader.root, &mut states, &[]);
+        // Tail facts from other scopes must not trigger their binding-history
+        // lookups or contaminate availability for the requested scope.
+        let (mut states, unrelated): (Vec<_>, Vec<_>) = states.into_values().partition(|state| {
+            filter
+                .account_id
+                .as_ref()
+                .is_none_or(|id| state.account_id.as_ref() == Some(id))
+                && filter
+                    .repository_id
+                    .as_ref()
+                    .is_none_or(|id| state.repository_id.as_ref() == Some(id))
+                && filter
+                    .thread_id
+                    .as_ref()
+                    .is_none_or(|id| state.thread_id.as_ref() == Some(id))
+                && filter
+                    .model
+                    .as_ref()
+                    .is_none_or(|id| state.model.as_ref() == Some(id))
+                && filter
+                    .thread_ids
+                    .as_ref()
+                    .is_none_or(|ids| state.thread_id.as_ref().is_some_and(|id| ids.contains(id)))
+        });
+        let work_assignment_coverage =
+            crate::assign_work_dimensions(&reader.root, &mut states, &[]);
+        states.extend(unrelated);
         let operation_tail = values_source(&states, &operation_columns)?;
         let classification_source = if classification_files.is_empty() {
             empty_source(&classification_columns)
@@ -272,6 +298,7 @@ impl ReportQuery {
             contributions: "SELECT * FROM selected_contributions".into(),
             work_operations,
             complete_from_sequence,
+            work_assignment_coverage,
         })
     }
 
