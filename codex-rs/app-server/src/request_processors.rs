@@ -557,6 +557,7 @@ mod fs_processor;
 mod git_processor;
 mod initialize_processor;
 mod local_usage_bindings;
+pub(crate) mod local_usage_control;
 pub(crate) mod local_usage_processor;
 mod local_usage_snapshots;
 mod marketplace_processor;

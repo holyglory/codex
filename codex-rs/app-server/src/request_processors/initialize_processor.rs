@@ -227,6 +227,8 @@ impl InitializeRequestProcessor {
                     methods: vec![
                         "localUsage/summary".into(),
                         "localUsage/repositoryIdentity".into(),
+                        "localUsage/bindingTransition".into(),
+                        "localUsage/bindingStatus".into(),
                     ],
                     storage: "usage-v2".into(),
                     supports_work_context_bindings: true,

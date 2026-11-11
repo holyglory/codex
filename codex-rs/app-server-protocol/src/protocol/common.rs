@@ -1162,6 +1162,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::LocalUsageBindingTransitionResponse,
     },
+    LocalUsageBindingStatus => "localUsage/bindingStatus" {
+        params: v2::LocalUsageBindingStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::LocalUsageBindingStatusResponse,
+    },
     LocalUsageRepositoryIdentity => "localUsage/repositoryIdentity" {
         params: v2::LocalUsageRepositoryIdentityParams,
         serialization: None,

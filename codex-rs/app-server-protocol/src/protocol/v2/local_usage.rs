@@ -171,6 +171,7 @@ pub struct LocalUsageRepositoryIdentityResponse {
 #[ts(export_to = "v2/")]
 pub struct LocalUsageBindingTransitionParams {
     pub version: u32,
+    /// Null or omission explicitly clears work; workstream and outcome must then be null.
     #[ts(optional = nullable)]
     pub native_project_id: Option<String>,
     pub thread_id: String,
@@ -178,9 +179,8 @@ pub struct LocalUsageBindingTransitionParams {
     pub workstream_id: Option<String>,
     #[ts(optional = nullable)]
     pub outcome_id: Option<String>,
-    pub transition_sequence: u64,
-    pub source: String,
-    pub authority: String,
+    /// Revision returned by status or the previous receipt. Zero before any declaration.
+    pub expected_revision: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -189,8 +189,45 @@ pub struct LocalUsageBindingTransitionParams {
 pub struct LocalUsageBindingTransitionResponse {
     pub version: u32,
     pub effective_capture_sequence: u64,
-    pub transition_sequence: u64,
+    /// Actual persisted revision, including an unchanged or idempotent declaration.
+    pub revision: u64,
     pub captured_at_ms: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageBindingStatusParams {
+    /// Omission selects version 1; unsupported versions are rejected.
+    #[ts(optional = nullable)]
+    pub version: Option<u32>,
+    pub thread_id: String,
+}
+
+/// The most recent explicit declaration, including a clear with a null project.
+/// Source and authority describe stored declaration provenance, not verified delivery.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageBindingSnapshot {
+    pub thread_id: String,
+    pub native_project_id: Option<String>,
+    pub workstream_id: Option<String>,
+    pub outcome_id: Option<String>,
+    pub effective_capture_sequence: u64,
+    pub captured_at_ms: i64,
+    pub source: String,
+    pub authority: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageBindingStatusResponse {
+    pub version: u32,
+    pub revision: u64,
+    /// Explicit null and revision zero mean no declaration has been captured.
+    pub transition: Option<LocalUsageBindingSnapshot>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

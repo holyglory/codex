@@ -72,7 +72,12 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     assert_eq!(capability.supported_versions, vec![1]);
     assert_eq!(
         capability.methods,
-        vec!["localUsage/summary", "localUsage/repositoryIdentity"]
+        vec![
+            "localUsage/summary",
+            "localUsage/repositoryIdentity",
+            "localUsage/bindingTransition",
+            "localUsage/bindingStatus"
+        ]
     );
     assert_eq!(capability.storage, "usage-v2");
     assert!(capability.supports_work_context_bindings);

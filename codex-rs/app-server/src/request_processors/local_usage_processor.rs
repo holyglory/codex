@@ -6,8 +6,6 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_app_server_protocol::JSONRPCErrorError;
-use codex_app_server_protocol::LocalUsageBindingTransitionParams;
-use codex_app_server_protocol::LocalUsageBindingTransitionResponse;
 use codex_app_server_protocol::LocalUsageCursor;
 use codex_app_server_protocol::LocalUsageRepositoryIdentityParams;
 use codex_app_server_protocol::LocalUsageRepositoryIdentityResponse;
@@ -32,41 +30,6 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-
-pub(crate) async fn binding_transition(
-    codex_home: PathBuf,
-    params: LocalUsageBindingTransitionParams,
-) -> Result<LocalUsageBindingTransitionResponse, JSONRPCErrorError> {
-    tokio::task::spawn_blocking(move || {
-        let transition = codex_usage::capture_work_binding_transition(
-            &codex_home,
-            codex_usage::WorkBindingUpdate {
-                version: params.version,
-                native_project_id: params.native_project_id,
-                thread_id: params.thread_id,
-                workstream_id: params.workstream_id,
-                outcome_id: params.outcome_id,
-                transition_sequence: params.transition_sequence,
-                source: params.source,
-                authority: params.authority,
-            },
-        )
-        .map_err(|error| match error {
-            codex_usage::StorageError::InvalidData(_) => {
-                invalid_params("invalid or stale work binding transition")
-            }
-            _ => internal_error("local work binding capture unavailable"),
-        })?;
-        Ok(LocalUsageBindingTransitionResponse {
-            version: 1,
-            effective_capture_sequence: transition.effective_capture_sequence,
-            transition_sequence: transition.update.transition_sequence,
-            captured_at_ms: transition.captured_at_ms,
-        })
-    })
-    .await
-    .map_err(|_| internal_error("local work binding capture unavailable"))?
-}
 
 pub(crate) async fn summary(
     codex_home: PathBuf,
