@@ -110,6 +110,8 @@ mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
 mod usage_capture;
+pub use usage_capture::work_binding::UsageWorkAction;
+pub use usage_capture::work_binding::UsageWorkReceipt;
 mod usage_identity;
 pub use mcp::McpManager;
 pub use mcp::McpServersDisabled;

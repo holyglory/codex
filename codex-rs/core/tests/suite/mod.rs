@@ -252,6 +252,8 @@ mod unified_exec_stdin_approval;
 mod unified_exec_stdin_review_size;
 mod unstable_features_warning;
 mod usage_activity;
+#[path = "usage_work_tests.rs"]
+mod usage_work;
 mod user_notification;
 mod user_shell_cmd;
 mod view_image;

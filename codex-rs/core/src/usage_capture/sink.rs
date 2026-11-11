@@ -8,6 +8,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::task::JoinHandle;
+use super::work_binding::PendingWork;
+use super::work_binding::UsageWorkAction;
+use super::work_binding::UsageWorkReceipt;
 
 const MAX_PENDING_RECORDS: usize = 256;
 
@@ -24,9 +27,16 @@ struct PendingRecord {
     receipt: Option<tokio::sync::oneshot::Sender<Persistence>>,
 }
 
+// Keep the frequent observation inline, without adding an allocation per capture.
+#[allow(clippy::large_enum_variant)]
+enum PendingCapture {
+    Record(PendingRecord),
+    Work(PendingWork),
+}
+
 pub(super) struct CaptureSink {
     home: PathBuf,
-    pending: Mutex<VecDeque<PendingRecord>>,
+    pending: Mutex<VecDeque<PendingCapture>>,
     gap: Mutex<Option<UsageRecord>>,
     loss: Mutex<CoverageLoss>,
     dropped: AtomicU64,
@@ -59,35 +69,57 @@ impl CaptureSink {
     }
 
     pub(super) fn submit(self: &Arc<Self>, record: UsageRecord) {
-        self.enqueue(PendingRecord {
+        self.enqueue(PendingCapture::Record(PendingRecord {
             record,
             receipt: None,
-        });
+        }));
     }
 
     pub(super) async fn submit_confirmed(self: &Arc<Self>, record: UsageRecord) -> Persistence {
         let (receipt, mut received) = tokio::sync::oneshot::channel();
-        self.enqueue(PendingRecord {
+        self.enqueue(PendingCapture::Record(PendingRecord {
             record,
             receipt: Some(receipt),
-        });
+        }));
         self.flush().await;
         received.try_recv().unwrap_or(Persistence::Pending)
     }
 
-    fn enqueue(self: &Arc<Self>, mut pending_record: PendingRecord) {
+    pub(super) async fn submit_work(
+        self: &Arc<Self>,
+        thread_id: String,
+        action: UsageWorkAction,
+    ) -> Result<UsageWorkReceipt, String> {
+        action.validate()?;
+        let (receipt, received) = tokio::sync::oneshot::channel();
+        self.enqueue(PendingCapture::Work(PendingWork { thread_id, action, receipt }));
+        // Accounting cannot stall model/tool progress on a blocked filesystem.
+        tokio::time::timeout(std::time::Duration::from_secs(2), received)
+            .await
+            .map_err(|_| "usage_work persistence pending; inspect status before retrying".to_string())?
+            .map_err(|_| "usage_work capture unavailable".to_string())?
+    }
+
+    fn enqueue(self: &Arc<Self>, item: PendingCapture) {
         {
             let mut pending = self
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if pending.len() == MAX_PENDING_RECORDS {
-                self.note_loss(&pending_record.record);
-                if let Some(receipt) = pending_record.receipt.take() {
-                    let _ = receipt.send(Persistence::Omitted);
+                match item {
+                    PendingCapture::Record(mut record) => {
+                        self.note_loss(&record.record);
+                        if let Some(receipt) = record.receipt.take() {
+                            let _ = receipt.send(Persistence::Omitted);
+                        }
+                    }
+                    PendingCapture::Work(work) => {
+                        let _ = work.receipt.send(Err("usage_work capture queue is full; retry after recovery".into()));
+                    }
                 }
             } else {
-                pending.push_back(pending_record);
+                pending.push_back(item);
             }
         }
         self.schedule();
@@ -165,13 +197,26 @@ impl CaptureSink {
     fn write_pending(self: Arc<Self>) {
         let mut failed = false;
         loop {
-            let mut records = self
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain(..)
-                .collect::<Vec<_>>();
             let gap = self.pending_gap();
+            let mut records = Vec::new();
+            let work = {
+                let mut pending = self.pending.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                while matches!(pending.front(), Some(PendingCapture::Record(_))) {
+                    if let Some(PendingCapture::Record(record)) = pending.pop_front() {
+                        records.push(record);
+                    }
+                }
+                if records.is_empty() && gap.is_none() {
+                    pending.pop_front()
+                } else {
+                    None
+                }
+            };
+            if let Some(PendingCapture::Work(work)) = work {
+                work.execute(&self.home);
+                continue;
+            }
             if records.is_empty() && gap.is_none() {
                 break;
             }
@@ -186,7 +231,16 @@ impl CaptureSink {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut retry = VecDeque::from(records);
-                retry.append(&mut pending);
+                // A failed prefix cannot acknowledge or replay a later switch.
+                // Preserve all ordinary observations under the existing retry bound.
+                for item in pending.drain(..) {
+                    match item {
+                        PendingCapture::Record(record) => retry.push_back(record),
+                        PendingCapture::Work(work) => {
+                            let _ = work.receipt.send(Err("usage_work capture prefix is pending; retry after recovery".into()));
+                        }
+                    }
+                }
                 let retained = MAX_PENDING_RECORDS.min(retry.len());
                 for mut record in retry.drain(retained..) {
                     self.note_loss(&record.record);
@@ -199,7 +253,7 @@ impl CaptureSink {
                         let _ = receipt.send(Persistence::Pending);
                     }
                 }
-                *pending = retry;
+                *pending = retry.into_iter().map(PendingCapture::Record).collect();
                 if !self.deferred.swap(true, Ordering::AcqRel) {
                     tracing::warn!("local usage capture is deferred; coverage is incomplete");
                 }

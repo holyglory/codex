@@ -8,6 +8,7 @@ mod lifecycle;
 mod model;
 mod model_transport;
 mod sink;
+pub(crate) mod work_binding;
 
 use crate::client::ModelClient;
 use crate::config::Config;

@@ -1,6 +1,7 @@
 mod managed;
 mod shared_instructions;
 mod shutdown;
+mod usage_work;
 
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
