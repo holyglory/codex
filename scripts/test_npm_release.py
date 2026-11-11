@@ -19,6 +19,7 @@ from release_identity import (
     verify_acceptance,
     verify_hosted_native_source,
     verify_hosted_v8_source,
+    verify_native_source,
     verify_new_downstream_version,
 )
 
@@ -306,6 +307,20 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                     str(account_routing.relative_to(root)),
                     result["packaging_only_paths"],
                 )
+
+                for path in (
+                    "scripts/run_isolated_workspace_tests.sh",
+                    "scripts/test_run_isolated_workspace_tests.py",
+                ):
+                    before_harness = packaging
+                    harness = root / path
+                    harness.parent.mkdir(parents=True, exist_ok=True)
+                    harness.write_text("owned test scratch cleanup\n")
+                    packaging = commit("test isolation cleanup")
+                    result = verify_hosted_v8_source(producer, packaging)
+                    self.assertIn(path, result["packaging_only_paths"])
+                    with self.assertRaisesRegex(ValueError, "Native reuse changes"):
+                        verify_native_source(before_harness, packaging)
 
                 unrelated_app_server = root / "codex-rs/app-server/src/lib.rs"
                 unrelated_app_server.write_text("unrelated app-server change\n")
