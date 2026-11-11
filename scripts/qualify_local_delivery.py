@@ -85,6 +85,8 @@ def require_sparse_proof(proof):
         or proof["sparseBoundOperations"] < 1
         or type(proof.get("sparseUnattributedOperations")) is not int
         or proof["sparseUnattributedOperations"] < 1
+        or not isinstance(proof.get("sparseThreadId"), str)
+        or not proof["sparseThreadId"]
         or not isinstance(proof.get("sparseOutcomeRows"), list)
         or len(proof["sparseOutcomeRows"]) < 2
     ):
@@ -230,6 +232,7 @@ def qualify(args):
     )
     evidence_ref = f"artifact/{artifact}/{run_id}/{check}/rpc-proof.json"
     completion = update_capability_inventory(completion, proof, evidence_ref)
+    completion["claim"] = "preliminary"
     completion["source_sha256"] = source_sha256
     (output / "completion.json").write_text(json.dumps(completion, indent=2) + "\n")
     qualification = {
