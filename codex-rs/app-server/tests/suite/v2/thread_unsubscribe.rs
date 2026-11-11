@@ -408,6 +408,8 @@ async fn thread_unsubscribe_during_turn_keeps_turn_running(
         }
     );
     if check_cold_resume {
+        // This persistent `thread_unload_delay_secs = 0` case is the regression
+        // boundary: after thread/closed, resume must no longer see the closing gate.
         // Immediate unloading preserves durable history. A cold resume uses the
         // server's default delay rather than restoring the old runtime's override.
         let resume: ThreadResumeResponse = mcp

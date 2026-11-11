@@ -667,13 +667,18 @@ async fn start_listener(
                             thread_watch_manager
                                 .remove_thread(&conversation_id.to_string())
                                 .await;
+                            // Release the closing gate before publishing thread/closed. A
+                            // resume sent after that notification must observe the completed
+                            // shutdown rather than the stale pending-unload entry.
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
                             outgoing_for_task
                                 .send_server_notification(ServerNotification::ThreadClosed(
                                     ThreadClosedNotification { thread_id: conversation_id.to_string() },
                                 ))
                                 .await;
+                        } else {
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
                         }
-                        pending_thread_unloads.lock().await.remove(&conversation_id);
                         return;
                     }
                     if is_v2_child {
@@ -719,13 +724,18 @@ async fn start_listener(
                             thread_watch_manager
                                 .remove_thread(&conversation_id.to_string())
                                 .await;
+                            // Release the closing gate before publishing thread/closed. A
+                            // resume sent after that notification must observe the completed
+                            // shutdown rather than the stale pending-unload entry.
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
                             outgoing_for_task
                                 .send_server_notification(ServerNotification::ThreadClosed(
                                     ThreadClosedNotification { thread_id: conversation_id.to_string() },
                                 ))
                                 .await;
+                        } else {
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
                         }
-                        pending_thread_unloads.lock().await.remove(&conversation_id);
                         return;
                     }
                     unload_thread_without_subscribers(
@@ -901,13 +911,15 @@ pub(super) async fn unload_thread_without_subscribers(
                 thread_watch_manager
                     .remove_thread(&thread_id.to_string())
                     .await;
+                // The runtime and its writer are fully shut down before this point. Clear the
+                // closing guard before thread/closed so an immediate cold resume is accepted.
+                pending_thread_unloads.lock().await.remove(&thread_id);
                 let notification = ThreadClosedNotification {
                     thread_id: thread_id.to_string(),
                 };
                 outgoing
                     .send_server_notification(ServerNotification::ThreadClosed(notification))
                     .await;
-                pending_thread_unloads.lock().await.remove(&thread_id);
             }
             Err(_) => {
                 pending_thread_unloads.lock().await.remove(&thread_id);
