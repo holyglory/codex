@@ -17,6 +17,9 @@ cxm_test_invocation=$(mktemp -d -- "$cxm_test_scratch/invocation.XXXXXXXX")
 cxm_test_cleanup() {
   local cxm_test_exit=$?
   if (( cxm_test_exit == 0 )); then
+    # Immutable tool caches may contain owner-owned read-only directories.
+    # Only prepare this private invocation for unlinking; never follow links.
+    find -P "$cxm_test_invocation" -type d -uid "$(id -u)" -exec chmod u+w -- {} +
     rm -rf -- "$cxm_test_invocation"
   else
     printf 'Retained failed test scratch: %s\n' "$cxm_test_invocation" >&2
