@@ -87,8 +87,8 @@ fn unrelated_scope_review_ignores_corrupt_history_and_keeps_scoped_errors()
     }
     let store = root.join("work-binding-store");
     let active: Value = serde_json::from_slice(&std::fs::read(store.join("active.json"))?)?;
-    let historical = store.join("pages/page-00000000000000000001.jsonl");
-    assert_ne!(active["file"], "pages/page-00000000000000000001.jsonl");
+    let historical = root.join("work-bindings.jsonl");
+    assert_ne!(active["file"], "work-bindings.jsonl");
     std::fs::write(&historical, b"{corrupt-history}\n")?;
     let begin = start("unrelated", /*at*/ 3_000).with_thread("unrelated-thread");
     capture_records(
