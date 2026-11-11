@@ -25,7 +25,7 @@ const THREADS: [u64; 3] = [
 pub(super) fn transition(round: u64) -> Option<WorkBindingUpdate> {
     let cycle = round / CYCLE;
     let thread = (round / 8) % fixture::THREADS;
-    if round % 8 != 0 || !THREADS.contains(&thread) {
+    if !round.is_multiple_of(8) || !THREADS.contains(&thread) {
         return None;
     }
     let job = match cycle {

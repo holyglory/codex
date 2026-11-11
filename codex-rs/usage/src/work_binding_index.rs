@@ -174,13 +174,12 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Opt
 
 pub(crate) fn read_active(root: &Path) -> Result<Option<ActivePage>> {
     let active: Option<ActivePage> = read_json(&active_path(root))?;
-    if let Some(active) = &active {
-        if active.version != INDEX_VERSION
+    if let Some(active) = &active
+        && (active.version != INDEX_VERSION
             || active.first_sequence == 0
-            || !valid_file_name(&active.file)
-        {
-            return Err(invalid("invalid work binding active page"));
-        }
+            || !valid_file_name(&active.file))
+    {
+        return Err(invalid("invalid work binding active page"));
     }
     Ok(active)
 }
@@ -198,7 +197,7 @@ pub(crate) fn read_scope(root: &Path, thread_id: &str) -> Result<Option<ScopeInd
 
 pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBindingTransition>> {
     let path = current_path(root, thread_id);
-    if fs::metadata(&path).map_or(false, |metadata| metadata.len() > 128 * 1024) {
+    if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 128 * 1024) {
         return Err(invalid(
             "work binding current state exceeds its bounded size",
         ));

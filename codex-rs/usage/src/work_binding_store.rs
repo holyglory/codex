@@ -652,16 +652,6 @@ fn line(transition: &WorkBindingTransition) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_page(root: &Path, file: &str, rows: &[WorkBindingTransition]) -> Result<()> {
-    let path = page_path(root, file)?;
-    let mut output = storage_file::create_new(&path)?;
-    for row in rows {
-        output.write_all(&line(row)?)?;
-    }
-    output.sync_all()?;
-    Ok(())
-}
-
 fn page_files(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
     let legacy = root.join(LEGACY_FILE);

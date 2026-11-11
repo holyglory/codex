@@ -98,10 +98,6 @@ pub(crate) fn read_transitions_at(root: &Path) -> Result<Vec<WorkBindingTransiti
     crate::work_binding_store::WorkBindingLookup::open_unpinned(root)?.read_all()
 }
 
-pub(crate) fn binding_lookup(root: &Path) -> Result<crate::work_binding_store::WorkBindingLookup> {
-    crate::work_binding_store::WorkBindingLookup::open(root)
-}
-
 pub(crate) fn read_prefix(
     file: &mut File,
     length: u64,

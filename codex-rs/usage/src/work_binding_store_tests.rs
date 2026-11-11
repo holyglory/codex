@@ -173,7 +173,7 @@ fn legacy_file_bootstraps_once_without_a_migration_scan_on_each_switch() -> crat
     )?;
     assert_eq!(
         read_current_work_binding(home.path(), "thread")?,
-        Some(transition.clone())
+        Some(transition)
     );
     UsageJournal::new(root.join("events.jsonl"))
         .append_record(UsageRecord::new_millis("event", 1, 0, 0))?;
@@ -191,7 +191,7 @@ fn legacy_file_bootstraps_once_without_a_migration_scan_on_each_switch() -> crat
 #[test]
 fn pruning_requires_reader_release_and_keeps_one_anchor_per_scope() -> crate::Result<()> {
     let home = tempdir()?;
-    let first = advance(home.path(), "thread", 1, Some("a"))?;
+    let _first = advance(home.path(), "thread", 1, Some("a"))?;
     let pinned = UsageReader::open(home.path())?;
     for revision in 2..=300 {
         advance(home.path(), "thread", revision, Some("a"))?;
