@@ -89,13 +89,11 @@ fn apply(
     thread_id: String,
     action: UsageWorkAction,
 ) -> Result<UsageWorkReceipt, String> {
-    // Read only the bounded sparse switch journal, on the capture worker. Refresh on
+    // Read only this thread's current sparse binding on the capture worker. Refresh on
     // each explicit control so another producer's revision cannot become a stale grant.
-    let transition = codex_usage::read_work_binding_transitions(home)
-        .map_err(|_| "usage_work storage unavailable; inspect status before retrying".to_string())?
-        .into_iter()
-        .rev()
-        .find(|transition| transition.update.thread_id == thread_id);
+    let transition = codex_usage::read_current_work_binding(home, &thread_id).map_err(|_| {
+        "usage_work storage unavailable; inspect status before retrying".to_string()
+    })?;
     let revision =
         transition.as_ref().map_or(
             /*default*/ 0,
