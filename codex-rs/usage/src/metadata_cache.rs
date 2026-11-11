@@ -35,9 +35,9 @@ impl<T> Clone for Parsed<T> {
     }
 }
 
-#[derive(Eq, PartialEq)]
-struct Identity {
-    bytes: u64,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Identity {
+    pub(crate) bytes: u64,
     modified: Option<SystemTime>,
     created: Option<SystemTime>,
     #[cfg(unix)]
@@ -45,7 +45,7 @@ struct Identity {
 }
 
 impl Identity {
-    fn from_metadata(metadata: &Metadata) -> Self {
+    pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         Self {

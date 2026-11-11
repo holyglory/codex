@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
+use std::time::Instant;
 
 use codex_usage::JournalReadLimits;
 use codex_usage::TimeRange;
@@ -136,23 +138,68 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
 fn repeated_switches_aggregate_by_job_before_report_limits() -> codex_usage::Result<()> {
     let home = tempfile::tempdir()?;
     let switches = 1_025;
+    let mut transition_time = Duration::ZERO;
+    let mut capture_time = Duration::ZERO;
     for sequence in 1..=switches {
+        let transition_start = Instant::now();
         capture_work_binding_transition(home.path(), assignment(sequence, Some("same-job")))?;
+        transition_time += transition_start.elapsed();
+        let capture_start = Instant::now();
         operation(
             home.path(),
             &format!("operation-{sequence}"),
             sequence as i64,
             1,
         )?;
+        capture_time += capture_start.elapsed();
     }
+    let reader_start = Instant::now();
     let reader = UsageReader::open(home.path())?;
+    let reader_time = reader_start.elapsed();
+    let query_start = Instant::now();
     let report = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
+    let query_time = query_start.elapsed();
     assert_eq!(
         json!({"bound":report["workBindings"]["boundOperations"],"rows":report["outcomes"]["totalRows"],
         "tokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
         json!({"bound":switches,"rows":1,"tokens":switches})
     );
     assert_eq!(reader.work_binding_transitions().len(), switches as usize);
+    eprintln!(
+        "sparse-work-measurement {}",
+        json!({"switches":switches,"operations":switches,
+        "transitionMs":transition_time.as_millis(),"captureMs":capture_time.as_millis(),
+        "readerOpenMs":reader_time.as_millis(),"reportMs":query_time.as_millis(),
+        "transitionBytes":std::fs::metadata(home.path().join("usage-v2/work-bindings.jsonl"))?.len()})
+    );
+    Ok(())
+}
+
+#[test]
+fn replacement_with_identical_size_and_mtime_never_reuses_another_file() -> codex_usage::Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let original = capture_work_binding_transition(home.path(), assignment(1, Some("a")))?;
+    let reader = UsageReader::open(home.path())?;
+    assert_eq!(reader.work_binding_transitions(), &[original.clone()]);
+    let path = home.path().join("usage-v2/work-bindings.jsonl");
+    let metadata = std::fs::metadata(&path)?;
+    let mut replaced = original.clone();
+    replaced.update.outcome_id = Some("b".into());
+    let mut bytes = serde_json::to_vec(&replaced)?;
+    bytes.push(b'\n');
+    assert_eq!(bytes.len() as u64, metadata.len());
+    let replacement = path.with_extension("replacement");
+    std::fs::write(&replacement, bytes)?;
+    std::fs::File::options()
+        .write(true)
+        .open(&replacement)?
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
+    std::fs::rename(replacement, &path)?;
+    assert_eq!(std::fs::metadata(&path)?.modified()?, metadata.modified()?);
+    let fresh = UsageReader::open(home.path())?;
+    assert_eq!(reader.work_binding_transitions(), &[original]);
+    assert_eq!(fresh.work_binding_transitions(), &[replaced]);
     Ok(())
 }
 
