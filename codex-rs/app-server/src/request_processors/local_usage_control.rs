@@ -22,9 +22,7 @@ pub(crate) async fn binding_transition(
     if params.version != 1 {
         return Err(invalid_params("unsupported local work binding version"));
     }
-    let thread_id = params
-        .thread_id
-        .parse::<ThreadId>()
+    let thread_id = ThreadId::from_string(&params.thread_id)
         .map_err(|_| invalid_params("local work binding requires a valid thread ID"))?;
     let action = match params.native_project_id {
         Some(native_project_id) => UsageWorkAction::Set {
@@ -66,9 +64,7 @@ pub(crate) async fn binding_status(
     if params.version.unwrap_or(/*default*/ 1) != 1 {
         return Err(invalid_params("unsupported local work binding version"));
     }
-    let thread_id = params
-        .thread_id
-        .parse::<ThreadId>()
+    let thread_id = ThreadId::from_string(&params.thread_id)
         .map_err(|_| invalid_params("local work binding requires a valid thread ID"))?;
     let receipt = manager
         .usage_work(thread_id, UsageWorkAction::Status)
