@@ -107,10 +107,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HOSTED_RUN_ID: ${{ inputs.hosted_v8_run_id }}
           HOSTED_NATIVE_RUN_ID: ${{ inputs.hosted_native_run_id }}
-          NATIVE_ONLY: ${{ inputs.native_only }}
         run: |
           set -euo pipefail
-          [[ "$NATIVE_ONLY" == false && "$HOSTED_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$HOSTED_RUN_ID" =~ ^[0-9]+$ ]]
           [[ -z "$HOSTED_NATIVE_RUN_ID" ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-v8-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-v8-jobs.json"
