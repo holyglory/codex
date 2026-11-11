@@ -8,9 +8,8 @@ use crate::OperationBindingMetadata;
 use crate::ReviewOperation;
 use crate::UsageReader;
 use crate::UsageRecord;
-use crate::WorkBindingTransition;
 use crate::review_state::lifecycle;
-use crate::work_binding_snapshot::WorkBindingSnapshot;
+use crate::work_binding_store::WorkBindingLookup;
 
 /// Whether all attempted assignment lookups completed, including valid clears
 /// and absent scopes. Unavailable metadata withholds pruning proof only.
@@ -84,7 +83,7 @@ struct Resolver<'a> {
     checked: BTreeSet<String>,
     resolved: BTreeMap<String, Option<Assignment>>,
     reader: OnceLock<Option<UsageReader>>,
-    bindings: BTreeMap<&'a str, Vec<&'a WorkBindingTransition>>,
+    lookup: Option<WorkBindingLookup>,
     binding_unavailable: bool,
     unavailable: bool,
 }
@@ -148,11 +147,9 @@ impl Resolver<'_> {
                 self.unavailable = true;
                 return None;
             }
-            let bindings = self.bindings.get(thread)?;
-            let index =
-                bindings.partition_point(|binding| binding.effective_capture_sequence <= row.first);
-            index.checked_sub(1).and_then(|index| {
-                let update = &bindings[index].update;
+            let binding = self.lookup.as_ref()?.lookup(thread,row.first).ok()?;
+            binding.and_then(|binding| {
+                let update = &binding.update;
                 update.native_project_id.as_ref().map(|project| Assignment {
                     project: project.clone(),
                     stream: update.workstream_id.clone(),
@@ -186,21 +183,10 @@ pub(crate) fn assign_work_dimensions(
     }) {
         return WorkAssignmentCoverage::Complete;
     }
-    let snapshot = WorkBindingSnapshot::pin(root);
-    let unavailable = snapshot.coverage() == "unavailable";
-    let mut bindings = BTreeMap::<&str, Vec<&WorkBindingTransition>>::new();
-    for binding in snapshot.transitions() {
-        bindings
-            .entry(&binding.update.thread_id)
-            .or_default()
-            .push(binding);
-    }
-    if bindings.is_empty() && rows.iter().all(|row| row.retry_of_operation_id.is_none()) {
-        return if unavailable {
-            WorkAssignmentCoverage::Unavailable
-        } else {
-            WorkAssignmentCoverage::Complete
-        };
+    let lookup = WorkBindingLookup::open(root).ok();
+    let unavailable = lookup.is_none();
+    if unavailable && rows.iter().all(|row| row.retry_of_operation_id.is_none()) {
+        return WorkAssignmentCoverage::Unavailable;
     }
     let mut candidates = rows
         .iter()
@@ -244,7 +230,7 @@ pub(crate) fn assign_work_dimensions(
         checked: BTreeSet::new(),
         resolved: BTreeMap::new(),
         reader: OnceLock::new(),
-        bindings,
+        lookup,
         binding_unavailable: unavailable,
         unavailable: false,
     };
