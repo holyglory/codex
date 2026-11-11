@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "threadId": {
+      "type": "string"
+    },
+    "version": {
+      "description": "Omission selects version 1; unsupported versions are rejected.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "LocalUsageBindingStatusParams",
+  "type": "object"
+}

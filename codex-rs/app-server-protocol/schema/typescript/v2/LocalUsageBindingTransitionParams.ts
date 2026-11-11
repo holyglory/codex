@@ -5,4 +5,12 @@
 /**
  * Out-of-band assignment control. Send only on an explicit job switch.
  */
-export type LocalUsageBindingTransitionParams = { version: number, nativeProjectId?: string | null, threadId: string, workstreamId?: string | null, outcomeId?: string | null, transitionSequence: bigint, source: string, authority: string, };
+export type LocalUsageBindingTransitionParams = { version: number,
+/**
+ * Null or omission explicitly clears work; workstream and outcome must then be null.
+ */
+nativeProjectId?: string | null, threadId: string, workstreamId?: string | null, outcomeId?: string | null,
+/**
+ * Revision returned by status or the previous receipt. Zero before any declaration.
+ */
+expectedRevision: bigint, };

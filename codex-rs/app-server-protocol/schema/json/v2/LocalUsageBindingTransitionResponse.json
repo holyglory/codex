@@ -10,7 +10,8 @@
       "minimum": 0.0,
       "type": "integer"
     },
-    "transitionSequence": {
+    "revision": {
+      "description": "Actual persisted revision, including an unchanged or idempotent declaration.",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
@@ -24,7 +25,7 @@
   "required": [
     "capturedAtMs",
     "effectiveCaptureSequence",
-    "transitionSequence",
+    "revision",
     "version"
   ],
   "title": "LocalUsageBindingTransitionResponse",

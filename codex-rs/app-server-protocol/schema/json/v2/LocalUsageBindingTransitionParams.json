@@ -3,10 +3,14 @@
   "additionalProperties": false,
   "description": "Out-of-band assignment control. Send only on an explicit job switch.",
   "properties": {
-    "authority": {
-      "type": "string"
+    "expectedRevision": {
+      "description": "Revision returned by status or the previous receipt. Zero before any declaration.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "nativeProjectId": {
+      "description": "Null or omission explicitly clears work; workstream and outcome must then be null.",
       "type": [
         "string",
         "null"
@@ -18,16 +22,8 @@
         "null"
       ]
     },
-    "source": {
-      "type": "string"
-    },
     "threadId": {
       "type": "string"
-    },
-    "transitionSequence": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
     },
     "version": {
       "format": "uint32",
@@ -42,10 +38,8 @@
     }
   },
   "required": [
-    "authority",
-    "source",
+    "expectedRevision",
     "threadId",
-    "transitionSequence",
     "version"
   ],
   "title": "LocalUsageBindingTransitionParams",

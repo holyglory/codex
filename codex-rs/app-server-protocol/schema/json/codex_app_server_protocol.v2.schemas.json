@@ -3956,6 +3956,30 @@
             },
             "method": {
               "enum": [
+                "localUsage/bindingStatus"
+              ],
+              "title": "LocalUsage/bindingStatusRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/LocalUsageBindingStatusParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/bindingStatusRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "localUsage/repositoryIdentity"
               ],
               "title": "LocalUsage/repositoryIdentityRequestMethod",
@@ -10877,13 +10901,20 @@
       ],
       "type": "string"
     },
-    "LocalUsageBindingTransitionParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
-      "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+    "LocalUsageBindingSnapshot": {
+      "description": "The most recent explicit declaration, including a clear with a null project. Source and authority describe stored declaration provenance, not verified delivery.",
       "properties": {
         "authority": {
           "type": "string"
+        },
+        "capturedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "effectiveCaptureSequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "nativeProjectId": {
           "type": [
@@ -10903,10 +10934,103 @@
         "threadId": {
           "type": "string"
         },
-        "transitionSequence": {
+        "workstreamId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "authority",
+        "capturedAtMs",
+        "effectiveCaptureSequence",
+        "source",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "LocalUsageBindingStatusParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "version": {
+          "description": "Omission selects version 1; unsupported versions are rejected.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "LocalUsageBindingStatusParams",
+      "type": "object"
+    },
+    "LocalUsageBindingStatusResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "revision": {
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "transition": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageBindingSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit null and revision zero mean no declaration has been captured."
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision",
+        "version"
+      ],
+      "title": "LocalUsageBindingStatusResponse",
+      "type": "object"
+    },
+    "LocalUsageBindingTransitionParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+      "properties": {
+        "expectedRevision": {
+          "description": "Revision returned by status or the previous receipt. Zero before any declaration.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "nativeProjectId": {
+          "description": "Null or omission explicitly clears work; workstream and outcome must then be null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcomeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
         },
         "version": {
           "format": "uint32",
@@ -10921,10 +11045,8 @@
         }
       },
       "required": [
-        "authority",
-        "source",
+        "expectedRevision",
         "threadId",
-        "transitionSequence",
         "version"
       ],
       "title": "LocalUsageBindingTransitionParams",
@@ -10942,7 +11064,8 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "transitionSequence": {
+        "revision": {
+          "description": "Actual persisted revision, including an unchanged or idempotent declaration.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -10956,7 +11079,7 @@
       "required": [
         "capturedAtMs",
         "effectiveCaptureSequence",
-        "transitionSequence",
+        "revision",
         "version"
       ],
       "title": "LocalUsageBindingTransitionResponse",

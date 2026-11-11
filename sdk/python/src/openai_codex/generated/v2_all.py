@@ -2299,17 +2299,66 @@ class LocalShellStatus(Enum):
     incomplete = "incomplete"
 
 
+class LocalUsageBindingSnapshot(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authority: str
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    effective_capture_sequence: Annotated[int, Field(alias="effectiveCaptureSequence", ge=0)]
+    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    source: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageBindingStatusParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    version: Annotated[
+        int | None,
+        Field(description="Omission selects version 1; unsupported versions are rejected.", ge=0),
+    ] = None
+
+
+class LocalUsageBindingStatusResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    revision: Annotated[int, Field(ge=0)]
+    transition: Annotated[
+        LocalUsageBindingSnapshot | None,
+        Field(description="Explicit null and revision zero mean no declaration has been captured."),
+    ] = None
+    version: Annotated[int, Field(ge=0)]
+
+
 class LocalUsageBindingTransitionParams(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         populate_by_name=True,
     )
-    authority: str
-    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    expected_revision: Annotated[
+        int,
+        Field(
+            alias="expectedRevision",
+            description="Revision returned by status or the previous receipt. Zero before any declaration.",
+            ge=0,
+        ),
+    ]
+    native_project_id: Annotated[
+        str | None,
+        Field(
+            alias="nativeProjectId",
+            description="Null or omission explicitly clears work; workstream and outcome must then be null.",
+        ),
+    ] = None
     outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
-    source: str
     thread_id: Annotated[str, Field(alias="threadId")]
-    transition_sequence: Annotated[int, Field(alias="transitionSequence", ge=0)]
     version: Annotated[int, Field(ge=0)]
     workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
 
@@ -2320,7 +2369,13 @@ class LocalUsageBindingTransitionResponse(BaseModel):
     )
     captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
     effective_capture_sequence: Annotated[int, Field(alias="effectiveCaptureSequence", ge=0)]
-    transition_sequence: Annotated[int, Field(alias="transitionSequence", ge=0)]
+    revision: Annotated[
+        int,
+        Field(
+            description="Actual persisted revision, including an unchanged or idempotent declaration.",
+            ge=0,
+        ),
+    ]
     version: Annotated[int, Field(ge=0)]
 
 
@@ -8029,6 +8084,17 @@ class LocalUsageBindingTransitionRequest(BaseModel):
     params: LocalUsageBindingTransitionParams
 
 
+class LocalUsageBindingStatusRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/bindingStatus"], Field(title="LocalUsage/bindingStatusRequestMethod")
+    ]
+    params: LocalUsageBindingStatusParams
+
+
 class LocalUsageRepositoryIdentityRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13707,6 +13773,7 @@ class ClientRequest(
         | ModelListRequest
         | LocalUsageSummaryRequest
         | LocalUsageBindingTransitionRequest
+        | LocalUsageBindingStatusRequest
         | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
@@ -13819,6 +13886,7 @@ class ClientRequest(
         | ModelListRequest
         | LocalUsageSummaryRequest
         | LocalUsageBindingTransitionRequest
+        | LocalUsageBindingStatusRequest
         | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
