@@ -116,6 +116,8 @@ V8_REUSE_SOURCE_PREFIXES = (
     "codex-rs/core/src/usage_capture/",
     "codex-rs/core/tests/suite/account_profiles.rs",
     "codex-rs/core/tests/suite/account_failover_tests.rs",
+    "codex-rs/core/tests/suite/hooks.rs",
+    "codex-rs/tui/src/pets/mod.rs",
     "codex-rs/ext/extension-api/src/state.rs",
     "codex-rs/ext/extension-api/tests/state.rs",
     "codex-rs/login/src/auth/profile/router/selection_probe.rs",

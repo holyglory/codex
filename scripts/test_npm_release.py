@@ -311,12 +311,14 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 for path in (
                     "scripts/run_isolated_workspace_tests.sh",
                     "scripts/test_run_isolated_workspace_tests.py",
+                    "codex-rs/core/tests/suite/hooks.rs",
+                    "codex-rs/tui/src/pets/mod.rs",
                 ):
                     before_harness = packaging
                     harness = root / path
                     harness.parent.mkdir(parents=True, exist_ok=True)
                     harness.write_text("owned test scratch cleanup\n")
-                    packaging = commit("test isolation cleanup")
+                    packaging = commit("test fixture changes")
                     result = verify_hosted_v8_source(producer, packaging)
                     self.assertIn(path, result["packaging_only_paths"])
                     with self.assertRaisesRegex(ValueError, "Native reuse changes"):
