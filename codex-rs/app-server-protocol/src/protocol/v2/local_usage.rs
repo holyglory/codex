@@ -165,6 +165,34 @@ pub struct LocalUsageRepositoryIdentityResponse {
     pub format_version: u32,
 }
 
+/// Out-of-band assignment control. Send only on an explicit job switch.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageBindingTransitionParams {
+    pub version: u32,
+    #[ts(optional = nullable)]
+    pub native_project_id: Option<String>,
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub workstream_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub outcome_id: Option<String>,
+    pub transition_sequence: u64,
+    pub source: String,
+    pub authority: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LocalUsageBindingTransitionResponse {
+    pub version: u32,
+    pub effective_capture_sequence: u64,
+    pub transition_sequence: u64,
+    pub captured_at_ms: i64,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

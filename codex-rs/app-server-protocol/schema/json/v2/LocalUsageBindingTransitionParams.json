@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+  "properties": {
+    "authority": {
+      "type": "string"
+    },
+    "nativeProjectId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outcomeId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "transitionSequence": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workstreamId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "authority",
+    "source",
+    "threadId",
+    "transitionSequence",
+    "version"
+  ],
+  "title": "LocalUsageBindingTransitionParams",
+  "type": "object"
+}

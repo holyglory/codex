@@ -6,6 +6,8 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::LocalUsageBindingTransitionParams;
+use codex_app_server_protocol::LocalUsageBindingTransitionResponse;
 use codex_app_server_protocol::LocalUsageCursor;
 use codex_app_server_protocol::LocalUsageRepositoryIdentityParams;
 use codex_app_server_protocol::LocalUsageRepositoryIdentityResponse;
@@ -30,6 +32,41 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+pub(crate) async fn binding_transition(
+    codex_home: PathBuf,
+    params: LocalUsageBindingTransitionParams,
+) -> Result<LocalUsageBindingTransitionResponse, JSONRPCErrorError> {
+    tokio::task::spawn_blocking(move || {
+        let transition = codex_usage::capture_work_binding_transition(
+            &codex_home,
+            codex_usage::WorkBindingUpdate {
+                version: params.version,
+                native_project_id: params.native_project_id,
+                thread_id: params.thread_id,
+                workstream_id: params.workstream_id,
+                outcome_id: params.outcome_id,
+                transition_sequence: params.transition_sequence,
+                source: params.source,
+                authority: params.authority,
+            },
+        )
+        .map_err(|error| match error {
+            codex_usage::StorageError::InvalidData(_) => {
+                invalid_params("invalid or stale work binding transition")
+            }
+            _ => internal_error("local work binding capture unavailable"),
+        })?;
+        Ok(LocalUsageBindingTransitionResponse {
+            version: 1,
+            effective_capture_sequence: transition.effective_capture_sequence,
+            transition_sequence: transition.update.transition_sequence,
+            captured_at_ms: transition.captured_at_ms,
+        })
+    })
+    .await
+    .map_err(|_| internal_error("local work binding capture unavailable"))?
+}
 
 pub(crate) async fn summary(
     codex_home: PathBuf,
@@ -254,7 +291,10 @@ fn read(
     } else {
         None
     };
-    let (work_contexts, operation_bindings) = if let Some(source) = &binding_source {
+    let outcome_totals = review
+        .as_ref()
+        .map(|review| review["outcomes"]["totals"].clone());
+    let (mut work_contexts, operation_bindings) = if let Some(source) = &binding_source {
         let evidence = if facts.is_some() {
             reader
                 .bound_operation_effort(range, &filter, &source.operation_ids())
@@ -335,6 +375,66 @@ fn read(
     } else {
         (Vec::new(), Vec::new())
     };
+    if let Some(facts) = &facts {
+        let explicit_ids = binding_source
+            .as_ref()
+            .map_or_else(Default::default, Bindings::operation_ids);
+        let sparse = reader
+            .sparse_bound_effort(
+                range,
+                &filter,
+                reader.work_binding_transitions(),
+                &explicit_ids,
+            )
+            .map_err(unavailable)?;
+        if !sparse.is_empty() {
+            let explicit_evidence = reader
+                .bound_operation_effort(range, &filter, &explicit_ids)
+                .map_err(unavailable)?;
+            let native_bound = sparse
+                .iter()
+                .try_fold(0u64, |sum, row| sum.checked_add(row.effort.operations))
+                .ok_or_else(|| unavailable(()))?;
+            let explicit_bound = explicit_evidence
+                .iter()
+                .try_fold(0u64, |sum, row| sum.checked_add(row.operations))
+                .ok_or_else(|| unavailable(()))?;
+            let bound = native_bound
+                .checked_add(explicit_bound)
+                .ok_or_else(|| unavailable(()))?;
+            let unknown = count(&native_summary["counts"]["operations"])
+                .checked_sub(bound)
+                .ok_or_else(|| unavailable(()))?;
+            let coverage = if unknown == 0 { "recorded" } else { "partial" };
+            report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":"sparse_transitions_and_exceptional_declarations",
+                "boundOperations":bound,"unknownOperations":unknown,"sparseBoundOperations":native_bound,
+                "sparseTransitions":sparse.len(),"declaredOperations":explicit_ids.len()});
+            report["coverage"]["workBindings"] = json!(coverage);
+            if let Some(review) = &mut review {
+                review["outcomes"] = Bindings::outcomes_with_sparse(
+                    binding_source.as_ref(),
+                    facts,
+                    outcome_totals.as_ref().ok_or_else(|| unavailable(()))?,
+                    &explicit_evidence,
+                    params.workstream_id.as_deref(),
+                    &sparse,
+                )
+                .map_err(unavailable)?;
+                review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] =
+                    json!(unknown);
+                review["semantics"]["coverage"] = json!(
+                    "Explicit sparse job switches assign subsequent captured operations locally. Exceptional operation declarations override them. Missing or retired evidence stays unattributed; completion does not prove delivery."
+                );
+            }
+            work_contexts.extend(
+                sparse
+                    .iter()
+                    .map(|row| super::local_usage_bindings::sparse_context(&row.binding)),
+            );
+            work_contexts.sort_by(|a, b| a.id.cmp(&b.id));
+            work_contexts.dedup();
+        }
+    }
     let (observations, next_records_cursor) = if params.record_limit == 0 {
         (None, None)
     } else {

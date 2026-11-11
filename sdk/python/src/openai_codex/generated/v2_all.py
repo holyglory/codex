@@ -2299,6 +2299,31 @@ class LocalShellStatus(Enum):
     incomplete = "incomplete"
 
 
+class LocalUsageBindingTransitionParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    authority: str
+    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    source: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    transition_sequence: Annotated[int, Field(alias="transitionSequence", ge=0)]
+    version: Annotated[int, Field(ge=0)]
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageBindingTransitionResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    effective_capture_sequence: Annotated[int, Field(alias="effectiveCaptureSequence", ge=0)]
+    transition_sequence: Annotated[int, Field(alias="transitionSequence", ge=0)]
+    version: Annotated[int, Field(ge=0)]
+
+
 class LocalUsageCursor(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7992,6 +8017,18 @@ class ModelListRequest(BaseModel):
     params: ModelListParams
 
 
+class LocalUsageBindingTransitionRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/bindingTransition"],
+        Field(title="LocalUsage/bindingTransitionRequestMethod"),
+    ]
+    params: LocalUsageBindingTransitionParams
+
+
 class LocalUsageRepositoryIdentityRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13669,6 +13706,7 @@ class ClientRequest(
         | ReviewStartRequest
         | ModelListRequest
         | LocalUsageSummaryRequest
+        | LocalUsageBindingTransitionRequest
         | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
@@ -13780,6 +13818,7 @@ class ClientRequest(
         | ReviewStartRequest
         | ModelListRequest
         | LocalUsageSummaryRequest
+        | LocalUsageBindingTransitionRequest
         | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest

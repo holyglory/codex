@@ -39,6 +39,7 @@ pub struct UsageReader {
     pending_entries: u64,
     freshness: Freshness,
     journal_watermark: u64,
+    work_binding_transitions: Vec<crate::WorkBindingTransition>,
 }
 
 /// Optional row restriction applied inside DuckDB before paging.
@@ -247,6 +248,7 @@ impl UsageReader {
             record_sequences.clear();
             corrections.clear();
         }
+        let work_binding_transitions = crate::work_binding::read_transitions_at(&root)?;
         Ok(Self {
             _pin: pin,
             root,
@@ -258,6 +260,7 @@ impl UsageReader {
             pending_entries,
             freshness,
             journal_watermark,
+            work_binding_transitions,
         })
     }
 
@@ -279,6 +282,11 @@ impl UsageReader {
     /// Last journal fact represented by this consistent snapshot plus tail.
     pub fn journal_watermark(&self) -> u64 {
         self.journal_watermark
+    }
+
+    /// Explicit assignment events pinned with this immutable report view.
+    pub fn work_binding_transitions(&self) -> &[crate::WorkBindingTransition] {
+        &self.work_binding_transitions
     }
 
     /// Resolve trusted descendants from this generation and its bounded tail.

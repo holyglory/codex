@@ -2012,6 +2012,57 @@
       ],
       "type": "string"
     },
+    "LocalUsageBindingTransitionParams": {
+      "additionalProperties": false,
+      "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+      "properties": {
+        "authority": {
+          "type": "string"
+        },
+        "nativeProjectId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcomeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "transitionSequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "workstreamId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "authority",
+        "source",
+        "threadId",
+        "transitionSequence",
+        "version"
+      ],
+      "type": "object"
+    },
     "LocalUsageCursor": {
       "properties": {
         "id": {
@@ -8326,6 +8377,30 @@
         "params"
       ],
       "title": "LocalUsage/summaryRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "localUsage/bindingTransition"
+          ],
+          "title": "LocalUsage/bindingTransitionRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/LocalUsageBindingTransitionParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "LocalUsage/bindingTransitionRequest",
       "type": "object"
     },
     {

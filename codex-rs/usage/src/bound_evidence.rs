@@ -20,6 +20,8 @@ use crate::review_storage::query_rows;
 #[derive(Clone, Debug, Default)]
 pub struct OperationBindingMetadata {
     pub operation_id: String,
+    pub first_sequence: u64,
+    pub retry_of_operation_id: Option<String>,
     pub kind: Option<ReviewOperationKind>,
     pub account_id: Option<String>,
     pub repository_id: Option<String>,
@@ -107,6 +109,8 @@ impl UsageReader {
                     operation.operation_id.clone(),
                     OperationBindingMetadata {
                         operation_id: operation.operation_id,
+                        first_sequence: operation.first_sequence,
+                        retry_of_operation_id: operation.retry_of_operation_id,
                         kind: Some(operation.kind),
                         account_id: operation.account_id,
                         repository_id: operation.repository_id,

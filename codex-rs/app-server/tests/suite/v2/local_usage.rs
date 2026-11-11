@@ -38,7 +38,7 @@ fn fixture_repository() -> Result<TempDir> {
     Ok(directory)
 }
 
-fn fixture_fact(
+pub(super) fn fixture_fact(
     id: &str,
     thread: &str,
     turn: &str,

@@ -120,7 +120,7 @@ fn deserialize_client_request(request: JSONRPCRequest) -> Result<ClientRequest, 
     reject_obsolete_request_fields(&request)?;
     let local_usage = matches!(
         request.method.as_str(),
-        "localUsage/summary" | "localUsage/repositoryIdentity"
+        "localUsage/summary" | "localUsage/repositoryIdentity" | "localUsage/bindingTransition"
     );
     ClientRequest::try_from(request).map_err(|err| {
         if local_usage {
@@ -1207,6 +1207,14 @@ impl MessageProcessor {
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
             ClientRequest::LocalUsageSummary { params, .. } => {
                 crate::request_processors::local_usage_processor::summary(
+                    self.local_usage_home.clone(),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
+            ClientRequest::LocalUsageBindingTransition { params, .. } => {
+                crate::request_processors::local_usage_processor::binding_transition(
                     self.local_usage_home.clone(),
                     params,
                 )

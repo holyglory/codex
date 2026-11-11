@@ -54,6 +54,8 @@ mod store;
 mod summary;
 mod summary_cache;
 mod token_rollup;
+mod work_binding;
+mod work_binding_report;
 
 pub use bound_evidence::BoundOperationEffort;
 pub use bound_evidence::OperationBindingMetadata;
@@ -132,6 +134,11 @@ pub use segment::hour_start;
 pub use segment::read_jsonl_segment;
 pub use store::USAGE_DIRECTORY_NAME;
 pub use store::UsageStore;
+pub use work_binding::WorkBindingTransition;
+pub use work_binding::WorkBindingUpdate;
+pub use work_binding::capture_work_binding_transition;
+pub use work_binding::read_work_binding_transitions;
+pub use work_binding_report::BoundWorkEffort;
 
 #[cfg(test)]
 #[path = "tests.rs"]

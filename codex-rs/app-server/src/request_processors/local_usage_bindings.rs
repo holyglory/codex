@@ -35,6 +35,44 @@ pub(super) struct Bindings {
 }
 
 impl Bindings {
+    pub(super) fn outcomes_with_sparse(
+        source: Option<&Self>,
+        facts: &Value,
+        total: &Value,
+        evidence: &[BoundOperationEffort],
+        workstream: Option<&str>,
+        sparse: &[codex_usage::BoundWorkEffort],
+    ) -> Result<Value, ()> {
+        let mut source = source.cloned().unwrap_or_default();
+        let mut evidence = evidence.to_vec();
+        for (index, row) in sparse.iter().enumerate() {
+            let context = sparse_context(&row.binding);
+            if source
+                .contexts
+                .get(&context.id)
+                .is_some_and(|prior| prior != &context)
+            {
+                return Err(());
+            }
+            // Internal aggregate keys are never returned as captured operation IDs.
+            let key = format!("!sparse:{index}");
+            source.operations.insert(
+                key.clone(),
+                LocalUsageOperationBinding {
+                    schema_version: 1,
+                    operation_id: key.clone(),
+                    work_context_id: context.id.clone(),
+                    captured_at_ms: row.binding.captured_at_ms,
+                },
+            );
+            source.contexts.insert(context.id.clone(), context);
+            let mut effort = row.effort.clone();
+            effort.operation_id = key;
+            evidence.push(effort);
+        }
+        source.outcomes(facts, total, &evidence, workstream)
+    }
+
     pub(super) fn merge_request(
         sidecar: Option<&Self>,
         declarations: Option<&[LocalUsageWorkContextBinding]>,
@@ -292,8 +330,24 @@ impl Bindings {
             "totals":scoped_total,"attributed":attributed,"unattributed":unattributed,
             "unattributedReasons":{"operation_context_or_outcome_unobserved":unattributed["operations"],"token_observation_context_unobserved":unattributed_observations},
             "totalRows":rows.len(),"rows":rows,"nextCursor":Value::Null,
-            "basis":"Explicit version-1 request/compatibility declarations joined by captured operation_id. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery."}),
+            "basis":"Explicit sparse assignment intervals and exceptional operation declarations joined to captured operation identity. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery."}),
         )
+    }
+}
+
+pub(super) fn sparse_context(
+    binding: &codex_usage::WorkBindingTransition,
+) -> LocalUsageWorkContext {
+    LocalUsageWorkContext {
+        schema_version: 1,
+        id: binding.context_id(),
+        repository_id: None,
+        native_project_id: binding.update.native_project_id.clone(),
+        workstream_id: binding.update.workstream_id.clone(),
+        outcome_id: binding.update.outcome_id.clone(),
+        thread_id: Some(binding.update.thread_id.clone()),
+        turn_id: None,
+        experiment_ref: None,
     }
 }
 

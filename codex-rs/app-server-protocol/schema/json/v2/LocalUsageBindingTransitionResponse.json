@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "capturedAtMs": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "effectiveCaptureSequence": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "transitionSequence": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "capturedAtMs",
+    "effectiveCaptureSequence",
+    "transitionSequence",
+    "version"
+  ],
+  "title": "LocalUsageBindingTransitionResponse",
+  "type": "object"
+}

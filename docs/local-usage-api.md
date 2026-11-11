@@ -157,8 +157,9 @@ and groups measured effort under `review.outcomes.rows` by declared outcome ID.
 An outcome row also carries its declared `workstreamId`. Contexts without an
 outcome ID, missing or retired operation facts, response-only token links, and
 operations without bindings stay unattributed. Binding declarations alone never
-create operations, tokens, time, or delivery receipts. With neither request
-bindings nor a compatibility source, arrays stay empty and effort unattributed.
+create operations, tokens, time, or delivery receipts. Without exceptional
+declarations, sparse assignment events provide the native binding source below.
+Missing assignment evidence remains unattributed.
 
 `report.workBindings` identifies the declaration basis, bound/unknown operation
 counts, matched/unmatched declaration counts, and a readable source revision.
@@ -192,3 +193,36 @@ isolated synthetic store without a sidecar, plus private `fixture-info.json`,
 selects its authorized source repository path. Fixture timestamps are near the
 test run so live retention cannot retire them during acceptance. Copy this
 fixture into a new isolated home before starting a companion app-server.
+
+## Sparse assignment control
+
+`localUsage/bindingTransition` is an out-of-band control request, sent only when
+the explicitly assigned job changes. Version 1 accepts `nativeProjectId`,
+`threadId`, optional `workstreamId` and `outcomeId`, `transitionSequence`,
+`source`, and `authority`. Null project/work IDs explicitly clear the assignment.
+Identifiers contain at most 128 ASCII letters, digits, hyphens, underscores,
+periods or colons. Source and authority describe the producer's assertion;
+neither verifies a Coordinator task or proves delivery. Reading a task, repository
+identity, phase and token totals never create an assignment.
+
+The content-free `usage-v2/work-bindings.jsonl` journal retains one event per
+accepted switch. Its capture boundary is the next canonical usage sequence,
+assigned under the same writer lock as observations. An identical retry is
+idempotent. An older or conflicting sequence for that thread is rejected.
+Runtime producers must serialize the switch with their capture queue before
+calling this storage boundary; synchronous external producers already satisfy
+that ordering through the journal writer lock.
+
+Native performance reports join an operation's first captured sequence to the
+latest applicable switch for its thread. Later facts retain that first binding.
+Retries follow an explicit, same-thread predecessor chain; absent or retired
+predecessors remain unattributed. Exceptional request declarations override
+sparse assignment for those exact operation IDs without double counting.
+`operationBindings` continues to contain only exceptional declarations; native
+bindings are represented by sparse contexts and aggregate counts. No assignment
+metadata is added to model requests, prompts, or individual usage records.
+
+This protocol/storage stage remains preliminary until the runtime queue and
+agent control surface are integrated and verified. Retention, large-history
+indexing and binding-specific unavailable coverage also require the follow-up
+acceptance review; the new control method is not yet advertised in initialize.

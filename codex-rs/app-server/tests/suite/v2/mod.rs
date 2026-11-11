@@ -89,6 +89,7 @@ mod host_skills;
 mod imagegen_extension;
 mod initialize;
 mod local_usage;
+mod local_usage_sparse;
 mod luna_reserve;
 mod marketplace_add;
 mod marketplace_remove;

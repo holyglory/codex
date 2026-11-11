@@ -215,7 +215,7 @@ impl UsageReader {
             "providerTotalTokens": measurement, "activeAgentMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
             "elapsedExecutionMs": {"measured":operation_counts["interval_sum_ms"],"exact":Value::Null,"unknown":unknown_intervals},
             "recordedWaitMs": {"measured":retries.wait_ms,"exact":Value::Null,"unknown":Value::Null}});
-        Ok(json!({
+        let mut report = json!({
             "schemaVersion":1,"kind":"performanceReview", "window":{"fromAtMs":(start != i64::MIN).then_some(start),"toAtMs":(end != i64::MAX).then_some(end)},
             "tokens":tokens,"tokensByActivity":by_activity,"operations":operations,
             "operationsByActivity":by_operation_activity,"tools":tools,"counts":operation_counts,"waits":retries.waits,
@@ -242,6 +242,16 @@ impl UsageReader {
             "evidence":{"action":"details","details":["operations","tokens","coverage","classifications"],"repository":filter.repository_id,
                 "thread_id":filter.thread_id,"from_at_ms":(start != i64::MIN).then_some(start),"to_at_ms":(end != i64::MAX).then_some(end),"limit":20},
             "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available execution intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Retry waits are measured separately and excluded from execution counts and sums. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
-        }))
+        });
+        if !self.work_binding_transitions().is_empty() {
+            let sparse = self.sparse_bound_effort(
+                range,
+                filter,
+                self.work_binding_transitions(),
+                &Default::default(),
+            )?;
+            crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
+        }
+        Ok(report)
     }
 }

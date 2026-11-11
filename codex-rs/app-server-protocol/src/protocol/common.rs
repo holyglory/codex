@@ -1157,6 +1157,11 @@ client_request_definitions! {
         serialization: None,
         response: v2::LocalUsageSummaryResponse,
     },
+    LocalUsageBindingTransition => "localUsage/bindingTransition" {
+        params: v2::LocalUsageBindingTransitionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::LocalUsageBindingTransitionResponse,
+    },
     LocalUsageRepositoryIdentity => "localUsage/repositoryIdentity" {
         params: v2::LocalUsageRepositoryIdentityParams,
         serialization: None,

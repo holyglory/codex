@@ -258,6 +258,8 @@ export type { ItemStartedNotification } from "./ItemStartedNotification";
 export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
 export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
 export type { LocalUsageAccountingCapability } from "./LocalUsageAccountingCapability";
+export type { LocalUsageBindingTransitionParams } from "./LocalUsageBindingTransitionParams";
+export type { LocalUsageBindingTransitionResponse } from "./LocalUsageBindingTransitionResponse";
 export type { LocalUsageCursor } from "./LocalUsageCursor";
 export type { LocalUsageOperationBinding } from "./LocalUsageOperationBinding";
 export type { LocalUsageRepositoryIdentityParams } from "./LocalUsageRepositoryIdentityParams";
