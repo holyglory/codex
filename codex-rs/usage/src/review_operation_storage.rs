@@ -82,6 +82,10 @@ pub(crate) fn write_operation_rows(
         column!(StringArray, |row| row.process_id.as_deref()),
         column!(StringArray, |row| row.agent_id.as_deref()),
         column!(StringArray, |row| row.retry_of_operation_id.as_deref()),
+        column!(StringArray, |row| row.work_native_project_id.as_deref()),
+        column!(StringArray, |row| row.workstream_id.as_deref()),
+        column!(StringArray, |row| row.work_outcome_id.as_deref()),
+        column!(UInt64Array, |row| row.work_binding_start_sequence),
     ];
     let fields = OPERATION_COLUMNS
         .iter()

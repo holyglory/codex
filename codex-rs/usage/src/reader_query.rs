@@ -525,6 +525,10 @@ pub(crate) fn parquet_source(
                     | "retry_operations"
                     | "observed_attempts"
                     | "linked_operations"
+                    | "work_native_project_id"
+                    | "workstream_id"
+                    | "work_outcome_id"
+                    | "work_binding_start_sequence"
             )
         })
         .collect::<Vec<_>>();

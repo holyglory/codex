@@ -61,6 +61,16 @@ pub struct ReviewOperation {
     /// Actual runtime/transport retry predecessor, distinct from an explicit redo.
     #[serde(default)]
     pub retry_of_operation_id: Option<String>,
+    /// Explicit agent-declared work captured locally at the accepted start.
+    #[serde(default)]
+    pub work_native_project_id: Option<String>,
+    #[serde(default)]
+    pub workstream_id: Option<String>,
+    #[serde(default)]
+    pub work_outcome_id: Option<String>,
+    /// An observed first start; a terminal-first or legacy row has no anchor.
+    #[serde(default)]
+    pub work_binding_start_sequence: Option<u64>,
 }
 
 impl ReviewOperation {
@@ -99,6 +109,10 @@ impl ReviewOperation {
             process_id: None,
             agent_id: None,
             retry_of_operation_id: None,
+            work_native_project_id: None,
+            workstream_id: None,
+            work_outcome_id: None,
+            work_binding_start_sequence: None,
         };
         state.merge(sequence, record)?;
         Ok(state)
@@ -158,6 +172,9 @@ impl ReviewOperation {
             }
             if !self.terminal_observed {
                 fill(&mut self.coverage, record.coverage.clone())?;
+                if sequence == self.first_sequence {
+                    self.work_binding_start_sequence = Some(sequence);
+                }
             }
             self.start_observed = true;
         }

@@ -269,6 +269,10 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
             process_id: None,
             agent_id: None,
             retry_of_operation_id: None,
+            work_native_project_id: None,
+            workstream_id: None,
+            work_outcome_id: None,
+            work_binding_start_sequence: Some(1),
         }]
     );
     assert_eq!(closed.partitions[0].open_operations, 0);
