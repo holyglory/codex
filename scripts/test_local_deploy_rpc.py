@@ -75,6 +75,7 @@ class Peer:
                 effort = {"activeAgentMs": {"measured": 0, "exact": None, "unknown": 1},
                           "elapsedExecutionMs": {"measured": 0, "exact": None, "unknown": 1}}
                 result["report"]["scope"] = {"type": "repository", "id": "fixture-repository"}
+                result["report"]["timeRange"] = {"startMs": params["fromAtMs"], "endMs": params["toAtMs"]}
                 result["report"]["workBindings"] = {"schemaVersion": 1,
                     "basis": "request_declarations", "declaredOperations": 1}
                 result["review"] = {"outcomes": {"schemaVersion": 1, "coverage": "unattributed",
@@ -175,10 +176,16 @@ class LocalDeployRpcTests(unittest.TestCase):
             ("localUsage/repositoryIdentity", lambda value: value.update(formatVersion=99)),
             ("localUsage/repositoryIdentity", lambda value: value.update(repositoryId=["private-payload"])),
             ("localUsage/summary", lambda value: value["report"].update(databaseSchemaVersion=99)),
+            ("localUsage/summary", lambda value: value["report"].update(schemaVersion=True)),
+            ("localUsage/summary", lambda value: value["summary"].update(schemaVersion=True)),
+            ("localUsage/summary", lambda value: value["summary"].update(inputTokens=-1)),
             ("localUsage/summary", lambda value: value["snapshot"].update(generatedAt=2001)),
             ("localUsage/summary", lambda value: value["snapshot"].update(journalWatermark=1)),
             ("localUsage/summary", lambda value: value["summary"].update(inputTokens="private-payload")),
             ("localUsage/summary", lambda value: value["report"].update(workBindings={})),
+            ("localUsage/summary", lambda value: value["report"].update(scope={"type": "all", "id": None})),
+            ("localUsage/summary", lambda value: value["report"].update(timeRange=None)),
+            ("localUsage/summary", lambda value: value["review"]["outcomes"].update(schemaVersion=True) if "review" in value else None),
             ("localUsage/summary", lambda value: value.update(review=None) if "review" in value else None),
             ("localUsage/summary", lambda value: value["review"]["outcomes"].update(rows="private-payload") if "review" in value else None),
             ("localUsage/summary", lambda value: value["review"]["outcomes"]["totals"]["elapsedExecutionMs"].update(exact=100) if "review" in value else None),

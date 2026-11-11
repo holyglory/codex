@@ -255,14 +255,16 @@ def verify_connection(rpc, plan):
         type(summary.get("contractVersion")) is not int
         or summary["contractVersion"] != 1
         or summary.get("source") != "usage-v2"
-        or report.get("schemaVersion") != 1
+        or type(report.get("schemaVersion")) is not int
+        or report["schemaVersion"] != 1
         or report.get("kind") != "usageSummary"
         or report.get("databaseSchemaVersion") != 3
         or report.get("scope") != {"type": "all", "id": None}
         or report.get("coverage", {}).get("state") not in {"complete", "partial", "unobserved"}
-        or native.get("schemaVersion") != 1
+        or type(native.get("schemaVersion")) is not int
+        or native["schemaVersion"] != 1
         or native.get("kind") != "usageSummary"
-        or any(type(native.get(key)) is not int for key in
+        or any(type(native.get(key)) is not int or native[key] < 0 for key in
                ("records", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"))
         or any(type(report.get("counts", {}).get(key)) is not int or report["counts"][key] < 0
                for key in ("operations", "modelRequests", "tools"))
@@ -296,9 +298,17 @@ def verify_connection(rpc, plan):
     scoped = rpc.call("localUsage/summary", review_params)
     if (
         not isinstance(scoped, dict)
-        or scoped.get("contractVersion") != 1
+        or type(scoped.get("contractVersion")) is not int
+        or scoped["contractVersion"] != 1
         or scoped.get("source") != "usage-v2"
         or not isinstance(scoped.get("report"), dict)
+        or scoped["report"].get("scope") != {
+            "type": "repository" if identity["repositoryId"] is not None else "all",
+            "id": identity["repositoryId"],
+        }
+        or scoped["report"].get("timeRange") != {
+            "startMs": review_params["fromAtMs"], "endMs": review_params["toAtMs"],
+        }
         or not isinstance(scoped.get("review"), dict)
         or not isinstance(scoped.get("workContexts"), list)
         or not isinstance(scoped.get("operationBindings"), list)
@@ -308,15 +318,18 @@ def verify_connection(rpc, plan):
     outcomes = scoped["review"].get("outcomes")
     if (
         not isinstance(bindings, dict)
-        or bindings.get("schemaVersion") != 1
+        or type(bindings.get("schemaVersion")) is not int
+        or bindings["schemaVersion"] != 1
         or bindings.get("basis") not in {"request_declarations", "request_and_compatibility_declarations"}
         or type(bindings.get("declaredOperations")) is not int
         or not 1 <= bindings["declaredOperations"] <= 256
         or not isinstance(outcomes, dict)
-        or outcomes.get("schemaVersion") != 1
+        or type(outcomes.get("schemaVersion")) is not int
+        or outcomes["schemaVersion"] != 1
         or outcomes.get("coverage") not in {"unattributed", "partial", "complete"}
         or not isinstance(outcomes.get("rows"), list)
         or any(not isinstance(row, dict) for row in outcomes["rows"])
+        or any(row.get("workstreamId") != review_params["workstreamId"] for row in outcomes["rows"])
     ):
         raise RuntimeError("usage-v2-outcome-contract-invalid")
     efforts = [outcomes.get(key) for key in ("totals", "attributed", "unattributed")]
