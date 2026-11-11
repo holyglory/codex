@@ -155,12 +155,14 @@ impl UsageReader {
                 |row| row.get(0),
             )
             .map_err(query_error)?;
-        let model_without_total: u64 = query.connection.query_row(&format!(
-            "SELECT count(*)::UBIGINT FROM ({}) o WHERE o.kind = 'model_request' AND NOT EXISTS \
-             (SELECT 1 FROM ({}) c WHERE c.provider_total_tokens IS NOT NULL AND \
-              (c.operation_id = o.operation_id OR (c.response_id IS NOT NULL AND c.response_id = o.response_id)))",
-            query.operations, query.contributions
-        ), [], |row| row.get(0)).map_err(query_error)?;
+        let model_without_total: u64 = query
+            .connection
+            .query_row(
+                &model_total_coverage_query(&query.operations, &query.contributions),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(query_error)?;
         let total_operations = operation_counts["operations"].as_u64().unwrap_or_default();
         let detail_operations: u64 = query
             .connection
@@ -267,4 +269,19 @@ impl UsageReader {
         }
         Ok(report)
     }
+}
+
+/// A total may match either explicit identity. Separate equality anti-joins
+/// avoid comparing every model request with every token observation.
+pub(crate) fn model_total_coverage_query(operations: &str, contributions: &str) -> String {
+    format!(
+        "SELECT count(*)::UBIGINT FROM ({operations}) o \
+         ANTI JOIN (SELECT DISTINCT operation_id FROM ({contributions}) \
+             WHERE provider_total_tokens IS NOT NULL AND operation_id IS NOT NULL) direct \
+             ON o.operation_id=direct.operation_id \
+         ANTI JOIN (SELECT DISTINCT response_id FROM ({contributions}) \
+             WHERE provider_total_tokens IS NOT NULL AND response_id IS NOT NULL) response \
+             ON o.response_id=response.response_id \
+         WHERE o.kind='model_request'"
+    )
 }

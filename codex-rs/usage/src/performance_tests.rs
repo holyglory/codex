@@ -642,6 +642,114 @@ fn fresh_process_recovery_helper() {
 
 #[test]
 #[ignore = "query profiling against a retained, fully published synthetic fixture"]
+fn retained_model_total_coverage_plan() {
+    let artifact = PathBuf::from(
+        std::env::var_os("CODEX_USAGE_SCALE_REUSE_ARTIFACT")
+            .expect("set retained synthetic fixture"),
+    );
+    let evidence = PathBuf::from(
+        std::env::var_os("CODEX_USAGE_COVERAGE_DIAGNOSTIC_DIR")
+            .expect("set a new caller-owned diagnostic directory"),
+    );
+    fs::create_dir(&evidence).expect("new immutable diagnostic directory");
+    let root = artifact.join("codex-home").join(USAGE_DIRECTORY_NAME);
+    let _pin =
+        crate::reclamation::SnapshotPin::acquire(&root).expect("pin retained immutable files");
+    let manifest = ManifestStore::new(root.join("manifest.json"))
+        .load()
+        .expect("retained manifest");
+    let projection = load_review_projection(&root, &manifest)
+        .expect("retained projection")
+        .expect("published operations");
+    assert_eq!(
+        manifest.retired_review_operations, 0,
+        "diagnostic consumes complete fixture detail"
+    );
+    assert_eq!(manifest.retired_review_contributions, 0);
+    let directory = root.join("segments");
+    let operations = crate::reader_query::parquet_source(
+        &directory,
+        &projection
+            .partitions
+            .iter()
+            .map(|partition| partition.file.clone())
+            .collect::<Vec<_>>(),
+        &[
+            ("operation_id", "VARCHAR"),
+            ("kind", "VARCHAR"),
+            ("response_id", "VARCHAR"),
+        ],
+    )
+    .expect("operation projection");
+    let contributions = crate::reader_query::parquet_source(
+        &directory,
+        &projection
+            .contribution_fragments
+            .iter()
+            .map(|fragment| fragment.file.clone())
+            .collect::<Vec<_>>(),
+        &[
+            ("operation_id", "VARCHAR"),
+            ("response_id", "VARCHAR"),
+            ("provider_total_tokens", "UBIGINT"),
+        ],
+    )
+    .expect("token link projection");
+    let old = format!(
+        "SELECT count(*)::UBIGINT FROM ({operations}) o WHERE o.kind='model_request' AND NOT EXISTS \
+        (SELECT 1 FROM ({contributions}) c WHERE c.provider_total_tokens IS NOT NULL AND \
+        (c.operation_id=o.operation_id OR (c.response_id IS NOT NULL AND c.response_id=o.response_id)))"
+    );
+    let proposed = crate::report::model_total_coverage_query(&operations, &contributions);
+    let connection = crate::duckdb_connection::open_in_memory().expect("diagnostic query engine");
+    let mut plans = Vec::new();
+    for (name, sql) in [("old", &old), ("proposed", &proposed)] {
+        let plan = connection
+            .prepare(&format!("EXPLAIN {sql}"))
+            .expect("prepare plan")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("explain without execution")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("complete plan")
+            .join("\n");
+        fs::write(
+            evidence.join(format!("model-total-coverage-{name}.plan.txt")),
+            &plan,
+        )
+        .expect("retain complete plan");
+        plans.push(plan);
+    }
+    let started = Instant::now();
+    let missing: u64 = connection
+        .query_row(&proposed, [], |row| row.get(0))
+        .expect("execute equality anti-joins only");
+    let elapsed = started.elapsed();
+    assert_eq!(missing, 0, "each synthetic request has provider totals");
+    let nested =
+        |plan: &str| plan.contains("BLOCKWISE_NL_JOIN") || plan.contains("NESTED_LOOP_JOIN");
+    assert!(
+        !nested(&plans[1]),
+        "proposed model coverage must avoid nested-loop comparisons"
+    );
+    assert!(
+        plans[1].matches("HASH_JOIN").count() >= 2,
+        "both coverage identities use hash joins"
+    );
+    let receipt = json!({"schemaVersion":1,"watermark":manifest.watermark,
+        "oldNestedLoop":nested(&plans[0]),"proposedNestedLoop":nested(&plans[1]),
+        "proposedHashJoins":plans[1].matches("HASH_JOIN").count(),"missingModelTotals":missing,
+        "proposedCountMs":milliseconds(elapsed),"oldQueryExecuted":false,
+        "plans":["model-total-coverage-old.plan.txt","model-total-coverage-proposed.plan.txt"]});
+    fs::write(
+        evidence.join("model-total-coverage-diagnostic.json"),
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("retained diagnostic receipt");
+    eprintln!("model-total-coverage-diagnostic {receipt}");
+}
+
+#[test]
+#[ignore = "query profiling against a retained, fully published synthetic fixture"]
 fn retained_scale_snapshot_queries() {
     let artifact = PathBuf::from(
         std::env::var_os("CODEX_USAGE_SCALE_REUSE_ARTIFACT")

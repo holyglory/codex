@@ -132,6 +132,170 @@ fn assert_private_projection(root: &Path, manifest: &UsageManifest) {
 }
 
 #[test]
+fn provider_total_coverage_uses_either_identity_and_preserves_scoped_unknowns() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let mut facts = Vec::new();
+    for (id, response, kind) in [
+        ("direct", Some("direct-response"), "model_request"),
+        ("response", Some("known-response"), "model_request"),
+        ("both", Some("both-response"), "model_request"),
+        ("zero", None, "model_request"),
+        ("null-total", Some("null-total-response"), "model_request"),
+        ("missing", None, "model_request"),
+        ("other-account", None, "model_request"),
+        ("other-thread", None, "model_request"),
+        ("outside-window", None, "model_request"),
+        ("tool", None, "tool"),
+    ] {
+        let mut begin = started(id, kind, /*at_ms*/ 1000);
+        begin.response_id = response.map(str::to_owned);
+        facts.extend([
+            begin.clone(),
+            finished(&begin, /*at_ms*/ 2000, /*duration_ms*/ 1000),
+        ]);
+    }
+    for (id, operation, response, total, account, thread, at) in [
+        (
+            "direct-total",
+            Some("direct"),
+            None,
+            Some(7),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "response-total",
+            Some("provider-alias"),
+            Some("known-response"),
+            Some(8),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "both-total",
+            Some("both"),
+            Some("both-response"),
+            Some(9),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "both-duplicate",
+            Some("both"),
+            Some("both-response"),
+            Some(9),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "zero-total",
+            Some("zero"),
+            None,
+            Some(0),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "null-total-fact",
+            Some("null-total"),
+            Some("null-total-response"),
+            None,
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "orphan-total",
+            None,
+            None,
+            Some(11),
+            "account-a",
+            "thread-a",
+            1500,
+        ),
+        (
+            "other-account-total",
+            Some("other-account"),
+            None,
+            Some(12),
+            "account-b",
+            "thread-a",
+            1500,
+        ),
+        (
+            "other-thread-total",
+            Some("other-thread"),
+            None,
+            Some(13),
+            "account-a",
+            "thread-b",
+            1500,
+        ),
+        (
+            "outside-window-total",
+            Some("outside-window"),
+            None,
+            Some(14),
+            "account-a",
+            "thread-a",
+            2500,
+        ),
+    ] {
+        let mut token =
+            UsageRecord::new_millis(id, at, /*input_tokens*/ 0, /*output_tokens*/ 0)
+                .with_account(account)
+                .with_thread(thread)
+                .with_repository("repository-a");
+        token.operation_id = operation.map(str::to_owned);
+        token.response_id = response.map(str::to_owned);
+        token.provider_total_tokens = total;
+        token.event = Some("token_observation".into());
+        token.coverage = Some("recorded".into());
+        facts.push(token);
+    }
+    journal
+        .append_batch(facts.into_iter().map(JournalPayload::Record).collect())
+        .expect("capture identities");
+    let range = TimeRange::from_millis(/*start_ms*/ 0, /*end_ms*/ 2200).expect("window");
+    let filter = UsageFilter::default()
+        .for_account("account-a")
+        .for_thread("thread-a")
+        .for_repository("repository-a");
+    for phase in ["journal-tail", "published"] {
+        if phase == "published" {
+            UsagePublisher::open_at(&root)
+                .expect("publisher")
+                .publish_batch(limits())
+                .expect("publish fixture");
+        }
+        let reader = crate::UsageReader::open_at(&root).expect("reader");
+        let report = reader
+            .performance_review(range, &filter)
+            .expect("public scoped review");
+        assert_eq!(
+            report["coverage"]["modelRequestsWithoutProviderTotal"],
+            serde_json::json!(5),
+            "{phase}"
+        );
+        let all = reader
+            .performance_review(TimeRange::all(), &UsageFilter::default())
+            .expect("global review");
+        assert_eq!(
+            all["coverage"]["modelRequestsWithoutProviderTotal"],
+            serde_json::json!(2),
+            "{phase}"
+        );
+    }
+}
+
+#[test]
 fn spanning_operations_tokens_and_late_classification_survive_publication_and_restart() {
     let directory = tempdir().expect("directory");
     let root = directory.path();
