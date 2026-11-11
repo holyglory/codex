@@ -1,7 +1,6 @@
 //! Sparse, explicit assignments. The capture journal lock orders switches with facts.
 use std::fs::File;
 use std::io::Read;
-use std::io::Write;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -60,56 +59,31 @@ pub fn capture_work_binding_transition(
     codex_home: &Path,
     update: WorkBindingUpdate,
 ) -> Result<WorkBindingTransition> {
-    validate(&update)?;
+    validate_update(&update)?;
     let root = codex_home.join(USAGE_DIRECTORY_NAME);
     let guard = storage_file::open_read_write(&root.join("events.lock"))?;
     guard.lock()?;
-    let path = root.join("work-bindings.jsonl");
-    let (transitions, complete_bytes) = read(&path)?;
-    if let Some(previous) = transitions
-        .iter()
-        .rev()
-        .find(|transition| transition.update.thread_id == update.thread_id)
-    {
-        if previous.update == update {
-            return Ok(previous.clone());
-        }
-        if update.transition_sequence <= previous.update.transition_sequence {
-            return Err(invalid("stale or conflicting work binding transition"));
-        }
-    }
-    if transitions.len() == MAX_TRANSITIONS {
-        return Err(invalid("work binding transition journal at capacity"));
-    }
     let journal = UsageJournal::new(root.join("events.jsonl"));
-    let transition = WorkBindingTransition {
-        update,
-        effective_capture_sequence: journal
-            .last_sequence()?
-            .checked_add(1)
-            .ok_or_else(|| invalid("work binding capture sequence exhausted"))?,
-        captured_at_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| invalid("work binding clock unavailable"))?
-            .as_millis()
-            .try_into()
-            .map_err(|_| invalid("work binding clock overflow"))?,
-    };
-    let mut bytes = serde_json::to_vec(&transition)?;
-    bytes.push(b'\n');
-    if complete_bytes.saturating_add(bytes.len() as u64) > MAX_BYTES {
-        return Err(invalid("work binding transition journal at capacity"));
-    }
-    // Discard only an interrupted final append, under the same writer lock.
-    let recovery = storage_file::open_read_write(&path)?;
-    recovery.set_len(complete_bytes)?;
-    drop(recovery);
-    let mut file = storage_file::open_append(&path)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    #[cfg(unix)]
-    File::open(&root)?.sync_all()?;
-    Ok(transition)
+    let effective = journal
+        .last_sequence()?
+        .checked_add(1)
+        .ok_or_else(|| invalid("work binding capture sequence exhausted"))?;
+    let captured_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid("work binding clock unavailable"))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| invalid("work binding clock overflow"))?;
+    crate::work_binding_store::append(&root, update, effective, captured_at_ms)
+}
+
+/// Read the current revision for one scope without decoding its history.
+pub fn read_current_work_binding(
+    codex_home: &Path,
+    thread_id: &str,
+) -> Result<Option<WorkBindingTransition>> {
+    let root = codex_home.join(USAGE_DIRECTORY_NAME);
+    crate::work_binding_store::read_current(&root, thread_id)
 }
 
 /// Pin the complete transition prefix for one reader. A later switch cannot
@@ -120,20 +94,8 @@ pub fn read_work_binding_transitions(codex_home: &Path) -> Result<Vec<WorkBindin
 }
 
 pub(crate) fn read_transitions_at(root: &Path) -> Result<Vec<WorkBindingTransition>> {
-    let guard = storage_file::open_read_write(&root.join("events.lock"))?;
-    guard.lock_shared()?;
-    read(&root.join("work-bindings.jsonl")).map(|(transitions, _)| transitions)
-}
-
-fn read(path: &Path) -> Result<(Vec<WorkBindingTransition>, u64)> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
-        Err(error) => return Err(error.into()),
-    };
-    storage_file::protect_existing(path)?;
-    let length = file.metadata()?.len();
-    read_prefix(&mut file, length)
+    let _pin = crate::reclamation::SnapshotPin::acquire(root)?;
+    crate::work_binding_store::WorkBindingLookup::open(root)?.read_all()
 }
 
 pub(crate) fn read_prefix(
@@ -166,7 +128,7 @@ pub(crate) fn read_prefix(
             return Err(invalid("work binding transition journal exceeds bounds"));
         }
         let transition: WorkBindingTransition = serde_json::from_slice(line)?;
-        validate(&transition.update)?;
+        validate_transition(&transition)?;
         if transition.effective_capture_sequence == 0
             || transition.effective_capture_sequence < effective
             || transition.captured_at_ms < 0
@@ -186,7 +148,7 @@ pub(crate) fn read_prefix(
     Ok((transitions, complete as u64))
 }
 
-fn validate(update: &WorkBindingUpdate) -> Result<()> {
+pub(crate) fn validate_update(update: &WorkBindingUpdate) -> Result<()> {
     if update.version != 1
         || update.transition_sequence == 0
         || update.native_project_id.is_none()
@@ -210,6 +172,14 @@ fn validate(update: &WorkBindingUpdate) -> Result<()> {
         })
     {
         return Err(invalid("invalid content-free work binding transition"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_transition(transition: &WorkBindingTransition) -> Result<()> {
+    validate_update(&transition.update)?;
+    if transition.effective_capture_sequence == 0 || transition.captured_at_ms < 0 {
+        return Err(invalid("invalid work binding transition boundary"));
     }
     Ok(())
 }
