@@ -357,6 +357,7 @@ pub(crate) fn publish_review_projection(
             return Err(invalid("operation partition exceeds fixed capacity"));
         }
         let mut rows = states.into_values().collect::<Vec<_>>();
+        crate::assign_work_dimensions(root, &mut rows, records);
         let dimensions = rows
             .iter()
             .flat_map(|row| {

@@ -103,7 +103,7 @@ impl UsageReader {
             "WITH RECURSIVE bindings(binding_index,thread_id,effective_sequence,transition_sequence,assigned,binding_project_id,binding_workstream_id,binding_outcome_id) AS (VALUES {}), \
              points AS (SELECT * FROM bindings QUALIFY row_number() OVER \
                (PARTITION BY thread_id,effective_sequence ORDER BY transition_sequence DESC)=1), \
-             ops AS (SELECT * FROM ({statistics}) WHERE {predicate} AND start_observed), \
+             ops AS (SELECT * FROM ({statistics}) WHERE {predicate} AND work_binding_start_sequence=first_sequence), \
              lineage_ops AS (SELECT * FROM (SELECT operation_id,first_sequence,thread_id,retry_of_operation_id FROM ops UNION ALL {dependencies}) \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY first_sequence)=1), \
              lineage AS (SELECT operation_id,operation_id ancestor,first_sequence,thread_id,retry_of_operation_id,0 depth FROM ops \
@@ -167,7 +167,9 @@ fn retry_dependencies(reader: &UsageReader, query: &ReportQuery) -> Result<Strin
         pending = BTreeSet::new();
         for chunk in ids.chunks(256) {
             for metadata in reader.operation_binding_metadata(&chunk.iter().cloned().collect())? {
-                if metadata.first_sequence == 0 || !metadata.start_observed {
+                if metadata.first_sequence == 0
+                    || metadata.work_binding_start_sequence != Some(metadata.first_sequence)
+                {
                     continue;
                 }
                 if let Some(parent) = &metadata.retry_of_operation_id {
