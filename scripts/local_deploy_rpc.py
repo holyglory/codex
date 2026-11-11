@@ -254,7 +254,9 @@ def verify_connection(rpc, plan):
             "workstreamBId",
             "outcomeBId",
         )
-        if not isinstance(sparse_plan, dict) or set(sparse_plan) != set(required_sparse_ids):
+        if not isinstance(sparse_plan, dict) or set(sparse_plan) != set(
+            required_sparse_ids
+        ):
             raise RuntimeError("usage-sparse-plan-invalid")
         for name in required_sparse_ids:
             value = sparse_plan[name]
@@ -513,7 +515,13 @@ def verify_connection(rpc, plan):
             ]
         else:
             phase_specs = [("legacy tools", "", None, None, None)]
-        for phase_index, (phase_name, declaration, expected_revision, expected_workstream, expected_outcome) in enumerate(phase_specs, 1):
+        for phase_index, (
+            phase_name,
+            declaration,
+            expected_revision,
+            expected_workstream,
+            expected_outcome,
+        ) in enumerate(phase_specs, 1):
             rpc.completed = None
             phase_output_start = len(rpc.outputs)
             prompt = (
@@ -546,7 +554,8 @@ def verify_connection(rpc, plan):
                         status.get("revision") != expected_revision
                         or not isinstance(transition, dict)
                         or transition.get("threadId") != thread["id"]
-                        or transition.get("nativeProjectId") != sparse_plan["nativeProjectId"]
+                        or transition.get("nativeProjectId")
+                        != sparse_plan["nativeProjectId"]
                         or transition.get("workstreamId") != expected_workstream
                         or transition.get("outcomeId") != expected_outcome
                     ):
@@ -560,7 +569,9 @@ def verify_connection(rpc, plan):
                 ):
                     raise RuntimeError("real-sparse-status-invalid")
                 phase_outputs = list(rpc.outputs.values())[phase_output_start:]
-                if not any("revision" in str(output.get("raw")) for output in phase_outputs):
+                if not any(
+                    "revision" in str(output.get("raw")) for output in phase_outputs
+                ):
                     raise RuntimeError("real-sparse-receipt-missing")
         required = {"account_management", "usage_stats"}
         direct = set()
@@ -597,7 +608,11 @@ def verify_connection(rpc, plan):
                 not isinstance(report, dict)
                 or report.get("scope") != {"type": "thread", "id": thread["id"]}
                 or not isinstance(bindings, dict)
-                or bindings.get("basis") not in {"explicit_sparse_transitions", "sparse_transitions_and_exceptional_declarations"}
+                or bindings.get("basis")
+                not in {
+                    "explicit_sparse_transitions",
+                    "sparse_transitions_and_exceptional_declarations",
+                }
                 or not isinstance(bindings.get("boundOperations"), int)
                 or bindings["boundOperations"] < 1
                 or not isinstance(bindings.get("unknownOperations"), int)
@@ -612,9 +627,7 @@ def verify_connection(rpc, plan):
             ):
                 raise RuntimeError("real-sparse-report-invalid")
             row_by_outcome = {
-                row.get("outcomeId"): row
-                for row in rows
-                if isinstance(row, dict)
+                row.get("outcomeId"): row for row in rows if isinstance(row, dict)
             }
             for outcome_id, workstream_id in (
                 (sparse_plan["outcomeAId"], sparse_plan["workstreamAId"]),

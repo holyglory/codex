@@ -51,7 +51,9 @@ def authoritative_source_sha256(root):
     )
     response = json.loads(result.stdout)
     source_sha256 = response.get("sha256")
-    if response.get("schema") != 2 or not re.fullmatch(r"[0-9a-f]{64}", source_sha256 or ""):
+    if response.get("schema") != 2 or not re.fullmatch(
+        r"[0-9a-f]{64}", source_sha256 or ""
+    ):
         raise RuntimeError("source-digest-invalid")
     return source_sha256
 
@@ -101,7 +103,9 @@ def require_sparse_proof(proof):
 
 
 def update_capability_inventory(completion, proof, evidence_ref):
-    if not isinstance(completion, dict) or not isinstance(completion.get("capabilities"), list):
+    if not isinstance(completion, dict) or not isinstance(
+        completion.get("capabilities"), list
+    ):
         raise RuntimeError("completion-inventory-invalid")
     sparse_ids = {
         "live-sparse-job-attribution",
@@ -109,10 +113,18 @@ def update_capability_inventory(completion, proof, evidence_ref):
     }
     account_ids = {"account-routing-and-cli", "accepted-account-cli-output"}
     resume_ids = {"desktop-profile-authentication"}
-    account_proof = proof.get("accountAuthStatusAgrees") is True and proof.get("accountToolRequested") is True
-    resume_proof = proof.get("originalChatResumed") is True and proof.get("secondClientReattached") is True
+    account_proof = (
+        proof.get("accountAuthStatusAgrees") is True
+        and proof.get("accountToolRequested") is True
+    )
+    resume_proof = (
+        proof.get("originalChatResumed") is True
+        and proof.get("secondClientReattached") is True
+    )
     for capability in completion["capabilities"]:
-        if not isinstance(capability, dict) or not isinstance(capability.get("id"), str):
+        if not isinstance(capability, dict) or not isinstance(
+            capability.get("id"), str
+        ):
             raise RuntimeError("completion-capability-invalid")
         capability_id = capability["id"]
         if capability_id in sparse_ids:
@@ -135,7 +147,13 @@ def owner_evidence(receipt):
         "ownershipMode": receipt.get("ownershipMode"),
         "serving": {
             key: serving.get(key)
-            for key in ("pid", "uid", "startTicks", "executableSha256", "noNewPrivileges")
+            for key in (
+                "pid",
+                "uid",
+                "startTicks",
+                "executableSha256",
+                "noNewPrivileges",
+            )
         },
         "events": [
             {"phase": event.get("phase"), "atMs": event.get("atMs")}
@@ -172,7 +190,11 @@ def qualify(args):
     package_root = Path(args.package_root).resolve(strict=True)
     package = package_root / "package"
     executable = package / "bin/codex"
-    if not executable.is_file() or executable.is_symlink() or not os.access(executable, os.X_OK):
+    if (
+        not executable.is_file()
+        or executable.is_symlink()
+        or not os.access(executable, os.X_OK)
+    ):
         raise RuntimeError("actual-executable-missing")
     metadata = load_json(package / "codex-package.json", "package-metadata")
     source_record = load_json(package_root / "source.json", "package-source")
@@ -196,7 +218,10 @@ def qualify(args):
     for field in ("pid", "uid", "startTicks", "executableSha256", "noNewPrivileges"):
         if process.get(field) != serving.get(field):
             raise RuntimeError("serving-process-identity-changed")
-    if process["noNewPrivileges"] != 0 or process["executableSha256"] != executable_sha256:
+    if (
+        process["noNewPrivileges"] != 0
+        or process["executableSha256"] != executable_sha256
+    ):
         raise RuntimeError("serving-process-security-or-hash-mismatch")
     codex_home = args.codex_home or os.environ.get("CODEX_HOME")
     if not codex_home:
@@ -223,7 +248,11 @@ def qualify(args):
         raise RuntimeError("sparse-proof-stale-requires-fresh-verification")
     if not verify_started <= checked_at_ms <= serving_verified:
         raise RuntimeError("sparse-proof-freshness-mismatch")
-    worktree_id = args.worktree_id or os.environ.get("DEVCOORDINATOR_WORKTREE_ID") or os.environ.get("CODEX_MULTI_NATIVE_WORKTREE_ID")
+    worktree_id = (
+        args.worktree_id
+        or os.environ.get("DEVCOORDINATOR_WORKTREE_ID")
+        or os.environ.get("CODEX_MULTI_NATIVE_WORKTREE_ID")
+    )
     run_id = args.run_id or os.environ.get("DEVCOORDINATOR_RUN_ID")
     check = args.check or os.environ.get("DEVCOORDINATOR_CHECK_NAME")
     if not worktree_id or not WORKTREE_PATTERN.fullmatch(worktree_id):
@@ -272,7 +301,9 @@ def qualify(args):
             if isinstance(capability, dict) and isinstance(capability.get("id"), str)
         },
     }
-    (output / "qualification.json").write_text(json.dumps(qualification, indent=2) + "\n")
+    (output / "qualification.json").write_text(
+        json.dumps(qualification, indent=2) + "\n"
+    )
     delivery = {
         "version": 1,
         "kind": "local-executable",
@@ -304,7 +335,9 @@ def main():
     parser.add_argument("--check")
     args = parser.parse_args()
     if args.target != TARGET:
-        raise SystemExit("local qualification currently supports only x86_64-unknown-linux-gnu")
+        raise SystemExit(
+            "local qualification currently supports only x86_64-unknown-linux-gnu"
+        )
     qualify(args)
 
 

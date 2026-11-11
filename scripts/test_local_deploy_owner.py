@@ -164,22 +164,48 @@ class PostDeploymentQualificationTests(unittest.TestCase):
         (package / "resources").mkdir()
         (package / "resources/rg").write_bytes(b"companion-resource")
         (package / "codex-package.json").write_text(
-            json.dumps({"entrypoint": "bin/codex", "target": "x86_64-unknown-linux-gnu", "version": "fixture-version"})
+            json.dumps(
+                {
+                    "entrypoint": "bin/codex",
+                    "target": "x86_64-unknown-linux-gnu",
+                    "version": "fixture-version",
+                }
+            )
         )
         source_sha = "a" * 64
-        (package_root / "source.json").write_text(json.dumps({"source_sha256": source_sha}))
+        (package_root / "source.json").write_text(
+            json.dumps({"source_sha256": source_sha})
+        )
         (package_root / "completion.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "claim": "preliminary",
-                "source_sha256": source_sha,
-                "capabilities": [
-                    {"id": "live-sparse-job-attribution", "state": "fixture_only", "evidence_refs": []},
-                    {"id": "account-routing-and-cli", "state": "fixture_only", "evidence_refs": []},
-                    {"id": "desktop-profile-authentication", "state": "fixture_only", "evidence_refs": []},
-                    {"id": "unknown-capability", "state": "fixture_only", "evidence_refs": []},
-                ],
-            })
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "claim": "preliminary",
+                    "source_sha256": source_sha,
+                    "capabilities": [
+                        {
+                            "id": "live-sparse-job-attribution",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "id": "account-routing-and-cli",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "id": "desktop-profile-authentication",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "id": "unknown-capability",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                    ],
+                }
+            )
         )
         serving = identity(server.pid)
         now = int(time.time() * 1000)
@@ -238,7 +264,11 @@ class PostDeploymentQualificationTests(unittest.TestCase):
         import qualify_local_delivery
 
         with (
-            patch.object(qualify_local_delivery, "authoritative_source_sha256", return_value="a" * 64),
+            patch.object(
+                qualify_local_delivery,
+                "authoritative_source_sha256",
+                return_value="a" * 64,
+            ),
             patch.object(
                 qualify_local_delivery.subprocess,
                 "run",
@@ -274,11 +304,14 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                     delivery["observed_sha256"], digest(output / "package/bin/codex")
                 )
                 self.assertEqual(
-                    (output / "package/resources/rg").read_bytes(), b"companion-resource"
+                    (output / "package/resources/rg").read_bytes(),
+                    b"companion-resource",
                 )
                 completion = json.loads((output / "completion.json").read_text())
                 self.assertEqual(completion["claim"], "preliminary")
-                states = {item["id"]: item["state"] for item in completion["capabilities"]}
+                states = {
+                    item["id"]: item["state"] for item in completion["capabilities"]
+                }
                 self.assertEqual(states["live-sparse-job-attribution"], "real_e2e")
                 self.assertEqual(states["unknown-capability"], "fixture_only")
             finally:
@@ -288,7 +321,9 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 server.stderr.close()
 
     def test_stale_rpc_proof_rejected_while_old_serving_process_lives(self):
-        with tempfile.TemporaryDirectory(prefix="qualify-stale-", dir="/tmp") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="qualify-stale-", dir="/tmp"
+        ) as temporary:
             root = Path(temporary)
             home = root / "home"
             endpoint = home / "app-server-control/app-server-control.sock"
@@ -300,7 +335,9 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(RuntimeError, "sparse-proof-stale"):
                     self.run_qualifier(
-                        self.qualify_args(package_root, owner, rpc, root, root / "out", home)
+                        self.qualify_args(
+                            package_root, owner, rpc, root, root / "out", home
+                        )
                     )
                 self.assertIsNone(server.poll())
             finally:
@@ -312,7 +349,9 @@ class PostDeploymentQualificationTests(unittest.TestCase):
     def test_changed_current_peer_rejected_even_when_old_pid_remains_alive(self):
         from local_deploy_owner import identity
 
-        with tempfile.TemporaryDirectory(prefix="qualify-peer-", dir="/tmp") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="qualify-peer-", dir="/tmp"
+        ) as temporary:
             root = Path(temporary)
             home = root / "home"
             endpoint = home / "app-server-control/app-server-control.sock"
@@ -327,9 +366,13 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 self.assertIsNone(old.poll())
                 replacement = self.start_server(endpoint)
                 self.assertNotEqual(old_identity, identity(replacement.pid))
-                with self.assertRaisesRegex(RuntimeError, "serving-control-peer-identity-mismatch"):
+                with self.assertRaisesRegex(
+                    RuntimeError, "serving-control-peer-identity-mismatch"
+                ):
                     self.run_qualifier(
-                        self.qualify_args(package_root, owner, rpc, root, root / "out", home)
+                        self.qualify_args(
+                            package_root, owner, rpc, root, root / "out", home
+                        )
                     )
             finally:
                 if replacement is not None:

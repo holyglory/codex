@@ -147,7 +147,7 @@ impl Resolver<'_> {
                 self.unavailable = true;
                 return None;
             }
-            let binding = match self.lookup.as_ref()?.lookup(thread,row.first) {
+            let binding = match self.lookup.as_ref()?.lookup(thread, row.first) {
                 Ok(binding) => binding,
                 Err(_) => {
                     self.unavailable = true;
