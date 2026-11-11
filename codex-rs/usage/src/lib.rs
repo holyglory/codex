@@ -141,7 +141,9 @@ pub use work_binding::WorkBindingUpdate;
 pub use work_binding::capture_work_binding_transition;
 pub use work_binding::read_work_binding_transitions;
 pub(crate) use work_binding_assignment::assign_work_dimensions;
+pub use work_binding_report::BoundWorkContext;
 pub use work_binding_report::BoundWorkEffort;
+pub use work_binding_report::WorkEffort;
 
 #[cfg(test)]
 #[path = "tests.rs"]

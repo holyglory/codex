@@ -243,7 +243,14 @@ impl UsageReader {
                 "thread_id":filter.thread_id,"from_at_ms":(start != i64::MIN).then_some(start),"to_at_ms":(end != i64::MAX).then_some(end),"limit":20},
             "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available execution intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Retry waits are measured separately and excluded from execution counts and sums. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
         });
-        if self.work_binding_coverage() == "unavailable" {
+        let sparse = crate::work_binding_report::bound_work_effort_from_query(
+            &query,
+            range,
+            &Default::default(),
+        )?;
+        if !sparse.is_empty() {
+            crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
+        } else if self.work_binding_coverage() == "unavailable" {
             report["workBindings"]["coverage"] = json!("unavailable");
             report["workBindings"]["basis"] = json!("binding_metadata_unavailable");
             report["outcomes"]["coverage"] = json!("unattributed");
@@ -251,12 +258,6 @@ impl UsageReader {
                 "Binding metadata is unavailable; token and operation measurements remain available without inferred assignments."
             );
         } else if self.work_binding_coverage() == "recorded" {
-            let sparse = self.sparse_bound_effort(
-                range,
-                filter,
-                self.work_binding_transitions(),
-                &Default::default(),
-            )?;
             crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
         }
         Ok(report)

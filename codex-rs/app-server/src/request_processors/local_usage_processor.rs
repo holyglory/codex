@@ -356,12 +356,7 @@ fn read(
             .as_ref()
             .map_or_else(Default::default, Bindings::operation_ids);
         let sparse = reader
-            .sparse_bound_effort(
-                range,
-                &filter,
-                reader.work_binding_transitions(),
-                &explicit_ids,
-            )
+            .bound_work_effort(range, &filter, &explicit_ids)
             .map_err(unavailable)?;
         if !sparse.is_empty() {
             let explicit_evidence = reader
@@ -384,7 +379,7 @@ fn read(
             let coverage = if unknown == 0 { "recorded" } else { "partial" };
             report["workBindings"] = json!({"schemaVersion":1,"coverage":coverage,"basis":"sparse_transitions_and_exceptional_declarations",
                 "boundOperations":bound,"unknownOperations":unknown,"sparseBoundOperations":native_bound,
-                "sparseTransitions":sparse.len(),"declaredOperations":explicit_ids.len()});
+                "capturedContexts":sparse.len(),"declaredOperations":explicit_ids.len()});
             report["coverage"]["workBindings"] = json!(coverage);
             if let Some(review) = &mut review {
                 review["outcomes"] = Bindings::outcomes_with_sparse(
@@ -405,7 +400,7 @@ fn read(
             work_contexts.extend(
                 sparse
                     .iter()
-                    .map(|row| super::local_usage_bindings::sparse_context(&row.binding)),
+                    .map(|row| super::local_usage_bindings::sparse_context(&row.context)),
             );
             work_contexts.sort_by(|a, b| a.id.cmp(&b.id));
             work_contexts.dedup();

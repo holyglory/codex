@@ -43,34 +43,28 @@ impl Bindings {
         workstream: Option<&str>,
         sparse: &[codex_usage::BoundWorkEffort],
     ) -> Result<Value, ()> {
-        let mut source = source.cloned().unwrap_or_default();
-        let mut evidence = evidence.to_vec();
-        for (index, row) in sparse.iter().enumerate() {
-            let context = sparse_context(&row.binding);
-            if source
-                .contexts
-                .get(&context.id)
-                .is_some_and(|prior| prior != &context)
-            {
-                return Err(());
-            }
-            // Internal aggregate keys are never returned as captured operation IDs.
-            let key = format!("!sparse:{index}");
-            source.operations.insert(
-                key.clone(),
-                LocalUsageOperationBinding {
-                    schema_version: 1,
-                    operation_id: key.clone(),
-                    work_context_id: context.id.clone(),
-                    captured_at_ms: row.binding.captured_at_ms,
-                },
-            );
-            source.contexts.insert(context.id.clone(), context);
-            let mut effort = row.effort.clone();
-            effort.operation_id = key;
-            evidence.push(effort);
-        }
-        source.outcomes(facts, total, &evidence, workstream)
+        let mut rows =
+            source.map_or_else(|| Ok(Vec::new()), |source| source.bound_rows(evidence))?;
+        rows.extend(
+            sparse
+                .iter()
+                .map(|row| (sparse_context(&row.context), row.effort.clone())),
+        );
+        outcomes_from_contexts(facts, total, &rows, workstream)
+    }
+
+    fn bound_rows(
+        &self,
+        evidence: &[BoundOperationEffort],
+    ) -> Result<Vec<(LocalUsageWorkContext, codex_usage::WorkEffort)>, ()> {
+        evidence
+            .iter()
+            .map(|fact| {
+                let binding = self.operations.get(&fact.operation_id).ok_or(())?;
+                let context = self.contexts.get(&binding.work_context_id).ok_or(())?;
+                Ok((context.clone(), codex_usage::WorkEffort::from(fact)))
+            })
+            .collect()
     }
 
     pub(super) fn merge_request(
@@ -260,92 +254,101 @@ impl Bindings {
         evidence: &[BoundOperationEffort],
         workstream: Option<&str>,
     ) -> Result<Value, ()> {
-        let mut attributed = zero_effort();
-        let mut attributed_observations = 0u64;
-        let mut excluded = zero_effort();
-        let mut excluded_observations = 0u64;
-        let mut groups = BTreeMap::<(String, Option<String>), Value>::new();
-        for fact in evidence {
-            let binding = self.operations.get(&fact.operation_id).ok_or(())?;
-            let context = self.contexts.get(&binding.work_context_id).ok_or(())?;
-            let mut effort = zero_effort();
-            effort["operations"] = json!(fact.operations);
-            effort["retryOperations"] = json!(fact.retry_operations);
-            effort["reworkOperations"] = json!(fact.rework_operations);
-            effort["providerTotalTokens"] = json!({"measured":fact.provider_total_tokens,"exact":Value::Null,"unknown":fact.unknown_token_observations});
-            effort["activeAgentMs"]["unknown"] = json!(fact.operations);
-            effort["elapsedExecutionMs"]["unknown"] = json!(fact.operations);
-            effort["recordedWaitMs"]["measured"] = json!(fact.recorded_wait_ms);
-            if workstream
-                .zip(context.workstream_id.as_deref())
-                .is_some_and(|(selected, actual)| selected != actual)
-            {
-                combine(&mut excluded, &effort, /*subtract*/ false)?;
-                excluded_observations = excluded_observations
-                    .checked_add(fact.token_observations)
-                    .ok_or(())?;
-                continue;
-            }
-            let Some(outcome) = &context.outcome_id else {
-                continue;
-            };
-            if workstream.is_some() && context.workstream_id.is_none() {
-                continue;
-            }
-            attributed_observations = attributed_observations
+        outcomes_from_contexts(facts, total, &self.bound_rows(evidence)?, workstream)
+    }
+}
+
+fn outcomes_from_contexts(
+    facts: &Value,
+    total: &Value,
+    rows: &[(LocalUsageWorkContext, codex_usage::WorkEffort)],
+    workstream: Option<&str>,
+) -> Result<Value, ()> {
+    let mut attributed = zero_effort();
+    let mut attributed_observations = 0u64;
+    let mut excluded = zero_effort();
+    let mut excluded_observations = 0u64;
+    let mut groups = BTreeMap::<(Option<String>, String, Option<String>), Value>::new();
+    for (context, fact) in rows {
+        let mut effort = zero_effort();
+        effort["operations"] = json!(fact.operations);
+        effort["retryOperations"] = json!(fact.retry_operations);
+        effort["reworkOperations"] = json!(fact.rework_operations);
+        effort["providerTotalTokens"] = json!({"measured":fact.provider_total_tokens,"exact":Value::Null,"unknown":fact.unknown_token_observations});
+        effort["activeAgentMs"]["unknown"] = json!(fact.operations);
+        effort["elapsedExecutionMs"]["unknown"] = json!(fact.operations);
+        effort["recordedWaitMs"]["measured"] = json!(fact.recorded_wait_ms);
+        if workstream
+            .zip(context.workstream_id.as_deref())
+            .is_some_and(|(selected, actual)| selected != actual)
+        {
+            combine(&mut excluded, &effort, /*subtract*/ false)?;
+            excluded_observations = excluded_observations
                 .checked_add(fact.token_observations)
                 .ok_or(())?;
-            combine(&mut attributed, &effort, /*subtract*/ false)?;
-            let aggregate = groups
-                .entry((outcome.clone(), context.workstream_id.clone()))
-                .or_insert_with(zero_effort);
-            combine(aggregate, &effort, /*subtract*/ false)?;
+            continue;
         }
-        let mut scoped_total = total.clone();
-        combine(&mut scoped_total, &excluded, /*subtract*/ true)?;
-        let mut unattributed = scoped_total.clone();
-        combine(&mut unattributed, &attributed, /*subtract*/ true)?;
-        let unattributed_observations = facts["coverage"]["rawTokenObservations"]
-            .as_u64()
-            .ok_or(())?
-            .checked_sub(excluded_observations)
-            .ok_or(())?
-            .checked_sub(attributed_observations)
+        let Some(outcome) = &context.outcome_id else {
+            continue;
+        };
+        if workstream.is_some() && context.workstream_id.is_none() {
+            continue;
+        }
+        attributed_observations = attributed_observations
+            .checked_add(fact.token_observations)
             .ok_or(())?;
-        let rows = groups.into_iter().map(|((outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
-        let full = unattributed["operations"] == 0
-            && scoped_total["providerTotalTokens"]["unknown"] == 0
-            && scoped_total["activeAgentMs"]["unknown"] == 0
-            && scoped_total["elapsedExecutionMs"]["unknown"] == 0
-            && scoped_total["recordedWaitMs"]["unknown"] == 0
-            && unattributed_observations == 0
-            && unattributed["providerTotalTokens"]["measured"] == 0
-            && unattributed["providerTotalTokens"]["unknown"] == 0
-            && unattributed["elapsedExecutionMs"]["measured"] == 0
-            && unattributed["elapsedExecutionMs"]["unknown"] == 0
-            && unattributed["recordedWaitMs"]["measured"] == 0
-            && facts["coverage"]["collectionCompleteness"] == "recorded";
-        Ok(
-            json!({"schemaVersion":1,"coverage":if rows.is_empty() {"unattributed"} else if full {"complete"} else {"partial"},
+        combine(&mut attributed, &effort, /*subtract*/ false)?;
+        let aggregate = groups
+            .entry((
+                context.native_project_id.clone(),
+                outcome.clone(),
+                context.workstream_id.clone(),
+            ))
+            .or_insert_with(zero_effort);
+        combine(aggregate, &effort, /*subtract*/ false)?;
+    }
+    let mut scoped_total = total.clone();
+    combine(&mut scoped_total, &excluded, /*subtract*/ true)?;
+    let mut unattributed = scoped_total.clone();
+    combine(&mut unattributed, &attributed, /*subtract*/ true)?;
+    let unattributed_observations = facts["coverage"]["rawTokenObservations"]
+        .as_u64()
+        .ok_or(())?
+        .checked_sub(excluded_observations)
+        .ok_or(())?
+        .checked_sub(attributed_observations)
+        .ok_or(())?;
+    let rows = groups.into_iter().map(|((native_project_id,outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"nativeProjectId":native_project_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
+    let full = unattributed["operations"] == 0
+        && scoped_total["providerTotalTokens"]["unknown"] == 0
+        && scoped_total["activeAgentMs"]["unknown"] == 0
+        && scoped_total["elapsedExecutionMs"]["unknown"] == 0
+        && scoped_total["recordedWaitMs"]["unknown"] == 0
+        && unattributed_observations == 0
+        && unattributed["providerTotalTokens"]["measured"] == 0
+        && unattributed["providerTotalTokens"]["unknown"] == 0
+        && unattributed["elapsedExecutionMs"]["measured"] == 0
+        && unattributed["elapsedExecutionMs"]["unknown"] == 0
+        && unattributed["recordedWaitMs"]["measured"] == 0
+        && facts["coverage"]["collectionCompleteness"] == "recorded";
+    Ok(
+        json!({"schemaVersion":1,"coverage":if rows.is_empty() {"unattributed"} else if full {"complete"} else {"partial"},
             "totals":scoped_total,"attributed":attributed,"unattributed":unattributed,
             "unattributedReasons":{"operation_context_or_outcome_unobserved":unattributed["operations"],"token_observation_context_unobserved":unattributed_observations},
             "totalRows":rows.len(),"rows":rows,"nextCursor":Value::Null,
             "basis":"Explicit sparse assignment intervals and exceptional operation declarations joined to captured operation identity. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery."}),
-        )
-    }
+    )
 }
 
-pub(super) fn sparse_context(
-    binding: &codex_usage::WorkBindingTransition,
-) -> LocalUsageWorkContext {
+pub(super) fn sparse_context(context: &codex_usage::BoundWorkContext) -> LocalUsageWorkContext {
     LocalUsageWorkContext {
         schema_version: 1,
-        id: binding.context_id(),
+        id: context.context_id(),
         repository_id: None,
-        native_project_id: binding.update.native_project_id.clone(),
-        workstream_id: binding.update.workstream_id.clone(),
-        outcome_id: binding.update.outcome_id.clone(),
-        thread_id: Some(binding.update.thread_id.clone()),
+        native_project_id: Some(context.native_project_id.clone()),
+        workstream_id: context.workstream_id.clone(),
+        outcome_id: context.outcome_id.clone(),
+        thread_id: context.thread_id.clone(),
         turn_id: None,
         experiment_ref: None,
     }
