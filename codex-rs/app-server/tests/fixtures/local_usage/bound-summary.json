@@ -1,0 +1,497 @@
+{
+  "contractVersion": 1,
+  "source": "usage-v2",
+  "generatedAt": 1794316143867,
+  "snapshot": {
+    "sourceWatermark": "usage-v2:s1-1794316142698:g2:w6:j7:absent",
+    "generatedAt": 1794316142698,
+    "generation": 2,
+    "watermark": 6,
+    "journalWatermark": 7,
+    "watermarkAtMs": 1794316142000,
+    "updatedAtMs": 1794316142000,
+    "freshness": "fresh",
+    "pendingEntries": 0,
+    "pendingCorrections": 0,
+    "refreshId": null
+  },
+  "report": {
+    "counts": {
+      "missingRepository": 0,
+      "modelRequests": 5,
+      "operations": 5,
+      "tools": 0,
+      "unclassified": 0,
+      "unfinished": 0,
+      "unknownIntervals": 0,
+      "warmups": 0
+    },
+    "coverage": {
+      "details": {
+        "collectionCompleteness": "recorded",
+        "conflictingTokenObservations": null,
+        "coverageEvents": [],
+        "criticalPath": "unobserved",
+        "deduplicatedOperations": 5,
+        "deduplicatedTokenObservations": 5,
+        "incompleteTokenObservations": 0,
+        "modelRequestsWithoutProviderTotal": 0,
+        "operationStatistics": "recorded",
+        "operationsWithoutRepository": 0,
+        "projectionCompleteFromSequence": 1,
+        "rawOperations": 5,
+        "rawTokenObservations": 5,
+        "repeatedInputComparison": "unobserved",
+        "retainedAggregateOperations": 0,
+        "reviewDetail": "recorded",
+        "tokenTotals": "recorded",
+        "unappliedCorrectionsAfterRetention": 0,
+        "unappliedObservationsAfterRetention": 0,
+        "unclassifiedOperations": 0,
+        "unknownOperationIntervals": 0,
+        "unknownTokenObservations": 0,
+        "unlinkedToolOperations": null,
+        "waits": "partial"
+      },
+      "hasGaps": false,
+      "state": "complete",
+      "workBindings": "partial"
+    },
+    "databaseSchemaVersion": 3,
+    "filters": {
+      "accountId": null,
+      "repositoryId": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+      "threadId": null
+    },
+    "kind": "usageSummary",
+    "measuredExecutionIntervalSumMs": 5000,
+    "providerTokens": [
+      {
+        "category": "total_tokens",
+        "exactTokens": 187,
+        "measuredTokens": 187,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 0
+      },
+      {
+        "category": "input_tokens",
+        "exactTokens": 187,
+        "measuredTokens": 187,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 0
+      },
+      {
+        "category": "input_tokens_details.cached_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 0
+      },
+      {
+        "category": "output_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 0
+      },
+      {
+        "category": "output_tokens_details.reasoning_tokens",
+        "exactTokens": 0,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 0
+      },
+      {
+        "category": "cache_write_input_tokens",
+        "exactTokens": null,
+        "measuredTokens": 0,
+        "measurementProvenance": "provider_reported",
+        "observationCount": 5,
+        "repositoryBucket": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+        "unknownObservations": 5
+      }
+    ],
+    "providerTokensByActivity": [
+      {
+        "activity": "coding",
+        "attributionProvenance": "unknown",
+        "exactTokens": null,
+        "measuredTokens": 187,
+        "phase": "implementation",
+        "unknownObservations": 0
+      }
+    ],
+    "schemaVersion": 1,
+    "scope": {
+      "id": "repo_9c6809d81ce50bca06bfdb71dc14d51479e37879",
+      "type": "repository"
+    },
+    "taxonomyVersion": 1,
+    "timeRange": {
+      "endMs": 1794316137231,
+      "startMs": 1794316132231
+    },
+    "workBindings": {
+      "basis": "request_declarations",
+      "boundOperations": 3,
+      "coverage": "partial",
+      "declaredOperations": 3,
+      "matchedDeclarations": 3,
+      "schemaVersion": 1,
+      "sourceRevision": "request-3",
+      "unknownOperations": 2,
+      "unmatchedDeclarations": 0
+    }
+  },
+  "summary": {
+    "cachedInputTokens": 0,
+    "counts": {
+      "missingRepository": 0,
+      "modelRequests": 5,
+      "operations": 5,
+      "tools": 0,
+      "unclassified": 0,
+      "unfinished": 0,
+      "unknownIntervals": 0,
+      "warmups": 0
+    },
+    "coverage": {
+      "observedWaitFamilies": [
+        "http_retry",
+        "stream_retry",
+        "compaction_retry"
+      ],
+      "operationState": "recorded",
+      "operationStatistics": "recorded",
+      "projectionCompleteFromSequence": 1,
+      "retiredReviewContributions": 0,
+      "retiredReviewOperations": 0,
+      "reviewDetail": "recorded",
+      "tokenTotals": "recorded",
+      "unappliedCorrectionsAfterRetention": 0,
+      "unappliedObservationsAfterRetention": 0,
+      "unobservedFamilies": [
+        "work_bindings"
+      ],
+      "unobservedWaitFamilies": [
+        "user",
+        "agent",
+        "approval",
+        "websocket_connection",
+        "auth_refresh"
+      ],
+      "waits": "partial"
+    },
+    "formulas": {
+      "counts": "Operations count canonical tool/model lifecycles, not the number of journal observations.",
+      "tokens": "Input and output are disjoint components. Cached input and reasoning output are subsets; do not add them again."
+    },
+    "inputTokens": 187,
+    "kind": "usageSummary",
+    "outputTokens": 0,
+    "reasoningOutputTokens": 0,
+    "records": 5,
+    "schemaVersion": 1,
+    "tools": {
+      "count": 0,
+      "outcomes": [
+        {
+          "count": 0,
+          "outcome": "completed"
+        },
+        {
+          "count": 0,
+          "outcome": "failed"
+        },
+        {
+          "count": 0,
+          "outcome": "blocked"
+        },
+        {
+          "count": 0,
+          "outcome": "cancelled"
+        },
+        {
+          "count": 0,
+          "outcome": "incomplete"
+        }
+      ]
+    }
+  },
+  "review": {
+    "activities": [
+      {
+        "activity": "coding",
+        "operations": null,
+        "phase": "implementation",
+        "provenance": {
+          "unknown": 187
+        },
+        "share": null,
+        "total_tokens": 187
+      }
+    ],
+    "coverage": {
+      "available_collectors": 1,
+      "configured_collectors": 1,
+      "contributing_collectors": 1,
+      "database_schemas": [
+        3
+      ],
+      "events": {},
+      "freshest_at_ms": 1794316142000,
+      "has_gaps": false,
+      "state": "complete",
+      "taxonomy_versions": [
+        1
+      ],
+      "token_observations": {
+        "observed": 5,
+        "unknown": 0
+      },
+      "unavailable_reasons": {
+        "work_binding_unobserved": 2
+      }
+    },
+    "outcomes": {
+      "attributed": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 1
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 1
+        },
+        "operations": 1,
+        "providerTotalTokens": {
+          "exact": null,
+          "measured": 120,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "basis": "Explicit version-1 request/compatibility declarations joined by captured operation_id. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery.",
+      "coverage": "partial",
+      "nextCursor": null,
+      "rows": [
+        {
+          "effort": {
+            "activeAgentMs": {
+              "exact": null,
+              "measured": 0,
+              "unknown": 1
+            },
+            "elapsedExecutionMs": {
+              "exact": null,
+              "measured": 0,
+              "unknown": 1
+            },
+            "operations": 1,
+            "providerTotalTokens": {
+              "exact": null,
+              "measured": 120,
+              "unknown": 0
+            },
+            "recordedWaitMs": {
+              "exact": null,
+              "measured": 0,
+              "unknown": 0
+            },
+            "retryOperations": 0,
+            "reworkOperations": 0
+          },
+          "outcomeId": "fixture-outcome",
+          "title": null,
+          "workstreamId": "fixture-workstream"
+        }
+      ],
+      "schemaVersion": 1,
+      "totalRows": 1,
+      "totals": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 4
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 4
+        },
+        "operations": 4,
+        "providerTotalTokens": {
+          "exact": null,
+          "measured": 147,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "unattributed": {
+        "activeAgentMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 3
+        },
+        "elapsedExecutionMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 3
+        },
+        "operations": 3,
+        "providerTotalTokens": {
+          "exact": null,
+          "measured": 27,
+          "unknown": 0
+        },
+        "recordedWaitMs": {
+          "exact": null,
+          "measured": 0,
+          "unknown": 0
+        },
+        "retryOperations": 0,
+        "reworkOperations": 0
+      },
+      "unattributedReasons": {
+        "operation_context_or_outcome_unobserved": 3,
+        "token_observation_context_unobserved": 3
+      }
+    },
+    "semantics": {
+      "coverage": "Work-context attribution uses only explicit request/compatibility operation IDs. Missing or retired evidence stays unattributed. Completed operations do not prove delivery.",
+      "time": "Wall-clock, delivery, and active-agent intervals are unobserved. Only report.measuredExecutionIntervalSumMs retains operation interval sums; overlap is not measured elapsed wall time.",
+      "tokens": "Provider totals are reported, not inferred. Cached input and reasoning output are subsets; do not add them again."
+    },
+    "time": {
+      "execution_wall": {
+        "measured_ms": 0,
+        "unknown_intervals": 5
+      },
+      "phases": [],
+      "request_to_delivery": {
+        "measured_ms": 0,
+        "unknown_intervals": 5
+      },
+      "summed_agent_active": {
+        "measured_ms": 0,
+        "unknown_intervals": 5
+      }
+    },
+    "tools": {
+      "families": [],
+      "outcomes": [
+        {
+          "count": 0,
+          "outcome": "completed"
+        },
+        {
+          "count": 0,
+          "outcome": "failed"
+        },
+        {
+          "count": 0,
+          "outcome": "blocked"
+        },
+        {
+          "count": 0,
+          "outcome": "cancelled"
+        },
+        {
+          "count": 0,
+          "outcome": "incomplete"
+        }
+      ]
+    },
+    "totals": {
+      "cached_input_tokens": 0,
+      "input_tokens": 187,
+      "model_requests": 5,
+      "operations": 5,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "tool_calls": 0,
+      "total_tokens": 187
+    }
+  },
+  "nextRecordsCursor": null,
+  "nextOperationsCursor": null,
+  "workContexts": [
+    {
+      "schemaVersion": 1,
+      "id": "C1",
+      "repositoryId": "fixture-coordinator-repo",
+      "nativeProjectId": "fixture-project",
+      "workstreamId": "fixture-workstream",
+      "outcomeId": "fixture-outcome",
+      "threadId": "fixture-thread",
+      "turnId": "fixture-turn",
+      "experimentRef": "fixture-experiment@1"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "C2",
+      "repositoryId": "fixture-coordinator-repo",
+      "nativeProjectId": "fixture-project",
+      "workstreamId": "other-stream",
+      "outcomeId": "other-outcome",
+      "threadId": "fixture-other-thread",
+      "turnId": "fixture-other-turn",
+      "experimentRef": "fixture-experiment@1"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "C3",
+      "repositoryId": "fixture-coordinator-repo",
+      "nativeProjectId": "fixture-project",
+      "workstreamId": null,
+      "outcomeId": "unknown-stream-outcome",
+      "threadId": "fixture-unknown-thread",
+      "turnId": "fixture-unknown-turn",
+      "experimentRef": "fixture-experiment@1"
+    }
+  ],
+  "operationBindings": [
+    {
+      "schemaVersion": 1,
+      "operationId": "fixture-model",
+      "workContextId": "C1",
+      "capturedAtMs": 1794316132731
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "fixture-other",
+      "workContextId": "C2",
+      "capturedAtMs": 1794316132731
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "fixture-unknown-stream",
+      "workContextId": "C3",
+      "capturedAtMs": 1794316132731
+    }
+  ]
+}

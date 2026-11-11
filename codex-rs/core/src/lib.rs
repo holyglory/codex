@@ -113,6 +113,8 @@ mod usage_capture;
 mod usage_identity;
 pub use mcp::McpManager;
 pub use mcp::McpServersDisabled;
+pub use usage_identity::REPOSITORY_ID_FORMAT_VERSION as USAGE_REPOSITORY_ID_FORMAT_VERSION;
+pub use usage_identity::repository_id as usage_repository_id;
 mod original_image_detail;
 pub use codex_mcp::CodexAppsToolsCache;
 pub use codex_mcp::SandboxState;

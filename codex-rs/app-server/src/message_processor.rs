@@ -118,9 +118,17 @@ const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 
 fn deserialize_client_request(request: JSONRPCRequest) -> Result<ClientRequest, JSONRPCErrorError> {
     reject_obsolete_request_fields(&request)?;
-
-    ClientRequest::try_from(request)
-        .map_err(|err| invalid_request(format!("Invalid request: {err}")))
+    let local_usage = matches!(
+        request.method.as_str(),
+        "localUsage/summary" | "localUsage/repositoryIdentity"
+    );
+    ClientRequest::try_from(request).map_err(|err| {
+        if local_usage {
+            invalid_params("invalid local usage request schema")
+        } else {
+            invalid_request(format!("Invalid request: {err}"))
+        }
+    })
 }
 
 fn reject_obsolete_request_fields(request: &JSONRPCRequest) -> Result<(), JSONRPCErrorError> {
@@ -168,6 +176,7 @@ pub(crate) struct MessageProcessor {
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
+    local_usage_home: std::path::PathBuf,
     marketplace_processor: MarketplaceRequestProcessor,
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
@@ -631,6 +640,7 @@ impl MessageProcessor {
         );
 
         Self {
+            local_usage_home: config.codex_home.to_path_buf(),
             turn_admission,
             user_verification,
             outgoing,
@@ -1195,6 +1205,19 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::LocalUsageSummary { params, .. } => {
+                crate::request_processors::local_usage_processor::summary(
+                    self.local_usage_home.clone(),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
+            ClientRequest::LocalUsageRepositoryIdentity { params, .. } => {
+                crate::request_processors::local_usage_processor::repository_identity(params)
+                    .await
+                    .map(|response| Some(response.into()))
+            }
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

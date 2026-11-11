@@ -1704,6 +1704,20 @@ impl TestAppServer {
         Ok(response)
     }
 
+    /// Read either terminal RPC reply when a test exercises recoverable errors.
+    pub async fn read_stream_until_response_or_error_message(
+        &mut self,
+        request_id: RequestId,
+    ) -> anyhow::Result<JSONRPCMessage> {
+        self.read_stream_until_message(|message| {
+            matches!(
+                message,
+                JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_)
+            ) && Self::message_request_id(message) == Some(&request_id)
+        })
+        .await
+    }
+
     /// Reads and deserializes the successful response for an integer request ID.
     ///
     /// This does not impose a timeout, so callers can retain suite-specific
