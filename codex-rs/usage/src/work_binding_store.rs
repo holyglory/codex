@@ -14,8 +14,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::Serialize;
-
 use crate::Result;
 use crate::StorageError;
 use crate::WorkBindingTransition;
@@ -273,7 +271,7 @@ pub(crate) fn prune_before(root: &Path, coverage_sequence: u64) -> Result<bool> 
         let threads = page
             .rows
             .iter()
-            .map(|row| row.update.thread_id.as_str())
+            .map(|row| row.update.thread_id.clone())
             .collect::<std::collections::BTreeSet<_>>();
         let safe = threads.iter().all(|thread| {
             scopes

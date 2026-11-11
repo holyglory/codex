@@ -148,7 +148,6 @@ pub(crate) use work_binding_assignment::assign_work_dimensions;
 pub use work_binding_report::BoundWorkContext;
 pub use work_binding_report::BoundWorkEffort;
 pub use work_binding_report::WorkEffort;
-pub(crate) use work_binding_store::WorkBindingLookup;
 
 #[cfg(test)]
 #[path = "tests.rs"]

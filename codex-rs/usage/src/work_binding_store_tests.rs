@@ -1,7 +1,6 @@
 use std::fs;
 
 use super::*;
-use crate::JournalPayload;
 use crate::UsageJournal;
 use crate::UsageReader;
 use crate::UsageRecord;
@@ -176,9 +175,8 @@ fn legacy_file_bootstraps_once_without_a_migration_scan_on_each_switch() -> crat
         read_current_work_binding(home.path(), "thread")?,
         Some(transition.clone())
     );
-    UsageJournal::new(root.join("events.jsonl")).append_record(JournalPayload::Record(
-        UsageRecord::new_millis("event", 1, 0, 0),
-    ))?;
+    UsageJournal::new(root.join("events.jsonl"))
+        .append_record(UsageRecord::new_millis("event", 1, 0, 0))?;
     let next = capture_work_binding_transition(home.path(), update("thread", 2, Some("next")))?;
     assert_eq!(next.effective_capture_sequence, 2);
     assert_eq!(read_work_binding_transitions(home.path())?.len(), 2);
@@ -195,9 +193,8 @@ fn pruning_requires_reader_release_and_keeps_one_anchor_per_scope() -> crate::Re
     let home = tempdir()?;
     let first = advance(home.path(), "thread", 1, Some("a"))?;
     let pinned = UsageReader::open(home.path())?;
-    let mut latest = first.clone();
     for revision in 2..=300 {
-        latest = advance(home.path(), "thread", revision, Some("a"))?;
+        advance(home.path(), "thread", revision, Some("a"))?;
     }
     let clear = advance(home.path(), "thread", 301, None)?;
     let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
