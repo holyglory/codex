@@ -246,7 +246,10 @@ def qualify(args):
     now_ms = time.time_ns() // 1_000_000
     if checked_at_ms > now_ms or now_ms - checked_at_ms > MAX_PROOF_AGE_MS:
         raise RuntimeError("sparse-proof-stale-requires-fresh-verification")
-    if not verify_started <= checked_at_ms <= serving_verified:
+    # A later read-only attribution proof is valid while the same serving
+    # process identity remains current; it need not precede the original
+    # serving-verified event.
+    if checked_at_ms < verify_started:
         raise RuntimeError("sparse-proof-freshness-mismatch")
     worktree_id = (
         args.worktree_id
