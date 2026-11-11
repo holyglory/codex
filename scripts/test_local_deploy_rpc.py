@@ -23,10 +23,13 @@ import prepare_local_usage_package as usage_package
 
 
 class Peer:
-    def __init__(self, home, mutate=None, model_tools=False):
+    def __init__(self, home, mutate=None, model_tools=False, code_mode=False):
         self.home = home
         self.mutate = mutate or (lambda method, value: value)
         self.model_tools = model_tools
+        self.code_mode = code_mode
+        self.turn_count = 0
+        self.binding_revision = 0
         endpoint = home / "app-server-control/app-server-control.sock"
         endpoint.parent.mkdir()
         self.listener = socket.socket(socket.AF_UNIX)
@@ -82,6 +85,32 @@ class Peer:
                 "repositoryId": "fixture-repository",
                 "formatVersion": 3,
             }
+        if method == "localUsage/bindingStatus" and self.model_tools:
+            transition = None
+            if self.binding_revision in (1, 2):
+                suffix = "a" if self.binding_revision == 1 else "b"
+                transition = {
+                    "threadId": "fixture-thread",
+                    "nativeProjectId": "fixture-project",
+                    "workstreamId": f"fixture-workstream-{suffix}",
+                    "outcomeId": f"fixture-outcome-{suffix}",
+                    "effectiveCaptureSequence": self.binding_revision,
+                    "capturedAtMs": 1,
+                    "source": "agent_declared",
+                    "authority": "agent_declared",
+                }
+            elif self.binding_revision == 3:
+                transition = {
+                    "threadId": "fixture-thread",
+                    "nativeProjectId": None,
+                    "workstreamId": None,
+                    "outcomeId": None,
+                    "effectiveCaptureSequence": 3,
+                    "capturedAtMs": 1,
+                    "source": "agent_declared",
+                    "authority": "agent_declared",
+                }
+            return {"version": 1, "revision": self.binding_revision, "transition": transition}
         if method == "localUsage/summary":
             result = {
                 "contractVersion": 1,
@@ -252,25 +281,33 @@ class Peer:
                         method, copy.deepcopy(self.result(method, request["params"]))
                     )
                     if method == "turn/start" and self.model_tools:
-                        calls = [
-                            ("work-a", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-a", "outcome_id": "fixture-outcome-a", "expected_revision": 0}),
-                            ("account-a", "account_management", {"action": "list", "limit": 1}),
-                            ("usage-a", "usage_stats", {"action": "summary", "scope": "current_chat"}),
-                            ("work-b", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-b", "outcome_id": "fixture-outcome-b", "expected_revision": 1}),
-                            ("account-b", "account_management", {"action": "list", "limit": 1}),
-                            ("usage-b", "usage_stats", {"action": "summary", "scope": "current_chat"}),
-                            ("work-clear", "usage_work", {"action": "clear", "expected_revision": 2}),
-                            ("usage-clear", "usage_stats", {"action": "summary", "scope": "current_chat"}),
-                        ]
-                        for call_id, name, arguments in calls:
-                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call", "call_id": call_id, "name": name, "arguments": json.dumps(arguments)}}})
-                            if name == "account_management":
-                                output = {"generation": 1, "accounts": [], "autoSelectionEnabled": False, "priorityOrder": ""}
-                            elif name == "usage_stats":
-                                output = {"schemaVersion": 1, "kind": "usageSummary", "snapshotGeneration": 1, "pendingCorrections": 0, "freshness": "fresh", "watermarkAtMs": 1, "counts": {}}
-                            else:
-                                output = {"revision": arguments.get("expected_revision", 0) + 1}
-                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call_output", "call_id": call_id, "output": json.dumps(output)}}})
+                        self.turn_count += 1
+                        if self.turn_count == 1:
+                            self.binding_revision = 1
+                            calls = [("work-a", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-a", "outcome_id": "fixture-outcome-a", "expected_revision": 0}), ("account-a", "account_management", {"action": "list", "limit": 1}), ("usage-a", "usage_stats", {"action": "summary", "scope": "current_chat"})]
+                        elif self.turn_count == 2:
+                            self.binding_revision = 2
+                            calls = [("work-b", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-b", "outcome_id": "fixture-outcome-b", "expected_revision": 1}), ("account-b", "account_management", {"action": "list", "limit": 1}), ("usage-b", "usage_stats", {"action": "summary", "scope": "current_chat"})]
+                        else:
+                            self.binding_revision = 3
+                            calls = [("work-clear", "usage_work", {"action": "clear", "expected_revision": 2}), ("usage-clear", "usage_stats", {"action": "summary", "scope": "current_chat"})]
+                        if self.code_mode:
+                            receipt = {"revision": self.binding_revision, "transition": {"nativeProjectId": None if self.binding_revision == 3 else "fixture-project"}}
+                            account_result = {"generation": 1, "accounts": [], "autoSelectionEnabled": False, "priorityOrder": ""}
+                            usage_result = {"schemaVersion": 1, "kind": "usageSummary", "snapshotGeneration": 1, "pendingCorrections": 0, "freshness": "fresh", "watermarkAtMs": 1, "counts": {}}
+                            raw = "\n".join(json.dumps(value) for value in (receipt, account_result, usage_result))
+                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call", "call_id": f"exec-{self.turn_count}", "name": "exec", "arguments": json.dumps({"cmd": "usage_work and accounting verification"})}}})
+                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call_output", "call_id": f"exec-{self.turn_count}", "output": raw}}})
+                        else:
+                            for call_id, name, arguments in calls:
+                                send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call", "call_id": call_id, "name": name, "arguments": json.dumps(arguments)}}})
+                                if name == "account_management":
+                                    output = {"generation": 1, "accounts": [], "autoSelectionEnabled": False, "priorityOrder": ""}
+                                elif name == "usage_stats":
+                                    output = {"schemaVersion": 1, "kind": "usageSummary", "snapshotGeneration": 1, "pendingCorrections": 0, "freshness": "fresh", "watermarkAtMs": 1, "counts": {}}
+                                else:
+                                    output = {"revision": arguments.get("expected_revision", 0) + 1}
+                                send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call_output", "call_id": call_id, "output": json.dumps(output)}}})
                         send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "message", "content": [{"type": "output_text", "text": "LOCAL_DEPLOY_VERIFIED"}]}}})
                         send_json({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
                     send_json({"id": request["id"], "result": response})
@@ -397,6 +434,17 @@ class LocalDeployRpcTests(unittest.TestCase):
             self.assertIn("thread/start", peer.methods)
             self.assertIn("turn/start", peer.methods)
             self.assertIn("localUsage/summary", peer.methods)
+
+    def test_model_tools_code_mode_uses_status_barriers_before_report(self):
+        with tempfile.TemporaryDirectory(prefix="ld-model-sparse-code-", dir="/tmp") as temporary:
+            home = Path(temporary)
+            with Peer(home, model_tools=True, code_mode=True) as peer:
+                verify(self.sparse_plan(home))
+            proof = json.loads((home / "proof/rpc.json").read_text())
+            self.assertTrue(proof["sparseReportVerified"])
+            self.assertEqual(proof["sparseDeclarationsObserved"], 3)
+            self.assertEqual(peer.methods.count("localUsage/bindingStatus"), 3)
+            self.assertTrue(any(request["method"] == "turn/start" for request in peer.requests))
 
     def test_model_tools_rejects_control_receipts_without_real_outcome_report(self):
         with tempfile.TemporaryDirectory(prefix="ld-model-sparse-", dir="/tmp") as temporary:
