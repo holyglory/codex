@@ -74,7 +74,7 @@ impl ScopeIndex {
         if self.version != INDEX_VERSION
             || self.thread_id.is_empty()
             || self.pages.windows(2).any(|pages| {
-                pages[0].first_sequence >= pages[1].first_sequence
+                pages[0].first_sequence > pages[1].first_sequence
                     || pages[0].generation >= pages[1].generation
             })
             || self
@@ -95,7 +95,7 @@ impl ScopeIndex {
         if self
             .pages
             .last()
-            .is_some_and(|existing| existing.first_sequence >= page.first_sequence)
+            .is_some_and(|existing| existing.first_sequence > page.first_sequence)
         {
             return Err(invalid("work binding pages are out of order"));
         }
@@ -174,7 +174,7 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Opt
 }
 
 pub(crate) fn read_active(root: &Path) -> Result<Option<ActivePage>> {
-    let active = read_json(&active_path(root))?;
+    let active: Option<ActivePage> = read_json(&active_path(root))?;
     if let Some(active) = &active {
         if active.version != INDEX_VERSION
             || active.first_sequence == 0
@@ -187,7 +187,7 @@ pub(crate) fn read_active(root: &Path) -> Result<Option<ActivePage>> {
 }
 
 pub(crate) fn read_scope(root: &Path, thread_id: &str) -> Result<Option<ScopeIndex>> {
-    let index = read_json(&scope_path(root, thread_id))?;
+    let index: Option<ScopeIndex> = read_json(&scope_path(root, thread_id))?;
     if let Some(index) = &index {
         if index.thread_id != thread_id {
             return Err(invalid("work binding scope index identity mismatch"));
@@ -198,7 +198,7 @@ pub(crate) fn read_scope(root: &Path, thread_id: &str) -> Result<Option<ScopeInd
 }
 
 pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBindingTransition>> {
-    let current = read_json(&current_path(root, thread_id))?;
+    let current: Option<WorkBindingTransition> = read_json(&current_path(root, thread_id))?;
     if let Some(current) = &current {
         if current.update.thread_id != thread_id {
             return Err(invalid("work binding current identity mismatch"));

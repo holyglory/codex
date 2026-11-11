@@ -33,7 +33,6 @@ use crate::work_binding_index::ensure_directories;
 use crate::work_binding_index::page_file;
 use crate::work_binding_index::page_path;
 use crate::work_binding_index::read_active;
-use crate::work_binding_index::read_current;
 use crate::work_binding_index::read_scope;
 use crate::work_binding_index::scope_path;
 use crate::work_binding_index::store_root;
@@ -191,13 +190,31 @@ impl WorkBindingLookup {
                 rows.extend(read_page(&self.root, &file, limit, /*strict*/ true)?.rows);
             }
         }
-        rows.sort_by_key(|row| row.effective_capture_sequence);
+        rows.sort_by_key(|row| {
+            (
+                row.effective_capture_sequence,
+                row.update.thread_id.clone(),
+                row.update.transition_sequence,
+            )
+        });
         let mut unique = BTreeMap::new();
         for row in rows {
-            let key = (row.update.thread_id.clone(), row.effective_capture_sequence);
+            let key = (
+                row.update.thread_id.clone(),
+                row.effective_capture_sequence,
+                row.update.transition_sequence,
+            );
             unique.insert(key, row);
         }
-        Ok(unique.into_values().collect())
+        let mut rows = unique.into_values().collect::<Vec<_>>();
+        rows.sort_by_key(|row| {
+            (
+                row.effective_capture_sequence,
+                row.update.thread_id.clone(),
+                row.update.transition_sequence,
+            )
+        });
+        Ok(rows)
     }
 }
 
@@ -221,9 +238,12 @@ pub(crate) fn prune_before(root: &Path, coverage_sequence: u64) -> Result<bool> 
         active.file.clone(),
         fs::metadata(page_path(root, &active.file)?)?.len(),
     );
+    drop(read_lock);
     let scopes = scope_indexes(root)?;
     let mut candidate = None;
     let mut candidate_first = 0_u64;
+    let mut candidate_generation = 0_u64;
+    let mut candidate_threads = std::collections::BTreeSet::new();
     for file in page_files(root)? {
         if file == active.file {
             continue;
@@ -247,21 +267,32 @@ pub(crate) fn prune_before(root: &Path, coverage_sequence: u64) -> Result<bool> 
             scopes
                 .iter()
                 .find(|scope| scope.thread_id == *thread)
-                .is_some_and(|scope| {
+                .and_then(|scope| {
                     scope
                         .pages
                         .iter()
-                        .any(|page| page.file == file && page.first_sequence == first)
-                        && scope.pages.iter().any(|page| page.first_sequence > first)
+                        .find(|page| page.file == file && page.first_sequence == first)
+                        .map(|page| {
+                            scope
+                                .pages
+                                .iter()
+                                .any(|later| later.generation > page.generation)
+                        })
                 })
+                .unwrap_or(false)
         });
         if safe {
+            candidate_threads.extend(threads);
             candidate = Some(file);
             candidate_first = first;
+            candidate_generation = scopes
+                .iter()
+                .flat_map(|scope| scope.pages.iter())
+                .find(|page| page.file == candidate.as_deref().unwrap_or_default())
+                .map_or(0, |page| page.generation);
             break;
         }
     }
-    drop(read_lock);
     let Some(candidate) = candidate else {
         return Ok(false);
     };
@@ -295,10 +326,18 @@ pub(crate) fn prune_before(root: &Path, coverage_sequence: u64) -> Result<bool> 
         Err(TryLockError::WouldBlock) => return Ok(false),
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
-    for mut scope in scopes {
+    let mut touched_scopes = Vec::new();
+    for thread in &candidate_threads {
+        if let Some(scope) = read_scope(root, thread)? {
+            touched_scopes.push(scope);
+        }
+    }
+    for mut scope in touched_scopes {
         let mut changed = false;
         scope.pages.retain(|page| {
-            let remove = page.file == candidate && page.first_sequence == candidate_first;
+            let remove = page.file == candidate
+                && page.first_sequence == candidate_first
+                && page.generation == candidate_generation;
             changed |= remove;
             !remove
         });
@@ -322,7 +361,8 @@ fn scope_indexes(root: &Path) -> Result<Vec<ScopeIndex>> {
         if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
             continue;
         }
-        let Some(scope) = crate::work_binding_index::read_json(&path)? else {
+        let scope: Option<ScopeIndex> = crate::work_binding_index::read_json(&path)?;
+        let Some(scope) = scope else {
             continue;
         };
         scope.validate()?;
@@ -345,7 +385,7 @@ pub(crate) fn append(
     if actual_bytes != active.bytes {
         recover_active(root, &active)?;
     }
-    if let Some(previous) = read_current(root, &update.thread_id)? {
+    if let Some(previous) = crate::work_binding_index::read_current(root, &update.thread_id)? {
         if previous.update == update {
             return Ok(previous);
         }
@@ -376,6 +416,9 @@ pub(crate) fn append(
         storage_file::create_new(&path)?.sync_all()?;
         write_atomic(&active_path(root), &active)?;
     }
+    if active.transition_count == 0 {
+        active.first_sequence = effective_capture_sequence;
+    }
     let path = page_path(root, &active.file)?;
     let mut output = storage_file::open_append(&path)?;
     output.write_all(&encoded)?;
@@ -391,12 +434,7 @@ pub(crate) fn append(
 
 pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBindingTransition>> {
     if read_active(root)?.is_some() {
-        // Status/CAS must not turn a damaged scope index into an implicit clear.
-        let scope = read_scope(root, thread_id)?;
         if let Some(current) = crate::work_binding_index::read_current(root, thread_id)? {
-            if scope.is_none() {
-                return Err(invalid("work binding current state has no scope index"));
-            }
             return Ok(Some(current));
         }
         return WorkBindingLookup::open(root)?.lookup(thread_id, u64::MAX);
@@ -435,9 +473,7 @@ fn initialize(root: &Path) -> Result<ActivePage> {
         let active = ActivePage {
             version: 1,
             file: page_file(next_generation),
-            first_sequence: rows
-                .last()
-                .map_or(1, |row| row.effective_capture_sequence.saturating_add(1)),
+            first_sequence: 1,
             generation: next_generation,
             transition_count: 0,
             bytes: 0,
@@ -532,9 +568,9 @@ fn write_current(root: &Path, transition: &WorkBindingTransition) -> Result<()> 
 }
 
 fn write_current_if_newer(root: &Path, transition: &WorkBindingTransition) -> Result<()> {
-    if read_current(root, &transition.update.thread_id)?.is_some_and(|current| {
-        current.effective_capture_sequence >= transition.effective_capture_sequence
-    }) {
+    if crate::work_binding_index::read_current(root, &transition.update.thread_id)?.is_some_and(
+        |current| current.effective_capture_sequence >= transition.effective_capture_sequence,
+    ) {
         return Ok(());
     }
     write_current(root, transition)
@@ -581,7 +617,7 @@ fn read_page(root: &Path, file: &str, limit: Option<u64>, strict: bool) -> Resul
     {
         let row: WorkBindingTransition = serde_json::from_slice(line)?;
         crate::work_binding::validate_transition(&row)?;
-        if row.effective_capture_sequence <= previous {
+        if row.effective_capture_sequence < previous {
             return Err(invalid("work binding page sequence is not increasing"));
         }
         previous = row.effective_capture_sequence;

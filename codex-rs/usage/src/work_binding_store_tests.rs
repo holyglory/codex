@@ -2,6 +2,7 @@ use std::fs;
 
 use super::*;
 use crate::JournalPayload;
+use crate::UsageJournal;
 use crate::UsageReader;
 use crate::UsageRecord;
 use crate::capture_work_binding_transition;
@@ -77,9 +78,9 @@ fn rotation_has_no_global_transition_cap_and_old_lookup_stays_pinned() -> crate:
     let home = tempdir()?;
     let first = advance(home.path(), "thread", 1, Some("a"))?;
     let pinned = WorkBindingLookup::open(&home.path().join(crate::USAGE_DIRECTORY_NAME))?;
-    let mut _latest = first.clone();
+    let mut latest = first.clone();
     for revision in 2..=300 {
-        _latest = advance(home.path(), "thread", revision, Some("a"))?;
+        latest = advance(home.path(), "thread", revision, Some("a"))?;
     }
     let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
     let page_count = fs::read_dir(
@@ -106,10 +107,40 @@ fn rotation_has_no_global_transition_cap_and_old_lookup_stays_pinned() -> crate:
 }
 
 #[test]
+fn rotation_accepts_repeated_capture_boundaries_without_usage_facts() -> crate::Result<()> {
+    let home = tempdir()?;
+    for revision in 1..=300 {
+        capture_work_binding_transition(home.path(), update("thread", revision, Some("a")))?;
+    }
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let lookup = WorkBindingLookup::open(&root)?;
+    assert_eq!(
+        lookup
+            .lookup("thread", u64::MAX)?
+            .unwrap()
+            .update
+            .transition_sequence,
+        300
+    );
+    assert_eq!(read_work_binding_transitions(home.path())?.len(), 300);
+    Ok(())
+}
+
+#[test]
 fn corrupt_scope_and_current_are_errors_not_an_inferred_clear() -> crate::Result<()> {
     let home = tempdir()?;
-    let _first = advance(home.path(), "thread", 1, Some("a"))?;
+    let first = advance(home.path(), "thread", 1, Some("a"))?;
     let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let current = root
+        .join(crate::work_binding_index::STORE_DIRECTORY)
+        .join(crate::work_binding_index::CURRENT_DIRECTORY)
+        .join(format!(
+            "{}.json",
+            crate::work_binding_index::scope_file_key("thread")
+        ));
+    fs::write(&current, b"{broken}\n")?;
+    assert!(read_current_work_binding(home.path(), "thread").is_err());
+    fs::write(&current, format!("{}\n", serde_json::to_string(&first)?))?;
     let scope = root
         .join(crate::work_binding_index::STORE_DIRECTORY)
         .join(SCOPE_DIRECTORY)
@@ -118,7 +149,7 @@ fn corrupt_scope_and_current_are_errors_not_an_inferred_clear() -> crate::Result
             crate::work_binding_index::scope_file_key("thread")
         ));
     fs::write(scope, b"{broken}\n")?;
-    assert!(read_current_work_binding(home.path(), "thread").is_err());
+    assert!(read_current_work_binding(home.path(), "thread").is_ok());
     assert!(
         WorkBindingLookup::open(&root)?
             .lookup("thread", u64::MAX)
