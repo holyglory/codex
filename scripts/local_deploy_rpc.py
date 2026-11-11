@@ -211,6 +211,12 @@ def verify_connection(rpc, plan):
     ):
         raise RuntimeError("account-credit-capability-missing")
     usage = initialized.get("localUsageAccounting")
+    read_methods = ["localUsage/repositoryIdentity", "localUsage/summary"]
+    sparse_methods = [
+        "localUsage/bindingStatus",
+        "localUsage/bindingTransition",
+        *read_methods,
+    ]
     if (
         not isinstance(usage, dict)
         or type(usage.get("version")) is not int
@@ -221,14 +227,19 @@ def verify_connection(rpc, plan):
         or any(type(version) is not int for version in usage["supportedVersions"])
         or not isinstance(usage.get("methods"), list)
         or any(not isinstance(method, str) for method in usage["methods"])
-        or sorted(usage["methods"])
-        != ["localUsage/repositoryIdentity", "localUsage/summary"]
+        or sorted(usage["methods"]) not in (read_methods, sparse_methods)
         or usage.get("supportsWorkContextBindings") is not True
         or usage.get("supportsWorkstreamOutcomes") is not True
         or type(usage.get("snapshotRetentionMs")) is not int
         or usage["snapshotRetentionMs"] <= 0
     ):
         raise RuntimeError("usage-v2-capability-invalid")
+    sparse_controls = sorted(usage["methods"]) == sparse_methods
+    require_sparse = plan.get("requireSparseBindings", False)
+    if type(require_sparse) is not bool:
+        raise RuntimeError("usage-sparse-control-requirement-invalid")
+    if require_sparse and not sparse_controls:
+        raise RuntimeError("usage-sparse-control-capability-missing")
     identity = rpc.call(
         "localUsage/repositoryIdentity",
         {
@@ -422,6 +433,7 @@ def verify_connection(rpc, plan):
         "creditCapability": True,
         "creditProfileFields": True,
         "localUsageCapability": True,
+        "usageSparseControlCapability": sparse_controls,
         "localUsageRepositoryIdentity": True,
         "localUsageSummary": True,
         "usageWorkContextBindingRequest": True,

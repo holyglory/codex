@@ -196,22 +196,40 @@ fixture into a new isolated home before starting a companion app-server.
 
 ## Sparse assignment control
 
-`localUsage/bindingTransition` is an out-of-band control request, sent only when
-the explicitly assigned job changes. Version 1 accepts `nativeProjectId`,
-`threadId`, optional `workstreamId` and `outcomeId`, `transitionSequence`,
-`source`, and `authority`. Null project/work IDs explicitly clear the assignment.
-Identifiers contain at most 128 ASCII letters, digits, hyphens, underscores,
-periods or colons. Source and authority describe the producer's assertion;
-neither verifies a Coordinator task or proves delivery. Reading a task, repository
-identity, phase and token totals never create an assignment.
+`localUsage/bindingTransition` changes explicitly declared work for a loaded
+thread. Start or resume that thread first. Send one declaration per actual job
+change; the same outcome keeps its binding across operations, retries, compaction
+and account changes. Reading a task, repository identity, phase or token totals
+never creates an assignment. The built-in agent tool `usage_work` provides
+`set`, `clear` and `status` for its invocation's current thread, using the same
+capture queue as these RPC methods.
+
+Read `localUsage/bindingStatus` with `threadId` and optional `version: 1` before
+changing an unknown binding. It returns `{version: 1, revision, transition}`.
+Revision zero and an explicit null transition mean no declaration was captured.
+Otherwise the typed transition contains `threadId`, nullable `nativeProjectId`,
+`workstreamId` and `outcomeId`, `effectiveCaptureSequence`, `capturedAtMs`,
+`source` and `authority`. Nullable output fields are always present. A captured
+clear has a nonzero revision and a null project.
+
+Version 1 transition requests contain `version: 1`, `threadId`,
+`expectedRevision`, and optional `nativeProjectId`, `workstreamId` and
+`outcomeId`. Set the project ID to declare work. A null or omitted project
+explicitly clears the binding; workstream and outcome must then be null or
+omitted. Identifiers contain 1–128 ASCII letters, digits, hyphens, underscores,
+periods or colons. Callers cannot supply source or authority: the runtime records
+new declarations as `agent_declared`. Those provenance labels neither verify a
+Coordinator task nor prove delivery.
 
 The content-free `usage-v2/work-bindings.jsonl` journal retains one event per
 accepted switch. Its capture boundary is the next canonical usage sequence,
-assigned under the same writer lock as observations. An identical retry is
-idempotent. An older or conflicting sequence for that thread is rejected.
-Runtime producers must serialize the switch with their capture queue before
-calling this storage boundary; synchronous external producers already satisfy
-that ordering through the journal writer lock.
+assigned after preceding observations in the same capture queue are durable.
+Supply the current revision as `expectedRevision`. An identical retry of the
+latest accepted request and an unchanged binding both return the existing
+receipt without another event; a stale conflicting revision fails. The response
+contains the actual `revision`, `effectiveCaptureSequence`, `capturedAtMs` and
+`version: 1`. An unavailable or pending response does not acknowledge a switch;
+inspect status before retrying.
 
 Native performance reports join an operation's first captured sequence to the
 latest applicable switch for its thread. Later facts retain that first binding.
@@ -222,7 +240,10 @@ sparse assignment for those exact operation IDs without double counting.
 bindings are represented by sparse contexts and aggregate counts. No assignment
 metadata is added to model requests, prompts, or individual usage records.
 
-This protocol/storage stage remains preliminary until the runtime queue and
-agent control surface are integrated and verified. Retention, large-history
-indexing and binding-specific unavailable coverage also require the follow-up
-acceptance review; the new control method is not yet advertised in initialize.
+Initialize advertises both binding methods alongside `localUsage/summary` and
+`localUsage/repositoryIdentity`. The read-only local deployment verifier accepts
+the historical two-method capability for rollback and the exact four-method
+capability. A plan with `requireSparseBindings: true` requires all four; the
+default is false. Its `usageSparseControlCapability` proof records the advertised
+contract without changing a binding. Actual switch behavior, retention and scale
+still require their separate acceptance evidence.

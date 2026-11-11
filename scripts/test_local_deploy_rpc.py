@@ -226,6 +226,7 @@ class LocalDeployRpcTests(unittest.TestCase):
                 verify(self.plan(home))
             proof = json.loads((home / "proof/rpc.json").read_text())
             self.assertTrue(proof["localUsageSummary"])
+            self.assertFalse(proof["usageSparseControlCapability"])
             self.assertEqual(proof["usageStorageFormatVersion"], 3)
             self.assertTrue(proof["localUsageRepositoryIdentity"])
             self.assertTrue(proof["usageWorkContextBindingRequest"])
@@ -251,6 +252,45 @@ class LocalDeployRpcTests(unittest.TestCase):
             )
             self.assertNotIn("local-deploy-unobserved-operation", json.dumps(proof))
             self.assertNotIn("legacyUsageCapabilityNull", proof)
+
+    def test_accepts_sparse_control_capability_without_mutating_the_binding(self):
+        for required in (False, True):
+            with (
+                self.subTest(requireSparseBindings=required),
+                tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary,
+            ):
+                home = Path(temporary)
+
+                def advertise(method, value):
+                    if method == "initialize":
+                        value["localUsageAccounting"]["methods"].extend(
+                            ["localUsage/bindingTransition", "localUsage/bindingStatus"]
+                        )
+                    return value
+
+                plan = self.plan(home)
+                plan["requireSparseBindings"] = required
+                with Peer(home, advertise) as peer:
+                    verify(plan)
+                proof = json.loads((home / "proof/rpc.json").read_text())
+                self.assertTrue(proof["usageSparseControlCapability"])
+                self.assertTrue(proof["localUsageSummary"])
+                self.assertTrue(proof["accountAuthStatusAgrees"])
+                self.assertNotIn("localUsage/bindingTransition", peer.methods)
+                self.assertNotIn("localUsage/bindingStatus", peer.methods)
+
+    def test_rejects_read_only_capability_when_sparse_bindings_are_required(self):
+        with tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary:
+            home = Path(temporary)
+            plan = self.plan(home)
+            plan["requireSparseBindings"] = True
+            with Peer(home) as peer:
+                with self.assertRaisesRegex(
+                    RuntimeError, "usage-sparse-control-capability-missing"
+                ):
+                    verify(plan)
+            self.assertFalse((home / "proof/rpc.json").exists())
+            self.assertNotIn("localUsage/bindingTransition", peer.methods)
 
     def test_rejects_incompatible_usage_and_inconsistent_snapshot_without_private_payload(
         self,
@@ -283,6 +323,44 @@ class LocalDeployRpcTests(unittest.TestCase):
                 "initialize",
                 lambda value: value["localUsageAccounting"]["methods"].append(
                     "localUsage/legacy"
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"]["methods"].append(
+                    "localUsage/bindingTransition"
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"]["methods"].append(
+                    "localUsage/bindingStatus"
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"]["methods"].append(
+                    "localUsage/summary"
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"]["methods"].extend(
+                    [
+                        "localUsage/bindingTransition",
+                        "localUsage/bindingStatus",
+                        "localUsage/bindingTransition",
+                    ]
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"]["methods"].extend(
+                    [
+                        "localUsage/bindingTransition",
+                        "localUsage/bindingStatus",
+                        "localUsage/legacy",
+                    ]
                 ),
             ),
             (
