@@ -101,6 +101,8 @@ impl UsageReader {
         let statistics = detail_statistics(&query.operations, range);
         let sql = format!(
             "WITH RECURSIVE bindings(binding_index,thread_id,effective_sequence,transition_sequence,assigned,binding_project_id,binding_workstream_id,binding_outcome_id) AS (VALUES {}), \
+             points AS (SELECT * FROM bindings QUALIFY row_number() OVER \
+               (PARTITION BY thread_id,effective_sequence ORDER BY transition_sequence DESC)=1), \
              ops AS (SELECT * FROM ({statistics}) WHERE {predicate} AND start_observed), \
              lineage_ops AS (SELECT * FROM (SELECT operation_id,first_sequence,thread_id,retry_of_operation_id FROM ops UNION ALL {dependencies}) \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY first_sequence)=1), \
@@ -110,9 +112,9 @@ impl UsageReader {
                AND p.thread_id=l.thread_id AND p.first_sequence<l.first_sequence WHERE l.depth<64), \
              anchors AS (SELECT operation_id,first_sequence,thread_id FROM lineage WHERE retry_of_operation_id IS NULL \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY depth DESC)=1), \
-             assigned AS (SELECT o.*,b.binding_index,b.assigned,b.binding_project_id,b.binding_workstream_id,b.binding_outcome_id FROM ops o JOIN anchors l USING(operation_id) JOIN bindings b \
-               ON l.thread_id=b.thread_id AND b.effective_sequence <= l.first_sequence \
-               QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY b.effective_sequence DESC,b.transition_sequence DESC)=1), \
+             assigned AS (SELECT o.*,b.binding_index,b.assigned,b.binding_project_id,b.binding_workstream_id,b.binding_outcome_id \
+               FROM ops o JOIN anchors l USING(operation_id) ASOF JOIN points b \
+               ON l.thread_id=b.thread_id AND l.first_sequence >= b.effective_sequence), \
              tokens AS (SELECT operation_id,COALESCE(sum(provider_total_tokens),0)::UBIGINT provider_total_tokens, \
                sum(COALESCE(observation_count,1))::UBIGINT token_observations, \
                sum(COALESCE(provider_total_unknowns,CASE WHEN provider_total_tokens IS NULL THEN COALESCE(observation_count,1) ELSE 0 END))::UBIGINT unknown_token_observations \

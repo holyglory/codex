@@ -69,6 +69,49 @@ fn totals(report: &Value) -> Value {
         "intervals":report["outcomes"]["attributed"]["elapsedExecutionMs"]})
 }
 
+fn measure_reports(home: &Path, baseline: &Path, expected: u64) -> codex_usage::Result<Value> {
+    let started = Instant::now();
+    let reader = UsageReader::open(home)?;
+    let reader_time = started.elapsed();
+    let baseline_reader = UsageReader::open(baseline)?;
+    let started = Instant::now();
+    let unbound = baseline_reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
+    let baseline_time = started.elapsed();
+    let started = Instant::now();
+    let transitions = reader.work_binding_transitions();
+    let binding_decode_time = started.elapsed();
+    let started = Instant::now();
+    let sparse = reader.sparse_bound_effort(
+        TimeRange::all(),
+        &UsageFilter::default(),
+        transitions,
+        &Default::default(),
+    )?;
+    let sparse_time = started.elapsed();
+    let started = Instant::now();
+    let report = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
+    let report_time = started.elapsed();
+    assert_eq!(
+        report["tokens"], unbound["tokens"],
+        "identical facts retain identical token totals"
+    );
+    assert_eq!(report["counts"], unbound["counts"]);
+    assert_eq!(
+        json!({"bound":report["workBindings"]["boundOperations"],"rows":report["outcomes"]["totalRows"],
+        "tokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
+        json!({"bound":expected,"rows":1,"tokens":expected})
+    );
+    assert_eq!(
+        sparse.iter().map(|row| row.effort.operations).sum::<u64>(),
+        expected
+    );
+    Ok(
+        json!({"readerOpenMs":reader_time.as_millis(),"baselineReportMs":baseline_time.as_millis(),
+        "bindingDecodeMs":binding_decode_time.as_millis(),"sparseEffortMs":sparse_time.as_millis(),
+        "boundReportMs":report_time.as_millis()}),
+    )
+}
+
 #[test]
 fn captured_starts_pin_assignments_across_switches_publication_and_late_retries()
 -> codex_usage::Result<()> {
@@ -153,23 +196,31 @@ fn repeated_switches_aggregate_by_job_before_report_limits() -> codex_usage::Res
         )?;
         capture_time += capture_start.elapsed();
     }
-    let reader_start = Instant::now();
-    let reader = UsageReader::open(home.path())?;
-    let reader_time = reader_start.elapsed();
-    let query_start = Instant::now();
-    let report = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
-    let query_time = query_start.elapsed();
+    let baseline = tempfile::tempdir()?;
+    std::fs::create_dir_all(baseline.path().join("usage-v2"))?;
+    std::fs::copy(
+        home.path().join("usage-v2/events.jsonl"),
+        baseline.path().join("usage-v2/events.jsonl"),
+    )?;
+    let tail = measure_reports(home.path(), baseline.path(), switches)?;
+    for path in [home.path(), baseline.path()] {
+        UsagePublisher::open_at(path.join("usage-v2"))?.publish_batch(JournalReadLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_entries: 16_384,
+        })?;
+    }
+    let published = measure_reports(home.path(), baseline.path(), switches)?;
     assert_eq!(
-        json!({"bound":report["workBindings"]["boundOperations"],"rows":report["outcomes"]["totalRows"],
-        "tokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
-        json!({"bound":switches,"rows":1,"tokens":switches})
+        UsageReader::open(home.path())?
+            .work_binding_transitions()
+            .len(),
+        switches as usize
     );
-    assert_eq!(reader.work_binding_transitions().len(), switches as usize);
     eprintln!(
         "sparse-work-measurement {}",
         json!({"switches":switches,"operations":switches,
         "transitionMs":transition_time.as_millis(),"captureMs":capture_time.as_millis(),
-        "readerOpenMs":reader_time.as_millis(),"reportMs":query_time.as_millis(),
+        "unpublished":tail,"published":published,
         "transitionBytes":std::fs::metadata(home.path().join("usage-v2/work-bindings.jsonl"))?.len()})
     );
     Ok(())
