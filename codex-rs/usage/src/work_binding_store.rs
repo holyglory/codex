@@ -70,10 +70,7 @@ impl WorkBindingLookup {
         Self::open_inner(root, None)
     }
 
-    fn open_inner(
-        root: &Path,
-        pin: Option<crate::reclamation::SnapshotPin>,
-    ) -> Result<Self> {
+    fn open_inner(root: &Path, pin: Option<crate::reclamation::SnapshotPin>) -> Result<Self> {
         let Some(active) = read_active(root)? else {
             let legacy = legacy_rows(root)?;
             return Ok(Self {
