@@ -31,25 +31,32 @@ pub struct LocalUsageAccountingCapability {
 pub struct LocalUsageSummaryParams {
     /// Omission selects version 1; unsupported versions are rejected.
     #[serde(default, alias = "schemaVersion")]
+    #[ts(optional = nullable)]
     pub contract_version: Option<u32>,
     #[serde(default, alias = "fromAt")]
+    #[ts(optional = nullable)]
     pub from_at_ms: Option<i64>,
     #[serde(default, alias = "toAt")]
+    #[ts(optional = nullable)]
     pub to_at_ms: Option<i64>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub account_id: Option<String>,
     #[serde(default, alias = "repositoryKey")]
+    #[ts(optional = nullable)]
     pub repository_id: Option<String>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub thread_id: Option<String>,
     /// Select outcome accounting only. Repository report/totals retain scope.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub workstream_id: Option<String>,
     /// Explicit authority declarations; at most 256, never persisted by this RPC.
-    #[serde(default)]
+    #[ts(optional = nullable)]
     pub work_context_bindings: Option<Vec<LocalUsageWorkContextBinding>>,
     /// Reserved compatibility selector; non-null is rejected until captured.
-    #[serde(default)]
+    #[ts(optional = nullable)]
     pub worktree_keys: Option<Vec<String>>,
     /// Compatibility flag, meaningful only alongside a worktree selector.
     #[serde(default)]
@@ -62,11 +69,14 @@ pub struct LocalUsageSummaryParams {
     #[serde(default)]
     pub operation_limit: u32,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub records_after: Option<LocalUsageCursor>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub operations_after: Option<LocalUsageCursor>,
     /// Required with a continuation, so paging never silently mixes snapshots.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub expected_snapshot: Option<String>,
 }
 
@@ -139,6 +149,7 @@ pub struct LocalUsageWorkContextBinding {
 #[ts(export_to = "v2/")]
 pub struct LocalUsageRepositoryIdentityParams {
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub contract_version: Option<u32>,
     /// Private local input; never echoed in the response or error.
     pub path: String,
@@ -176,15 +187,9 @@ pub struct LocalUsageSummaryResponse {
     pub snapshot: LocalUsageSnapshot,
     pub report: Value,
     pub summary: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub review: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub observations: Option<Vec<Value>>,
     pub next_records_cursor: Option<LocalUsageCursor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub operations: Option<Vec<Value>>,
     pub next_operations_cursor: Option<LocalUsageCursor>,
     pub work_contexts: Vec<LocalUsageWorkContext>,
@@ -192,34 +197,5 @@ pub struct LocalUsageSummaryResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ClientRequest;
-    use crate::RequestId;
-    use pretty_assertions::assert_eq;
-    use serde_json::json;
-
-    #[test]
-    fn local_usage_summary_preserves_wire_method_and_legacy_parameter_names() {
-        let params: LocalUsageSummaryParams = serde_json::from_value(json!({
-            "schemaVersion":1,"repositoryKey":"repo","fromAt":1_000,"toAt":2_000,
-            "ignoredPrompt":"private content must not be forwarded"
-        }))
-        .unwrap();
-        assert_eq!(params.contract_version, Some(1));
-        assert_eq!(params.repository_id.as_deref(), Some("repo"));
-        assert_eq!(params.from_at_ms, Some(1_000));
-        assert_eq!(params.to_at_ms, Some(2_000));
-        let value = serde_json::to_value(ClientRequest::LocalUsageSummary {
-            request_id: RequestId::Integer(7),
-            params,
-        })
-        .unwrap();
-        assert_eq!(value["method"], "localUsage/summary");
-        assert_eq!(value["params"]["contractVersion"], 1);
-        assert!(value["params"].get("ignoredPrompt").is_none());
-        assert!(value["params"].get("repositoryKey").is_none());
-        let parsed: ClientRequest = serde_json::from_value(value).unwrap();
-        assert_eq!(parsed.method_name(), "localUsage/summary");
-    }
-}
+#[path = "local_usage_tests.rs"]
+mod tests;

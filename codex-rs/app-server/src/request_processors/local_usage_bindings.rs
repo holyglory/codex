@@ -81,14 +81,14 @@ impl Bindings {
         .into_iter()
         .flatten()
         {
-            if !safe_identifier(id, false) {
+            if !safe_identifier(id, /*experiment*/ false) {
                 return Err(());
             }
         }
         if context
             .experiment_ref
             .as_deref()
-            .is_some_and(|value| !safe_identifier(value, true))
+            .is_some_and(|value| !safe_identifier(value, /*experiment*/ true))
         {
             return Err(());
         }
@@ -242,7 +242,7 @@ impl Bindings {
                 .zip(context.workstream_id.as_deref())
                 .is_some_and(|(selected, actual)| selected != actual)
             {
-                combine(&mut excluded, &effort, false)?;
+                combine(&mut excluded, &effort, /*subtract*/ false)?;
                 excluded_observations = excluded_observations
                     .checked_add(fact.token_observations)
                     .ok_or(())?;
@@ -257,16 +257,16 @@ impl Bindings {
             attributed_observations = attributed_observations
                 .checked_add(fact.token_observations)
                 .ok_or(())?;
-            combine(&mut attributed, &effort, false)?;
+            combine(&mut attributed, &effort, /*subtract*/ false)?;
             let aggregate = groups
                 .entry((outcome.clone(), context.workstream_id.clone()))
                 .or_insert_with(zero_effort);
-            combine(aggregate, &effort, false)?;
+            combine(aggregate, &effort, /*subtract*/ false)?;
         }
         let mut scoped_total = total.clone();
-        combine(&mut scoped_total, &excluded, true)?;
+        combine(&mut scoped_total, &excluded, /*subtract*/ true)?;
         let mut unattributed = scoped_total.clone();
-        combine(&mut unattributed, &attributed, true)?;
+        combine(&mut unattributed, &attributed, /*subtract*/ true)?;
         let unattributed_observations = facts["coverage"]["rawTokenObservations"]
             .as_u64()
             .ok_or(())?

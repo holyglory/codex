@@ -39,9 +39,15 @@ def build():
     # normal host target/cache; no target-triple cold rebuild or old binary reuse.
     v8 = fetch_codex_v8_artifacts(TARGET_SPECS[TARGET], cache_root=Path("/mnt/build-storage/codex/rebase166-v8"))
     environment = {**os.environ, "RUSTY_V8_ARCHIVE": str(v8.archive), "RUSTY_V8_SRC_BINDING_PATH": str(v8.binding)}
+    metadata = json.loads(run([CARGO, "metadata", "--locked", "--no-deps", "--format-version", "1",
+        "--manifest-path", ROOT / "codex-rs/Cargo.toml"],
+        env=environment, capture_output=True, text=True).stdout)
+    target_directory = Path(metadata["target_directory"])
+    if not target_directory.is_absolute():
+        raise RuntimeError("cargo-target-directory-not-absolute")
     run([CARGO, "build", "--locked", "--manifest-path", ROOT / "codex-rs/Cargo.toml",
          "--bin", "codex", "--bin", "codex-code-mode-host", "--bin", "codex-exec-server", "--bin", "bwrap"], env=environment)
-    binaries = ROOT / "codex-rs/target/debug"
+    binaries = target_directory / "debug"
     package = work / "package"
     run([sys.executable, ROOT / "scripts/build_codex_package.py", "--target", TARGET,
          "--package-version", version, "--cargo-profile", "dev", "--strip", "all", "--package-dir", package,

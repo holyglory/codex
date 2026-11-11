@@ -56,8 +56,8 @@ pub(crate) async fn repository_identity(
     tokio::task::spawn_blocking(move || LocalUsageRepositoryIdentityResponse {
         contract_version: 1,
         source: "usage-v2".into(),
-        repository_id: codex_core::usage_identity::repository_id(&path),
-        format_version: codex_core::usage_identity::REPOSITORY_ID_FORMAT_VERSION,
+        repository_id: codex_core::usage_repository_id(&path),
+        format_version: codex_core::USAGE_REPOSITORY_ID_FORMAT_VERSION,
     })
     .await
     .map_err(|_| internal_error("local repository identity unavailable"))
@@ -75,11 +75,11 @@ fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
     if params
         .workstream_id
         .as_deref()
-        .is_some_and(|value| !safe_identifier(value, false))
+        .is_some_and(|value| !safe_identifier(value, /*experiment*/ false))
     {
         return Err(invalid_params("invalid workstream identifier"));
     }
-    Bindings::merge_request(None, params.work_context_bindings.as_deref())
+    Bindings::merge_request(/*sidecar*/ None, params.work_context_bindings.as_deref())
         .map_err(|_| invalid_params("invalid or conflicting work context declarations"))?;
     if (params.include_review || params.record_limit > 0 || params.operation_limit > 0)
         && (params.from_at_ms.is_none() || params.to_at_ms.is_none())

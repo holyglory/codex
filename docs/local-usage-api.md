@@ -80,10 +80,10 @@ The result keeps the existing `generatedAt`, `report`, and `snapshot` envelope:
     workBindings, filters
   },
   summary: <native UsageReader.summary>,
-  review?: { coverage, totals, activities, time, tools, semantics, outcomes },
-  observations?: [<content-free UsageRecord>],
+  review: null | { coverage, totals, activities, time, tools, semantics, outcomes },
+  observations: null | [<content-free UsageRecord>],
   nextRecordsCursor: null | { observedAtMs, id },
-  operations?: [<content-free ReviewOperation>],
+  operations: null | [<content-free ReviewOperation>],
   nextOperationsCursor: null | { observedAtMs, id },
   workContexts: [<explicit contexts with scoped operation evidence>],
   operationBindings: [<explicit operationId to workContextId declarations>]

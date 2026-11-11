@@ -28,6 +28,16 @@ use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
+fn fixture_repository() -> Result<TempDir> {
+    let directory = TempDir::new()?;
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(directory.path())
+        .output()?;
+    anyhow::ensure!(output.status.success(), "fixture Git initialization failed");
+    Ok(directory)
+}
+
 fn fixture_fact(
     id: &str,
     thread: &str,
@@ -104,11 +114,12 @@ fn export_runtime_fixture(home: &Path, info: &Value) -> Result<Option<PathBuf>> 
 #[tokio::test]
 async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ipc() -> Result<()> {
     let home = TempDir::new()?;
+    let repository_directory = fixture_repository()?;
     let repository_path = std::env::var_os("CODEX_USAGE_V2_FIXTURE_REPOSITORY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        .unwrap_or_else(|| repository_directory.path().to_owned());
     let repository_path = repository_path.canonicalize()?;
-    let repository = codex_core::usage_identity::repository_id(&repository_path)
+    let repository = codex_core::usage_repository_id(&repository_path)
         .context("fixture repository is not recognized")?;
     let base = i64::try_from(
         std::time::SystemTime::now()
@@ -183,12 +194,17 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         "providerTokens":187});
     let exported = export_runtime_fixture(home.path(), &info)?;
     let global_start = Instant::now();
-    let global: LocalUsageSummaryResponse = server
+    let global: Value = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
             request_id,
             params: LocalUsageSummaryParams::default(),
         })
         .await?;
+    assert_eq!(
+        ["review", "observations", "operations"].map(|field| global.get(field)),
+        [Some(&Value::Null); 3]
+    );
+    let global: LocalUsageSummaryResponse = serde_json::from_value(global)?;
     let metadata_cold_ms = global_start.elapsed().as_millis();
     assert!(
         global.report["providerTokens"]
@@ -530,15 +546,13 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
 async fn local_usage_repository_identity_is_read_only_and_never_echoes_paths() -> Result<()> {
     let home = TempDir::new()?;
     let outside = TempDir::new()?;
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()?;
+    let repository = fixture_repository()?;
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
         .without_auto_env()
         .build_initialized_with_timeout(Duration::from_secs(20))
         .await?;
-    for path in [repository.as_path(), outside.path()] {
+    for path in [repository.path(), outside.path()] {
         let response: LocalUsageRepositoryIdentityResponse = server
             .request(|request_id| ClientRequest::LocalUsageRepositoryIdentity {
                 request_id,
@@ -550,7 +564,7 @@ async fn local_usage_repository_identity_is_read_only_and_never_echoes_paths() -
             .await?;
         assert_eq!(
             response.repository_id,
-            codex_core::usage_identity::repository_id(path)
+            codex_core::usage_repository_id(path)
         );
         assert_eq!(response.format_version, 3);
         assert!(!serde_json::to_string(&response)?.contains(path.to_str().unwrap()));
