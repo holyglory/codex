@@ -457,6 +457,79 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
         with self.assertRaisesRegex(ValueError, "require the local release"):
             verify_acceptance(None, producer, mode="complete")
 
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_native_only_v8_reuse_runs_both_producer_checks(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/downstream-candidate.yml"
+        ).read_text()
+        step = source.split(
+            "      - name: Verify the optional hosted V8 producer\n", 1
+        )[1]
+        command = "\n".join(
+            line[10:]
+            for line in step.split("        run: |\n", 1)[1]
+            .split("\n  handoff:", 1)[0]
+            .splitlines()
+        )
+        harness = """gh() { printf '{"head_sha":"%s"}\\n' "$FIXTURE_PRODUCER"; }
+jq() { printf '%s\\n' "$FIXTURE_PRODUCER"; }
+python3() {
+  printf '%s\\n' "$*" >> "$FIXTURE_CHECKS"
+  [[ "$1" != "$FIXTURE_REJECT" ]]
+}
+"""
+        producer = "a" * 40
+        packaging = "b" * 40
+        for mode, run_id, native_id, reject, accepted in (
+            ("true", "123", "", "", True),
+            ("false", "123", "", "", True),
+            ("true", "invalid", "", "", False),
+            ("true", "123", "456", "", False),
+            ("true", "123", "", "scripts/release_identity.py", False),
+            ("true", "123", "", "codex-cli/scripts/verify_candidate_run.py", False),
+        ):
+            with self.subTest(
+                mode=mode, run_id=run_id, native_id=native_id, reject=reject
+            ):
+                with tempfile.TemporaryDirectory(prefix="npm-v8-reuse-") as directory:
+                    root = Path(directory)
+                    checks = root / "checks"
+                    output = root / "output"
+                    result = subprocess.run(
+                        ["bash", "-c", harness + command],
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "NATIVE_ONLY": mode,
+                            "HOSTED_RUN_ID": run_id,
+                            "HOSTED_NATIVE_RUN_ID": native_id,
+                            "GITHUB_REPOSITORY": "holyglory/codex",
+                            "GITHUB_SHA": packaging,
+                            "RUNNER_TEMP": directory,
+                            "GITHUB_OUTPUT": str(output),
+                            "FIXTURE_PRODUCER": producer,
+                            "FIXTURE_CHECKS": str(checks),
+                            "FIXTURE_REJECT": reject,
+                        },
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    self.assertEqual(output.exists(), accepted)
+                    if accepted:
+                        self.assertEqual(
+                            output.read_text(), f"source_commit={producer}\n"
+                        )
+                        self.assertEqual(
+                            checks.read_text().splitlines(),
+                            [
+                                f"scripts/release_identity.py --producer {producer} --packaging {packaging} --hosted-v8",
+                                f"codex-cli/scripts/verify_candidate_run.py --repository holyglory/codex --commit {producer} --jobs-file {root / 'hosted-v8-jobs.json'} --hosted-v8",
+                            ],
+                        )
+
     def test_native_only_success_cannot_qualify_npm_publication(self) -> None:
         commit = "a" * 40
         repository = "holyglory/codex"
