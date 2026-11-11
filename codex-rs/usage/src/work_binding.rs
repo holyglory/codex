@@ -132,13 +132,22 @@ fn read(path: &Path) -> Result<(Vec<WorkBindingTransition>, u64)> {
         Err(error) => return Err(error.into()),
     };
     storage_file::protect_existing(path)?;
-    if file.metadata()?.len() > MAX_BYTES {
+    let length = file.metadata()?.len();
+    read_prefix(&mut file, length)
+}
+
+pub(crate) fn read_prefix(
+    file: &mut File,
+    length: u64,
+) -> Result<(Vec<WorkBindingTransition>, u64)> {
+    if length > MAX_BYTES {
         return Err(invalid("work binding transition journal exceeds bounds"));
     }
     let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    Read::by_ref(file).take(length).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(invalid("work binding snapshot prefix changed"));
+    }
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid("work binding transition journal exceeds bounds"));
     }

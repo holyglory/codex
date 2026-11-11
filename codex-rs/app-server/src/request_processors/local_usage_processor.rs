@@ -376,6 +376,19 @@ fn read(
         (Vec::new(), Vec::new())
     };
     if let Some(facts) = &facts {
+        if facts["workBindings"]["coverage"] == "unavailable" {
+            report["workBindings"]["sparseCoverage"] = json!("unavailable");
+            if binding_source.is_none() {
+                report["workBindings"]["coverage"] = json!("unavailable");
+                report["coverage"]["workBindings"] = json!("unavailable");
+            }
+            if let Some(review) = &mut review {
+                review["coverage"]["unavailable_reasons"]["sparse_binding_metadata_unavailable"] =
+                    json!(true);
+            }
+        } else if facts["workBindings"]["basis"] == "explicit_sparse_transitions" {
+            report["workBindings"]["basis"] = json!("explicit_sparse_transitions");
+        }
         let explicit_ids = binding_source
             .as_ref()
             .map_or_else(Default::default, Bindings::operation_ids);

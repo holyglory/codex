@@ -39,7 +39,7 @@ pub struct UsageReader {
     pending_entries: u64,
     freshness: Freshness,
     journal_watermark: u64,
-    work_binding_transitions: Vec<crate::WorkBindingTransition>,
+    work_binding_snapshot: crate::work_binding_snapshot::WorkBindingSnapshot,
 }
 
 /// Optional row restriction applied inside DuckDB before paging.
@@ -248,7 +248,7 @@ impl UsageReader {
             record_sequences.clear();
             corrections.clear();
         }
-        let work_binding_transitions = crate::work_binding::read_transitions_at(&root)?;
+        let work_binding_snapshot = crate::work_binding_snapshot::WorkBindingSnapshot::pin(&root);
         Ok(Self {
             _pin: pin,
             root,
@@ -260,7 +260,7 @@ impl UsageReader {
             pending_entries,
             freshness,
             journal_watermark,
-            work_binding_transitions,
+            work_binding_snapshot,
         })
     }
 
@@ -286,7 +286,12 @@ impl UsageReader {
 
     /// Explicit assignment events pinned with this immutable report view.
     pub fn work_binding_transitions(&self) -> &[crate::WorkBindingTransition] {
-        &self.work_binding_transitions
+        self.work_binding_snapshot.transitions()
+    }
+
+    /// Attribution availability, independent of token and operation measurements.
+    pub fn work_binding_coverage(&self) -> &'static str {
+        self.work_binding_snapshot.coverage()
     }
 
     /// Resolve trusted descendants from this generation and its bounded tail.

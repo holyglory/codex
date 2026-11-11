@@ -21,6 +21,7 @@ use crate::review_storage::query_rows;
 pub struct OperationBindingMetadata {
     pub operation_id: String,
     pub first_sequence: u64,
+    pub start_observed: bool,
     pub retry_of_operation_id: Option<String>,
     pub kind: Option<ReviewOperationKind>,
     pub account_id: Option<String>,
@@ -110,6 +111,7 @@ impl UsageReader {
                     OperationBindingMetadata {
                         operation_id: operation.operation_id,
                         first_sequence: operation.first_sequence,
+                        start_observed: operation.start_observed,
                         retry_of_operation_id: operation.retry_of_operation_id,
                         kind: Some(operation.kind),
                         account_id: operation.account_id,

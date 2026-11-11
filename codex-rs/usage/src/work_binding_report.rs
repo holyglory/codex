@@ -61,11 +61,26 @@ impl UsageReader {
             })
             .map(|(index, binding)| {
                 format!(
-                    "({index},{},{},{},{})",
+                    "({index},{},{},{},{},{},{},{})",
                     quoted(&binding.update.thread_id),
                     binding.effective_capture_sequence,
                     binding.update.transition_sequence,
-                    binding.update.native_project_id.is_some()
+                    binding.update.native_project_id.is_some(),
+                    binding
+                        .update
+                        .native_project_id
+                        .as_deref()
+                        .map_or_else(|| "NULL".into(), quoted),
+                    binding
+                        .update
+                        .workstream_id
+                        .as_deref()
+                        .map_or_else(|| "NULL".into(), quoted),
+                    binding
+                        .update
+                        .outcome_id
+                        .as_deref()
+                        .map_or_else(|| "NULL".into(), quoted)
                 )
             })
             .collect::<Vec<_>>();
@@ -85,8 +100,8 @@ impl UsageReader {
         };
         let statistics = detail_statistics(&query.operations, range);
         let sql = format!(
-            "WITH RECURSIVE bindings(binding_index,thread_id,effective_sequence,transition_sequence,assigned) AS (VALUES {}), \
-             ops AS (SELECT * FROM ({statistics}) WHERE {predicate}), \
+            "WITH RECURSIVE bindings(binding_index,thread_id,effective_sequence,transition_sequence,assigned,binding_project_id,binding_workstream_id,binding_outcome_id) AS (VALUES {}), \
+             ops AS (SELECT * FROM ({statistics}) WHERE {predicate} AND start_observed), \
              lineage_ops AS (SELECT * FROM (SELECT operation_id,first_sequence,thread_id,retry_of_operation_id FROM ops UNION ALL {dependencies}) \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY first_sequence)=1), \
              lineage AS (SELECT operation_id,operation_id ancestor,first_sequence,thread_id,retry_of_operation_id,0 depth FROM ops \
@@ -95,14 +110,14 @@ impl UsageReader {
                AND p.thread_id=l.thread_id AND p.first_sequence<l.first_sequence WHERE l.depth<64), \
              anchors AS (SELECT operation_id,first_sequence,thread_id FROM lineage WHERE retry_of_operation_id IS NULL \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY depth DESC)=1), \
-             assigned AS (SELECT o.*,b.binding_index,b.assigned FROM ops o JOIN anchors l USING(operation_id) JOIN bindings b \
+             assigned AS (SELECT o.*,b.binding_index,b.assigned,b.binding_project_id,b.binding_workstream_id,b.binding_outcome_id FROM ops o JOIN anchors l USING(operation_id) JOIN bindings b \
                ON l.thread_id=b.thread_id AND b.effective_sequence <= l.first_sequence \
                QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY b.effective_sequence DESC,b.transition_sequence DESC)=1), \
              tokens AS (SELECT operation_id,COALESCE(sum(provider_total_tokens),0)::UBIGINT provider_total_tokens, \
                sum(COALESCE(observation_count,1))::UBIGINT token_observations, \
                sum(COALESCE(provider_total_unknowns,CASE WHEN provider_total_tokens IS NULL THEN COALESCE(observation_count,1) ELSE 0 END))::UBIGINT unknown_token_observations \
                FROM ({}) WHERE ({TOKEN_PREDICATE}) GROUP BY operation_id) \
-             SELECT a.binding_index,'' operation_id, \
+             SELECT min(a.binding_index)::UBIGINT binding_index,'' operation_id, \
                sum((kind <> 'wait')::UBIGINT)::UBIGINT operations, \
                sum(retry_operations)::UBIGINT retry_operations,sum(rework_operations)::UBIGINT rework_operations, \
                sum(COALESCE(t.provider_total_tokens,0))::UBIGINT provider_total_tokens, \
@@ -111,11 +126,12 @@ impl UsageReader {
                sum(CASE WHEN kind <> 'wait' THEN interval_sum_ms ELSE 0 END)::UBIGINT execution_interval_sum_ms, \
                sum(CASE WHEN kind <> 'wait' THEN unknown_intervals ELSE 0 END)::UBIGINT unknown_execution_intervals, \
                sum(CASE WHEN kind = 'wait' THEN interval_sum_ms ELSE 0 END)::UBIGINT recorded_wait_ms \
-             FROM assigned a LEFT JOIN tokens t USING(operation_id) WHERE a.assigned GROUP BY a.binding_index ORDER BY a.binding_index",
+             FROM assigned a LEFT JOIN tokens t USING(operation_id) WHERE a.assigned \
+             GROUP BY a.thread_id,a.binding_project_id,a.binding_workstream_id,a.binding_outcome_id ORDER BY binding_index",
             selected.join(","),
             query.contributions
         );
-        query_rows::<Row>(&query.connection, &sql, /*max_rows*/ 1024)?
+        query_rows::<Row>(&query.connection, &sql, transitions.len())?
             .into_iter()
             .map(|row| {
                 let binding = transitions[row.binding_index].clone();
@@ -149,7 +165,7 @@ fn retry_dependencies(reader: &UsageReader, query: &ReportQuery) -> Result<Strin
         pending = BTreeSet::new();
         for chunk in ids.chunks(256) {
             for metadata in reader.operation_binding_metadata(&chunk.iter().cloned().collect())? {
-                if metadata.first_sequence == 0 {
+                if metadata.first_sequence == 0 || !metadata.start_observed {
                     continue;
                 }
                 if let Some(parent) = &metadata.retry_of_operation_id {
@@ -173,6 +189,12 @@ fn retry_dependencies(reader: &UsageReader, query: &ReportQuery) -> Result<Strin
 
 pub(crate) fn apply_sparse_report(report: &mut Value, sparse: &[BoundWorkEffort]) -> Result<()> {
     if sparse.is_empty() {
+        report["workBindings"]["basis"] = json!("explicit_sparse_transitions");
+        report["workBindings"]["coverage"] = json!("unattributed");
+        report["outcomes"]["coverage"] = json!("unattributed");
+        report["outcomes"]["basis"] = json!(
+            "Explicit switches were captured, but selected work is unassigned or lacks operation start/lineage evidence."
+        );
         return Ok(());
     }
     let zero = || {
@@ -203,7 +225,8 @@ pub(crate) fn apply_sparse_report(report: &mut Value, sparse: &[BoundWorkEffort]
         effort["providerTotalTokens"]["measured"] = json!(row.effort.provider_total_tokens);
         effort["providerTotalTokens"]["unknown"] = json!(row.effort.unknown_token_observations);
         effort["activeAgentMs"]["unknown"] = json!(row.effort.operations);
-        effort["elapsedExecutionMs"]["unknown"] = json!(row.effort.operations);
+        effort["elapsedExecutionMs"]["measured"] = json!(row.effort.execution_interval_sum_ms);
+        effort["elapsedExecutionMs"]["unknown"] = json!(row.effort.unknown_execution_intervals);
         effort["recordedWaitMs"]["measured"] = json!(row.effort.recorded_wait_ms);
         combine(&mut attributed, &effort, /*subtract*/ false)?;
         let group = groups
@@ -232,7 +255,7 @@ pub(crate) fn apply_sparse_report(report: &mut Value, sparse: &[BoundWorkEffort]
         .collect::<Vec<_>>();
     report["workBindings"] = json!({"basis":"explicit_sparse_transitions","boundOperations":bound,
         "unknownOperations":unknown,"transitions":sparse.len()});
-    report["outcomes"] = json!({"schemaVersion":1,"coverage":"partial","totals":total,"attributed":attributed,
+    report["outcomes"] = json!({"schemaVersion":1,"coverage":if rows.is_empty() {"unattributed"} else {"partial"},"totals":total,"attributed":attributed,
         "unattributed":unattributed,"unattributedReasons":{"work_binding_or_outcome_unobserved":unattributed["operations"]},
         "totalRows":rows.len(),"rows":rows,"nextCursor":Value::Null,
         "basis":"Explicit sparse assignment intervals joined to first captured operation sequence. Missing or retired links stay unattributed; operation completion does not prove delivery."});

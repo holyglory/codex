@@ -56,6 +56,7 @@ mod summary_cache;
 mod token_rollup;
 mod work_binding;
 mod work_binding_report;
+mod work_binding_snapshot;
 
 pub use bound_evidence::BoundOperationEffort;
 pub use bound_evidence::OperationBindingMetadata;
