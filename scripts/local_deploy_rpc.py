@@ -400,19 +400,20 @@ def verify_connection(rpc, plan):
         or type(bindings.get("schemaVersion")) is not int
         or bindings["schemaVersion"] != 1
         or bindings.get("basis")
-        not in {"request_declarations", "request_and_compatibility_declarations"}
-        or type(bindings.get("declaredOperations")) is not int
-        or not 1 <= bindings["declaredOperations"] <= 256
+        not in {
+            "request_declarations",
+            "request_and_compatibility_declarations",
+            "explicit_sparse_transitions",
+            "sparse_transitions_and_exceptional_declarations",
+        }
+        or type(bindings.get("declaredOperations", 0)) is not int
+        or not 0 <= bindings.get("declaredOperations", 0) <= 256
         or not isinstance(outcomes, dict)
         or type(outcomes.get("schemaVersion")) is not int
         or outcomes["schemaVersion"] != 1
         or outcomes.get("coverage") not in {"unattributed", "partial", "complete"}
         or not isinstance(outcomes.get("rows"), list)
         or any(not isinstance(row, dict) for row in outcomes["rows"])
-        or any(
-            row.get("workstreamId") != review_params["workstreamId"]
-            for row in outcomes["rows"]
-        )
     ):
         raise RuntimeError("usage-v2-outcome-contract-invalid")
     efforts = [outcomes.get(key) for key in ("totals", "attributed", "unattributed")]
