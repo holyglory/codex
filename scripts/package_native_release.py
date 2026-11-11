@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 
@@ -244,37 +245,43 @@ def golden(work):
         != "fae81eb5297a5230ebcfd79dd2c3f5c47f6d8e9756ff70e42061026455d94bc5"
     ):
         raise RuntimeError("The independently captured installed CLI reference changed")
-    run(
-        [
-            "python3",
-            "-m",
-            "scripts.account_cli_compat.runner",
-            "compare",
-            "--binary",
-            work / "cli/bin/codex",
-            "--source-root",
-            ROOT,
-            "--reference",
-            reference,
-            "--output",
-            work / "account-golden.json",
-        ]
-    )
-    run(
-        [
-            "python3",
-            "-m",
-            "scripts.account_cli_compat.captured_credits",
-            "--binary",
-            work / "cli/bin/codex",
-            "--reference",
-            "/mnt/build-storage/codex/rebase166-package-work/t20261108T222308Z-28e3a5/account-credit-golden.json",
-            "--source-root",
-            ROOT,
-            "--output",
-            work / "account-credit-golden.json",
-        ]
-    )
+    # The harnesses omit TMPDIR when invoking Codex, whose alias guard checks
+    # fixture homes against the default system temporary directory.
+    with tempfile.TemporaryDirectory(prefix="account-golden-", dir=work) as temporary:
+        env = {**os.environ, "TMPDIR": temporary}
+        run(
+            [
+                "python3",
+                "-m",
+                "scripts.account_cli_compat.runner",
+                "compare",
+                "--binary",
+                work / "cli/bin/codex",
+                "--source-root",
+                ROOT,
+                "--reference",
+                reference,
+                "--output",
+                work / "account-golden.json",
+            ],
+            env=env,
+        )
+        run(
+            [
+                "python3",
+                "-m",
+                "scripts.account_cli_compat.captured_credits",
+                "--binary",
+                work / "cli/bin/codex",
+                "--reference",
+                "/mnt/build-storage/codex/rebase166-package-work/t20261108T222308Z-28e3a5/account-credit-golden.json",
+                "--source-root",
+                ROOT,
+                "--output",
+                work / "account-credit-golden.json",
+            ],
+            env=env,
+        )
     verify_source(work)
 
 
