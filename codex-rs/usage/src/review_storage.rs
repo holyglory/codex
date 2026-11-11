@@ -56,6 +56,7 @@ pub(crate) const CONTRIBUTION_COLUMNS: &[(&str, DataType)] = columns![
     provider_total_unknowns:UInt64, cache_write_unknowns:UInt64,
     missing_observations_sum:UInt64, attempt_number:UInt64,
     rework_of_operation_id:Utf8,
+    work_native_project_id:Utf8, workstream_id:Utf8, work_outcome_id:Utf8,
 ];
 pub(crate) const CLASSIFICATION_COLUMNS: &[(&str, DataType)] = columns![
     record_id:Utf8, operation_id:Utf8, source_sequence:UInt64, observed_at_ms:Int64,

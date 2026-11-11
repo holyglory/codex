@@ -34,6 +34,7 @@ pub(crate) struct ReportQuery {
     pub(crate) connection: Connection,
     pub(crate) operations: String,
     pub(crate) operation_statistics: String,
+    pub(crate) retained_operation_statistics: String,
     pub(crate) contributions: String,
     pub(crate) complete_from_sequence: u64,
 }
@@ -119,10 +120,9 @@ impl ReportQuery {
         } else {
             parquet_source(&directory, &operation_files, &operation_columns)?
         };
-        let operation_tail = values_source(
-            &states.into_values().collect::<Vec<_>>(),
-            &operation_columns,
-        )?;
+        let mut states = states.into_values().collect::<Vec<_>>();
+        crate::assign_work_dimensions(&reader.root, &mut states, &[]);
+        let operation_tail = values_source(&states, &operation_columns)?;
         let classification_source = if classification_files.is_empty() {
             empty_source(&classification_columns)
         } else {
@@ -192,6 +192,12 @@ impl ReportQuery {
             range,
             filter,
         )?;
+        let retained_operation_statistics = crate::review_aggregate::retained_statistics_source(
+            &reader.root,
+            descriptor.as_deref(),
+            range,
+            filter,
+        )?;
         // Materializing only the selected indexed slice avoids repeating Parquet
         // reads for the small aggregate and detail queries that form one report.
         connection
@@ -206,9 +212,15 @@ impl ReportQuery {
             connection,
             operations: "SELECT * FROM selected_operations".into(),
             operation_statistics: "SELECT * FROM selected_operation_statistics".into(),
+            retained_operation_statistics,
             contributions: "SELECT * FROM selected_contributions".into(),
             complete_from_sequence,
         })
+    }
+
+    /// Corrected live and retained token effort, linked only to captured work.
+    pub(crate) fn work_contributions(&self) -> String {
+        crate::review_aggregate::work_contribution_source(&self.contributions, &self.operations)
     }
 }
 
@@ -270,6 +282,9 @@ fn hourly_contribution_source(
         "NULL::UBIGINT missing_observations_sum".into(),
         "attempt_number".into(),
         "rework_of_operation_id".into(),
+        "NULL::VARCHAR work_native_project_id".into(),
+        "NULL::VARCHAR workstream_id".into(),
+        "NULL::VARCHAR work_outcome_id".into(),
     ]
     .join(", ");
     Ok(Some(format!(

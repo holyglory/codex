@@ -19,6 +19,7 @@ use crate::review_projection::load_review_projection;
 use crate::review_projection::operation_bloom;
 use crate::review_state::REVIEW_PARTITION_SIZE;
 use crate::review_state::ReviewOperation;
+use crate::review_storage::CONTRIBUTION_COLUMNS;
 use crate::review_storage::parquet_source;
 use crate::review_storage::query_error;
 use crate::review_storage::query_rows;
@@ -256,7 +257,14 @@ fn retire(
     let mut retired_contributions = 0_u64;
     if let Some(fragment) = descriptor.contribution_fragments.get(index).cloned() {
         let previous_file = fragment.file.clone();
-        let source = parquet_source(root, std::slice::from_ref(&fragment.file))?;
+        let source = format!(
+            "({})",
+            crate::reader_query::parquet_source(
+                &root.join("segments"),
+                std::slice::from_ref(&fragment.file),
+                &crate::report_query::sql_columns(CONTRIBUTION_COLUMNS),
+            )?
+        );
         // Raw detail must disappear first: until then a newly published token
         // correction can still target its identity. The corresponding review
         // row must remain available to consume that same signed correction.
@@ -428,7 +436,14 @@ fn retire(
         .collect::<Vec<_>>();
     let mut merged = false;
     if !inputs.is_empty() {
-        let source = parquet_source(root, &inputs)?;
+        let source = format!(
+            "({})",
+            crate::reader_query::parquet_source(
+                &root.join("segments"),
+                &inputs,
+                &crate::report_query::sql_columns(CONTRIBUTION_COLUMNS),
+            )?
+        );
         let needs_conversion = inputs.len() > 1 || connection.query_row(&format!(
             "SELECT EXISTS (SELECT 1 FROM {source} WHERE {inactive} AND NOT starts_with(record_id, 'review-lifetime:'))"
         ), [], |row| row.get::<_, bool>(0)).map_err(query_error)?;
@@ -518,6 +533,9 @@ fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &s
         "phase",
         "activity",
         "classification",
+        "work_native_project_id",
+        "workstream_id",
+        "work_outcome_id",
     ]
     .join(", ");
     let grouped = format!(
@@ -547,7 +565,8 @@ fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &s
          classification, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, \
          provider_total_tokens, cache_write_input_tokens, NULL::UBIGINT AS missing_observations, \
          observation_count, provider_total_unknowns, cache_write_unknowns, missing_observations_sum, \
-         NULL::UBIGINT AS attempt_number, NULL::VARCHAR AS rework_of_operation_id \
+         NULL::UBIGINT AS attempt_number, NULL::VARCHAR AS rework_of_operation_id, \
+         work_native_project_id, workstream_id, work_outcome_id \
          FROM ({grouped})"
     )
 }

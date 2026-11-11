@@ -236,6 +236,13 @@ pub struct ReviewContribution {
     pub missing_observations_sum: Option<u64>,
     pub attempt_number: Option<u64>,
     pub rework_of_operation_id: Option<String>,
+    /// Captured operation dimensions carried by self-contained retained totals.
+    #[serde(default)]
+    pub work_native_project_id: Option<String>,
+    #[serde(default)]
+    pub workstream_id: Option<String>,
+    #[serde(default)]
+    pub work_outcome_id: Option<String>,
 }
 
 impl ReviewContribution {
@@ -269,6 +276,9 @@ impl ReviewContribution {
             missing_observations_sum: None,
             attempt_number: fact.attempt_number,
             rework_of_operation_id: fact.rework_of_operation_id.clone(),
+            work_native_project_id: None,
+            workstream_id: None,
+            work_outcome_id: None,
         }
     }
 }

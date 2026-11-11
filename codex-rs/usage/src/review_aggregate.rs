@@ -23,7 +23,7 @@ use crate::review_storage::parquet_source;
 use crate::review_storage::query_rows;
 use crate::review_storage::write_query;
 
-const DIMENSIONS: &str = "account_id, thread_id, repository_id, model, tool, kind, outcome, phase, activity, classification, coverage";
+const DIMENSIONS: &str = "account_id, thread_id, repository_id, model, tool, kind, outcome, phase, activity, classification, coverage, work_native_project_id, workstream_id, work_outcome_id";
 const METRICS: &[&str] = &[
     "operation_count",
     "interval_sum_ms",
@@ -47,6 +47,9 @@ const COLUMNS: &[(&str, &str)] = &[
     ("activity", "VARCHAR"),
     ("classification", "VARCHAR"),
     ("coverage", "VARCHAR"),
+    ("work_native_project_id", "VARCHAR"),
+    ("workstream_id", "VARCHAR"),
+    ("work_outcome_id", "VARCHAR"),
     ("operation_count", "UBIGINT"),
     ("interval_sum_ms", "UBIGINT"),
     ("unknown_intervals", "UBIGINT"),
@@ -226,6 +229,22 @@ pub(crate) fn statistics_source(
     range: TimeRange,
     filter: &UsageFilter,
 ) -> Result<String> {
+    let retained = retained_statistics_source(root, descriptor, range, filter)?;
+    let metrics = METRICS.join(", ");
+    let detail = detail_statistics(operations, range);
+    Ok(format!(
+        "SELECT {DIMENSIONS}, {metrics} FROM ({detail}) UNION ALL {retained}"
+    ))
+}
+
+/// Retained-only metrics let exceptional live-operation overrides compose with
+/// immutable totals without counting either source twice.
+pub(crate) fn retained_statistics_source(
+    root: &Path,
+    descriptor: Option<&ReviewProjectionDescriptor>,
+    range: TimeRange,
+    filter: &UsageFilter,
+) -> Result<String> {
     let retained = if let Some(descriptor) = descriptor {
         typed_source(
             &root.join("segments"),
@@ -245,13 +264,31 @@ pub(crate) fn statistics_source(
         )
     };
     let metrics = METRICS.join(", ");
-    let detail = detail_statistics(operations, range);
     Ok(format!(
-        "SELECT {DIMENSIONS}, {metrics} FROM ({detail}) UNION ALL \
-         SELECT {DIMENSIONS}, {metrics} FROM ({retained}) r \
+        "SELECT {DIMENSIONS}, {metrics} FROM ({retained}) r \
          WHERE {} AND {time}",
         dimension_predicate(filter)
     ))
+}
+
+/// Assign token effort only through captured canonical links. Retained rows
+/// already contain their assignment; missing or conflicting links stay null.
+pub(crate) fn work_contribution_source(contributions: &str, operations: &str) -> String {
+    format!(
+        "WITH facts AS ({contributions}), ops AS ({operations}), \
+         links AS (SELECT response_id,min(operation_id) operation_id FROM ops \
+             WHERE response_id IS NOT NULL GROUP BY response_id HAVING count(*)=1), \
+         attributed AS (SELECT f.*, CASE WHEN d.operation_id IS NOT NULL \
+             AND l.operation_id IS NOT NULL AND d.operation_id <> l.operation_id THEN NULL \
+             ELSE COALESCE(d.operation_id,l.operation_id) END linked_operation \
+             FROM facts f LEFT JOIN ops d ON f.operation_id=d.operation_id \
+             LEFT JOIN links l ON f.response_id=l.response_id) \
+         SELECT f.* EXCLUDE (linked_operation,work_native_project_id,workstream_id,work_outcome_id), \
+             COALESCE(f.work_native_project_id,o.work_native_project_id) work_native_project_id, \
+             COALESCE(f.workstream_id,o.workstream_id) workstream_id, \
+             COALESCE(f.work_outcome_id,o.work_outcome_id) work_outcome_id \
+         FROM attributed f LEFT JOIN ops o ON f.linked_operation=o.operation_id"
+    )
 }
 
 /// Apply signed corrections and inherited taxonomy while record/response links
@@ -279,8 +316,9 @@ pub(crate) fn retained_contribution_source(
         CORRECTION_COLUMNS,
     )?;
     let eligible = eligible_corrections(manifest);
+    let work = work_contribution_source(&format!("SELECT * FROM {source}"), &operations);
     Ok(format!(
-        "WITH facts AS (SELECT * FROM {source}), \
+        "WITH facts AS ({work}), \
          ops AS (SELECT * FROM ({operations}) WHERE operation_id IN \
              (SELECT operation_id FROM facts WHERE operation_id IS NOT NULL) OR response_id IN \
              (SELECT response_id FROM facts WHERE response_id IS NOT NULL)), \

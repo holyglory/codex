@@ -1,3 +1,6 @@
+#[path = "review_retention_work_tests.rs"]
+mod work_tests;
+
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
