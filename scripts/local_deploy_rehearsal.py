@@ -48,12 +48,13 @@ CASES = (
     "managed-record-mismatch",
     "managed-update-failure",
 )
-CANDIDATE = json.loads(Path(os.environ["CODEX_MULTI_LOCAL_CANDIDATE"]).read_text())
-PACKAGE = Path(CANDIDATE["package"])
-OLD = Path(CANDIDATE["oldBinary"])
-EXE_SHA = CANDIDATE["executableSha256"]
-OLD_SHA = CANDIDATE["oldExecutableSha256"]
-ARTIFACT_TREE_SHA = CANDIDATE["artifactTreeSha256"]
+PRESERVED_FILES = {
+    "config.toml": "approval_policy = 'never'\n",
+    # A real AuthDotJson shape with deliberately unusable fixture-only material.
+    "auth.json": '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-local-rehearsal-canary-not-a-real-key"}\n',
+    "registry.json": '{"accounts":["holygloryTT","axel"],"retain":true}\n',
+    "sessions/session-canary.json": '{"session":"redacted-canary","retain":true}\n',
+}
 
 
 def coordinator(operation, params):
@@ -95,12 +96,7 @@ def prepare():
         task_home.mkdir(parents=True, mode=0o700)
         codex_home = disposable / case / "c"
         codex_home.mkdir(mode=0o700)
-        preserved = {
-            "config.toml": "approval_policy = 'never'\n",
-            "auth.json": '{"credential":"redacted-canary","retain":true}\n',
-            "registry.json": '{"accounts":["holygloryTT","axel"],"retain":true}\n',
-            "sessions/session-canary.json": '{"session":"redacted-canary","retain":true}\n',
-        }
+        preserved = PRESERVED_FILES
         for relative, contents in preserved.items():
             target = codex_home / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -540,6 +536,12 @@ def verify_reports():
 
 
 if __name__ == "__main__":
+    CANDIDATE = json.loads(Path(os.environ["CODEX_MULTI_LOCAL_CANDIDATE"]).read_text())
+    PACKAGE = Path(CANDIDATE["package"])
+    OLD = Path(CANDIDATE["oldBinary"])
+    EXE_SHA = CANDIDATE["executableSha256"]
+    OLD_SHA = CANDIDATE["oldExecutableSha256"]
+    ARTIFACT_TREE_SHA = CANDIDATE["artifactTreeSha256"]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "step",

@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from local_deploy_owner import digest
+from local_deploy_rehearsal import PRESERVED_FILES
 from local_deploy_rpc import verify
 import prepare_local_usage_package as usage_package
 
@@ -437,10 +439,22 @@ class LocalDeployRpcTests(unittest.TestCase):
     def test_actual_candidate_in_isolated_home(self):
         with tempfile.TemporaryDirectory(prefix="ld-real-", dir="/tmp") as temporary:
             home = Path(temporary)
+            for relative, contents in PRESERVED_FILES.items():
+                target = home / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(contents)
+            preserved = {
+                relative: digest(home / relative) for relative in PRESERVED_FILES
+            }
             binary = os.environ["CODEX_MULTI_VERIFY_BINARY"]
+            environment = {
+                name: value
+                for name, value in os.environ.items()
+                if name not in {"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}
+            }
             process = subprocess.Popen(
                 [binary, "app-server", "--listen", "unix://"],
-                env={**os.environ, "CODEX_HOME": str(home), "HOME": str(home)},
+                env={**environment, "CODEX_HOME": str(home), "HOME": str(home)},
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -462,6 +476,11 @@ class LocalDeployRpcTests(unittest.TestCase):
                 verify(candidate_plan)
                 proof = json.loads((home / "proof/rpc.json").read_text())
                 self.assertTrue(proof["localUsageSummary"])
+                self.assertTrue(proof["accountAuthStatusAgrees"])
+                self.assertEqual(
+                    {relative: digest(home / relative) for relative in PRESERVED_FILES},
+                    preserved,
+                )
             finally:
                 process.terminate()
                 process.wait(timeout=30)
