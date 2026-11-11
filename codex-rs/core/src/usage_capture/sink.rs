@@ -1,3 +1,6 @@
+use super::work_binding::PendingWork;
+use super::work_binding::UsageWorkAction;
+use super::work_binding::UsageWorkReceipt;
 use codex_usage::UsageRecord;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -8,9 +11,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::task::JoinHandle;
-use super::work_binding::PendingWork;
-use super::work_binding::UsageWorkAction;
-use super::work_binding::UsageWorkReceipt;
 
 const MAX_PENDING_RECORDS: usize = 256;
 
@@ -92,11 +92,17 @@ impl CaptureSink {
     ) -> Result<UsageWorkReceipt, String> {
         action.validate()?;
         let (receipt, received) = tokio::sync::oneshot::channel();
-        self.enqueue(PendingCapture::Work(PendingWork { thread_id, action, receipt }));
+        self.enqueue(PendingCapture::Work(PendingWork {
+            thread_id,
+            action,
+            receipt,
+        }));
         // Accounting cannot stall model/tool progress on a blocked filesystem.
         tokio::time::timeout(std::time::Duration::from_secs(2), received)
             .await
-            .map_err(|_| "usage_work persistence pending; inspect status before retrying".to_string())?
+            .map_err(|_| {
+                "usage_work persistence pending; inspect status before retrying".to_string()
+            })?
             .map_err(|_| "usage_work capture unavailable".to_string())?
     }
 
@@ -115,7 +121,9 @@ impl CaptureSink {
                         }
                     }
                     PendingCapture::Work(work) => {
-                        let _ = work.receipt.send(Err("usage_work capture queue is full; retry after recovery".into()));
+                        let _ = work.receipt.send(Err(
+                            "usage_work capture queue is full; retry after recovery".into(),
+                        ));
                     }
                 }
             } else {
@@ -200,7 +208,9 @@ impl CaptureSink {
             let gap = self.pending_gap();
             let mut records = Vec::new();
             let work = {
-                let mut pending = self.pending.lock()
+                let mut pending = self
+                    .pending
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 while matches!(pending.front(), Some(PendingCapture::Record(_))) {
                     if let Some(PendingCapture::Record(record)) = pending.pop_front() {
@@ -237,7 +247,9 @@ impl CaptureSink {
                     match item {
                         PendingCapture::Record(record) => retry.push_back(record),
                         PendingCapture::Work(work) => {
-                            let _ = work.receipt.send(Err("usage_work capture prefix is pending; retry after recovery".into()));
+                            let _ = work.receipt.send(Err(
+                                "usage_work capture prefix is pending; retry after recovery".into(),
+                            ));
                         }
                     }
                 }

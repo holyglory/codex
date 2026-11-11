@@ -38,7 +38,8 @@ impl ToolExecutor<ToolInvocation> for UsageWorkHandler {
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
-    where ToolInvocation: 'a,
+    where
+        ToolInvocation: 'a,
     {
         Box::pin(async move {
             let ToolPayload::Function { arguments } = &invocation.payload else {
@@ -50,10 +51,14 @@ impl ToolExecutor<ToolInvocation> for UsageWorkHandler {
             let action: UsageWorkAction = serde_json::from_str(arguments)
                 .map_err(|_| error("usage_work arguments must match its action schema"))?;
             let receipt = crate::usage_capture::work_binding::apply_work(&invocation, action)
-                .await.map_err(|message| error(&message))?;
+                .await
+                .map_err(|message| error(&message))?;
             let encoded = serde_json::to_string(&receipt)
                 .map_err(|_| error("usage_work receipt unavailable; inspect status"))?;
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(encoded, Some(true))))
+            Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                encoded,
+                Some(true),
+            )))
         })
     }
 }

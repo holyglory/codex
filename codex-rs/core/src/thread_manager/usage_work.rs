@@ -11,9 +11,18 @@ impl ThreadManager {
         thread_id: ThreadId,
         action: UsageWorkAction,
     ) -> Result<UsageWorkReceipt, String> {
-        let thread = self.state.threads.read().await.get(&thread_id).cloned()
+        let thread = self
+            .state
+            .threads
+            .read()
+            .await
+            .get(&thread_id)
+            .cloned()
             .ok_or_else(|| "usage_work requires a loaded thread".to_string())?;
-        let capture = self.state.usage_capture.as_ref()
+        let capture = self
+            .state
+            .usage_capture
+            .as_ref()
             .ok_or_else(|| "usage_work capture unavailable".to_string())?;
         let result = capture.usage_work(thread_id.to_string(), action).await;
         drop(thread);
