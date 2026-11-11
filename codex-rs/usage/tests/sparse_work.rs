@@ -69,7 +69,12 @@ fn totals(report: &Value) -> Value {
         "intervals":report["outcomes"]["attributed"]["elapsedExecutionMs"]})
 }
 
-fn measure_reports(home: &Path, baseline: &Path, expected: u64) -> codex_usage::Result<Value> {
+fn measure_reports(
+    home: &Path,
+    baseline: &Path,
+    expected: u64,
+    state: &str,
+) -> codex_usage::Result<Value> {
     let started = Instant::now();
     let reader = UsageReader::open(home)?;
     let reader_time = started.elapsed();
@@ -77,20 +82,31 @@ fn measure_reports(home: &Path, baseline: &Path, expected: u64) -> codex_usage::
     let started = Instant::now();
     let unbound = baseline_reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
     let baseline_time = started.elapsed();
+    eprintln!(
+        "sparse-work-phase {}",
+        json!({"state":state,"phase":"baselineReport","ms":baseline_time.as_millis()})
+    );
     let started = Instant::now();
-    let transitions = reader.work_binding_transitions();
+    let _ = reader.work_binding_transitions();
     let binding_decode_time = started.elapsed();
     let started = Instant::now();
-    let sparse = reader.sparse_bound_effort(
+    let sparse = reader.bound_work_effort(
         TimeRange::all(),
         &UsageFilter::default(),
-        transitions,
         &Default::default(),
     )?;
     let sparse_time = started.elapsed();
+    eprintln!(
+        "sparse-work-phase {}",
+        json!({"state":state,"phase":"sparseEffort","ms":sparse_time.as_millis()})
+    );
     let started = Instant::now();
     let report = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
     let report_time = started.elapsed();
+    eprintln!(
+        "sparse-work-phase {}",
+        json!({"state":state,"phase":"boundReport","ms":report_time.as_millis()})
+    );
     assert_eq!(
         report["tokens"], unbound["tokens"],
         "identical facts retain identical token totals"
@@ -171,16 +187,15 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
     );
     let unavailable = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
     assert_eq!(
-        json!({"coverage":unavailable["workBindings"]["coverage"],"tokens":unavailable["outcomes"]["totals"]["providerTotalTokens"]["measured"]}),
-        json!({"coverage":"unavailable","tokens":105})
+        json!({"coverage":unavailable["workBindings"]["coverage"],"tokens":unavailable["outcomes"]["totals"]["providerTotalTokens"]["measured"],
+            "historical":unavailable["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
+        json!({"coverage":"partial","tokens":105,"historical":15})
     );
     Ok(())
 }
 
-#[test]
-fn repeated_switches_aggregate_by_job_before_report_limits() -> codex_usage::Result<()> {
+fn switch_fixture(switches: u64) -> codex_usage::Result<(tempfile::TempDir, Duration, Duration)> {
     let home = tempfile::tempdir()?;
-    let switches = 1_025;
     let mut transition_time = Duration::ZERO;
     let mut capture_time = Duration::ZERO;
     for sequence in 1..=switches {
@@ -196,20 +211,53 @@ fn repeated_switches_aggregate_by_job_before_report_limits() -> codex_usage::Res
         )?;
         capture_time += capture_start.elapsed();
     }
+    eprintln!(
+        "sparse-work-phase {}",
+        json!({"phase":"captureComplete","switches":switches,
+        "transitionMs":transition_time.as_millis(),"captureMs":capture_time.as_millis()})
+    );
+    Ok((home, transition_time, capture_time))
+}
+
+#[test]
+fn repeated_switches_aggregate_by_job_before_report_limits() -> codex_usage::Result<()> {
+    let switches = 1_025;
+    let (home, transition_time, capture_time) = switch_fixture(switches)?;
+    let started = Instant::now();
+    let reader = UsageReader::open(home.path())?;
+    let report = reader.performance_review(TimeRange::all(), &UsageFilter::default())?;
+    assert_eq!(
+        json!({"bound":report["workBindings"]["boundOperations"],"rows":report["outcomes"]["totalRows"],
+        "tokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
+        json!({"bound":switches,"rows":1,"tokens":switches})
+    );
+    eprintln!(
+        "sparse-work-measurement {}",
+        json!({"switches":switches,"operations":switches,
+        "transitionMs":transition_time.as_millis(),"captureMs":capture_time.as_millis(),"reportMs":started.elapsed().as_millis()})
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "comparative phase diagnostics; run with the explicit benchmark profile"]
+fn sparse_report_phase_measurement() -> codex_usage::Result<()> {
+    let switches = 1_025;
+    let (home, transition_time, capture_time) = switch_fixture(switches)?;
     let baseline = tempfile::tempdir()?;
     std::fs::create_dir_all(baseline.path().join("usage-v2"))?;
     std::fs::copy(
         home.path().join("usage-v2/events.jsonl"),
         baseline.path().join("usage-v2/events.jsonl"),
     )?;
-    let tail = measure_reports(home.path(), baseline.path(), switches)?;
+    let tail = measure_reports(home.path(), baseline.path(), switches, "unpublished")?;
     for path in [home.path(), baseline.path()] {
         UsagePublisher::open_at(path.join("usage-v2"))?.publish_batch(JournalReadLimits {
             max_bytes: 16 * 1024 * 1024,
             max_entries: 16_384,
         })?;
     }
-    let published = measure_reports(home.path(), baseline.path(), switches)?;
+    let published = measure_reports(home.path(), baseline.path(), switches, "published")?;
     assert_eq!(
         UsageReader::open(home.path())?
             .work_binding_transitions()
