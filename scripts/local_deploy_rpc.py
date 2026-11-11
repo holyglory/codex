@@ -681,6 +681,9 @@ def verify_connection(rpc, plan):
                 second.connection.close()
             proof["originalChatResumed"] = True
             proof["secondClientReattached"] = True
+    # Bind freshness to completion of every required check, rather than the
+    # timestamp captured before the three-turn sparse journey began.
+    proof["checkedAtMs"] = int(time.time() * 1000)
     save(Path(plan["state"]) / "rpc.json", proof)
 
 
