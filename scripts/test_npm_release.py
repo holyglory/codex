@@ -294,6 +294,11 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                 (root / "codex-rs/core/src/compact.rs").write_text(
                     "required compaction account continuation\n"
                 )
+                usage_api = (
+                    root / "codex-rs/app-server-protocol/src/protocol/v2/local_usage.rs"
+                )
+                usage_api.parent.mkdir(parents=True, exist_ok=True)
+                usage_api.write_text("bounded usage RPC contract\n")
                 packaging = commit("managed account failover fix")
                 result = verify_hosted_v8_source(producer, packaging)
                 self.assertEqual(result["v8_inputs"]["schema"], 1)

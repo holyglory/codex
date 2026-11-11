@@ -372,7 +372,7 @@ def qualify(run_id, work):
             "task_id": "pb55141372eaf9f45",
             "scope": "product",
             "state": "fixture_only",
-            "expected_result": "Preserve null negotiation for the unported legacy usage RPC extension while keeping the implemented usage_stats tool available; live activation is pending.",
+            "expected_result": "Advertise only the versioned usage-v2 summary and repository identity methods, with bounded snapshots and explicit work-context support; live activation is pending.",
             "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
@@ -403,9 +403,47 @@ def qualify(run_id, work):
             "id": "retry-wait-and-outcome-bindings",
             "task_id": "p310ae9370e9a2ffa",
             "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Accept explicit content-free work-context declarations in the usage-v2 API without inferring bindings from thread, repository or operation completion; preserve unknown timing and unattributed effort.",
+            "evidence_refs": [f"run/{base_run}/full-workspace"],
+        },
+        {
+            "id": "live-authority-binding-coverage",
+            "task_id": "p310ae9370e9a2ffa",
+            "scope": "product",
             "state": "external_blocked",
-            "expected_result": "Attribute effort only after explicit authoritative host selection or assignment. No such receipt contract currently exists; reports preserve unattributed effort.",
+            "expected_result": "Show live task attribution only where the authoritative host supplies a recorded binding. Historical missing bindings remain unknown and are not reconstructed.",
             "evidence_refs": [],
+        },
+        {
+            "id": "weekly-limit-chat-continuation",
+            "task_id": "pd29bb8f2ea4bb5f5",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Continue a clean usage-limit rejection on an eligible managed account within the same chat, preserving completed tools, request ownership and the following user turn.",
+            "evidence_refs": [
+                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/full-workspace",
+            ],
+        },
+        {
+            "id": "automatic-compaction-account-continuation",
+            "task_id": "paf8db8a2bdee97c4",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Continue clean foreground automatic compaction rejections before, during and after a turn on another eligible account, keeping active goals and later tools on the correct owner.",
+            "evidence_refs": [
+                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/full-workspace",
+            ],
+        },
+        {
+            "id": "guarded-unrestricted-local-activation",
+            "task_id": "pf1a4589871fcd061",
+            "scope": "product",
+            "state": "fixture_only",
+            "expected_result": "Refuse restricted launchers and serving peers before claiming activation; live installation must separately prove the actual serving process has NoNewPrivs=0.",
+            "evidence_refs": [f"run/{run_id}/deployment-privilege-refusals"],
         },
     ]
     if base_run != run_id:
