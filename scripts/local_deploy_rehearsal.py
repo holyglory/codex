@@ -5,13 +5,22 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 
-from local_deploy_owner import digest, identity, package_digest, peer, save
+from local_deploy_owner import (
+    Owner,
+    digest,
+    exited,
+    identity,
+    package_digest,
+    peer,
+    save,
+)
 from local_deploy_rpc import report_results
 
 
@@ -33,6 +42,11 @@ CASES = (
     "desktop",
     "mismatch",
     "childdeath",
+    "managed",
+    "managed-mismatch",
+    "managed-unpinned",
+    "managed-record-mismatch",
+    "managed-update-failure",
 )
 CANDIDATE = json.loads(Path(os.environ["CODEX_MULTI_LOCAL_CANDIDATE"]).read_text())
 PACKAGE = Path(CANDIDATE["package"])
@@ -99,7 +113,9 @@ def prepare():
             "package": str(PACKAGE),
             "packageSha256": tree,
             "executableSha256": EXE_SHA,
-            "version": "0.166.0+multi.5",
+            "version": json.loads((PACKAGE / "codex-package.json").read_text())[
+                "version"
+            ],
             "artifactTreeSha256": ARTIFACT_TREE_SHA,
             "state": str(state),
             "codexHome": str(codex_home),
@@ -115,11 +131,26 @@ def prepare():
                 relative: digest(codex_home / relative) for relative in preserved
             },
         }
-        if case in ("unmanaged", "forced", "desktop", "mismatch"):
+        if case in ("unmanaged", "forced", "desktop", "mismatch", "managed"):
             plan["fixture"] = case
         if case in ("forced", "force-mismatch", "force-unpinned"):
             plan["restartPolicy"] = "force-matching-unmanaged"
         if case == "force-unpinned":
+            plan["captureOldIdentity"] = True
+        if case.startswith("managed"):
+            plan["restartPolicy"] = "canonical-matching-managed"
+        if case == "managed-update-failure":
+            rejected = disposable / case / "rejected-package"
+            (rejected / "bin").mkdir(parents=True)
+            shutil.copy2(PACKAGE / "bin/codex", rejected / "bin/codex")
+            metadata = json.loads((PACKAGE / "codex-package.json").read_text())
+            save(rejected / "codex-package.json", {**metadata, "target": "invalid"})
+            plan.update(
+                package=str(rejected),
+                packageSha256=package_digest(rejected),
+                fixture="managed",
+            )
+        if case == "managed-unpinned":
             plan["captureOldIdentity"] = True
         if case == "mismatch":
             plan["mismatchBinary"] = str(OLD.resolve())
@@ -140,23 +171,55 @@ def request():
     save(EVIDENCE / "requester.json", identity(os.getpid()))
     # Refusals deliberately exit immediately. Exercise them as finite commands,
     # keeping the old peer outside the installation owner's process lifecycle.
-    for case in ("force-unpinned", "force-mismatch"):
+    for case in (
+        "force-unpinned",
+        "force-mismatch",
+        "managed-mismatch",
+        "managed-unpinned",
+        "managed-record-mismatch",
+    ):
         state = EVIDENCE / case
         plan = json.loads((state / "plan.json").read_text())
         endpoint = (
             Path(plan["codexHome"]) / "app-server-control/app-server-control.sock"
         )
         reference = None
+        managed_reference = False
+        native_record = None
+        record_path = Path(plan["codexHome"]) / "app-server-daemon/daemon.pid"
+        observed = None
+        fixture_env = {
+            **os.environ,
+            "HOME": plan["ownerHome"],
+            "CODEX_HOME": plan["codexHome"],
+        }
         try:
             with (state / "reference.stderr").open("wb") as log:
+                if case.startswith("managed"):
+                    subprocess.run(
+                        [str(OLD), "app-server", "daemon", "start"],
+                        env=fixture_env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=log,
+                        timeout=60,
+                        check=True,
+                    )
+                    managed_reference = True
+                    observed = peer(endpoint)
+                    assert observed and observed["managed"]
+                    if case == "managed-mismatch":
+                        plan["old"] = {**observed, "executableSha256": "0" * 64}
+                    if case == "managed-record-mismatch":
+                        plan["old"] = observed
+                        native_record = record_path.read_bytes()
+                        corrupted = json.loads(native_record)
+                        corrupted["processIdentity"]["startTicks"] += 1
+                        save(record_path, corrupted)
+                    save(state / "plan.json", plan)
                 if case == "force-mismatch":
                     reference = subprocess.Popen(
                         [str(OLD), "app-server", "--listen", "unix://"],
-                        env={
-                            **os.environ,
-                            "HOME": plan["ownerHome"],
-                            "CODEX_HOME": plan["codexHome"],
-                        },
+                        env=fixture_env,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=log,
@@ -188,18 +251,30 @@ def request():
                         timeout=60,
                     )
                 assert refused.returncode == 1
-                if reference is not None:
-                    assert reference.poll() is None and peer(endpoint) == observed
+                if observed is not None:
+                    assert peer(endpoint) == observed
+                    assert identity(observed["pid"]) == observed
                 else:
                     assert peer(endpoint) is None
                 save(
                     state / "refusal-observed.json",
                     {
                         "exitCode": refused.returncode,
-                        "oldPeerUnchanged": reference is not None,
+                        "oldPeerUnchanged": observed is not None,
                     },
                 )
         finally:
+            if managed_reference:
+                if native_record is not None:
+                    record_path.write_bytes(native_record)
+                subprocess.run(
+                    [str(OLD), "app-server", "daemon", "stop"],
+                    env=fixture_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=90,
+                    check=True,
+                )
             if reference is not None:
                 reference.terminate()
                 reference.wait(timeout=30)
@@ -225,6 +300,39 @@ def wait_receipt(case, terminal):
     raise RuntimeError(f"{case}-receipt-deadline")
 
 
+def rollback_fixture():
+    """Keep the private old child alive after a rejected canonical package."""
+    state = EVIDENCE / "managed-update-failure"
+    owner = Owner(state / "plan.json")
+    assert owner.run() == 1
+    observed = owner.rollback_peer
+    assert observed and peer(owner.endpoint) == observed
+    assert owner.managed_identity(observed) == observed
+    assert observed["executableSha256"] == OLD_SHA
+    assert owner.previous is None
+    assert not (owner.task_codex_home / "packages/standalone/current").exists()
+    assert any(
+        event.get("reason", "").startswith("canonical-managed-update-exit-")
+        for event in owner.receipt["events"]
+    )
+    for relative, expected_hash in owner.plan["preservation"].items():
+        assert digest(owner.task_codex_home / relative) == expected_hash
+    save(
+        state / "rollback-observed.json",
+        {
+            "oldPeerUnchanged": True,
+            "previousCliSelectionRestored": True,
+            "daemonPackageUnchanged": True,
+        },
+    )
+    owner.event("rollback-fixture-verified")
+    owner.install_lock.close()
+    with os.fdopen(os.pidfd_open(observed["pid"]), "rb") as descriptor:
+        assert identity(observed["pid"]) == observed
+        exited(descriptor.fileno())
+    raise RuntimeError("rollback-fixture-old-process-exited")
+
+
 def verify():
     requester = json.loads((EVIDENCE / "requester.json").read_text())
     try:
@@ -235,30 +343,57 @@ def verify():
         raise RuntimeError("requester-has-not-ended")
     proofs = []
     for case in CASES:
-        expected_failure = case in {"mismatch", "force-mismatch", "force-unpinned"}
-        receipt = wait_receipt(
-            case,
-            {"failed", "empty-cli-selection-restored"}
-            if expected_failure
-            else {
-                "serving-verified",
-                "verification-failed",
+        expected_failure = case in {
+            "mismatch",
+            "force-mismatch",
+            "force-unpinned",
+            "managed-mismatch",
+            "managed-unpinned",
+            "managed-record-mismatch",
+        }
+        terminal = {
+            "serving-verified",
+            "verification-failed",
+            "failed",
+            "empty-cli-selection-restored",
+        }
+        if expected_failure:
+            terminal = {
                 "failed",
                 "empty-cli-selection-restored",
-            },
-        )
+                "canonical-daemon-selection-retained",
+            }
+        if case == "managed-update-failure":
+            terminal = {"rollback-fixture-verified"}
+        receipt = wait_receipt(case, terminal)
         plan = json.loads((EVIDENCE / case / "plan.json").read_text())
         for relative, expected_hash in plan["preservation"].items():
             assert digest(Path(plan["codexHome"]) / relative) == expected_hash
+        if case == "managed-update-failure":
+            assert receipt["result"] == "failed"
+            assert identity(receipt["owner"]["pid"]) == receipt["owner"]
+            assert receipt["owner"]["cgroup"] != requester["cgroup"]
+            assert json.loads(
+                (EVIDENCE / case / "rollback-observed.json").read_text()
+            ) == {
+                "oldPeerUnchanged": True,
+                "previousCliSelectionRestored": True,
+                "daemonPackageUnchanged": True,
+            }
+            proofs.append({"case": case, "canonicalFailurePreservesOldServer": True})
+            continue
         if expected_failure:
             assert receipt["result"] == "failed"
             reason = {
                 "mismatch": "replacement-endpoint-identity-mismatch",
                 "force-mismatch": "old-endpoint-identity-mismatch",
                 "force-unpinned": "forced-stop-requires-explicit-old-identity",
+                "managed-mismatch": "old-endpoint-identity-mismatch",
+                "managed-unpinned": "canonical-managed-requires-explicit-old-identity",
+                "managed-record-mismatch": "canonical-managed-identity-mismatch",
             }[case]
             assert any(event.get("reason") == reason for event in receipt["events"])
-            if case in {"force-mismatch", "force-unpinned"}:
+            if case != "mismatch":
                 assert not any(
                     "stop-requested" in event["phase"] for event in receipt["events"]
                 )
@@ -270,7 +405,12 @@ def verify():
                     )
                     is None
                 )
-            if case == "force-mismatch":
+            if case in {
+                "force-mismatch",
+                "managed-mismatch",
+                "managed-unpinned",
+                "managed-record-mismatch",
+            }:
                 assert json.loads(
                     (EVIDENCE / case / "refusal-observed.json").read_text()
                 ) == {"exitCode": 1, "oldPeerUnchanged": True}
@@ -300,6 +440,31 @@ def verify():
             ]
             assert len(stops) == 1 and stops[0]["phase"] == "forced-stop-requested"
             assert stops[0]["old"]["executableSha256"] == OLD_SHA
+        if case == "managed":
+            phases = [event["phase"] for event in receipt["events"]]
+            assert phases.count("canonical-managed-update") == 1
+            assert phases.count("old-exited") == 1
+            assert not any("stop-requested" in phase for phase in phases)
+            assert "canonical-start" not in phases
+            assert receipt["serving"]["cgroup"] == receipt["owner"]["cgroup"]
+            repeated = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/local_deploy_owner.py"),
+                    str(EVIDENCE / case / "plan.json"),
+                ],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            assert repeated.returncode == 78
+            assert (
+                peer(
+                    Path(plan["codexHome"])
+                    / "app-server-control/app-server-control.sock"
+                )
+                == receipt["serving"]
+            )
         save(EVIDENCE / case / "survived-requester.json", receipt)
         if case == "childdeath":
             descriptor = os.pidfd_open(receipt["serving"]["pid"])
@@ -377,7 +542,15 @@ def verify_reports():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "step", choices=("prepare", "request", "verify", "cleanup", "reports")
+        "step",
+        choices=(
+            "prepare",
+            "request",
+            "verify",
+            "cleanup",
+            "reports",
+            "rollback-fixture",
+        ),
     )
     arguments = parser.parse_args()
     {
@@ -386,4 +559,5 @@ if __name__ == "__main__":
         "verify": verify,
         "cleanup": cleanup,
         "reports": verify_reports,
+        "rollback-fixture": rollback_fixture,
     }[arguments.step]()

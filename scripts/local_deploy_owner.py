@@ -120,6 +120,8 @@ class Owner:
         }
         self.candidate = Path(self.plan["package"]).resolve(strict=True)
         self.previous = None
+        self.previous_daemon = None
+        self.rollback_peer = None
         self.selected = None
         self.fixture_children = []
 
@@ -169,6 +171,8 @@ class Owner:
         fcntl.flock(self.install_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         current = root / "current"
         self.previous = current.resolve(strict=True) if current.is_symlink() else None
+        daemon = self.task_codex_home / "packages/app-server-daemon/current"
+        self.previous_daemon = daemon.resolve(strict=True) if daemon.exists() else None
         if current.exists() and not current.is_symlink():
             raise RuntimeError("non-symlink-standalone-selection")
         release = releases / f"local-{self.plan['packageSha256']}-{metadata['target']}"
@@ -196,10 +200,18 @@ class Owner:
             "forced",
             "desktop",
             "mismatch",
+            "managed",
         }:
             raise RuntimeError("fixture-mode-not-authorized")
         if not str(self.task_codex_home).startswith("/mnt/build-storage/codex/ld/"):
             raise RuntimeError("fixture-home-not-disposable")
+        if self.plan["fixture"] == "managed":
+            self.command(
+                "fixture-managed-start",
+                [str(binary), "app-server", "daemon", "start"],
+            )
+            observed = self.managed_identity(peer(self.endpoint))
+            return observed
         log = (self.state / f"fixture-{len(self.fixture_children)}.stderr").open("wb")
         child = subprocess.Popen(
             [str(binary), "app-server", "--listen", "unix://"],
@@ -218,6 +230,28 @@ class Owner:
                 raise RuntimeError("fixture-server-exited")
             time.sleep(0.1)
         raise RuntimeError("fixture-server-not-ready")
+
+    def managed_identity(self, observed):
+        record = json.loads(
+            (self.task_codex_home / "app-server-daemon/daemon.pid").read_text()
+        )
+        native = record.get("processIdentity", record.get("linuxProcessIdentity"))
+        if (
+            not observed
+            or not observed["managed"]
+            or record["pid"] != observed["pid"]
+            or native
+            != {
+                "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "startTicks": int(observed["startTicks"]),
+            }
+            or digest(
+                self.task_codex_home / "packages/app-server-daemon/current/bin/codex"
+            )
+            != observed["executableSha256"]
+        ):
+            raise RuntimeError("canonical-managed-identity-mismatch")
+        return observed
 
     def verify_serving(self, observed, mode):
         if (
@@ -259,6 +293,9 @@ class Owner:
         ):
             raise RuntimeError("forced-stop-requires-explicit-old-identity")
         self.stage()
+        selected = self.selected
+        if selected is None:
+            raise RuntimeError("staged-release-missing")
         observed = peer(self.endpoint)
         expected = self.plan.get("old")
         if observed and expected is None and self.plan.get("captureOldIdentity"):
@@ -278,6 +315,8 @@ class Owner:
         ):
             if observed["noNewPrivileges"] != 0:
                 raise RuntimeError("serving-no-new-privileges-must-be-zero")
+            if identity(os.getpid())["noNewPrivileges"] != 0:
+                raise RuntimeError("owner-no-new-privileges-must-be-zero")
             root = self.task_codex_home / "packages/standalone"
             select_release(root, self.selected)
             self.event("candidate-already-serving", serving=observed)
@@ -285,18 +324,32 @@ class Owner:
                 observed, "desktop-owned" if not observed["managed"] else "managed"
             )
         if observed:
+            if self.plan["restartPolicy"] == "canonical-matching-managed" and (
+                not expected or self.plan.get("captureOldIdentity")
+            ):
+                raise RuntimeError("canonical-managed-requires-explicit-old-identity")
             if not expected or any(
                 observed[key] != expected[key]
                 for key in ("pid", "uid", "startTicks", "executableSha256")
             ):
                 raise RuntimeError("old-endpoint-identity-mismatch")
-            if observed["managed"] or self.plan["restartPolicy"] not in {
+            if observed["managed"]:
+                if self.plan["restartPolicy"] != "canonical-matching-managed":
+                    raise RuntimeError("unsupported-old-owner")
+                self.managed_identity(observed)
+                self.previous_daemon = (
+                    self.task_codex_home / "packages/app-server-daemon/current"
+                ).resolve(strict=True)
+            elif self.plan["restartPolicy"] not in {
                 "single-graceful-matching-unmanaged",
                 "force-matching-unmanaged",
             }:
                 raise RuntimeError("unsupported-old-owner")
+            self.rollback_peer = observed
         elif expected:
             raise RuntimeError("expected-old-endpoint-missing")
+        elif self.plan["restartPolicy"] == "canonical-matching-managed":
+            raise RuntimeError("expected-managed-endpoint-missing")
         # Children inherit this irreversible bit. Refuse before changing the
         # selected release or signalling the existing server.
         if identity(os.getpid())["noNewPrivileges"] != 0:
@@ -312,20 +365,45 @@ class Owner:
                     or identity(observed["pid"]) != observed
                 ):
                     raise RuntimeError("old-owner-changed-before-stop")
-                forced = self.plan["restartPolicy"] == "force-matching-unmanaged"
-                signal.pidfd_send_signal(
-                    descriptor.fileno(), signal.SIGKILL if forced else signal.SIGTERM
-                )
-                self.event(
-                    "forced-stop-requested" if forced else "graceful-stop-requested",
-                    old=observed,
-                )
-                if not exited(descriptor.fileno(), self.plan.get("drainSeconds", 600)):
-                    raise RuntimeError(
-                        "old-server-did-not-exit-after-forced-stop"
-                        if forced
-                        else "old-work-still-draining-no-escalation"
+                if observed["managed"]:
+                    self.managed_identity(observed)
+                    # This workflow owns activation. The canonical command owns
+                    # daemon.lock and its separate daemon install.lock; taking
+                    # either here would deadlock it. These checks are not an
+                    # atomic compare-and-update against independent CLI actors.
+                    self.command(
+                        "canonical-managed-update",
+                        [
+                            str(selected / "bin/codex"),
+                            "app-server",
+                            "daemon",
+                            "update",
+                            "--from-cli",
+                            "--yes",
+                        ],
                     )
+                    if not exited(descriptor.fileno(), 0):
+                        raise RuntimeError("canonical-update-old-process-still-running")
+                else:
+                    forced = self.plan["restartPolicy"] == "force-matching-unmanaged"
+                    signal.pidfd_send_signal(
+                        descriptor.fileno(),
+                        signal.SIGKILL if forced else signal.SIGTERM,
+                    )
+                    self.event(
+                        "forced-stop-requested"
+                        if forced
+                        else "graceful-stop-requested",
+                        old=observed,
+                    )
+                    if not exited(
+                        descriptor.fileno(), self.plan.get("drainSeconds", 600)
+                    ):
+                        raise RuntimeError(
+                            "old-server-did-not-exit-after-forced-stop"
+                            if forced
+                            else "old-work-still-draining-no-escalation"
+                        )
             self.event("old-exited")
         if self.plan.get("fixture") in {"desktop", "mismatch"}:
             fixture_binary = self.candidate / "bin/codex"
@@ -339,7 +417,11 @@ class Owner:
                 or observed["executableSha256"] != self.plan["executableSha256"]
             ):
                 raise RuntimeError("replacement-endpoint-identity-mismatch")
-            mode = "desktop-owned"
+            mode = "managed" if observed["managed"] else "desktop-owned"
+            if mode == "managed":
+                self.managed_identity(observed)
+                if observed["cgroup"] != identity(os.getpid())["cgroup"]:
+                    raise RuntimeError("canonical-child-outside-owner-unit")
         else:
             binary = str(self.candidate / "bin/codex")
             prior_state = self.task_codex_home / "app-server-daemon"
@@ -367,17 +449,8 @@ class Owner:
                     [binary, "app-server", "daemon", "update", "--from-cli", "--yes"],
                 )
             self.command("canonical-start", [binary, "app-server", "daemon", "start"])
-            observed = peer(self.endpoint)
+            observed = self.managed_identity(peer(self.endpoint))
             mode = "managed"
-            record = json.loads(
-                (self.task_codex_home / "app-server-daemon/daemon.pid").read_text()
-            )
-            if (
-                not observed
-                or record["pid"] != observed["pid"]
-                or not observed["managed"]
-            ):
-                raise RuntimeError("canonical-child-ownership-missing")
             if observed["cgroup"] != identity(os.getpid())["cgroup"]:
                 raise RuntimeError("canonical-child-outside-owner-unit")
         self.verify_serving(observed, mode)
@@ -393,13 +466,30 @@ class Owner:
         except Exception as error:
             self.receipt["result"] = "failed"
             self.event("failed", reason=str(error)[:200])
-            # Keep a responsive exact candidate selected. Never touch a new peer.
-            if self.previous and peer(self.endpoint) is None:
+            observed = peer(self.endpoint)
+            daemon = self.task_codex_home / "packages/app-server-daemon/current"
+            daemon_selected = daemon.resolve(strict=True) if daemon.exists() else None
+            # Canonical replacement may already have selected a new daemon even
+            # when launch/readiness failed. Keep its matching CLI selected and
+            # report recovery, rather than claiming a daemon rollback.
+            if (
+                self.plan["restartPolicy"] == "canonical-matching-managed"
+                and self.selected is not None
+                and daemon_selected != self.previous_daemon
+            ):
+                self.event(
+                    "canonical-daemon-selection-retained",
+                    selected=str(daemon_selected) if daemon_selected else None,
+                    recovery="inspect-canonical-daemon-and-retry-start",
+                )
+            elif self.previous and (observed is None or observed == self.rollback_peer):
                 root = self.task_codex_home / "packages/standalone"
                 if (root / "current").resolve() == self.selected:
                     select_release(root, self.previous)
                     self.event("previous-cli-selection-restored")
-            elif self.previous is None and peer(self.endpoint) is None:
+            elif self.previous is None and (
+                observed is None or observed == self.rollback_peer
+            ):
                 root = self.task_codex_home / "packages/standalone"
                 if (root / "current").resolve() == self.selected:
                     (root / "current").unlink()
