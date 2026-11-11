@@ -1,11 +1,12 @@
 //! Each round captures three tool invocations and one model request, each with
 //! separate actual start/terminal facts, plus seven disjoint token deltas: 15M
 //! journal facts, 4M canonical operations, 1M requests, and 7M token observations.
-//! Token operation ids deliberately use response ids, as real capture does;
-//! terminal request facts provide the explicit response-to-operation link.
+//! Tokens use the captured request UUID while retaining their provider response
+//! identity, matching .6 capture without per-operation assignment metadata.
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::work_fixture::WorkExpectations;
 use crate::HOUR_SECONDS;
 use crate::ReviewCounts;
 use crate::TimeRange;
@@ -17,8 +18,8 @@ pub(super) const ROUNDS: u64 = 1_000_000;
 pub(super) const FACTS: u64 = 15 * ROUNDS;
 pub(super) const CURRENT_THREAD: u64 = 137;
 const START: i64 = 1_700_000_000;
-const START_MS: i64 = 1_700_000_000_000;
-const THREADS: u64 = 16_384;
+pub(super) const START_MS: i64 = 1_700_000_000_000;
+pub(super) const THREADS: u64 = 16_384;
 const REPOSITORIES: u64 = 256;
 
 #[derive(Clone, Copy)]
@@ -144,7 +145,7 @@ pub(super) fn round_records(round: u64) -> [UsageRecord; 15] {
                 let observation = round * 7 + slot;
                 (
                     scattered_id(round * 16 + 4 + slot),
-                    response.clone(),
+                    scattered_id(round * 16 + 3),
                     "token_observation",
                     32 + observation % 17,
                     7 + observation % 11,
@@ -239,6 +240,9 @@ pub(super) fn live_record(index: u64) -> UsageRecord {
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Expectations {
+    /// Older retained fixtures remain readable but cannot prove sparse work.
+    #[serde(default)]
+    pub work: Option<WorkExpectations>,
     pub global: UsageTotals,
     pub current_thread: UsageTotals,
     pub finite_repository: UsageTotals,
@@ -252,6 +256,7 @@ pub(super) struct Expectations {
 impl Expectations {
     pub fn calculate() -> Self {
         let mut expected = Self {
+            work: Some(WorkExpectations::calculate()),
             global: token_totals(/*first*/ 0, /*end*/ ROUNDS * 7),
             current_thread: UsageTotals::default(),
             finite_repository: UsageTotals::default(),
@@ -317,7 +322,7 @@ fn remainder_sum(count: u64, modulus: u64) -> i64 {
         as i64
 }
 
-fn token_totals(first: u64, end: u64) -> UsageTotals {
+pub(super) fn token_totals(first: u64, end: u64) -> UsageTotals {
     let count = (end - first) as i64;
     let sum = |modulus| remainder_sum(end, modulus) - remainder_sum(first, modulus);
     UsageTotals {

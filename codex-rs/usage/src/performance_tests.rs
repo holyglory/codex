@@ -24,6 +24,9 @@ use crate::*;
 #[path = "performance_fixture.rs"]
 mod fixture;
 
+#[path = "performance_work_fixture.rs"]
+mod work_fixture;
+
 const LIMITS: JournalReadLimits = JournalReadLimits {
     // The acceptance fixture uses a larger bounded publication window than
     // ordinary foreground recovery so the 15M fact run measures throughput
@@ -129,11 +132,21 @@ fn append_buffer(journal: &UsageJournal, buffer: &mut Vec<JournalPayload>) {
     }
 }
 
-fn capture_fixture(journal: &UsageJournal) -> serde_json::Value {
+fn capture_fixture(codex_home: &Path, journal: &UsageJournal) -> serde_json::Value {
     let started = Instant::now();
     let mut buffer = Vec::with_capacity(LIMITS.max_entries);
     let mut counts = BTreeMap::<String, u64>::new();
+    let mut transitions = Vec::new();
     for round in 0..fixture::ROUNDS {
+        if let Some(update) = work_fixture::transition(round) {
+            // The real writer orders the switch after every buffered earlier
+            // fact and before the next round's captured starts.
+            append_buffer(journal, &mut buffer);
+            let transition = capture_work_binding_transition(codex_home, update)
+                .expect("normal sparse switch capture");
+            assert_eq!(transition.effective_capture_sequence, round * 15 + 1);
+            transitions.push(transition);
+        }
         for record in fixture::round_records(round) {
             *counts
                 .entry(record.event.as_ref().expect("fact kind").clone())
@@ -156,11 +169,14 @@ fn capture_fixture(journal: &UsageJournal) -> serde_json::Value {
     assert_eq!(counts.get("model_request_started"), Some(&1_000_000));
     assert_eq!(counts.get("model_request_finished"), Some(&1_000_000));
     assert_eq!(counts.get("token_observation"), Some(&7_000_000));
+    assert_eq!(transitions.len(), 12);
     assert_eq!(
         journal.checkpoint().expect("capture boundary").sequence,
         fixture::FACTS
     );
-    json!({"counts":counts,"elapsedMs":milliseconds(started.elapsed())})
+    json!({"counts":counts,"elapsedMs":milliseconds(started.elapsed()),"workTransitions":transitions,
+        "assignmentBasis":"effective_capture_sequence","controlClock":"collector_wall_clock",
+        "operationClock":"synthetic_2023"})
 }
 
 #[derive(Default, Serialize)]
@@ -355,7 +371,8 @@ fn report_measurements(
     if repository_totals != expected.finite_repository {
         failures.push("finite repository exact totals differ".into());
     }
-    json!({"currentChatMs":milliseconds(current_elapsed),"warmGlobalMs":milliseconds(global_elapsed),"finiteReviewMs":milliseconds(review_elapsed),"finiteEvidencePageMs":milliseconds(page_elapsed),"finiteTotalsMs":milliseconds(totals_elapsed),"currentChatSummary":current,"warmGlobalSummary":global,"currentChatOutputBytes":current_output.len(),"warmGlobalOutputBytes":global_output.len(),"finiteTotals":repository_totals,"review":review,"reviewRows":page.data.len(),"reviewPage":page.data,"reviewOutputBytes":output.len(),"warmSnapshotGeneration":warm.manifest().snapshot_generation})
+    let attribution = work_fixture::measure(root, warm, expected, &review, failures);
+    json!({"currentChatMs":milliseconds(current_elapsed),"warmGlobalMs":milliseconds(global_elapsed),"finiteReviewMs":milliseconds(review_elapsed),"finiteEvidencePageMs":milliseconds(page_elapsed),"finiteTotalsMs":milliseconds(totals_elapsed),"currentChatSummary":current,"warmGlobalSummary":global,"currentChatOutputBytes":current_output.len(),"warmGlobalOutputBytes":global_output.len(),"finiteTotals":repository_totals,"review":review,"reviewRows":page.data.len(),"reviewPage":page.data,"reviewOutputBytes":output.len(),"warmSnapshotGeneration":warm.manifest().snapshot_generation,"attribution":attribution})
 }
 
 #[test]
@@ -383,7 +400,7 @@ fn synthetic_scale_acceptance() {
     )
     .expect("expectation artifact");
     let journal = UsageJournal::new(root.join("events.jsonl"));
-    let capture = capture_fixture(&journal);
+    let capture = capture_fixture(&codex_home, &journal);
     fs::write(
         artifact.join("capture.json"),
         serde_json::to_vec_pretty(&capture).expect("capture JSON"),
@@ -494,7 +511,24 @@ fn synthetic_scale_acceptance() {
     if final_counts != recovery_counts(&expected.global_counts, head.sequence) {
         failures.push("full recovery lost or double-counted canonical operations".into());
     }
-    let receipt = json!({"schemaVersion":1,"debugAssertions":cfg!(debug_assertions),"baselineFacts":fixture::FACTS,"canonicalOperations":4_000_000,"toolOperations":3_000_000,"modelRequests":1_000_000,"toolLifecycleFacts":6_000_000,"modelRequestLifecycleFacts":2_000_000,"tokenObservations":7_000_000,"journalBytes":head.byte_offset,"capture":capture,"publication":publication,"queries":queries,"capturedDuringReports":captured_during_reports,"concurrentCapture":concurrent_capture,"concurrentPublication":concurrent_publication,"concurrentPendingEntries":concurrent_pending,"concurrentDrain":concurrent_drain,"recoveryTailEntries":RECOVERY_TAIL,"freshProcessMs":milliseconds(recovery_elapsed),"freshProcess":recovery,"finalPublication":final_publication,"finalTotals":final_totals,"finalOperationCounts":final_counts,"finalSnapshotGeneration":final_reader.manifest().snapshot_generation,"segmentFiles":final_reader.manifest().segment_files.len(),"failures":failures});
+    let final_current = final_reader
+        .performance_review(
+            TimeRange::all(),
+            &UsageFilter::default().for_thread(fixture::thread_id(fixture::CURRENT_THREAD)),
+        )
+        .expect("recovered native work report");
+    let final_work = work_fixture::check(
+        &final_current,
+        &expected
+            .work
+            .as_ref()
+            .expect("fresh sparse oracle")
+            .current_thread,
+        expected.current_thread_counts.operations,
+        "recovered current chat",
+        &mut failures,
+    );
+    let receipt = json!({"schemaVersion":1,"debugAssertions":cfg!(debug_assertions),"baselineFacts":fixture::FACTS,"canonicalOperations":4_000_000,"toolOperations":3_000_000,"modelRequests":1_000_000,"toolLifecycleFacts":6_000_000,"modelRequestLifecycleFacts":2_000_000,"tokenObservations":7_000_000,"journalBytes":head.byte_offset,"capture":capture,"publication":publication,"queries":queries,"capturedDuringReports":captured_during_reports,"concurrentCapture":concurrent_capture,"concurrentPublication":concurrent_publication,"concurrentPendingEntries":concurrent_pending,"concurrentDrain":concurrent_drain,"recoveryTailEntries":RECOVERY_TAIL,"freshProcessMs":milliseconds(recovery_elapsed),"freshProcess":recovery,"finalPublication":final_publication,"finalTotals":final_totals,"finalOperationCounts":final_counts,"finalWork":final_work,"finalSnapshotGeneration":final_reader.manifest().snapshot_generation,"segmentFiles":final_reader.manifest().segment_files.len(),"failures":failures});
     let receipt_path = artifact.join("acceptance.json");
     fs::write(
         &receipt_path,
