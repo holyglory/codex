@@ -58,11 +58,14 @@ class IsolatedWorkspaceCleanupTests(unittest.TestCase):
                 scratch,
                 "from pathlib import Path\nimport os,sys\n"
                 "cache=Path('/tmp/cache');cache.mkdir()\n"
-                "os.link(sys.argv[1],cache/'hard-link')\n"
+                "backing=next(Path(sys.argv[3]).glob('invocation.*'))/'cache'\n"
+                "os.link(sys.argv[1],backing/'hard-link')\n"
+                "assert (cache/'hard-link').read_bytes()==Path(sys.argv[1]).read_bytes()\n"
                 "cache.chmod(0o500)\n"
                 "Path('/tmp/symlink').symlink_to(sys.argv[2],target_is_directory=True)\n",
                 payload,
                 outside,
+                scratch,
             )
             self.assertEqual(
                 {
