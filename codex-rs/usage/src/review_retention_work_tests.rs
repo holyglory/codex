@@ -186,6 +186,15 @@ fn job_totals_survive_hourly_lifetime_restart_and_resumed_work() {
             "after retirement",
         ))
         .expect("late correction");
+    let pending = publish(&root);
+    assert_eq!(
+        pending.pending_corrections,
+        vec!["expired-signed".to_string()]
+    );
+    // Once both target identity and detail have expired, a newly observed
+    // correction first waits for its target. Aging its own observation makes
+    // the existing publisher record the explicitly unapplied adjustment.
+    maintain_at(&root, 28 * DAY);
     let expired = publish(&root);
     assert_eq!(expired.unapplied_retention_corrections, 1);
     let reader = UsageReader::open_at(&root).expect("truthful correction reader");
@@ -196,18 +205,18 @@ fn job_totals_survive_hourly_lifetime_restart_and_resumed_work() {
     );
 
     bind(home.path(), "c", /*sequence*/ 3);
-    let c = started("c", 21 * DAY, "active").with_account("account-a");
+    let c = started("c", 29 * DAY, "active").with_account("account-a");
     capture(
         &root,
         vec![
             c.clone(),
             finished(&c),
-            token("c-token", 21 * DAY + 500, "active", /*input*/ 30)
+            token("c-token", 29 * DAY + 500, "active", /*input*/ 30)
                 .with_operation("c")
                 .with_account("account-a"),
         ],
     );
-    maintain_at(&root, 21 * DAY + 1_000);
+    maintain_at(&root, 29 * DAY + 1_000);
     let resumed = UsageReader::open_at(&root).expect("resumed restart");
     let mut resumed_oracle = oracle;
     resumed_oracle.push(expected(
@@ -398,4 +407,109 @@ fn old_v3_missing_columns_and_terminal_first_late_starts_remain_unattributed() {
         )
         .expect("no fabricated legacy anchor");
     assert_eq!(anchors, 0);
+}
+
+#[test]
+fn late_token_uses_exact_operation_identity_outside_the_time_slice() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    capture_work_binding_transition(
+        home.path(),
+        WorkBindingUpdate {
+            version: 1,
+            native_project_id: Some("project-only".into()),
+            thread_id: "active".into(),
+            workstream_id: None,
+            outcome_id: None,
+            transition_sequence: 1,
+            source: "agent".into(),
+            authority: "explicit_agent_declaration".into(),
+        },
+    )
+    .expect("project-only assignment");
+    let mut start = started("early", DAY, "active");
+    start.response_id = Some("early-response".into());
+    capture(&root, vec![start.clone(), finished(&start)]);
+    bind(home.path(), "b", /*sequence*/ 2);
+    let mut legacy = token(
+        "legacy-response",
+        3 * DAY + 2_000,
+        "active",
+        /*input*/ 2,
+    )
+    .with_operation("early-response");
+    legacy.response_id = Some("early-response".into());
+    capture(
+        &root,
+        vec![
+            token("late-direct", 3 * DAY, "active", /*input*/ 7).with_operation("early"),
+            legacy,
+        ],
+    );
+    let reader = UsageReader::open_at(&root).expect("late capture reader");
+    let range = TimeRange::from_millis(3 * DAY, 3 * DAY + 1_000).expect("late token window");
+    let query = ReportQuery::new(&reader, range, &UsageFilter::default()).expect("finite query");
+    let operation_count: u64 = query
+        .connection
+        .query_row(
+            &format!("SELECT count(*) FROM ({})", query.operations),
+            [],
+            |row| row.get(0),
+        )
+        .expect("time slice");
+    assert_eq!(operation_count, 0);
+    let work = query.work_contributions();
+    let rows = query_rows::<Value>(&query.connection, &format!(
+        "SELECT record_id,work_operation_id,work_native_project_id,workstream_id,work_outcome_id \
+         FROM ({work}) ORDER BY record_id"), /*max_rows*/ 10).expect("indexed late identity");
+    assert_eq!(
+        rows,
+        vec![
+            json!({"record_id":"late-direct","work_operation_id":"early","work_native_project_id":"project-only",
+            "workstream_id":null,"work_outcome_id":null})
+        ]
+    );
+    let range = TimeRange::from_millis(3 * DAY + 2_000, 3 * DAY + 3_000).expect("legacy window");
+    let query =
+        ReportQuery::new(&reader, range, &UsageFilter::default()).expect("legacy finite query");
+    let work = query.work_contributions();
+    let rows = query_rows::<Value>(&query.connection, &format!(
+        "SELECT record_id,work_operation_id,work_native_project_id,workstream_id,work_outcome_id \
+         FROM ({work}) ORDER BY record_id"), /*max_rows*/ 10).expect("no global response scan");
+    assert_eq!(
+        rows,
+        vec![
+            json!({"record_id":"legacy-response","work_operation_id":null,
+        "work_native_project_id":null,"workstream_id":null,"work_outcome_id":null})
+        ]
+    );
+
+    // A stored tuple is authoritative as a whole. A nullable work ID must not
+    // be filled from a different captured tuple on the linked operation.
+    let query =
+        ReportQuery::new(&reader, TimeRange::all(), &UsageFilter::default()).expect("all work");
+    let operations = format!(
+        "SELECT * REPLACE('other-project' AS work_native_project_id, \
+        'other-stream' AS workstream_id,'other-outcome' AS work_outcome_id) FROM ({})",
+        query.operations
+    );
+    let captured = format!(
+        "SELECT * REPLACE('project-only' AS work_native_project_id, \
+        NULL::VARCHAR AS workstream_id,NULL::VARCHAR AS work_outcome_id) FROM ({}) \
+        WHERE record_id='late-direct'",
+        query.contributions
+    );
+    let source = crate::review_aggregate::work_contribution_source(&captured, &operations);
+    let tuple = query_rows::<Value>(
+        &query.connection,
+        &format!("SELECT work_native_project_id,workstream_id,work_outcome_id FROM ({source})"),
+        /*max_rows*/ 1,
+    )
+    .expect("stored tuple precedence");
+    assert_eq!(
+        tuple,
+        vec![
+            json!({"work_native_project_id":"project-only","workstream_id":null,"work_outcome_id":null})
+        ]
+    );
 }

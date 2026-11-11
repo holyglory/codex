@@ -285,8 +285,9 @@ pub(crate) fn work_contribution_source(contributions: &str, operations: &str) ->
              LEFT JOIN links l ON f.response_id=l.response_id) \
          SELECT f.* EXCLUDE (linked_operation,work_native_project_id,workstream_id,work_outcome_id), \
              COALESCE(f.work_native_project_id,o.work_native_project_id) work_native_project_id, \
-             COALESCE(f.workstream_id,o.workstream_id) workstream_id, \
-             COALESCE(f.work_outcome_id,o.work_outcome_id) work_outcome_id \
+             CASE WHEN f.work_native_project_id IS NOT NULL THEN f.workstream_id ELSE o.workstream_id END workstream_id, \
+             CASE WHEN f.work_native_project_id IS NOT NULL THEN f.work_outcome_id ELSE o.work_outcome_id END work_outcome_id, \
+             f.linked_operation work_operation_id \
          FROM attributed f LEFT JOIN ops o ON f.linked_operation=o.operation_id"
     )
 }

@@ -36,6 +36,7 @@ pub(crate) struct ReportQuery {
     pub(crate) operation_statistics: String,
     pub(crate) retained_operation_statistics: String,
     pub(crate) contributions: String,
+    work_operations: String,
     pub(crate) complete_from_sequence: u64,
 }
 
@@ -208,19 +209,78 @@ impl ReportQuery {
              CREATE TEMP TABLE selected_classifications AS {classifications};"
             ))
             .map_err(query_error)?;
+        // Late tokens can name an operation outside the operation-time slice.
+        // Resolve only those explicit IDs through the immutable exact index;
+        // provider-only response IDs never trigger a canonical history scan.
+        connection
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE work_operation_lookup AS {}",
+                empty_source(&operation_columns)
+            ))
+            .map_err(query_error)?;
+        if let Some(descriptor) = &descriptor {
+            let mut after = None;
+            loop {
+                let cursor = after.as_deref().map_or_else(
+                    || "true".into(),
+                    |id| format!("c.operation_id > {}", quoted(id)),
+                );
+                let references = crate::review_storage::query_rows::<serde_json::Value>(
+                    &connection,
+                    &format!(
+                        "SELECT DISTINCT c.operation_id FROM selected_contributions c \
+                         WHERE c.operation_id IS NOT NULL AND c.work_native_project_id IS NULL \
+                         AND ({}) AND {cursor} AND NOT EXISTS \
+                         (SELECT 1 FROM selected_operations o WHERE o.operation_id=c.operation_id) \
+                         ORDER BY c.operation_id LIMIT 256",
+                        crate::review_aggregate::TOKEN_PREDICATE
+                    ),
+                    /*max_rows*/ 256,
+                )?;
+                if references.is_empty() {
+                    break;
+                }
+                let ids = references
+                    .into_iter()
+                    .filter_map(|row| row["operation_id"].as_str().map(str::to_owned))
+                    .collect::<BTreeSet<_>>();
+                after = ids.last().cloned();
+                let rows = load_review_operations(&reader.root, descriptor, &ids, &connection)?;
+                if !rows.is_empty() {
+                    let source = values_source(&rows, &operation_columns)?;
+                    connection
+                        .execute_batch(&format!("INSERT INTO work_operation_lookup {source}"))
+                        .map_err(query_error)?;
+                }
+            }
+        }
+        let names = operation_columns
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let work_operations = format!(
+            "SELECT * FROM (SELECT {names} FROM selected_operations UNION ALL \
+             {operation_tail} UNION ALL SELECT * FROM work_operation_lookup) \
+             QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC)=1"
+        );
         Ok(Self {
             connection,
             operations: "SELECT * FROM selected_operations".into(),
             operation_statistics: "SELECT * FROM selected_operation_statistics".into(),
             retained_operation_statistics,
             contributions: "SELECT * FROM selected_contributions".into(),
+            work_operations,
             complete_from_sequence,
         })
     }
 
     /// Corrected live and retained token effort, linked only to captured work.
     pub(crate) fn work_contributions(&self) -> String {
-        crate::review_aggregate::work_contribution_source(&self.contributions, &self.operations)
+        crate::review_aggregate::work_contribution_source(
+            &self.contributions,
+            &self.work_operations,
+        )
     }
 }
 
