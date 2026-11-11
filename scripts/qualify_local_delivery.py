@@ -19,11 +19,13 @@ import time
 from local_deploy_owner import digest
 from local_deploy_owner import identity
 from local_deploy_owner import package_digest
+from local_deploy_owner import peer
 
 
 TARGET = "x86_64-unknown-linux-gnu"
 RUN_PATTERN = re.compile(r"t[0-9]{8}T[0-9]{6}Z-[0-9a-f]+")
 WORKTREE_PATTERN = re.compile(r"w[0-9a-f]{16}")
+MAX_PROOF_AGE_MS = 15 * 60 * 1000
 
 
 def load_json(path, label):
@@ -34,8 +36,11 @@ def load_json(path, label):
 
 
 def authoritative_source_sha256(root):
-    executable = shutil.which("devcoordinator2-executor")
-    if executable is None:
+    client = shutil.which("devcoordinator2")
+    if client is None:
+        raise RuntimeError("source-digest-helper-missing")
+    executable = Path(client).resolve().with_name("devcoordinator2-executor")
+    if not executable.is_file():
         raise RuntimeError("source-digest-helper-missing")
     result = subprocess.run(
         [executable, "source-digest", "--worktree", str(Path(root).resolve())],
@@ -193,6 +198,12 @@ def qualify(args):
             raise RuntimeError("serving-process-identity-changed")
     if process["noNewPrivileges"] != 0 or process["executableSha256"] != executable_sha256:
         raise RuntimeError("serving-process-security-or-hash-mismatch")
+    codex_home = args.codex_home or os.environ.get("CODEX_HOME")
+    if not codex_home:
+        raise RuntimeError("serving-control-home-missing")
+    current_peer = peer(Path(codex_home) / "app-server-control/app-server-control.sock")
+    if current_peer != process:
+        raise RuntimeError("serving-control-peer-identity-mismatch")
     version = str(metadata.get("version", ""))
     if not version:
         raise RuntimeError("package-version-missing")
@@ -203,10 +214,13 @@ def qualify(args):
         check=True,
         timeout=30,
     )
-    if version not in version_result.stdout:
+    if version_result.stdout != f"codex-cli {version}\n":
         raise RuntimeError("serving-process-version-mismatch")
     verify_started, serving_verified = event_window(owner)
     checked_at_ms = proof["checkedAtMs"]
+    now_ms = time.time_ns() // 1_000_000
+    if checked_at_ms > now_ms or now_ms - checked_at_ms > MAX_PROOF_AGE_MS:
+        raise RuntimeError("sparse-proof-stale-requires-fresh-verification")
     if not verify_started <= checked_at_ms <= serving_verified:
         raise RuntimeError("sparse-proof-freshness-mismatch")
     worktree_id = args.worktree_id or os.environ.get("DEVCOORDINATOR_WORKTREE_ID") or os.environ.get("CODEX_MULTI_NATIVE_WORKTREE_ID")
@@ -220,10 +234,11 @@ def qualify(args):
     output = Path(args.output).resolve()
     if output.exists():
         raise RuntimeError("qualification-artifact-already-exists")
-    (output / "package/bin").mkdir(parents=True, mode=0o700)
-    shutil.copy2(executable, output / "package/bin/codex")
+    shutil.copytree(package, output / "package", symlinks=False)
     if digest(output / "package/bin/codex") != executable_sha256:
         raise RuntimeError("retained-executable-changed")
+    if package_digest(output / "package") != package_sha256:
+        raise RuntimeError("retained-package-changed")
     (output / "owner-receipt.json").write_text(
         json.dumps(owner_evidence(owner), indent=2) + "\n"
     )
@@ -281,6 +296,7 @@ def main():
     parser.add_argument("--rpc-proof", required=True)
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--codex-home")
     parser.add_argument("--artifact", default="native-linux-gnu")
     parser.add_argument("--target", default=TARGET)
     parser.add_argument("--worktree-id")
