@@ -161,7 +161,6 @@ pub(crate) fn ensure_directories(root: &Path) -> Result<()> {
     fs::create_dir_all(store.join(CURRENT_DIRECTORY))?;
     fs::create_dir_all(store.join(SCOPE_DIRECTORY))?;
     fs::create_dir_all(store.join(PAGE_DIRECTORY))?;
-    storage_file::protect_existing(&store)?;
     Ok(())
 }
 
