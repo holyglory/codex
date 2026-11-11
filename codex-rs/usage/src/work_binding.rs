@@ -95,7 +95,7 @@ pub fn read_work_binding_transitions(codex_home: &Path) -> Result<Vec<WorkBindin
 
 pub(crate) fn read_transitions_at(root: &Path) -> Result<Vec<WorkBindingTransition>> {
     let _pin = crate::reclamation::SnapshotPin::acquire(root)?;
-    crate::work_binding_store::WorkBindingLookup::open(root)?.read_all()
+    crate::work_binding_store::WorkBindingLookup::open_unpinned(root)?.read_all()
 }
 
 pub(crate) fn binding_lookup(root: &Path) -> Result<crate::work_binding_store::WorkBindingLookup> {

@@ -51,6 +51,7 @@ struct PageRead {
 /// subsequent appends and rotations cannot change results for this instance.
 #[derive(Debug)]
 pub(crate) struct WorkBindingLookup {
+    _pin: Option<crate::reclamation::SnapshotPin>,
     root: PathBuf,
     active_file: Option<String>,
     active_generation: u64,
@@ -61,9 +62,22 @@ pub(crate) struct WorkBindingLookup {
 
 impl WorkBindingLookup {
     pub(crate) fn open(root: &Path) -> Result<Self> {
+        let pin = crate::reclamation::SnapshotPin::acquire(root)?;
+        Self::open_inner(root, Some(pin))
+    }
+
+    pub(crate) fn open_unpinned(root: &Path) -> Result<Self> {
+        Self::open_inner(root, None)
+    }
+
+    fn open_inner(
+        root: &Path,
+        pin: Option<crate::reclamation::SnapshotPin>,
+    ) -> Result<Self> {
         let Some(active) = read_active(root)? else {
             let legacy = legacy_rows(root)?;
             return Ok(Self {
+                _pin: pin,
                 root: root.to_path_buf(),
                 active_file: None,
                 active_generation: 0,
@@ -83,6 +97,7 @@ impl WorkBindingLookup {
             return Err(invalid("work binding active page changed while opening"));
         }
         Ok(Self {
+            _pin: pin,
             root: root.to_path_buf(),
             active_file: Some(active.file),
             active_generation: active.generation,
@@ -437,7 +452,7 @@ pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBi
         if let Some(current) = crate::work_binding_index::read_current(root, thread_id)? {
             return Ok(Some(current));
         }
-        return WorkBindingLookup::open(root)?.lookup(thread_id, u64::MAX);
+        return WorkBindingLookup::open_unpinned(root)?.lookup(thread_id, u64::MAX);
     }
     Ok(legacy_rows(root)?.and_then(|rows| {
         rows.into_iter()

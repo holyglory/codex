@@ -198,7 +198,11 @@ pub(crate) fn read_scope(root: &Path, thread_id: &str) -> Result<Option<ScopeInd
 }
 
 pub(crate) fn read_current(root: &Path, thread_id: &str) -> Result<Option<WorkBindingTransition>> {
-    let current: Option<WorkBindingTransition> = read_json(&current_path(root, thread_id))?;
+    let path = current_path(root, thread_id);
+    if fs::metadata(&path).map_or(false, |metadata| metadata.len() > 128 * 1024) {
+        return Err(invalid("work binding current state exceeds its bounded size"));
+    }
+    let current: Option<WorkBindingTransition> = read_json(&path)?;
     if let Some(current) = &current {
         if current.update.thread_id != thread_id {
             return Err(invalid("work binding current identity mismatch"));

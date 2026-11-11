@@ -24,7 +24,7 @@ pub(crate) struct WorkBindingSnapshot {
 
 impl WorkBindingSnapshot {
     pub(crate) fn pin(root: &std::path::Path) -> Self {
-        let source = WorkBindingLookup::open(root)
+        let source = WorkBindingLookup::open_unpinned(root)
             .map(Source::Lookup)
             .unwrap_or(Source::Unavailable);
         Self {
