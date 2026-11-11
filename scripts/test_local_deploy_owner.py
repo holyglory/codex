@@ -133,6 +133,14 @@ class PrivilegeRefusalTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "linux", "Linux /proc and Unix peer contract")
 class PostDeploymentQualificationTests(unittest.TestCase):
+    """Helper contracts with only NoNewPrivs modeled as unrestricted.
+
+    Governed test children inherit NoNewPrivs=1. These fixtures keep real
+    process/socket identities and executable hashes, but cannot prove an
+    unrestricted launch. The real privilege-refusal tests above and live
+    post-deployment NoNewPrivs=0 qualification remain separate requirements.
+    """
+
     def start_server(self, endpoint):
         server = subprocess.Popen(
             [
@@ -207,7 +215,7 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 }
             )
         )
-        serving = identity(server.pid)
+        serving = {**identity(server.pid), "noNewPrivileges": 0}
         now = int(time.time() * 1000)
         owner = {
             "result": "passed",
@@ -261,9 +269,21 @@ class PostDeploymentQualificationTests(unittest.TestCase):
         )
 
     def run_qualifier(self, arguments):
+        import local_deploy_owner
         import qualify_local_delivery
 
+        actual_identity = local_deploy_owner.identity
+
+        def contract_identity(pid):
+            return {**actual_identity(pid), "noNewPrivileges": 0}
+
         with (
+            patch.object(
+                qualify_local_delivery, "identity", side_effect=contract_identity
+            ),
+            # peer() resolves identity in its defining module. Normalize only
+            # this field there too, preserving actual Unix peer credentials.
+            patch.object(local_deploy_owner, "identity", side_effect=contract_identity),
             patch.object(
                 qualify_local_delivery,
                 "authoritative_source_sha256",
@@ -365,7 +385,9 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 self.assertEqual(old.stdout.readline(), b"released\n")
                 self.assertIsNone(old.poll())
                 replacement = self.start_server(endpoint)
-                self.assertNotEqual(old_identity, identity(replacement.pid))
+                self.assertNotEqual(
+                    old_identity["pid"], identity(replacement.pid)["pid"]
+                )
                 with self.assertRaisesRegex(
                     RuntimeError, "serving-control-peer-identity-mismatch"
                 ):
