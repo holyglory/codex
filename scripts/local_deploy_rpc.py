@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import sys
@@ -93,6 +94,7 @@ class Rpc:
             raise RuntimeError("websocket-upgrade-failed")
         self.sequence = 0
         self.calls = {}
+        self.arguments = {}
         self.outputs = {}
         self.marker = False
         self.completed = None
@@ -152,9 +154,9 @@ class Rpc:
                 if value.get("method") == "rawResponseItem/completed":
                     item = value.get("params", {}).get("item", {})
                     if item.get("type") in ("function_call", "custom_tool_call"):
-                        self.calls[item.get("call_id") or item.get("id")] = item.get(
-                            "name"
-                        )
+                        call_id = item.get("call_id") or item.get("id")
+                        self.calls[call_id] = item.get("name")
+                        self.arguments[call_id] = item.get("arguments")
                     elif item.get("type") in (
                         "function_call_output",
                         "custom_tool_call_output",
@@ -240,6 +242,25 @@ def verify_connection(rpc, plan):
         raise RuntimeError("usage-sparse-control-requirement-invalid")
     if require_sparse and not sparse_controls:
         raise RuntimeError("usage-sparse-control-capability-missing")
+    sparse_plan = plan.get("sparseBindings")
+    if require_sparse and plan.get("verification") == "model-tools":
+        required_sparse_ids = (
+            "nativeProjectId",
+            "workstreamAId",
+            "outcomeAId",
+            "workstreamBId",
+            "outcomeBId",
+        )
+        if not isinstance(sparse_plan, dict) or set(sparse_plan) != set(required_sparse_ids):
+            raise RuntimeError("usage-sparse-plan-invalid")
+        for name in required_sparse_ids:
+            value = sparse_plan[name]
+            if (
+                not isinstance(value, str)
+                or not 1 <= len(value) <= 128
+                or re.fullmatch(r"[A-Za-z0-9_.:-]+", value) is None
+            ):
+                raise RuntimeError("usage-sparse-plan-invalid")
     identity = rpc.call(
         "localUsage/repositoryIdentity",
         {
@@ -452,6 +473,7 @@ def verify_connection(rpc, plan):
     if plan.get("verification") == "model-tools":
         if account.get("account") is None:
             raise RuntimeError("preserved-account-login-unavailable")
+        journey_started_at = int(time.time() * 1000)
         thread = rpc.call(
             "thread/start",
             {
@@ -469,10 +491,23 @@ def verify_connection(rpc, plan):
                 "input": [
                     {
                         "type": "text",
-                        "text": "Call account_management with action list and limit 1. Call usage_stats with action summary and scope current_chat. "
-                        "If using code mode, print both actual tool return values with text({account_management: accountResult, usage_stats: usageResult}); "
-                        "do not replace them with booleans or a summary. Do not print credentials or file contents. "
-                        "After both tools return successfully, reply exactly LOCAL_DEPLOY_VERIFIED. If a tool fails, report failure.",
+                        "text": (
+                            "Call account_management with action list and limit 1. Call usage_stats with action summary and scope current_chat. "
+                            "If using code mode, print both actual tool return values with text({account_management: accountResult, usage_stats: usageResult}); "
+                            "do not replace them with booleans or a summary. Do not print credentials or file contents. "
+                            + (
+                                f"Also call usage_work directly: set job A with native_project_id={sparse_plan['nativeProjectId']}, "
+                                f"workstream_id={sparse_plan['workstreamAId']}, outcome_id={sparse_plan['outcomeAId']}, expected_revision=0; "
+                                "repeat account_management and usage_stats; then set job B with "
+                                f"native_project_id={sparse_plan['nativeProjectId']}, workstream_id={sparse_plan['workstreamBId']}, "
+                                f"outcome_id={sparse_plan['outcomeBId']} and expected_revision=1; repeat both tools; "
+                                "then clear usage_work with expected_revision=2 and call usage_stats once more. "
+                                "Do not call usage_work for every operation or add IDs to request metadata. "
+                                if require_sparse
+                                else ""
+                            )
+                            + "After all requested tools return successfully, reply exactly LOCAL_DEPLOY_VERIFIED. If a tool fails, report failure."
+                        ),
                     }
                 ],
             },
@@ -495,6 +530,105 @@ def verify_connection(rpc, plan):
             or not required <= direct | wrapped
         ):
             raise RuntimeError("real-model-tools-not-completed")
+        if require_sparse:
+            declarations = []
+            for call_id, name in rpc.calls.items():
+                if name != "usage_work":
+                    continue
+                arguments = rpc.arguments.get(call_id)
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except (TypeError, ValueError):
+                        arguments = None
+                if isinstance(arguments, dict):
+                    declarations.append(arguments)
+            mutations = [
+                declaration
+                for declaration in declarations
+                if declaration.get("action") in {"set", "clear"}
+            ]
+            if len(mutations) < 3:
+                raise RuntimeError("real-sparse-declarations-missing")
+            first, second, third = mutations[:3]
+            if (
+                first.get("action") != "set"
+                or first.get("native_project_id") != sparse_plan["nativeProjectId"]
+                or first.get("workstream_id") != sparse_plan["workstreamAId"]
+                or first.get("outcome_id") != sparse_plan["outcomeAId"]
+                or first.get("expected_revision") != 0
+                or second.get("action") != "set"
+                or second.get("native_project_id") != sparse_plan["nativeProjectId"]
+                or second.get("workstream_id") != sparse_plan["workstreamBId"]
+                or second.get("outcome_id") != sparse_plan["outcomeBId"]
+                or second.get("expected_revision") != 1
+                or third.get("action") != "clear"
+                or third.get("expected_revision") != 2
+            ):
+                raise RuntimeError("real-sparse-declarations-invalid")
+            sparse_report = rpc.call(
+                "localUsage/summary",
+                {
+                    "contractVersion": 1,
+                    "fromAtMs": max(0, journey_started_at - 1_000),
+                    "toAtMs": int(time.time() * 1000) + 1_000,
+                    "includeReview": True,
+                    "threadId": thread["id"],
+                },
+            )
+            report = sparse_report.get("report")
+            review = sparse_report.get("review")
+            outcomes = review.get("outcomes") if isinstance(review, dict) else None
+            bindings = report.get("workBindings") if isinstance(report, dict) else None
+            rows = outcomes.get("rows") if isinstance(outcomes, dict) else None
+            if (
+                not isinstance(report, dict)
+                or report.get("scope") != {"type": "thread", "id": thread["id"]}
+                or not isinstance(bindings, dict)
+                or bindings.get("basis") != "explicit_sparse_transitions"
+                or not isinstance(bindings.get("boundOperations"), int)
+                or bindings["boundOperations"] < 1
+                or not isinstance(bindings.get("unknownOperations"), int)
+                or bindings["unknownOperations"] < 1
+                or not isinstance(outcomes, dict)
+                or outcomes.get("coverage") not in {"partial", "complete"}
+                or not isinstance(rows, list)
+                or not isinstance(outcomes.get("attributed"), dict)
+                or not isinstance(outcomes.get("unattributed"), dict)
+                or outcomes["attributed"].get("operations", 0) < 1
+                or outcomes["unattributed"].get("operations", 0) < 1
+            ):
+                raise RuntimeError("real-sparse-report-invalid")
+            row_by_outcome = {
+                row.get("outcomeId"): row
+                for row in rows
+                if isinstance(row, dict)
+            }
+            for outcome_id, workstream_id in (
+                (sparse_plan["outcomeAId"], sparse_plan["workstreamAId"]),
+                (sparse_plan["outcomeBId"], sparse_plan["workstreamBId"]),
+            ):
+                row = row_by_outcome.get(outcome_id)
+                effort = row.get("effort") if isinstance(row, dict) else None
+                if (
+                    not isinstance(row, dict)
+                    or row.get("workstreamId") != workstream_id
+                    or row.get("nativeProjectId") != sparse_plan["nativeProjectId"]
+                    or not isinstance(effort, dict)
+                    or not isinstance(effort.get("operations"), int)
+                    or effort["operations"] < 1
+                ):
+                    raise RuntimeError("real-sparse-outcome-row-invalid")
+            proof.update(
+                usageOutcomeEvidence="real_model_sparse",
+                sparseJourney=True,
+                sparseDeclarationsObserved=len(mutations),
+                sparseReportVerified=True,
+                sparseThreadId=thread["id"],
+                sparseBoundOperations=bindings["boundOperations"],
+                sparseUnattributedOperations=bindings["unknownOperations"],
+                sparseOutcomeRows=sorted(row_by_outcome),
+            )
         proof.update(
             realModelTurn=True,
             usageToolRequested=True,

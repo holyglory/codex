@@ -23,9 +23,10 @@ import prepare_local_usage_package as usage_package
 
 
 class Peer:
-    def __init__(self, home, mutate=None):
+    def __init__(self, home, mutate=None, model_tools=False):
         self.home = home
         self.mutate = mutate or (lambda method, value: value)
+        self.model_tools = model_tools
         endpoint = home / "app-server-control/app-server-control.sock"
         endpoint.parent.mkdir()
         self.listener = socket.socket(socket.AF_UNIX)
@@ -58,7 +59,16 @@ class Peer:
                 "localUsageAccounting": {
                     "version": 1,
                     "supportedVersions": [1],
-                    "methods": ["localUsage/summary", "localUsage/repositoryIdentity"],
+                    "methods": (
+                        ["localUsage/summary", "localUsage/repositoryIdentity"]
+                        if not self.model_tools
+                        else [
+                            "localUsage/bindingStatus",
+                            "localUsage/bindingTransition",
+                            "localUsage/repositoryIdentity",
+                            "localUsage/summary",
+                        ]
+                    ),
                     "storage": "usage-v2",
                     "supportsWorkContextBindings": True,
                     "supportsWorkstreamOutcomes": True,
@@ -141,15 +151,53 @@ class Peer:
                         "unattributed": effort,
                     }
                 }
+            if self.model_tools and params.get("threadId") == "fixture-thread":
+                def effort(operations, tokens):
+                    return {
+                        "operations": operations,
+                        "providerTotalTokens": {"measured": tokens, "unknown": 0, "exact": None},
+                        "activeAgentMs": {"measured": 0, "unknown": operations, "exact": None},
+                        "elapsedExecutionMs": {"measured": 0, "unknown": operations, "exact": None},
+                        "recordedWaitMs": {"measured": 0, "unknown": 0, "exact": None},
+                        "retryOperations": 0,
+                        "reworkOperations": 0,
+                    }
+                result["report"]["scope"] = {"type": "thread", "id": "fixture-thread"}
+                result["report"]["timeRange"] = {
+                    "startMs": params["fromAtMs"],
+                    "endMs": params["toAtMs"],
+                }
+                result["report"]["workBindings"] = {
+                    "schemaVersion": 1,
+                    "basis": "explicit_sparse_transitions",
+                    "boundOperations": 2,
+                    "unknownOperations": 1,
+                    "transitions": 3,
+                }
+                result["review"] = {"outcomes": {
+                    "schemaVersion": 1,
+                    "coverage": "partial",
+                    "totals": effort(3, 200),
+                    "attributed": effort(2, 180),
+                    "unattributed": effort(1, 20),
+                    "rows": [
+                        {"outcomeId": "fixture-outcome-a", "workstreamId": "fixture-workstream-a", "nativeProjectId": "fixture-project", "effort": effort(1, 100)},
+                        {"outcomeId": "fixture-outcome-b", "workstreamId": "fixture-workstream-b", "nativeProjectId": "fixture-project", "effort": effort(1, 80)},
+                    ],
+                }}
             return result
+        if method == "thread/start" and self.model_tools:
+            return {"thread": {"id": "fixture-thread"}}
+        if method == "turn/start" and self.model_tools:
+            return {"turn": {"id": "fixture-turn"}}
         if method in {"model/list", "accountProfile/list"}:
             return {"data": []}
         if method == "skills/list":
             return {"data": []}
         if method == "account/read":
-            return {"account": None}
+            return {"account": {"id": "fixture-account"}} if self.model_tools else {"account": None}
         if method == "getAuthStatus":
-            return {"authMethod": None, "authToken": None}
+            return {"authMethod": "chatgpt", "authToken": None} if self.model_tools else {"authMethod": None, "authToken": None}
         raise AssertionError(f"unexpected verifier method {method}")
 
     def run(self):
@@ -175,6 +223,15 @@ class Peer:
                     + accept
                     + b"\r\n\r\n"
                 )
+                def send_json(value):
+                    data = json.dumps(value).encode()
+                    prefix = (
+                        bytes([0x81, len(data)])
+                        if len(data) < 126
+                        else b"\x81\x7e" + struct.pack("!H", len(data))
+                    )
+                    connection.sendall(prefix + data)
+
                 while header := stream.read(2):
                     length = header[1] & 127
                     if length == 126:
@@ -194,15 +251,29 @@ class Peer:
                     response = self.mutate(
                         method, copy.deepcopy(self.result(method, request["params"]))
                     )
-                    data = json.dumps(
-                        {"id": request["id"], "result": response}
-                    ).encode()
-                    prefix = (
-                        bytes([0x81, len(data)])
-                        if len(data) < 126
-                        else b"\x81\x7e" + struct.pack("!H", len(data))
-                    )
-                    connection.sendall(prefix + data)
+                    if method == "turn/start" and self.model_tools:
+                        calls = [
+                            ("work-a", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-a", "outcome_id": "fixture-outcome-a", "expected_revision": 0}),
+                            ("account-a", "account_management", {"action": "list", "limit": 1}),
+                            ("usage-a", "usage_stats", {"action": "summary", "scope": "current_chat"}),
+                            ("work-b", "usage_work", {"action": "set", "native_project_id": "fixture-project", "workstream_id": "fixture-workstream-b", "outcome_id": "fixture-outcome-b", "expected_revision": 1}),
+                            ("account-b", "account_management", {"action": "list", "limit": 1}),
+                            ("usage-b", "usage_stats", {"action": "summary", "scope": "current_chat"}),
+                            ("work-clear", "usage_work", {"action": "clear", "expected_revision": 2}),
+                            ("usage-clear", "usage_stats", {"action": "summary", "scope": "current_chat"}),
+                        ]
+                        for call_id, name, arguments in calls:
+                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call", "call_id": call_id, "name": name, "arguments": json.dumps(arguments)}}})
+                            if name == "account_management":
+                                output = {"generation": 1, "accounts": [], "autoSelectionEnabled": False, "priorityOrder": ""}
+                            elif name == "usage_stats":
+                                output = {"schemaVersion": 1, "kind": "usageSummary", "snapshotGeneration": 1, "pendingCorrections": 0, "freshness": "fresh", "watermarkAtMs": 1, "counts": {}}
+                            else:
+                                output = {"revision": arguments.get("expected_revision", 0) + 1}
+                            send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "function_call_output", "call_id": call_id, "output": json.dumps(output)}}})
+                        send_json({"method": "rawResponseItem/completed", "params": {"item": {"type": "message", "content": [{"type": "output_text", "text": "LOCAL_DEPLOY_VERIFIED"}]}}})
+                        send_json({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+                    send_json({"id": request["id"], "result": response})
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as error:
@@ -218,6 +289,21 @@ class LocalDeployRpcTests(unittest.TestCase):
             "version": "0.166.0+multi.3",
             "verification": "local-rpc",
         }
+
+    def sparse_plan(self, home):
+        plan = self.plan(home)
+        plan.update(
+            verification="model-tools",
+            requireSparseBindings=True,
+            sparseBindings={
+                "nativeProjectId": "fixture-project",
+                "workstreamAId": "fixture-workstream-a",
+                "outcomeAId": "fixture-outcome-a",
+                "workstreamBId": "fixture-workstream-b",
+                "outcomeBId": "fixture-outcome-b",
+            },
+        )
+        return plan
 
     def test_negotiates_usage_v2_and_reads_summary_over_unix_websocket(self):
         with tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary:
@@ -291,6 +377,41 @@ class LocalDeployRpcTests(unittest.TestCase):
                     verify(plan)
             self.assertFalse((home / "proof/rpc.json").exists())
             self.assertNotIn("localUsage/bindingTransition", peer.methods)
+
+    def test_model_tools_requires_real_sparse_declarations_and_report(self):
+        with tempfile.TemporaryDirectory(prefix="ld-model-sparse-", dir="/tmp") as temporary:
+            home = Path(temporary)
+            with Peer(home, model_tools=True) as peer:
+                verify(self.sparse_plan(home))
+            proof = json.loads((home / "proof/rpc.json").read_text())
+            self.assertTrue(proof["realModelTurn"])
+            self.assertTrue(proof["sparseJourney"])
+            self.assertTrue(proof["sparseReportVerified"])
+            self.assertEqual(proof["sparseDeclarationsObserved"], 3)
+            self.assertGreaterEqual(proof["sparseBoundOperations"], 1)
+            self.assertGreaterEqual(proof["sparseUnattributedOperations"], 1)
+            self.assertEqual(
+                proof["sparseOutcomeRows"],
+                ["fixture-outcome-a", "fixture-outcome-b"],
+            )
+            self.assertIn("thread/start", peer.methods)
+            self.assertIn("turn/start", peer.methods)
+            self.assertIn("localUsage/summary", peer.methods)
+
+    def test_model_tools_rejects_control_receipts_without_real_outcome_report(self):
+        with tempfile.TemporaryDirectory(prefix="ld-model-sparse-", dir="/tmp") as temporary:
+            home = Path(temporary)
+
+            def missing_report(method, value):
+                if method == "localUsage/summary" and value.get("report", {}).get("scope", {}).get("type") == "thread":
+                    value.pop("review", None)
+                    value["report"].pop("workBindings", None)
+                return value
+
+            with Peer(home, missing_report, model_tools=True):
+                with self.assertRaisesRegex(RuntimeError, "real-sparse-report-invalid"):
+                    verify(self.sparse_plan(home))
+            self.assertFalse((home / "proof/rpc.json").exists())
 
     def test_rejects_incompatible_usage_and_inconsistent_snapshot_without_private_payload(
         self,
