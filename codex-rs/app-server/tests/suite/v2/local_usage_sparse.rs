@@ -28,10 +28,16 @@ use super::local_usage::fixture_fact;
 
 fn captured_pair(finish: UsageRecord) -> [UsageRecord; 2] {
     let mut start = finish.clone();
-    start.id = format!("{}-started", start.operation_id.as_deref().unwrap());
+    start.id = format!(
+        "{}-started",
+        start.operation_id.as_deref().expect("fixture operation ID")
+    );
     start.event = Some("model_request_started".into());
     start.observed_at_ms = start.started_at_ms;
-    start.observed_at = start.started_at_ms.unwrap().div_euclid(1_000);
+    start.observed_at = start
+        .started_at_ms
+        .expect("fixture start time")
+        .div_euclid(1_000);
     start.ended_at_ms = None;
     start.ended_at = None;
     start.duration_ms = None;
@@ -165,23 +171,20 @@ async fn local_usage_sparse_switches_survive_restart_and_do_not_scale_with_opera
     forged["authority"] = json!("verified_assignment");
     invalid_request(&mut server, "localUsage/bindingTransition", forged).await?;
     let encoded_before = std::fs::metadata(home.path().join("usage-v2/work-bindings.jsonl"))?.len();
-    let mut records = (0..300)
-        .map(|index| {
-            fixture_fact(
-                &format!("a-{index}"),
-                thread,
-                "turn",
-                "repo",
-                base,
-                /*tokens*/ 1,
-            )
-        })
-        .collect::<Vec<_>>();
+    let records = (0..300).map(|index| {
+        fixture_fact(
+            &format!("a-{index}"),
+            thread,
+            "turn",
+            "repo",
+            base,
+            /*tokens*/ 1,
+        )
+    });
     let mut retry = fixture_fact("retry", thread, "turn", "repo", base, /*tokens*/ 10);
     retry.account_id = Some("failover-account".into());
     retry.attempt_number = Some(2);
     retry.retry_of_operation_id = Some("a-0".into());
-    records.push(retry);
     let mut compaction = fixture_fact(
         "compaction",
         thread,
@@ -193,7 +196,7 @@ async fn local_usage_sparse_switches_survive_restart_and_do_not_scale_with_opera
     compaction.model = Some("compaction-model".into());
     let [compaction_start, compaction_finish] = captured_pair(compaction);
     let mut records = records
-        .into_iter()
+        .chain([retry])
         .flat_map(captured_pair)
         .collect::<Vec<_>>();
     records.push(compaction_start);

@@ -42,11 +42,14 @@ fn start(id: &str, at: i64) -> UsageRecord {
 }
 
 fn finish(mut fact: UsageRecord, at: i64, tokens: u64) -> UsageRecord {
-    fact.id = format!("{}:finish", fact.operation_id.as_deref().unwrap());
+    fact.id = format!(
+        "{}:finish",
+        fact.operation_id.as_deref().expect("fixture operation ID")
+    );
     fact.observed_at_ms = Some(at);
     fact.observed_at = at.div_euclid(1_000);
     fact.ended_at_ms = Some(at);
-    fact.duration_ms = Some((at - fact.started_at_ms.unwrap()) as u64);
+    fact.duration_ms = Some((at - fact.started_at_ms.expect("fixture start time")) as u64);
     fact.event = Some("model_request_finished".into());
     fact.outcome = Some(UsageOutcome::Completed);
     fact.coverage = Some("recorded".into());
@@ -351,7 +354,10 @@ fn replacement_with_identical_size_and_mtime_never_reuses_another_file() -> code
     let home = tempfile::tempdir()?;
     let original = capture_work_binding_transition(home.path(), assignment(1, Some("a")))?;
     let reader = UsageReader::open(home.path())?;
-    assert_eq!(reader.work_binding_transitions(), &[original.clone()]);
+    assert_eq!(
+        reader.work_binding_transitions(),
+        std::slice::from_ref(&original)
+    );
     let path = home.path().join("usage-v2/work-bindings.jsonl");
     let metadata = std::fs::metadata(&path)?;
     let mut replaced = original.clone();
