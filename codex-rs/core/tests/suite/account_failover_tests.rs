@@ -1,7 +1,13 @@
 use super::*;
 use codex_core::TurnInputRequest;
+use codex_core::UsageWorkAction;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::user_input::UserInput;
+use codex_usage::TimeRange;
+use codex_usage::UsageFilter;
+use codex_usage::UsageReader;
+use codex_usage::WorkBindingTransition;
+use codex_usage::WorkBindingUpdate;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::wait_for_event;
@@ -100,6 +106,160 @@ fn error_summaries(events: &[EventMsg]) -> Vec<String> {
         .collect()
 }
 
+async fn declare_failover_work(test: &TestCodex) -> Result<WorkBindingTransition> {
+    let thread_id = test.session_configured.session_id;
+    let receipt = test
+        .thread_manager
+        .usage_work(
+            thread_id,
+            UsageWorkAction::Set {
+                native_project_id: "failover-fixture-project".into(),
+                workstream_id: Some("weekly-limit-workstream".into()),
+                outcome_id: Some("continue-existing-job".into()),
+                expected_revision: 0,
+            },
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(receipt.revision, 1);
+    let transition = receipt.transition.expect("persisted work declaration");
+    assert_eq!(
+        transition.update,
+        WorkBindingUpdate {
+            version: 1,
+            native_project_id: Some("failover-fixture-project".into()),
+            thread_id: thread_id.to_string(),
+            workstream_id: Some("weekly-limit-workstream".into()),
+            outcome_id: Some("continue-existing-job".into()),
+            transition_sequence: 1,
+            source: "agent_declared".into(),
+            authority: "agent_declared".into(),
+        }
+    );
+    Ok(transition)
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExpectedWorkUsage {
+    model_requests: u64,
+    tools: u64,
+    retries: u64,
+    provider_total_tokens: u64,
+    missing_provider_totals: u64,
+}
+
+fn assert_failover_work_usage(
+    test: &TestCodex,
+    transition: &WorkBindingTransition,
+    expected_accounts: &[ExpectedWorkUsage],
+) -> Result<()> {
+    assert_eq!(
+        codex_usage::read_work_binding_transitions(test.home.path())?,
+        vec![transition.clone()],
+        "retries, account changes and compaction must not redeclare the job"
+    );
+    let ended_at_ms: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?;
+    let range = TimeRange::from_millis(transition.captured_at_ms, ended_at_ms.saturating_add(1))?;
+    let reader = UsageReader::open(test.home.path())?;
+    assert_eq!(reader.pending_entries(), 0);
+    let accounts = RegistryStore::new(test.home.path()).read()?.accounts;
+    assert_eq!(accounts.len(), expected_accounts.len());
+    let total = expected_accounts
+        .iter()
+        .fold(ExpectedWorkUsage::default(), |sum, account| {
+            ExpectedWorkUsage {
+                model_requests: sum.model_requests + account.model_requests,
+                tools: sum.tools + account.tools,
+                retries: sum.retries + account.retries,
+                provider_total_tokens: sum.provider_total_tokens + account.provider_total_tokens,
+                missing_provider_totals: sum.missing_provider_totals
+                    + account.missing_provider_totals,
+            }
+        });
+    let filters = std::iter::once((None, total)).chain(
+        accounts
+            .iter()
+            .zip(expected_accounts)
+            .map(|(account, expected)| (Some(account.id.to_string()), *expected)),
+    );
+    for (account_id, expected) in filters {
+        let filter = UsageFilter {
+            account_id,
+            thread_id: Some(test.session_configured.session_id.to_string()),
+            ..UsageFilter::default()
+        };
+        let report = reader.performance_review(range, &filter)?;
+        let tokens = report["tokens"]
+            .as_array()
+            .expect("token categories")
+            .iter()
+            .find(|row| row["category"] == "total_tokens")
+            .expect("provider total category");
+        assert_eq!(
+            (
+                &report["counts"]["model_requests"],
+                &report["counts"]["tools"],
+                &report["links"]["retryOperations"],
+                &tokens["measuredTokens"],
+                &report["coverage"]["modelRequestsWithoutProviderTotal"],
+            ),
+            (
+                &json!(expected.model_requests),
+                &json!(expected.tools),
+                &json!(expected.retries),
+                &json!(expected.provider_total_tokens),
+                &json!(expected.missing_provider_totals),
+            ),
+            "account {:?}",
+            filter.account_id
+        );
+        let rows = report["outcomes"]["rows"].as_array().expect("outcome rows");
+        assert_eq!(rows.len(), 1, "account {:?}", filter.account_id);
+        let row = &rows[0];
+        assert_eq!(
+            json!({
+                "nativeProjectId": row["nativeProjectId"],
+                "workstreamId": row["workstreamId"],
+                "outcomeId": row["outcomeId"],
+                "operations": row["effort"]["operations"],
+                "retryOperations": row["effort"]["retryOperations"],
+                "providerTotalTokens": row["effort"]["providerTotalTokens"]["measured"],
+            }),
+            json!({
+                "nativeProjectId": "failover-fixture-project",
+                "workstreamId": "weekly-limit-workstream",
+                "outcomeId": "continue-existing-job",
+                "operations": expected.model_requests + expected.tools,
+                "retryOperations": expected.retries,
+                "providerTotalTokens": expected.provider_total_tokens,
+            }),
+            "account {:?}",
+            filter.account_id
+        );
+        assert_eq!(report["outcomes"]["totalRows"], 1);
+        assert_eq!(report["outcomes"]["attributed"], row["effort"]);
+        assert_eq!(
+            report["workBindings"]["boundOperations"],
+            expected.model_requests + expected.tools
+        );
+        assert_eq!(report["outcomes"]["unattributed"]["operations"], 0);
+        assert_eq!(
+            report["outcomes"]["unattributed"]["providerTotalTokens"]["measured"],
+            0
+        );
+        // Provider-reported tokens do not fill missing rejected-response usage
+        // or establish exact active time or a delivered outcome.
+        assert_eq!(report["outcomes"]["coverage"], "partial");
+        assert!(row["effort"]["providerTotalTokens"]["exact"].is_null());
+        assert!(row["effort"]["activeAgentMs"]["exact"].is_null());
+        assert!(row["effort"]["elapsedExecutionMs"]["exact"].is_null());
+    }
+    Ok(())
+}
+
 fn compaction_builder(
     home: Arc<TempDir>,
     server: &MockServer,
@@ -157,11 +317,11 @@ async fn required_compaction_and_following_sampling_can_switch_accounts_in_the_s
                         "account_management",
                         "{\"action\":\"list\"}",
                     ),
-                    responses::ev_completed("listed"),
+                    responses::ev_completed_with_tokens("listed", /*total_tokens*/ 13),
                 ])),
                 responses::sse_response(responses::sse(vec![
                     responses::ev_assistant_message("done", "Continued the same work"),
-                    responses::ev_completed("done"),
+                    responses::ev_completed_with_tokens("done", /*total_tokens*/ 17),
                 ])),
             ],
         )
@@ -169,6 +329,7 @@ async fn required_compaction_and_following_sampling_can_switch_accounts_in_the_s
         let test = compaction_builder(Arc::clone(&home), &server, backend)
             .build_with_auto_env(&server)
             .await?;
+        let binding = declare_failover_work(&test).await?;
         turn_events(&test, "Keep this history").await?;
         let events = turn_events(&test, "Preserve this pending input and finish").await?;
         assert!(
@@ -223,6 +384,33 @@ async fn required_compaction_and_following_sampling_can_switch_accounts_in_the_s
             ),
             (&attempts[1].operation_id, &attempts[3].operation_id)
         );
+        assert_failover_work_usage(
+            &test,
+            &binding,
+            &[
+                ExpectedWorkUsage {
+                    model_requests: 2,
+                    tools: 0,
+                    retries: 0,
+                    provider_total_tokens: 200_000,
+                    missing_provider_totals: 1,
+                },
+                ExpectedWorkUsage {
+                    model_requests: 2,
+                    tools: 0,
+                    retries: 1,
+                    provider_total_tokens: 0,
+                    missing_provider_totals: 1,
+                },
+                ExpectedWorkUsage {
+                    model_requests: 2,
+                    tools: 1,
+                    retries: 1,
+                    provider_total_tokens: 30,
+                    missing_provider_totals: 0,
+                },
+            ],
+        )?;
     }
     Ok(())
 }
@@ -259,11 +447,11 @@ async fn inline_compaction_failover_preserves_completed_tools_and_rebuilds_tool_
                     "imagegen",
                     "{\"prompt\":\"paint a blue whale\"}",
                 ),
-                responses::ev_completed("image"),
+                responses::ev_completed_with_tokens("image", /*total_tokens*/ 23),
             ])),
             responses::sse_response(responses::sse(vec![
                 responses::ev_assistant_message("done", "Finished"),
-                responses::ev_completed("done"),
+                responses::ev_completed_with_tokens("done", /*total_tokens*/ 29),
             ])),
         ],
     )
@@ -279,6 +467,7 @@ async fn inline_compaction_failover_preserves_completed_tools_and_rebuilds_tool_
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
         .await?;
+    let binding = declare_failover_work(&test).await?;
     let events = turn_events(&test, "Rename my profile, create an image, and finish").await?;
     let request_owners = mock
         .requests()
@@ -307,6 +496,26 @@ async fn inline_compaction_failover_preserves_completed_tools_and_rebuilds_tool_
     );
     server.verify().await;
     test.codex.shutdown_and_wait().await?;
+    assert_failover_work_usage(
+        &test,
+        &binding,
+        &[
+            ExpectedWorkUsage {
+                model_requests: 2,
+                tools: 1,
+                retries: 0,
+                provider_total_tokens: 200_000,
+                missing_provider_totals: 1,
+            },
+            ExpectedWorkUsage {
+                model_requests: 3,
+                tools: 1,
+                retries: 1,
+                provider_total_tokens: 52,
+                missing_provider_totals: 0,
+            },
+        ],
+    )?;
     Ok(())
 }
 
@@ -328,7 +537,7 @@ async fn post_turn_compaction_failover_preserves_the_completed_answer_and_next_t
                 compaction_success(backend),
                 responses::sse_response(responses::sse(vec![
                     responses::ev_assistant_message("next", "Work continued"),
-                    responses::ev_completed("next"),
+                    responses::ev_completed_with_tokens("next", /*total_tokens*/ 31),
                 ])),
             ],
         )
@@ -340,6 +549,7 @@ async fn post_turn_compaction_failover_preserves_the_completed_answer_and_next_t
             })
             .build_with_auto_env(&server)
             .await?;
+        let binding = declare_failover_work(&test).await?;
         let events = turn_events(
             &test,
             "Finish this answer, then keep the conversation available",
@@ -369,6 +579,26 @@ async fn post_turn_compaction_failover_preserves_the_completed_answer_and_next_t
                 .to_vec()
         );
         test.codex.shutdown_and_wait().await?;
+        assert_failover_work_usage(
+            &test,
+            &binding,
+            &[
+                ExpectedWorkUsage {
+                    model_requests: 2,
+                    tools: 0,
+                    retries: 0,
+                    provider_total_tokens: 200_000,
+                    missing_provider_totals: 1,
+                },
+                ExpectedWorkUsage {
+                    model_requests: 2,
+                    tools: 0,
+                    retries: 1,
+                    provider_total_tokens: 31,
+                    missing_provider_totals: 0,
+                },
+            ],
+        )?;
     }
     Ok(())
 }
@@ -477,26 +707,27 @@ async fn usage_limit_failover_keeps_completed_tools_and_usage_lineage() -> Resul
             responses::ev_function_call("rename", "account_management", &json!({
                 "action":"rename", "account":"a", "new_alias":"active", "expected_generation":1
             }).to_string()),
-            responses::ev_completed("tool"),
+            responses::ev_completed_with_tokens("tool", /*total_tokens*/ 11),
         ])),
             usage_rejection(),
             responses::sse_response(responses::sse(vec![
                 responses::ev_response_created("backup-tool"),
                 responses::ev_function_call("list", "account_management", "{\"action\":\"list\"}"),
-                responses::ev_completed("backup-tool"),
+                responses::ev_completed_with_tokens("backup-tool", /*total_tokens*/ 13),
             ])),
         ];
-    for id in ["done", "next"] {
+    for (id, total_tokens) in [("done", 17), ("next", 19)] {
         script.push(responses::sse_response(responses::sse(vec![
             responses::ev_response_created(id),
             responses::ev_assistant_message(id, "continued"),
-            responses::ev_completed(id),
+            responses::ev_completed_with_tokens(id, total_tokens),
         ])));
     }
     let mock = responses::mount_response_sequence(&server, script).await;
     let test = failover_builder(Arc::clone(&home), &server)
         .build_with_auto_env(&server)
         .await?;
+    let binding = declare_failover_work(&test).await?;
     let events = turn_events(&test, "Rename my first profile, then finish the work").await?;
     assert!(
         !events
@@ -571,6 +802,26 @@ async fn usage_limit_failover_keeps_completed_tools_and_usage_lineage() -> Resul
             .count(),
         2
     );
+    assert_failover_work_usage(
+        &test,
+        &binding,
+        &[
+            ExpectedWorkUsage {
+                model_requests: 2,
+                tools: 1,
+                retries: 0,
+                provider_total_tokens: 11,
+                missing_provider_totals: 1,
+            },
+            ExpectedWorkUsage {
+                model_requests: 3,
+                tools: 1,
+                retries: 1,
+                provider_total_tokens: 49,
+                missing_provider_totals: 0,
+            },
+        ],
+    )?;
     Ok(())
 }
 
