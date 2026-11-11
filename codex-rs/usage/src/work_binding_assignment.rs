@@ -12,6 +12,14 @@ use crate::WorkBindingTransition;
 use crate::review_state::lifecycle;
 use crate::work_binding_snapshot::WorkBindingSnapshot;
 
+/// Whether all attempted assignment lookups completed, including valid clears
+/// and absent scopes. Unavailable metadata withholds pruning proof only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkAssignmentCoverage {
+    Complete,
+    Unavailable,
+}
+
 #[derive(Clone)]
 struct Assignment {
     project: String,
@@ -77,6 +85,8 @@ struct Resolver<'a> {
     resolved: BTreeMap<String, Option<Assignment>>,
     reader: OnceLock<Option<UsageReader>>,
     bindings: BTreeMap<&'a str, Vec<&'a WorkBindingTransition>>,
+    binding_unavailable: bool,
+    unavailable: bool,
 }
 
 impl Resolver<'_> {
@@ -89,13 +99,21 @@ impl Resolver<'_> {
         {
             return self.candidates.get(id).cloned();
         }
-        let reader = self
+        let Some(reader) = self
             .reader
             .get_or_init(|| UsageReader::open_at(self.root).ok())
-            .as_ref()?;
-        let metadata = reader
-            .operation_binding_metadata(&BTreeSet::from([id.to_owned()]))
-            .ok()?;
+            .as_ref()
+        else {
+            self.unavailable = true;
+            return None;
+        };
+        let metadata = match reader.operation_binding_metadata(&BTreeSet::from([id.to_owned()])) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                self.unavailable = true;
+                return None;
+            }
+        };
         if let Some(metadata) = metadata.into_iter().next() {
             self.candidates
                 .insert(id.to_owned(), Candidate::from_metadata(metadata));
@@ -109,6 +127,7 @@ impl Resolver<'_> {
             return result.clone();
         }
         if depth == 64 {
+            self.unavailable = true;
             return None;
         }
         let row = self.candidate(id)?;
@@ -124,7 +143,12 @@ impl Resolver<'_> {
             }
             self.resolve(parent, depth + 1)
         } else {
-            let bindings = self.bindings.get(row.thread.as_deref()?)?;
+            let thread = row.thread.as_deref()?;
+            if self.binding_unavailable {
+                self.unavailable = true;
+                return None;
+            }
+            let bindings = self.bindings.get(thread)?;
             let index =
                 bindings.partition_point(|binding| binding.effective_capture_sequence <= row.first);
             index.checked_sub(1).and_then(|index| {
@@ -147,7 +171,7 @@ pub(crate) fn assign_work_dimensions(
     root: &Path,
     rows: &mut [ReviewOperation],
     records: &[(u64, UsageRecord)],
-) {
+) -> WorkAssignmentCoverage {
     for row in rows.iter_mut() {
         if row.work_binding_start_sequence != Some(row.first_sequence)
             || row.work_native_project_id.is_none()
@@ -160,9 +184,10 @@ pub(crate) fn assign_work_dimensions(
     if rows.iter().all(|row| {
         row.work_native_project_id.is_some() || row.work_binding_start_sequence.is_none()
     }) {
-        return;
+        return WorkAssignmentCoverage::Complete;
     }
     let snapshot = WorkBindingSnapshot::pin(root);
+    let unavailable = snapshot.coverage() == "unavailable";
     let mut bindings = BTreeMap::<&str, Vec<&WorkBindingTransition>>::new();
     for binding in snapshot.transitions() {
         bindings
@@ -171,13 +196,27 @@ pub(crate) fn assign_work_dimensions(
             .push(binding);
     }
     if bindings.is_empty() && rows.iter().all(|row| row.retry_of_operation_id.is_none()) {
-        return;
+        return if unavailable {
+            WorkAssignmentCoverage::Unavailable
+        } else {
+            WorkAssignmentCoverage::Complete
+        };
     }
     let mut candidates = rows
         .iter()
         .map(|row| (row.operation_id.clone(), Candidate::from_operation(row)))
         .collect::<BTreeMap<_, _>>();
-    for (sequence, record) in records {
+    // Most publication partitions contain no retry edges. Their merged rows
+    // already contain every required start; do not rescan the whole batch.
+    let needs_batch = rows.iter().any(|row| {
+        row.work_native_project_id.is_none()
+            && row
+                .retry_of_operation_id
+                .as_ref()
+                .is_some_and(|parent| !candidates.contains_key(parent))
+    });
+    let batch = if needs_batch { records } else { &[] };
+    for (sequence, record) in batch {
         let Some((_, terminal)) = lifecycle(record) else {
             continue;
         };
@@ -206,6 +245,8 @@ pub(crate) fn assign_work_dimensions(
         resolved: BTreeMap::new(),
         reader: OnceLock::new(),
         bindings,
+        binding_unavailable: unavailable,
+        unavailable: false,
     };
     for row in rows {
         if row.work_native_project_id.is_some() {
@@ -216,5 +257,10 @@ pub(crate) fn assign_work_dimensions(
             row.workstream_id = assignment.stream;
             row.work_outcome_id = assignment.outcome;
         }
+    }
+    if resolver.unavailable {
+        WorkAssignmentCoverage::Unavailable
+    } else {
+        WorkAssignmentCoverage::Complete
     }
 }

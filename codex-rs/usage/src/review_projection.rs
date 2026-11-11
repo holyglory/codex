@@ -126,10 +126,36 @@ pub struct ReviewProjectionDescriptor {
     /// cannot extend a cycle and keep older detail from being revisited.
     #[serde(default)]
     pub retention_scan_remaining: usize,
+    /// Assignment validation proof installed with this exact projection.
+    /// Ordinary publication may advance while unavailable scopes withhold it.
+    #[serde(default)]
+    pub work_assignment_coverage_sequence: Option<u64>,
+    /// Metadata-only queue for bounded validation/repair after legacy reads or
+    /// an unavailable binding dependency. It never blocks ordinary capture.
+    #[serde(default)]
+    pub work_assignment_pending_partitions: BTreeSet<u64>,
 }
 
 const BLOOM_BITS_PER_OPERATION: usize = 8;
 const BLOOM_HASHES: usize = 4;
+
+/// Read only proof installed with the manifest's exact projection. A pending
+/// repair can retain an older valid frontier; missing/invalid proof never
+/// authorizes binding-history reclamation.
+pub(crate) fn work_assignment_coverage_sequence(
+    root: &Path,
+    manifest: &UsageManifest,
+) -> Result<Option<u64>> {
+    Ok(
+        load_review_projection_shared(root, manifest)?.and_then(|descriptor| {
+            descriptor
+                .work_assignment_coverage_sequence
+                .filter(|sequence| {
+                    *sequence <= descriptor.watermark.sequence && *sequence <= manifest.watermark
+                })
+        }),
+    )
+}
 
 pub(crate) fn operation_bloom(rows: &[ReviewOperation]) -> Vec<u64> {
     let bits = (rows.len().max(1) * BLOOM_BITS_PER_OPERATION).next_power_of_two();
@@ -228,9 +254,21 @@ pub(crate) fn publish_review_projection(
             retired_contribution_rows: 0,
             retention_scan_offset: 0,
             retention_scan_remaining: 0,
+            work_assignment_coverage_sequence: None,
+            work_assignment_pending_partitions: BTreeSet::new(),
         });
     if descriptor.watermark != prior || next.sequence < prior.sequence {
         return Err(invalid("review projection and manifest frontiers disagree"));
+    }
+    if descriptor.work_assignment_coverage_sequence.is_none()
+        && descriptor.work_assignment_pending_partitions.is_empty()
+    {
+        descriptor.work_assignment_pending_partitions.extend(
+            descriptor
+                .partitions
+                .iter()
+                .map(|partition| partition.partition),
+        );
     }
     let operation_index = operation_id_index::load(root, &descriptor)?;
     let mut new_addresses = Vec::new();
@@ -357,7 +395,18 @@ pub(crate) fn publish_review_projection(
             return Err(invalid("operation partition exceeds fixed capacity"));
         }
         let mut rows = states.into_values().collect::<Vec<_>>();
-        crate::assign_work_dimensions(root, &mut rows, records);
+        match crate::assign_work_dimensions(root, &mut rows, records) {
+            crate::WorkAssignmentCoverage::Complete => {
+                descriptor
+                    .work_assignment_pending_partitions
+                    .remove(&partition);
+            }
+            crate::WorkAssignmentCoverage::Unavailable => {
+                descriptor
+                    .work_assignment_pending_partitions
+                    .insert(partition);
+            }
+        }
         let dimensions = rows
             .iter()
             .flat_map(|row| {
@@ -567,6 +616,9 @@ pub(crate) fn publish_review_projection(
         )?);
     }
     descriptor.watermark = next;
+    if descriptor.work_assignment_pending_partitions.is_empty() {
+        descriptor.work_assignment_coverage_sequence = Some(next.sequence);
+    }
     #[cfg(test)]
     profile.mark("contributions-and-classifications");
     let file = format!("review-projection-{stamp}.json");

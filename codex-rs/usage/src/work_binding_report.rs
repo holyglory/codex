@@ -113,7 +113,11 @@ pub(crate) fn bound_work_effort_from_query(
         }
     };
     let operation_filter = predicate("operation_id");
-    let token_filter = predicate("work_operation_id");
+    let token_filter = format!(
+        "{} AND {}",
+        predicate("work_operation_id"),
+        predicate("operation_id")
+    );
     let detail = detail_statistics(&query.operations, range);
     let columns = "work_native_project_id,workstream_id,work_outcome_id,thread_id,kind,operation_count,interval_sum_ms,unknown_intervals,retry_operations,rework_operations";
     let statistics = if exceptional.is_empty() {

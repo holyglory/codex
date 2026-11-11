@@ -205,11 +205,12 @@ impl UsageReader {
              CASE WHEN kind <> 'wait' THEN unknown_intervals ELSE 0 END::UBIGINT unknown_execution_intervals, \
              CASE WHEN kind = 'wait' THEN interval_sum_ms ELSE 0 END::UBIGINT recorded_wait_ms \
              FROM ({statistics}) WHERE operation_id IN ({selected})), \
-             tokens AS (SELECT work_operation_id operation_id, COALESCE(sum(provider_total_tokens),0)::UBIGINT provider_total_tokens, \
+             tokens AS (SELECT bound_operation_id operation_id, COALESCE(sum(provider_total_tokens),0)::UBIGINT provider_total_tokens, \
              COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT token_observations, \
              COALESCE(sum(COALESCE(provider_total_unknowns, CASE WHEN provider_total_tokens IS NULL \
                THEN COALESCE(observation_count,1) ELSE 0 END)),0)::UBIGINT unknown_token_observations \
-             FROM ({contributions}) WHERE work_operation_id IN ({selected}) AND ({token_predicate}) GROUP BY work_operation_id) \
+             FROM (SELECT *,CASE WHEN operation_id IN ({selected}) THEN operation_id ELSE work_operation_id END bound_operation_id \
+               FROM ({contributions})) WHERE bound_operation_id IN ({selected}) AND ({token_predicate}) GROUP BY bound_operation_id) \
              SELECT COALESCE(o.operation_id,t.operation_id) operation_id, \
              COALESCE(o.operations,0)::UBIGINT operations, COALESCE(o.retry_operations,0)::UBIGINT retry_operations, \
              COALESCE(o.rework_operations,0)::UBIGINT rework_operations, \

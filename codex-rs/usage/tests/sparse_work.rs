@@ -303,6 +303,88 @@ fn replacement_with_identical_size_and_mtime_never_reuses_another_file() -> code
 }
 
 #[test]
+fn cross_partition_retry_keeps_the_original_assignment() -> codex_usage::Result<()> {
+    let home = tempfile::tempdir()?;
+    capture_work_binding_transition(home.path(), assignment(/*sequence*/ 1, Some("a")))?;
+    operation(home.path(), "root", /*at*/ 1000, /*tokens*/ 10)?;
+    let fillers = (0..16_382)
+        .map(|index| {
+            UsageRecord::new_millis(
+                format!("filler-{index}"),
+                /*observed_at_ms*/ 1000,
+                /*input_tokens*/ 0,
+                /*output_tokens*/ 0,
+            )
+        })
+        .collect();
+    capture_records(home.path(), fillers)?;
+    capture_work_binding_transition(home.path(), assignment(/*sequence*/ 2, Some("b")))?;
+    let mut retry = start("retry", /*at*/ 2000);
+    retry.retry_of_operation_id = Some("root".into());
+    capture_records(
+        home.path(),
+        vec![retry.clone(), finish(retry, /*at*/ 2001, /*tokens*/ 20)],
+    )?;
+    let root = home.path().join("usage-v2");
+    let end = codex_usage::UsageJournal::new(root.join("events.jsonl")).last_sequence()?;
+    let manifest = UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 64 * 1024 * 1024,
+        max_entries: 20_000,
+    })?;
+    assert_eq!(
+        manifest.watermark, end,
+        "one publication must consume both partitions"
+    );
+    let descriptor: Value = serde_json::from_slice(&std::fs::read(
+        root.join("segments")
+            .join(manifest.review_projection_file.unwrap()),
+    )?)?;
+    assert_eq!(descriptor["partitions"].as_array().unwrap().len(), 2);
+    let report = UsageReader::open(home.path())?
+        .performance_review(TimeRange::all(), &UsageFilter::default())?;
+    assert_eq!(
+        json!({"bound":report["workBindings"]["boundOperations"],"rows":report["outcomes"]["rows"]}),
+        json!({"bound":2,"rows":[{"nativeProjectId":"project","outcomeId":"a","workstreamId":"stream","title":null,
+            "effort":{"operations":2,"retryOperations":1,"reworkOperations":0,
+                "providerTotalTokens":{"measured":30,"exact":null,"unknown":0},
+                "activeAgentMs":{"measured":0,"exact":null,"unknown":2},
+                "elapsedExecutionMs":{"measured":2,"exact":null,"unknown":0},
+                "recordedWaitMs":{"measured":0,"exact":null,"unknown":0}}}]})
+    );
+    Ok(())
+}
+
+#[test]
+fn exceptional_producer_binds_exact_token_identity_without_a_lifecycle() -> codex_usage::Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let mut token = UsageRecord::new_millis(
+        "external-token",
+        /*observed_at_ms*/ 1000,
+        /*input_tokens*/ 7,
+        /*output_tokens*/ 0,
+    )
+    .with_operation("external-operation")
+    .with_thread("thread");
+    token.event = Some("token_observation".into());
+    token.provider_total_tokens = Some(7);
+    capture_record(home.path(), token)?;
+    let reader = UsageReader::open(home.path())?;
+    let evidence = reader.bound_operation_effort(
+        TimeRange::all(),
+        &UsageFilter::default(),
+        &std::collections::BTreeSet::from(["external-operation".to_owned()]),
+    )?;
+    assert_eq!(
+        serde_json::to_value(evidence)?,
+        json!([{"operation_id":"external-operation","operations":0,
+        "retry_operations":0,"rework_operations":0,"provider_total_tokens":7,"token_observations":1,
+        "unknown_token_observations":0,"execution_interval_sum_ms":0,"unknown_execution_intervals":0,"recorded_wait_ms":0}])
+    );
+    Ok(())
+}
+
+#[test]
 fn clear_and_conflicting_revisions_have_explicit_unattributed_coverage() -> codex_usage::Result<()>
 {
     let home = tempfile::tempdir()?;
