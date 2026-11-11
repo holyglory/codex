@@ -379,7 +379,7 @@ def qualify(run_id, work):
             "task_id": "pb55141372eaf9f45",
             "scope": "product",
             "state": "fixture_only",
-            "expected_result": "Advertise only the versioned usage-v2 summary and repository identity methods, with bounded snapshots and explicit work-context support; live activation is pending.",
+            "expected_result": "Advertise the versioned usage-v2 summary, repository identity, sparse binding transition and status methods, with bounded snapshots; live activation is pending.",
             "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
@@ -395,7 +395,7 @@ def qualify(run_id, work):
             "task_id": "p71691992a596b0dd",
             "scope": "product",
             "state": "fixture_only",
-            "expected_result": "Keep continued usage pages on their original snapshot and resolved filters until expiry. Nonempty outcome pagination is fixture-tested; authoritative outcome capture remains unavailable.",
+            "expected_result": "Keep continued usage pages on their original snapshot and resolved filters until expiry, including captured job totals and explicitly unattributed work.",
             "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
@@ -411,16 +411,20 @@ def qualify(run_id, work):
             "task_id": "p310ae9370e9a2ffa",
             "scope": "product",
             "state": "fixture_only",
-            "expected_result": "Accept explicit content-free work-context declarations in the usage-v2 API without inferring bindings from thread, repository or operation completion; preserve unknown timing and unattributed effort.",
+            "expected_result": "Capture content-free job declarations only when work changes, preserve operation-start assignments across account failover, restart and retention, and retain explicit exceptional operation bindings without double counting.",
             "evidence_refs": [f"run/{base_run}/full-workspace"],
         },
         {
-            "id": "live-authority-binding-coverage",
+            "id": "live-sparse-job-attribution",
             "task_id": "p310ae9370e9a2ffa",
             "scope": "product",
-            "state": "external_blocked",
-            "expected_result": "Show live task attribution only where the authoritative host supplies a recorded binding. Historical missing bindings remain unknown and are not reconstructed.",
-            "evidence_refs": [],
+            "state": "fixture_only",
+            "expected_result": "Show locally captured, agent-declared job assignments through usage_work and outcome reports, including provider tokens and cleared work. Live A/B/clear verification is pending; historical missing assignments remain unknown and operation completion does not prove delivery.",
+            "evidence_refs": [
+                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/usage-scale",
+                f"run/{base_run}/local-usage-package-rpc",
+            ],
         },
         {
             "id": "weekly-limit-chat-continuation",
