@@ -79,8 +79,11 @@ fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
     {
         return Err(invalid_params("invalid workstream identifier"));
     }
-    Bindings::merge_request(/*sidecar*/ None, params.work_context_bindings.as_deref())
-        .map_err(|_| invalid_params("invalid or conflicting work context declarations"))?;
+    Bindings::merge_request(
+        /*sidecar*/ None,
+        params.work_context_bindings.as_deref(),
+    )
+    .map_err(|_| invalid_params("invalid or conflicting work context declarations"))?;
     if (params.include_review || params.record_limit > 0 || params.operation_limit > 0)
         && (params.from_at_ms.is_none() || params.to_at_ms.is_none())
     {

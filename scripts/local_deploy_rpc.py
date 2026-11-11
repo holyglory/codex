@@ -221,16 +221,21 @@ def verify_connection(rpc, plan):
         or any(type(version) is not int for version in usage["supportedVersions"])
         or not isinstance(usage.get("methods"), list)
         or any(not isinstance(method, str) for method in usage["methods"])
-        or sorted(usage["methods"]) != ["localUsage/repositoryIdentity", "localUsage/summary"]
+        or sorted(usage["methods"])
+        != ["localUsage/repositoryIdentity", "localUsage/summary"]
         or usage.get("supportsWorkContextBindings") is not True
         or usage.get("supportsWorkstreamOutcomes") is not True
         or type(usage.get("snapshotRetentionMs")) is not int
         or usage["snapshotRetentionMs"] <= 0
     ):
         raise RuntimeError("usage-v2-capability-invalid")
-    identity = rpc.call("localUsage/repositoryIdentity", {
-        "contractVersion": 1, "path": plan["verificationCwd"],
-    })
+    identity = rpc.call(
+        "localUsage/repositoryIdentity",
+        {
+            "contractVersion": 1,
+            "path": plan["verificationCwd"],
+        },
+    )
     if (
         not isinstance(identity, dict)
         or type(identity.get("contractVersion")) is not int
@@ -239,7 +244,8 @@ def verify_connection(rpc, plan):
         or type(identity.get("formatVersion")) is not int
         or identity["formatVersion"] != 3
         or "repositoryId" not in identity
-        or identity["repositoryId"] is not None and (
+        or identity["repositoryId"] is not None
+        and (
             not isinstance(identity["repositoryId"], str)
             or not identity["repositoryId"]
             or len(identity["repositoryId"]) > 256
@@ -260,16 +266,39 @@ def verify_connection(rpc, plan):
         or report.get("kind") != "usageSummary"
         or report.get("databaseSchemaVersion") != 3
         or report.get("scope") != {"type": "all", "id": None}
-        or report.get("coverage", {}).get("state") not in {"complete", "partial", "unobserved"}
+        or report.get("coverage", {}).get("state")
+        not in {"complete", "partial", "unobserved"}
         or type(native.get("schemaVersion")) is not int
         or native["schemaVersion"] != 1
         or native.get("kind") != "usageSummary"
-        or any(type(native.get(key)) is not int or native[key] < 0 for key in
-               ("records", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"))
-        or any(type(report.get("counts", {}).get(key)) is not int or report["counts"][key] < 0
-               for key in ("operations", "modelRequests", "tools"))
-        or any(type(snapshot.get(key)) is not int or snapshot[key] < 0 for key in
-               ("generation", "watermark", "journalWatermark", "generatedAt", "watermarkAtMs", "updatedAtMs", "pendingEntries", "pendingCorrections"))
+        or any(
+            type(native.get(key)) is not int or native[key] < 0
+            for key in (
+                "records",
+                "inputTokens",
+                "cachedInputTokens",
+                "outputTokens",
+                "reasoningOutputTokens",
+            )
+        )
+        or any(
+            type(report.get("counts", {}).get(key)) is not int
+            or report["counts"][key] < 0
+            for key in ("operations", "modelRequests", "tools")
+        )
+        or any(
+            type(snapshot.get(key)) is not int or snapshot[key] < 0
+            for key in (
+                "generation",
+                "watermark",
+                "journalWatermark",
+                "generatedAt",
+                "watermarkAtMs",
+                "updatedAtMs",
+                "pendingEntries",
+                "pendingCorrections",
+            )
+        )
         or type(summary.get("generatedAt")) is not int
         or snapshot.get("generatedAt", 0) > summary.get("generatedAt", 0)
         or snapshot.get("watermark", 0) > snapshot.get("journalWatermark", 0)
@@ -284,14 +313,24 @@ def verify_connection(rpc, plan):
     # covered by the isolated app-server fixture journey.
     captured_at = int(time.time() * 1000)
     review_params = {
-        "contractVersion": 1, "fromAtMs": max(0, captured_at - 60_000),
-        "toAtMs": captured_at + 1, "includeReview": True,
+        "contractVersion": 1,
+        "fromAtMs": max(0, captured_at - 60_000),
+        "toAtMs": captured_at + 1,
+        "includeReview": True,
         "workstreamId": "local-deploy-verification",
-        "workContextBindings": [{"schemaVersion": 1,
-            "operationId": "local-deploy-unobserved-operation", "capturedAtMs": captured_at,
-            "workContext": {"schemaVersion": 1, "id": "local-deploy-unobserved-context",
-                "workstreamId": "local-deploy-verification",
-                "outcomeId": "local-deploy-unobserved-outcome"}}],
+        "workContextBindings": [
+            {
+                "schemaVersion": 1,
+                "operationId": "local-deploy-unobserved-operation",
+                "capturedAtMs": captured_at,
+                "workContext": {
+                    "schemaVersion": 1,
+                    "id": "local-deploy-unobserved-context",
+                    "workstreamId": "local-deploy-verification",
+                    "outcomeId": "local-deploy-unobserved-outcome",
+                },
+            }
+        ],
     }
     if identity["repositoryId"] is not None:
         review_params["repositoryId"] = identity["repositoryId"]
@@ -302,12 +341,15 @@ def verify_connection(rpc, plan):
         or scoped["contractVersion"] != 1
         or scoped.get("source") != "usage-v2"
         or not isinstance(scoped.get("report"), dict)
-        or scoped["report"].get("scope") != {
+        or scoped["report"].get("scope")
+        != {
             "type": "repository" if identity["repositoryId"] is not None else "all",
             "id": identity["repositoryId"],
         }
-        or scoped["report"].get("timeRange") != {
-            "startMs": review_params["fromAtMs"], "endMs": review_params["toAtMs"],
+        or scoped["report"].get("timeRange")
+        != {
+            "startMs": review_params["fromAtMs"],
+            "endMs": review_params["toAtMs"],
         }
         or not isinstance(scoped.get("review"), dict)
         or not isinstance(scoped.get("workContexts"), list)
@@ -320,7 +362,8 @@ def verify_connection(rpc, plan):
         not isinstance(bindings, dict)
         or type(bindings.get("schemaVersion")) is not int
         or bindings["schemaVersion"] != 1
-        or bindings.get("basis") not in {"request_declarations", "request_and_compatibility_declarations"}
+        or bindings.get("basis")
+        not in {"request_declarations", "request_and_compatibility_declarations"}
         or type(bindings.get("declaredOperations")) is not int
         or not 1 <= bindings["declaredOperations"] <= 256
         or not isinstance(outcomes, dict)
@@ -329,7 +372,10 @@ def verify_connection(rpc, plan):
         or outcomes.get("coverage") not in {"unattributed", "partial", "complete"}
         or not isinstance(outcomes.get("rows"), list)
         or any(not isinstance(row, dict) for row in outcomes["rows"])
-        or any(row.get("workstreamId") != review_params["workstreamId"] for row in outcomes["rows"])
+        or any(
+            row.get("workstreamId") != review_params["workstreamId"]
+            for row in outcomes["rows"]
+        )
     ):
         raise RuntimeError("usage-v2-outcome-contract-invalid")
     efforts = [outcomes.get(key) for key in ("totals", "attributed", "unattributed")]
