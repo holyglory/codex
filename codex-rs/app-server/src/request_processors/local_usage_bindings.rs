@@ -308,7 +308,8 @@ pub(super) fn safe_identifier(id: &str, experiment: bool) -> bool {
 // Content digests stay private. A bounded process-local registry gives changed
 // bytes a new readable revision, even if line count/timestamps were reused.
 fn revision(path: PathBuf, digest: [u8; 32], lines: usize, latest: i64) -> Result<String, ()> {
-    static SOURCES: OnceLock<Mutex<BTreeMap<PathBuf, ([u8; 32], String)>>> = OnceLock::new();
+    type RevisionCache = BTreeMap<PathBuf, ([u8; 32], String)>;
+    static SOURCES: OnceLock<Mutex<RevisionCache>> = OnceLock::new();
     static SERIAL: AtomicU64 = AtomicU64::new(1);
     static SESSION: OnceLock<u128> = OnceLock::new();
     let mut sources = SOURCES
