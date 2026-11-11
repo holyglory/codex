@@ -98,7 +98,7 @@ impl CaptureSink {
             receipt,
         }));
         // Accounting cannot stall model/tool progress on a blocked filesystem.
-        tokio::time::timeout(std::time::Duration::from_secs(2), received)
+        tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 2), received)
             .await
             .map_err(|_| {
                 "usage_work persistence pending; inspect status before retrying".to_string()

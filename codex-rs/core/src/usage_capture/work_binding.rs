@@ -96,9 +96,11 @@ fn apply(
         .into_iter()
         .rev()
         .find(|transition| transition.update.thread_id == thread_id);
-    let revision = transition
-        .as_ref()
-        .map_or(0, |transition| transition.update.transition_sequence);
+    let revision =
+        transition.as_ref().map_or(
+            /*default*/ 0,
+            |transition| transition.update.transition_sequence,
+        );
     let current = UsageWorkReceipt {
         revision,
         transition,
@@ -125,7 +127,7 @@ fn apply(
         workstream_id,
         outcome_id,
         transition_sequence: expected_revision
-            .checked_add(1)
+            .checked_add(/*rhs*/ 1)
             .ok_or_else(|| "usage_work revision exhausted".to_string())?,
         source: "agent_declared".into(),
         authority: "agent_declared".into(),

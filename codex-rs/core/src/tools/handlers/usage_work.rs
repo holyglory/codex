@@ -57,7 +57,7 @@ impl ToolExecutor<ToolInvocation> for UsageWorkHandler {
                 .map_err(|_| error("usage_work receipt unavailable; inspect status"))?;
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 encoded,
-                Some(true),
+                /*success*/ Some(true),
             )))
         })
     }

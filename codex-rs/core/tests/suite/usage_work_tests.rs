@@ -17,7 +17,9 @@ fn output(request: &ResponsesRequest, id: &str) -> Result<Value> {
     let (content, _) = request
         .function_call_output_content_and_success(id)
         .context("tool receipt")?;
-    Ok(serde_json::from_str(&content.context("JSON receipt")?)?)
+    let content = content.context("JSON receipt")?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("tool {id} returned a non-JSON receipt: {content:.512}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
