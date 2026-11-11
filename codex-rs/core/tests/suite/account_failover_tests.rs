@@ -107,7 +107,7 @@ fn error_summaries(events: &[EventMsg]) -> Vec<String> {
 }
 
 async fn declare_failover_work(test: &TestCodex) -> Result<WorkBindingTransition> {
-    let thread_id = test.session_configured.session_id;
+    let thread_id = test.session_configured.thread_id;
     let receipt = test
         .thread_manager
         .usage_work(
@@ -188,7 +188,7 @@ fn assert_failover_work_usage(
     for (account_id, expected) in filters {
         let filter = UsageFilter {
             account_id,
-            thread_id: Some(test.session_configured.session_id.to_string()),
+            thread_id: Some(test.session_configured.thread_id.to_string()),
             ..UsageFilter::default()
         };
         let report = reader.performance_review(range, &filter)?;
