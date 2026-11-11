@@ -2,6 +2,7 @@
 use super::CaptureContext;
 use super::Operation;
 use super::TurnCapture;
+use super::model::ResponseOperations;
 use super::now_ms;
 use super::sink::CaptureSink;
 use crate::session::turn_context::TurnContext;
@@ -48,6 +49,12 @@ pub(super) fn register(sink: &Arc<CaptureSink>) {
 }
 
 pub(crate) fn annotate_record(turn: &TurnContext, record: &mut UsageRecord) {
+    if let Some(responses) = turn.extension_data.get::<ResponseOperations>() {
+        responses.annotate_token_record(record);
+    } else {
+        record.operation_id = None;
+        record.account_id = None;
+    }
     if let Some(capture) = turn.extension_data.get::<TurnCapture>() {
         record.process_id = Some(process_id());
         record.agent_id = Some(capture.context.thread_id.clone());

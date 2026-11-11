@@ -146,7 +146,11 @@ impl TurnContext {
         if let Ok(mut client) = self.model_client(session) {
             client
                 .request_contributors
-                .push(Arc::new(model::CaptureRequests(Arc::clone(&context))));
+                .push(Arc::new(model::CaptureRequests(
+                    Arc::clone(&context),
+                    self.extension_data
+                        .get_or_init(model::ResponseOperations::default),
+                )));
             self.extension_data.insert(CapturedModelClient(client));
         }
         self.extension_data.insert(TurnCapture {
@@ -174,7 +178,11 @@ impl TurnContext {
         if let Ok(mut client) = self.model_client(session) {
             client
                 .request_contributors
-                .push(Arc::new(model::CaptureRequests(Arc::clone(&context))));
+                .push(Arc::new(model::CaptureRequests(
+                    Arc::clone(&context),
+                    self.extension_data
+                        .get_or_init(model::ResponseOperations::default),
+                )));
             self.extension_data.insert(CapturedModelClient(client));
         }
         self.extension_data.insert(TurnCapture {

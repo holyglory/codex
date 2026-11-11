@@ -142,6 +142,45 @@ async fn observed_response_usage_accumulates_per_turn_and_thread() -> Result<()>
         .iter()
         .filter(|fact| fact.event.as_deref() == Some("model_request_finished"))
         .collect::<Vec<_>>();
+    let tokens = facts
+        .iter()
+        .filter(|fact| fact.event.as_deref() == Some("token_observation"))
+        .collect::<Vec<_>>();
+    assert_eq!(tokens.len(), 3);
+    for token in tokens {
+        let request = requests
+            .iter()
+            .find(|request| request.response_id == token.response_id)
+            .context("captured request owning provider tokens")?;
+        assert!(
+            request
+                .operation_id
+                .as_ref()
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        );
+        assert_eq!(
+            (
+                &token.operation_id,
+                &token.account_id,
+                &token.thread_id,
+                &token.turn_id
+            ),
+            (
+                &request.operation_id,
+                &request.account_id,
+                &request.thread_id,
+                &request.turn_id
+            )
+        );
+        assert_eq!(
+            token.id,
+            format!(
+                "{}:{}",
+                token.thread_id.as_deref().unwrap(),
+                token.response_id.as_deref().unwrap()
+            )
+        );
+    }
     assert_eq!(
         requests
             .iter()
