@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -137,10 +138,13 @@ class PostDeploymentQualificationTests(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import signal,socket,sys,time; s=socket.socket(socket.AF_UNIX); "
-                "s.bind(sys.argv[1]); s.listen(); "
-                "signal.signal(signal.SIGUSR1, lambda *_: s.close()); "
-                "print('ready',flush=True); time.sleep(120)",
+                "import os,signal,socket,sys,time\n"
+                "s=socket.socket(socket.AF_UNIX)\n"
+                "s.bind(sys.argv[1]); s.listen()\n"
+                "def release(*_):\n"
+                " s.close(); os.unlink(sys.argv[1]); print('released',flush=True)\n"
+                "signal.signal(signal.SIGUSR1, release)\n"
+                "print('ready',flush=True); time.sleep(120)\n",
                 str(endpoint),
             ],
             stdout=subprocess.PIPE,
@@ -306,6 +310,8 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 server.stderr.close()
 
     def test_changed_current_peer_rejected_even_when_old_pid_remains_alive(self):
+        from local_deploy_owner import identity
+
         with tempfile.TemporaryDirectory(prefix="qualify-peer-", dir="/tmp") as temporary:
             root = Path(temporary)
             home = root / "home"
@@ -316,10 +322,11 @@ class PostDeploymentQualificationTests(unittest.TestCase):
             try:
                 package_root, owner, rpc, _, old_identity = self.make_fixture(root, old)
                 old.send_signal(signal.SIGUSR1)
-                time.sleep(0.2)  # Keep the old PID alive while releasing the peer socket.
+                self.assertTrue(select.select([old.stdout], [], [], 10)[0])
+                self.assertEqual(old.stdout.readline(), b"released\n")
                 self.assertIsNone(old.poll())
                 replacement = self.start_server(endpoint)
-                self.assertNotEqual(old_identity["startTicks"], identity(replacement.pid)["startTicks"])
+                self.assertNotEqual(old_identity, identity(replacement.pid))
                 with self.assertRaisesRegex(RuntimeError, "serving-control-peer-identity-mismatch"):
                     self.run_qualifier(
                         self.qualify_args(package_root, owner, rpc, root, root / "out", home)
