@@ -89,8 +89,13 @@ class Producer:
         if log.exists():
             raise ValueError(f"Refusing to replace retained check evidence: {name}")
         print(json.dumps({"check": name, "state": "started"}), flush=True)
+        effective_environment = dict(os.environ if environment is None else environment)
+        if command[:2] == ["just", "test"]:
+            config_path = effective_environment.get("CODEX_WINDOWS_NEXTEST_CONFIG_FILE")
+            if config_path:
+                command = [*command, "--config-file", config_path]
         with log.open("w", encoding="utf-8") as stream:
-            result = subprocess.run(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE if capture_output else stream, stderr=stream, text=True, encoding="utf-8", errors="replace", check=False)
+            result = subprocess.run(command, cwd=ROOT, env=effective_environment, stdout=subprocess.PIPE if capture_output else stream, stderr=stream, text=True, encoding="utf-8", errors="replace", check=False)
             if capture_output:
                 stream.write(result.stdout)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command}

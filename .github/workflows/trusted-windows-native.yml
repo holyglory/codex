@@ -157,13 +157,15 @@ jobs:
       - name: Extend the Windows sparse-work test budget
         shell: pwsh
         run: |
-          git update-index --assume-unchanged codex-rs/.config/nextest.toml
-          Add-Content -LiteralPath 'codex-rs/.config/nextest.toml' -Value @'
+          $config = Join-Path $env:RUNNER_TEMP 'codexmulti-nextest.toml'
+          Copy-Item -LiteralPath 'codex-rs/.config/nextest.toml' -Destination $config
+          Add-Content -LiteralPath $config -Value @'
 
           [[profile.default.overrides]]
           filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
           slow-timeout = { period = "2m", terminate-after = 2 }
           '@
+          "CODEX_WINDOWS_NEXTEST_CONFIG_FILE=$config" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build a matching x64 V8 archive and binding
         run: python .github/scripts/downstream-windows-native.ps1 source-v8
       - name: Validate native Windows account, usage and V8 regressions

@@ -34,6 +34,9 @@ run_check() {
   shift
   local log_dir="${LOG_DIR:-$dist/logs}"
   mkdir -p "$log_dir"
+  if [[ "${1:-}" == "just" && "${2:-}" == "test" && -n "${CODEX_UNIX_NEXTEST_CONFIG_FILE:-}" ]]; then
+    set -- "$@" --config-file "$CODEX_UNIX_NEXTEST_CONFIG_FILE"
+  fi
   "$@" 2>&1 | tee "$log_dir/$name.log"
 }
 
@@ -223,13 +226,15 @@ package_native() {
   shopt -u nullglob
   cd "$root/codex-rs"
   run_check v8-poc just test --locked -p codex-v8-poc --target "$TARGET" --run-ignored all
-  git update-index --assume-unchanged .config/nextest.toml
-  cat >> .config/nextest.toml <<'EOF'
+  nextest_config="$RUNNER_TEMP/codexmulti-nextest-$TARGET.toml"
+  cp .config/nextest.toml "$nextest_config"
+  cat >> "$nextest_config" <<'EOF'
 
 [[profile.default.overrides]]
 filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
 slow-timeout = { period = "2m", terminate-after = 2 }
 EOF
+  export CODEX_UNIX_NEXTEST_CONFIG_FILE="$nextest_config"
   run_check product-regressions just test --locked --target "$TARGET" \
     -p codex-code-mode-runtime -p codex-account-registry -p codex-account-selection \
     -p codex-private-storage -p codex-usage
