@@ -1,0 +1,21 @@
+name: CodexMulti v6 Linux musl handoff
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact public CodexMulti source commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    uses: holyglory/codex/.github/workflows/downstream-unix-native-target.yml@codex/rebase166-multi6
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-musl
+      platform: linux_amd64_musl
+      bazel_config: ci
+      source_version: 0.166.0+multi.6
+    secrets: inherit
