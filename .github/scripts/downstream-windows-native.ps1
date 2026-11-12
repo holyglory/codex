@@ -95,6 +95,9 @@ class Producer:
             if capture_output:
                 stream.write(result.stdout)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command}
+        if "--config-file" in command:
+            config = Path(command[command.index("--config-file") + 1])
+            receipt["test_config_sha256"] = digest(config)
         write_json(self.evidence / "checks" / f"{name}.json", receipt)
         print(json.dumps({"check": name, "exit_code": result.returncode}), flush=True)
         result.check_returncode()

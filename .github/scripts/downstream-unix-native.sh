@@ -34,9 +34,6 @@ run_check() {
   shift
   local log_dir="${LOG_DIR:-$dist/logs}"
   mkdir -p "$log_dir"
-  if [[ "${1:-}" == "just" && "${2:-}" == "test" && -n "${CODEX_UNIX_NEXTEST_CONFIG_FILE:-}" ]]; then
-    set -- "$@" --config-file "$CODEX_UNIX_NEXTEST_CONFIG_FILE"
-  fi
   "$@" 2>&1 | tee "$log_dir/$name.log"
 }
 
@@ -234,8 +231,7 @@ package_native() {
 filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
 slow-timeout = { period = "2m", terminate-after = 2 }
 EOF
-  export CODEX_UNIX_NEXTEST_CONFIG_FILE="$nextest_config"
-  run_check product-regressions just test --locked --target "$TARGET" \
+  run_check product-regressions just test --config-file "$nextest_config" --locked --target "$TARGET" \
     -p codex-code-mode-runtime -p codex-account-registry -p codex-account-selection \
     -p codex-private-storage -p codex-usage
   if [[ "$TARGET" == *-linux-musl ]]; then
@@ -294,9 +290,10 @@ receipt = {
     "schema": 1, "commit": git("rev-parse", "HEAD"), "source_commit": git("rev-parse", "HEAD"),
     "source_tree": git("rev-parse", "HEAD^{tree}"), "native_tree": git("rev-parse", "HEAD:codex-rs"),
     "v8_tree": git("rev-parse", "HEAD:third_party/v8"),
-    "producer": "github-native", "status": "success", "target": os.environ["TARGET"],
+    "producer": "linux-local" if os.environ.get("DEVCOORDINATOR_RUN_ID") else "github-native", "status": "success", "target": os.environ["TARGET"],
     "version": os.environ["SOURCE_VERSION"], "runtime_executed": True,
-    "github_run_id": os.environ["GITHUB_RUN_ID"], "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+    "github_run_id": os.environ.get("GITHUB_RUN_ID"), "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+    "coordinator_run_id": os.environ.get("DEVCOORDINATOR_RUN_ID"),
     "checks": [{"name": path.stem, "exit_code": 0, "log_sha256": digest(path)} for path in sorted((dist / "logs").glob("*.log"))],
     "v8_pair": {"profile": pair_receipt["profile"], "source_built": True, "cppgc_ignored_tests_executed": True,
                 "source_commit": pair_receipt["source_commit"], "source_tree": pair_receipt["source_tree"],

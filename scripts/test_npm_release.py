@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -122,6 +123,130 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                             "fileLimit": 16384 if platform["os"] == "linux" else 1024,
                         },
                     )
+
+    @unittest.skipUnless(os.name == "posix", "requires a POSIX command fixture")
+    def test_windows_acceptance_records_one_external_config_and_command_failure(
+        self,
+    ) -> None:
+        helper = (
+            Path(__file__).resolve().parents[1]
+            / ".github/scripts/downstream-windows-native.ps1"
+        )
+        harness = """import os, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+module = runpy.run_path(sys.argv[1])
+producer = module['Producer'].__new__(module['Producer'])
+producer.evidence = Path(sys.argv[2])
+producer.handoff = producer.evidence / 'windows-handoff'
+producer.logs = producer.handoff / 'logs'
+producer.logs.mkdir(parents=True)
+producer.native_environment = lambda: dict(os.environ)
+producer.acceptance()
+"""
+        with tempfile.TemporaryDirectory(
+            prefix="Windows release fixture "
+        ) as directory:
+            root = Path(directory)
+            config = root / "nextest external.toml"
+            config.write_text("[profile.default]\nretries = 0\n")
+            binary = root / "just"
+            binary.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json,os,sys\n"
+                "print(json.dumps(sys.argv[1:]))\n"
+                "if '--config-file' in sys.argv:\n"
+                "    assert sys.argv.count('--config-file') == 1\n"
+                "    assert sys.argv[sys.argv.index('--config-file')+1] == os.environ['CODEX_WINDOWS_NEXTEST_CONFIG_FILE']\n"
+                "    sys.exit(int(os.environ['FIXTURE_EXIT']))\n"
+            )
+            binary.chmod(0o755)
+            before = helper.read_bytes()
+            for status in (0, 7):
+                with self.subTest(exit_status=status):
+                    evidence = root / str(status)
+                    result = subprocess.run(
+                        [sys.executable, "-c", harness, str(helper), str(evidence)],
+                        env={
+                            **os.environ,
+                            "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                            "CODEX_WINDOWS_NEXTEST_CONFIG_FILE": str(config),
+                            "FIXTURE_EXIT": str(status),
+                        },
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode == 0, status == 0, result.stderr)
+                    receipt = json.loads(
+                        (
+                            evidence / "checks/windows-product-regressions.json"
+                        ).read_text()
+                    )
+                    self.assertEqual(receipt["exit_code"], status)
+                    self.assertEqual(receipt["command"].count("--config-file"), 1)
+                    self.assertEqual(
+                        receipt["test_config_sha256"],
+                        hashlib.sha256(config.read_bytes()).hexdigest(),
+                    )
+                    observed = json.loads(
+                        (
+                            evidence
+                            / "windows-handoff/logs/windows-product-regressions.log"
+                        ).read_text()
+                    )
+                    self.assertEqual(observed, receipt["command"][1:])
+                    self.assertEqual(helper.read_bytes(), before)
+
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_unix_acceptance_preserves_source_and_passes_external_config(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / ".github/scripts/downstream-unix-native.sh").read_text()
+        start = source.index("  nextest_config=")
+        recipe = source[
+            start : source.index('  if [[ "$TARGET" == *-linux-musl ]]', start)
+        ]
+        run_check = source[
+            source.index("run_check() {") : source.index("write_pair_receipt()")
+        ]
+        harness = """set -euo pipefail
+just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+"""
+        with tempfile.TemporaryDirectory(prefix="Unix release fixture ") as directory:
+            scratch = Path(directory)
+            (scratch / ".config").mkdir()
+            original = (root / "codex-rs/.config/nextest.toml").read_bytes()
+            tracked = scratch / ".config/nextest.toml"
+            tracked.write_bytes(original)
+            result = subprocess.run(
+                ["bash", "-c", harness + run_check + recipe],
+                cwd=scratch,
+                env={
+                    **os.environ,
+                    "RUNNER_TEMP": str(scratch),
+                    "TARGET": "x86_64-apple-darwin",
+                    "dist": str(scratch / "dist"),
+                    "FIXTURE_PYTHON": sys.executable,
+                },
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            args = json.loads(result.stdout)
+            self.assertEqual(args.count("--config-file"), 1)
+            config = Path(args[args.index("--config-file") + 1])
+            self.assertNotEqual(config, tracked)
+            self.assertEqual(tracked.read_bytes(), original)
+            self.assertEqual(
+                tomllib.loads(config.read_text())["profile"]["default"]["overrides"][
+                    -1
+                ],
+                {
+                    "filter": "package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)",
+                    "slow-timeout": {"period": "2m", "terminate-after": 2},
+                },
+            )
 
     def test_hosted_reuse_keeps_the_real_producer_and_unchanged_native_inputs(
         self,
