@@ -154,6 +154,15 @@ jobs:
           "$root/bin/dotslash.exe" --version
       - name: Check tool prerequisites before compiling
         run: python .github/scripts/downstream-windows-native.ps1 prerequisites
+      - name: Extend the Windows sparse-work test budget
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath 'codex-rs/.config/nextest.toml' -Value @'
+
+[[profile.default.overrides]]
+filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
+slow-timeout = { period = "2m", terminate-after = 2 }
+'@
       - name: Build a matching x64 V8 archive and binding
         run: python .github/scripts/downstream-windows-native.ps1 source-v8
       - name: Validate native Windows account, usage and V8 regressions
