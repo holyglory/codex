@@ -7,6 +7,10 @@ on:
         description: Exact holyglory/codex commit to validate and package
         required: true
         type: string
+      packaging_sha:
+        description: Packaging-only workflow/script commit; native source remains source_sha
+        required: true
+        type: string
       boot_after_utc:
         description: Optional UTC timestamp; require an actual reboot after it
         required: false
@@ -99,6 +103,21 @@ jobs:
           ) | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           [ordered]@{runner=$env:RUNNER_NAME;controller_commit=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;last_boot_utc=$boot;build_volume=$drive.ToString()} |
             ConvertTo-Json | Set-Content (Join-Path $evidence 'runner.json') -Encoding utf8
+      - name: Check out packaging-only workflow helpers
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447a5a8e0a5a5b5b2e # v6.0.2
+        with:
+          repository: holyglory/codex
+          ref: ${{ inputs.packaging_sha }}
+          path: packaging-source
+          sparse-checkout: |
+            .github/scripts/downstream-windows-native.ps1
+          persist-credentials: false
+      - name: Install packaging helper outside native source tree
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:GITHUB_WORKSPACE '.github/scripts-packaging'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Copy-Item -LiteralPath 'packaging-source/.github/scripts/downstream-windows-native.ps1' -Destination (Join-Path $destination 'downstream-windows-native.ps1') -Force
       - name: Import the preinstalled x64 MSVC SDK
         run: |
           $ErrorActionPreference = 'Stop'
@@ -153,7 +172,7 @@ jobs:
           echo "$root/bin" >> "$GITHUB_PATH"
           "$root/bin/dotslash.exe" --version
       - name: Check tool prerequisites before compiling
-        run: python .github/scripts/downstream-windows-native.ps1 prerequisites
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 prerequisites
       - name: Extend the Windows sparse-work test budget
         shell: pwsh
         run: |
@@ -167,11 +186,11 @@ jobs:
           '@
           "CODEX_WINDOWS_NEXTEST_CONFIG_FILE=$config" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build a matching x64 V8 archive and binding
-        run: python .github/scripts/downstream-windows-native.ps1 source-v8
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 source-v8
       - name: Validate native Windows account, usage and V8 regressions
-        run: python .github/scripts/downstream-windows-native.ps1 acceptance
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 acceptance
       - name: Build, assemble and run the x64 package
-        run: python .github/scripts/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
       - name: Import the preinstalled ARM64 cross SDK
         run: |
           $ErrorActionPreference = 'Stop'
@@ -183,11 +202,11 @@ jobs:
             }
           }
       - name: Verify the published ARM64 V8 pair against source-pinned checksums
-        run: python .github/scripts/downstream-windows-native.ps1 published-v8
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 published-v8
       - name: Cross compile and assemble the ARM64 package
-        run: python .github/scripts/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
       - name: Seal exact source, checksums and Windows handoff
-        run: python .github/scripts/downstream-windows-native.ps1 finalize
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize
       - name: Preserve native diagnostic evidence
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
