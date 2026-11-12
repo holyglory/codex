@@ -120,7 +120,7 @@ jobs:
         run: |
           $destination = Join-Path $env:GITHUB_WORKSPACE '.github/scripts-packaging'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          Copy-Item -Path 'packaging-source/.github/scripts/*.py' -Destination $destination -Force
+          Copy-Item -Path 'packaging-source/.github/scripts/*' -Destination $destination -Force
       - name: Import the preinstalled x64 MSVC SDK
         run: |
           $ErrorActionPreference = 'Stop'
