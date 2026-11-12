@@ -18,4 +18,5 @@ jobs:
       platform: linux_amd64_musl
       bazel_config: ci
       source_version: 0.166.0+multi.6
+      source_commit: ${{ inputs.source_sha }}
     secrets: inherit
