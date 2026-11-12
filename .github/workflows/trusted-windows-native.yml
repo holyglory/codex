@@ -157,6 +157,7 @@ jobs:
       - name: Extend the Windows sparse-work test budget
         shell: pwsh
         run: |
+          git update-index --assume-unchanged codex-rs/.config/nextest.toml
           Add-Content -LiteralPath 'codex-rs/.config/nextest.toml' -Value @'
 
           [[profile.default.overrides]]
