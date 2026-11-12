@@ -688,6 +688,28 @@ python3() {
         candidate.verify_candidate_run(
             run, repository, commit, jobs, hosted_native=True
         )
+        reused_jobs = [dict(job) for job in jobs]
+        reuse_check = {
+            "name": "Verify the optional hosted V8 producer",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        reused_jobs[0]["steps"] = [reuse_check]
+        for job in reused_jobs:
+            if job["name"] in candidate.HOSTED_V8_JOBS:
+                job["conclusion"] = "skipped"
+        candidate.verify_candidate_run(
+            run, repository, commit, reused_jobs, hosted_native=True
+        )
+        with self.assertRaisesRegex(ValueError, "Required candidate job"):
+            candidate.verify_candidate_run(run, repository, commit, reused_jobs)
+        for conclusion in ("skipped", "failure"):
+            with self.subTest(reuse_check=conclusion):
+                reused_jobs[0]["steps"] = [{**reuse_check, "conclusion": conclusion}]
+                with self.assertRaisesRegex(ValueError, "Required candidate job"):
+                    candidate.verify_candidate_run(
+                        run, repository, commit, reused_jobs, hosted_native=True
+                    )
         for required in (*candidate.HOSTED_V8_JOBS, *candidate.HOSTED_PACKAGE_JOBS):
             with self.subTest(missing_hosted_job=required):
                 missing = [job for job in jobs if job["name"] != required]

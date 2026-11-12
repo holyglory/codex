@@ -77,12 +77,31 @@ def verify_candidate_run(
         or any(not isinstance(job, dict) for job in jobs)
     ):
         raise ValueError("Candidate jobs must be a bounded complete API result")
+    reused_v8 = False
+    if hosted_native:
+        identity_jobs = [job for job in jobs if job.get("name") == CANDIDATE_JOBS[0]]
+        if len(identity_jobs) == 1:
+            steps = identity_jobs[0].get("steps", [])
+            if not isinstance(steps, list):
+                raise ValueError("Candidate verification steps must be a list")
+            reuse_checks = [
+                step
+                for step in steps
+                if isinstance(step, dict)
+                and step.get("name") == "Verify the optional hosted V8 producer"
+            ]
+            reused_v8 = (
+                len(reuse_checks) == 1
+                and reuse_checks[0].get("status") == "completed"
+                and reuse_checks[0].get("conclusion") == "success"
+            )
     for name in required:
         matches = [job for job in jobs if job.get("name") == name]
+        conclusion = "skipped" if reused_v8 and name in HOSTED_V8_JOBS else "success"
         if (
             len(matches) != 1
             or matches[0].get("status") != "completed"
-            or matches[0].get("conclusion") != "success"
+            or matches[0].get("conclusion") != conclusion
         ):
             raise ValueError(
                 f"Required candidate job did not complete successfully: {name}"
