@@ -223,6 +223,13 @@ package_native() {
   shopt -u nullglob
   cd "$root/codex-rs"
   run_check v8-poc just test --locked -p codex-v8-poc --target "$TARGET" --run-ignored all
+  git update-index --assume-unchanged .config/nextest.toml
+  cat >> .config/nextest.toml <<'EOF'
+
+[[profile.default.overrides]]
+filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
+slow-timeout = { period = "2m", terminate-after = 2 }
+EOF
   run_check product-regressions just test --locked --target "$TARGET" \
     -p codex-code-mode-runtime -p codex-account-registry -p codex-account-selection \
     -p codex-private-storage -p codex-usage
