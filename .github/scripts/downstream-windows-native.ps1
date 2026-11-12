@@ -262,7 +262,10 @@ class Producer:
             "windows-product-regressions": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-code-mode-runtime", "-p", "codex-account-registry", "-p", "codex-account-selection", "-p", "codex-private-storage", "-p", "codex-usage", "-p", "codex-login"],
         }
         for name, arguments in checks.items():
-            self.run(name, ["just", "test", "--locked", "--test-threads", "4", *arguments], environment=environment)
+            command = ["just", "test", "--locked", "--test-threads", "4", *arguments]
+            if name == "windows-product-regressions":
+                command[2:2] = ["--config-file", os.environ["CODEX_WINDOWS_NEXTEST_CONFIG_FILE"]]
+            self.run(name, command, environment=environment)
 
     def package(self, target: str) -> None:
         environment = self.native_environment() if target.startswith("x86_64") else dict(os.environ)
