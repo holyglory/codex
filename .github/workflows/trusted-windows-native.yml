@@ -111,13 +111,16 @@ jobs:
           path: packaging-source
           sparse-checkout: |
             .github/scripts/downstream-windows-native.ps1
+            .github/scripts/rusty_v8_bazel.py
+            .github/scripts/run_bazel_with_buildbuddy.py
+            .github/scripts/rusty_v8_module_bazel.py
           persist-credentials: false
       - name: Install packaging helper outside native source tree
         shell: pwsh
         run: |
           $destination = Join-Path $env:GITHUB_WORKSPACE '.github/scripts-packaging'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          Copy-Item -LiteralPath 'packaging-source/.github/scripts/downstream-windows-native.ps1' -Destination (Join-Path $destination 'downstream-windows-native.ps1') -Force
+          Copy-Item -Path 'packaging-source/.github/scripts/*.py' -Destination $destination -Force
       - name: Import the preinstalled x64 MSVC SDK
         run: |
           $ErrorActionPreference = 'Stop'
