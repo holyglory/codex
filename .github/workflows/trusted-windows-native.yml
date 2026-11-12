@@ -104,7 +104,7 @@ jobs:
           [ordered]@{runner=$env:RUNNER_NAME;controller_commit=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;last_boot_utc=$boot;build_volume=$drive.ToString()} |
             ConvertTo-Json | Set-Content (Join-Path $evidence 'runner.json') -Encoding utf8
       - name: Check out packaging-only workflow helpers
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447a5a8e0a5a5b5b2e # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: holyglory/codex
           ref: ${{ inputs.packaging_sha }}
