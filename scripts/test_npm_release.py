@@ -385,6 +385,16 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 "env:\n  BUILD_MODE: release\njobs:\n  native:\n    if: inputs.hosted_native_run_id == ''\n    uses: target\n    with:\n      target: test\n  npm:\n    name: npm\n"
             )
             producer = commit("producer")
+            qualification = root / "scripts/qualify_local_delivery.py"
+            qualification.write_text("post-activation evidence verification\n")
+            qualification_commit = commit("local delivery evidence fix")
+            with patch("release_identity.ROOT", root):
+                result = verify_native_source(producer, qualification_commit)
+                self.assertEqual(
+                    result["packaging_only_paths"],
+                    ["scripts/qualify_local_delivery.py"],
+                )
+                verify_hosted_v8_source(producer, qualification_commit)
             usage = root / "codex-rs/usage/src/runtime.rs"
             usage.parent.mkdir(parents=True, exist_ok=True)
             usage.write_text("usage fix\n")

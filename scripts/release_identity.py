@@ -31,6 +31,7 @@ PACKAGING_PATHS = frozenset(
         "scripts/local_deploy_owner.py",
         "scripts/local_deploy_rehearsal.py",
         "scripts/local_deploy_rpc.py",
+        "scripts/qualify_local_delivery.py",
         "scripts/test_local_deploy_owner.py",
         "scripts/test_local_deploy_rpc.py",
         "scripts/prepare_local_usage_package.py",
