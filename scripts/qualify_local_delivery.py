@@ -107,34 +107,39 @@ def update_capability_inventory(completion, proof, evidence_ref):
         completion.get("capabilities"), list
     ):
         raise RuntimeError("completion-inventory-invalid")
-    sparse_ids = {
-        "live-sparse-job-attribution",
-        "local-usage-capability",
+    verified = {
+        "native-linux-package": "The serving CLI version and all retained package bytes match the verified local installation.",
+        "live-sparse-job-attribution": "Live model turns declare two jobs and clear the binding; outcome reports retain provider tokens for both jobs and explicitly unattributed work.",
     }
-    account_ids = {"account-routing-and-cli", "accepted-account-cli-output"}
-    resume_ids = {"desktop-profile-authentication"}
-    account_proof = (
+    if all(
+        proof.get(field) is True
+        for field in (
+            "localUsageCapability",
+            "localUsageRepositoryIdentity",
+            "localUsageSummary",
+            "usageSparseControlCapability",
+        )
+    ):
+        verified["local-usage-capability"] = (
+            "Installed initialization advertises usage and sparse controls; repository identity, summary and live outcome reports succeed."
+        )
+    if (
         proof.get("accountAuthStatusAgrees") is True
-        and proof.get("accountToolRequested") is True
-    )
-    resume_proof = (
-        proof.get("originalChatResumed") is True
+        and proof.get("originalChatResumed") is True
         and proof.get("secondClientReattached") is True
-    )
+    ):
+        verified["desktop-profile-authentication"] = (
+            "Installed login APIs agree on preserved authentication and the original chat resumes through two clients."
+        )
     for capability in completion["capabilities"]:
         if not isinstance(capability, dict) or not isinstance(
             capability.get("id"), str
         ):
             raise RuntimeError("completion-capability-invalid")
         capability_id = capability["id"]
-        if capability_id in sparse_ids:
+        if capability_id in verified:
             capability["state"] = "real_e2e"
-            capability.setdefault("evidence_refs", []).append(evidence_ref)
-        elif capability_id in account_ids and account_proof:
-            capability["state"] = "real_e2e"
-            capability.setdefault("evidence_refs", []).append(evidence_ref)
-        elif capability_id in resume_ids and resume_proof:
-            capability["state"] = "real_e2e"
+            capability["expected_result"] = verified[capability_id]
             capability.setdefault("evidence_refs", []).append(evidence_ref)
     return completion
 
@@ -180,6 +185,9 @@ def rpc_evidence(proof):
             "sparseOutcomeRows",
             "accountAuthStatusAgrees",
             "accountToolRequested",
+            "localUsageCapability",
+            "localUsageRepositoryIdentity",
+            "localUsageSummary",
             "originalChatResumed",
             "secondClientReattached",
         )
@@ -277,7 +285,7 @@ def qualify(args):
     (output / "rpc-proof.json").write_text(
         json.dumps(rpc_evidence(proof), indent=2) + "\n"
     )
-    evidence_ref = f"artifact/{artifact}/{run_id}/{check}/rpc-proof.json"
+    evidence_ref = f"run/{run_id}/{check}"
     completion = update_capability_inventory(completion, proof, evidence_ref)
     completion["claim"] = "preliminary"
     completion["source_sha256"] = source_sha256

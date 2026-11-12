@@ -192,12 +192,27 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                     "source_sha256": source_sha,
                     "capabilities": [
                         {
+                            "id": "native-linux-package",
+                            "state": "real_e2e",
+                            "evidence_refs": ["run/earlier-package/package-smoke"],
+                        },
+                        {
                             "id": "live-sparse-job-attribution",
                             "state": "fixture_only",
                             "evidence_refs": [],
                         },
                         {
                             "id": "account-routing-and-cli",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "id": "accepted-account-cli-output",
+                            "state": "fixture_only",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "id": "local-usage-capability",
                             "state": "fixture_only",
                             "evidence_refs": [],
                         },
@@ -246,6 +261,9 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                     "sparseOutcomeRows": ["fixture-outcome-a", "fixture-outcome-b"],
                     "accountAuthStatusAgrees": True,
                     "accountToolRequested": True,
+                    "localUsageCapability": True,
+                    "localUsageRepositoryIdentity": True,
+                    "localUsageSummary": True,
                     "originalChatResumed": True,
                     "secondClientReattached": True,
                 }
@@ -332,8 +350,25 @@ class PostDeploymentQualificationTests(unittest.TestCase):
                 states = {
                     item["id"]: item["state"] for item in completion["capabilities"]
                 }
-                self.assertEqual(states["live-sparse-job-attribution"], "real_e2e")
-                self.assertEqual(states["unknown-capability"], "fixture_only")
+                self.assertEqual(
+                    states,
+                    {
+                        "native-linux-package": "real_e2e",
+                        "live-sparse-job-attribution": "real_e2e",
+                        "account-routing-and-cli": "fixture_only",
+                        "accepted-account-cli-output": "fixture_only",
+                        "local-usage-capability": "real_e2e",
+                        "desktop-profile-authentication": "real_e2e",
+                        "unknown-capability": "fixture_only",
+                    },
+                )
+                for capability in completion["capabilities"]:
+                    if capability["state"] == "real_e2e":
+                        self.assertEqual(
+                            capability["evidence_refs"][-1],
+                            "run/t20261111T150000Z-abc123/qualify-local",
+                        )
+                        self.assertNotIn("pending", capability["expected_result"])
             finally:
                 server.terminate()
                 server.wait(timeout=10)
