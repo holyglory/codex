@@ -18,10 +18,6 @@ on:
       source_version:
         required: true
         type: string
-      source_commit:
-        description: Exact source commit to checkout for the native build
-        required: true
-        type: string
       v8_run_id:
         description: Optional completed run whose successful V8 pair artifact is reused
         required: false
@@ -58,7 +54,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_commit }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -129,7 +124,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_commit }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
