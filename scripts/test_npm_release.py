@@ -33,6 +33,24 @@ SPEC.loader.exec_module(candidate)
 
 
 class NpmReleaseContractTest(unittest.TestCase):
+    def test_windows_long_build_keeps_target_checkpoints_and_heartbeat(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/trusted-windows-native.yml").read_text()
+        helper = (root / ".github/scripts/downstream-windows-native.ps1").read_text()
+        self.assertIn("timeout-minutes: 900", workflow)
+        self.assertIn(
+            "downstream-windows-native.ps1 finalize-target --target x86_64-pc-windows-msvc",
+            workflow,
+        )
+        self.assertIn(
+            "downstream-windows-native.ps1 finalize-target --target aarch64-pc-windows-msvc",
+            workflow,
+        )
+        self.assertIn('"state": "running"', helper)
+        self.assertIn('"elapsed_seconds"', helper)
+        self.assertIn("last_heartbeat", helper)
+        self.assertIn("time.sleep(1)", helper)
+
     def test_downstream_version_must_advance_existing_tag(self) -> None:
         with patch("release_identity.git", return_value="npm-v0.166.0-multi.4\n"):
             with self.assertRaisesRegex(ValueError, r"use \+multi\.5"):

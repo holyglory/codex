@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 
 from rusty_v8_bazel import stage_artifacts
@@ -91,17 +92,38 @@ class Producer:
         print(json.dumps({"check": name, "state": "started"}), flush=True)
         effective_environment = dict(os.environ if environment is None else environment)
         with log.open("w", encoding="utf-8") as stream:
-            result = subprocess.run(command, cwd=ROOT, env=effective_environment, stdout=subprocess.PIPE if capture_output else stream, stderr=stream, text=True, encoding="utf-8", errors="replace", check=False)
-            if capture_output:
-                stream.write(result.stdout)
+            result = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=effective_environment,
+                stdout=subprocess.PIPE if capture_output else stream,
+                stderr=stream,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            started = time.monotonic()
+            last_heartbeat = started - 60
+            captured = []
+            while result.poll() is None:
+                now = time.monotonic()
+                if now - last_heartbeat >= 60:
+                    print(json.dumps({"check": name, "state": "running", "elapsed_seconds": int(now - started)}), flush=True)
+                    last_heartbeat = now
+                time.sleep(1)
+            if capture_output and result.stdout is not None:
+                captured.append(result.stdout.read())
+            result.wait()
+            output = "".join(captured)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command}
         if "--config-file" in command:
             config = Path(command[command.index("--config-file") + 1])
             receipt["test_config_sha256"] = digest(config)
         write_json(self.evidence / "checks" / f"{name}.json", receipt)
-        print(json.dumps({"check": name, "exit_code": result.returncode}), flush=True)
-        result.check_returncode()
-        return result.stdout if capture_output else ""
+        print(json.dumps({"check": name, "exit_code": result.returncode, "elapsed_seconds": int(time.monotonic() - started)}), flush=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command)
+        return output if capture_output else ""
 
     def record_check(self, name: str, output: str) -> None:
         """Retain a successful in-process verification as a normal check receipt."""
@@ -352,7 +374,7 @@ class Producer:
                     raise ValueError("A native archive changed before the handoff was sealed.")
             # The importer bundles target directories independently. Keep the
             # evidence named by each receipt within that same target subtree.
-            shutil.copytree(self.logs, self.handoff / package["target"] / "logs")
+            shutil.copytree(self.logs, self.handoff / package["target"] / "logs", dirs_exist_ok=True)
             write_json(self.handoff / package["target"] / "native-manifest.json", {
                 "schema": 1,
                 "status": "success",
@@ -372,10 +394,54 @@ class Producer:
         (self.handoff / "source-commit.txt").write_text(self.identity["source_commit"] + "\n", encoding="ascii")
         (self.handoff / "source-version.txt").write_text(self.identity["version"] + "\n", encoding="ascii")
 
+    def finalize_target(self, target: str) -> None:
+        """Seal one target so a later target failure cannot erase its proof."""
+        if target not in TARGETS:
+            raise ValueError(f"Unknown target: {target}")
+        if source_identity(os.environ["SOURCE_SHA"]) != self.identity:
+            raise ValueError("Source identity changed before the target checkpoint.")
+        checks = [json.loads(path.read_text()) for path in sorted((self.evidence / "checks").glob("*.json"))]
+        required = {"git-longpaths", "cargo-source-metadata", "windows-product-regressions"}
+        if target.startswith("x86_64"):
+            required.update({"v8-x64-poc-cppgc", "package-x64-version", "package-x64-accounts"})
+        else:
+            required.update({"v8-arm64-published-pair", "v8-arm64-compile-link", "sdk-arm64-build"})
+        required.update({f"{target}-{phase}" for phase in ("build", "assemble", "pe-architecture")})
+        names = {check["name"] for check in checks}
+        if not required.issubset(names):
+            raise ValueError(f"Target checkpoint is missing successful checks: {sorted(required - names)}")
+        selected = [check for check in checks if check["name"] in required]
+        if any(check["exit_code"] != 0 or digest(self.handoff / check["log_path"]) != check["log_sha256"] for check in selected):
+            raise ValueError("Target checkpoint contains failed or changed evidence.")
+        pair = json.loads((self.handoff / f"v8-{target}.json").read_text())
+        pair["poc_cppgc_result"] = "passed" if target.startswith("x86_64") else "compiled_and_linked_not_executed"
+        pair["cppgc_ignored_tests_executed"] = target.startswith("x86_64")
+        package = json.loads((self.handoff / f"package-{target}.json").read_text())
+        target_root = self.handoff / target
+        target_root.mkdir(parents=True, exist_ok=True)
+        for item in package["artifacts"]:
+            source = self.handoff / target / item["name"]
+            if source.stat().st_size != item["size_bytes"] or digest(source) != item["sha256"]:
+                raise ValueError("A target archive changed before checkpoint sealing.")
+        shutil.copytree(self.logs, target_root / "logs", dirs_exist_ok=True)
+        write_json(target_root / "native-manifest.json", {
+            "schema": 1, "status": "success", "source_commit": package["source_commit"],
+            "native_tree": self.identity["native_tree"], "v8_tree": self.identity["v8_tree"],
+            "target": target, "version": self.identity["version"],
+            "runtime_executed": package["runtime_executed"],
+            "runtime_not_executed_reason": pair.get("runtime_not_executed"),
+            "checks": selected, "v8_pair": pair,
+            "archives": {item["name"]: {"sha256": item["sha256"], "size_bytes": item["size_bytes"]} for item in package["artifacts"]},
+        })
+        write_json(self.handoff / f"windows-manifest-{target}.json", {
+            "schema": 1, **self.identity, "producer": "windows-private-controller",
+            "status": "success", "checks": selected, "packages": [package], "v8_pairs": [pair],
+        })
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prerequisites", "source-v8", "acceptance", "published-v8", "package", "finalize"))
+    parser.add_argument("phase", choices=("prerequisites", "source-v8", "acceptance", "published-v8", "package", "finalize-target", "finalize"))
     parser.add_argument("--target", choices=TARGETS)
     args = parser.parse_args()
     if os.name != "nt":
@@ -385,6 +451,10 @@ def main() -> None:
         if args.target is None:
             parser.error("package requires --target")
         producer.package(args.target)
+    elif args.phase == "finalize-target":
+        if args.target is None:
+            parser.error("finalize-target requires --target")
+        producer.finalize_target(args.target)
     else:
         {"prerequisites": producer.prerequisites, "source-v8": producer.source_v8, "acceptance": producer.acceptance, "published-v8": producer.published_v8, "finalize": producer.finalize}[args.phase]()
 

@@ -31,7 +31,9 @@ jobs:
       github.actor == 'holyglory' &&
       github.triggering_actor == 'holyglory'
     runs-on: [self-hosted, Windows, X64, codex-win-msvc]
-    timeout-minutes: 360
+    # x64 packaging completes before the ARM64 cross-build. Keep enough wall
+    # time for both targets while retaining per-target checkpoints below.
+    timeout-minutes: 900
     defaults:
       run:
         shell: pwsh
@@ -194,6 +196,15 @@ jobs:
         run: python .github/scripts-packaging/downstream-windows-native.ps1 acceptance
       - name: Build, assemble and run the x64 package
         run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
+      - name: Seal the x64 handoff checkpoint
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize-target --target x86_64-pc-windows-msvc
+      - name: Upload the x64 handoff checkpoint
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: windows-handoff-${{ inputs.source_sha }}-x86_64
+          path: ${{ env.CODEX_WINDOWS_EVIDENCE }}/windows-handoff/x86_64-pc-windows-msvc
+          if-no-files-found: error
+          retention-days: 14
       - name: Import the preinstalled ARM64 cross SDK
         run: |
           $ErrorActionPreference = 'Stop'
@@ -208,6 +219,15 @@ jobs:
         run: python .github/scripts-packaging/downstream-windows-native.ps1 published-v8
       - name: Cross compile and assemble the ARM64 package
         run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
+      - name: Seal the ARM64 handoff checkpoint
+        run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize-target --target aarch64-pc-windows-msvc
+      - name: Upload the ARM64 handoff checkpoint
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: windows-handoff-${{ inputs.source_sha }}-aarch64
+          path: ${{ env.CODEX_WINDOWS_EVIDENCE }}/windows-handoff/aarch64-pc-windows-msvc
+          if-no-files-found: error
+          retention-days: 14
       - name: Seal exact source, checksums and Windows handoff
         run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize
       - name: Preserve native diagnostic evidence
