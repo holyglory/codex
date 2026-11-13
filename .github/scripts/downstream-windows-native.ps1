@@ -47,6 +47,74 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def process_tree_cpu(pid: int) -> dict | None:
+    """Sample CPU time for a Windows process and all descendants."""
+    if os.name != "nt":
+        return None
+    script = r"""
+$root = [int]$args[0]
+$processes = @(Get-CimInstance Win32_Process | ForEach-Object {
+  [pscustomobject]@{ id = [int]$_.ProcessId; parent = [int]$_.ParentProcessId }
+})
+$ids = [System.Collections.Generic.HashSet[int]]::new()
+[void]$ids.Add($root)
+do {
+  $changed = $false
+  foreach ($process in $processes) {
+    if ($ids.Contains($process.parent) -and $ids.Add($process.id)) { $changed = $true }
+  }
+} while ($changed)
+$cpuSeconds = 0.0
+$count = 0
+foreach ($id in $ids) {
+  try {
+    $process = Get-Process -Id $id -ErrorAction Stop
+    $cpuSeconds += $process.TotalProcessorTime.TotalSeconds
+    $count++
+  } catch {}
+}
+[pscustomobject]@{ cpu_seconds = $cpuSeconds; process_count = $count } | ConvertTo-Json -Compress
+"""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
+            capture_output=True,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+        value = json.loads(result.stdout)
+        return value if isinstance(value, dict) else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def host_cpu_count() -> int:
+    value = os.environ.get("CODEX_WINDOWS_CPU_COUNT")
+    try:
+        return max(1, int(value)) if value is not None else max(1, os.cpu_count() or 1)
+    except ValueError:
+        return max(1, os.cpu_count() or 1)
+
+
+def requested_parallelism(command: list[str]) -> int | None:
+    for argument in command:
+        if argument.startswith("--jobs="):
+            try:
+                return int(argument.partition("=")[2])
+            except ValueError:
+                return None
+    for name in ("BAZEL_JOBS", "CARGO_BUILD_JOBS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
 def git(*arguments: str) -> str:
     return subprocess.check_output(["git", *arguments], cwd=ROOT, text=True).strip()
 
@@ -102,6 +170,10 @@ class Producer:
             "started_at_ms": started_at_ms,
             "pid": None,
             "heartbeat_interval_seconds": 60,
+            "parallelism": {
+                "host_cpu_count": host_cpu_count(),
+                "requested_jobs": requested_parallelism(command),
+            },
             "state": "running",
         }
         write_json(telemetry_path, telemetry)
@@ -120,11 +192,25 @@ class Producer:
             write_json(telemetry_path, telemetry)
             started = time.monotonic()
             last_heartbeat = started - 60
+            previous_cpu = None
             captured = []
             while result.poll() is None:
                 now = time.monotonic()
                 if now - last_heartbeat >= 60:
                     log_bytes = log.stat().st_size if log.exists() else 0
+                    cpu = process_tree_cpu(result.pid)
+                    cpu_sample = {"at_ms": time.time_ns() // 1_000_000, **cpu} if cpu else None
+                    if cpu_sample and previous_cpu:
+                        elapsed = max(0.001, cpu_sample["at_ms"] - previous_cpu["at_ms"])
+                        cpu_sample["utilization_percent_of_machine"] = round(
+                            100
+                            * (cpu_sample["cpu_seconds"] - previous_cpu["cpu_seconds"])
+                            / (elapsed / 1000 * telemetry["parallelism"]["host_cpu_count"]),
+                            2,
+                        )
+                    if cpu_sample:
+                        telemetry["cpu_sample"] = cpu_sample
+                        previous_cpu = cpu_sample
                     telemetry.update({
                         "state": "running",
                         "elapsed_seconds": int(now - started),
@@ -153,6 +239,9 @@ class Producer:
             "exit_code": result.returncode,
             "log_bytes": log.stat().st_size if log.exists() else 0,
         })
+        final_cpu = process_tree_cpu(result.pid)
+        if final_cpu:
+            telemetry["cpu_sample"] = {"at_ms": finished_at_ms, **final_cpu}
         write_json(telemetry_path, telemetry)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command, "telemetry_path": f"telemetry/{telemetry_path.name}"}
         if "--config-file" in command:

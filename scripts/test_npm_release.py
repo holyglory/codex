@@ -52,6 +52,9 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn("time.sleep(1)", helper)
         self.assertIn('"log_bytes"', helper)
         self.assertIn("self.telemetry", helper)
+        self.assertIn('"requested_jobs"', helper)
+        self.assertIn("utilization_percent_of_machine", helper)
+        self.assertIn("BAZEL_JOBS", workflow)
         self.assertIn('"--timings=info"', helper)
 
     def test_exact_reserved_tag_is_allowed_only_for_its_producer(self) -> None:

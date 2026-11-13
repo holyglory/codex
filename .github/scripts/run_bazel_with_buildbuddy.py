@@ -30,6 +30,19 @@ REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS = {
 }
 
 
+def configured_bazel_jobs(env: Mapping[str, str]) -> int | None:
+    value = env.get("BAZEL_JOBS")
+    if value is None:
+        return None
+    try:
+        jobs = int(value)
+    except ValueError as exc:
+        raise ValueError("BAZEL_JOBS must be a positive integer") from exc
+    if jobs < 1:
+        raise ValueError("BAZEL_JOBS must be a positive integer")
+    return jobs
+
+
 def startup_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     """Return shared startup options that are missing from a Bazel invocation.
 
@@ -157,6 +170,21 @@ def bazel_args_with_remote_config(
             *remote_args,
             *args[command_idx + 1 :],
         ]
+
+    jobs = configured_bazel_jobs(env)
+    if jobs is not None and configured_args[0] == "build":
+        separator_idx = next(
+            (idx for idx, arg in enumerate(configured_args) if arg == "--"),
+            len(configured_args),
+        )
+        if not any(
+            arg.startswith("--jobs=") for arg in configured_args[1:separator_idx]
+        ):
+            configured_args = [
+                configured_args[0],
+                f"--jobs={jobs}",
+                *configured_args[1:],
+            ]
 
     try:
         separator_idx = configured_args.index("--")

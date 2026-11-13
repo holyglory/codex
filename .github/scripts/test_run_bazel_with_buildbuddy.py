@@ -48,6 +48,20 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ["build", "--", "//codex-rs/cli:codex"],
         )
 
+    def test_build_uses_explicit_runner_parallelism(self) -> None:
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["build", "//codex-rs/cli:codex"], {"BAZEL_JOBS": "56"}
+            ),
+            ["build", "--jobs=56", "//codex-rs/cli:codex"],
+        )
+
+    def test_invalid_runner_parallelism_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "BAZEL_JOBS"):
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["build", "//codex-rs/cli:codex"], {"BAZEL_JOBS": "0"}
+            )
+
     def test_program_arguments_after_separator_do_not_select_or_lose_rbe(self) -> None:
         args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
 

@@ -181,6 +181,11 @@ jobs:
       - name: Extend the Windows sparse-work test budget
         shell: pwsh
         run: |
+          $cpuCount = [Environment]::ProcessorCount
+          if ($cpuCount -lt 1) { throw 'The Windows runner reported no processors.' }
+          "CODEX_WINDOWS_CPU_COUNT=$cpuCount" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "BAZEL_JOBS=$cpuCount" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_BUILD_JOBS=$cpuCount" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $config = Join-Path $env:RUNNER_TEMP 'codexmulti-nextest.toml'
           Copy-Item -LiteralPath 'codex-rs/.config/nextest.toml' -Destination $config
           Add-Content -LiteralPath $config -Value @'
