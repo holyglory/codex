@@ -54,6 +54,15 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn("self.telemetry", helper)
         self.assertIn('"--timings=info"', helper)
 
+    def test_exact_reserved_tag_is_allowed_only_for_its_producer(self) -> None:
+        with patch("release_identity.git", side_effect=lambda *args: {
+            ("tag", "--list", "v0.166.0-multi.*", "npm-v0.166.0-multi.*"): "npm-v0.166.0-multi.7\n",
+            ("rev-parse", "npm-v0.166.0-multi.7^{commit}"): "a" * 40,
+        }[args]):
+            verify_new_downstream_version("0.166.0+multi.7", "a" * 40)
+            with self.assertRaisesRegex(ValueError, "already reserved"):
+                verify_new_downstream_version("0.166.0+multi.7", "b" * 40)
+
     def test_downstream_version_must_advance_existing_tag(self) -> None:
         with patch("release_identity.git", return_value="npm-v0.166.0-multi.4\n"):
             with self.assertRaisesRegex(ValueError, r"use \+multi\.5"):

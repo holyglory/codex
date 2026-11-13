@@ -377,7 +377,7 @@ def version() -> tuple[str, str]:
     return source, source.replace("+multi.", "-multi.", 1)
 
 
-def verify_new_downstream_version(source: str) -> None:
+def verify_new_downstream_version(source: str, producer_commit: str | None = None) -> None:
     """Reject a downstream version that has already been tagged for this upstream release."""
     match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)\+multi\.(?P<revision>\d+)", source)
     if match is None:
@@ -392,12 +392,20 @@ def verify_new_downstream_version(source: str) -> None:
         )
         if tag_match is not None:
             prior.append((int(tag_match.group(1)), tag))
-    if prior and revision <= max(number for number, _ in prior):
+    if prior and revision < max(number for number, _ in prior):
         highest, tag = max(prior)
         raise ValueError(
             f"Downstream version {source} is not newer than existing tag {tag}; "
             f"use +multi.{highest + 1} or later"
         )
+    if prior and revision == max(number for number, _ in prior):
+        tag = max(prior)[1]
+        tagged_commit = git("rev-parse", f"{tag}^{{commit}}")
+        if producer_commit != tagged_commit:
+            raise ValueError(
+                f"Downstream version {source} is already reserved by {tag}; "
+                f"only the exact immutable producer tag may use it; use +multi.{revision + 1} or later"
+            )
 
 
 def verify_acceptance(
@@ -597,7 +605,7 @@ def main() -> None:
             args.artifacts_dir, args.packaging
         )
     source, npm = version()
-    verify_new_downstream_version(source)
+    verify_new_downstream_version(source, args.producer)
     result.update({"source_version": source, "npm_version": npm})
     if args.github_output:
         with args.github_output.open("a") as output:
