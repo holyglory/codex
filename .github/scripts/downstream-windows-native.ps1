@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import tomllib
 
@@ -191,10 +192,17 @@ class Producer:
             )
             telemetry["pid"] = result.pid
             write_json(telemetry_path, telemetry)
+            captured = []
+            stdout_reader = None
+            if capture_output and result.stdout is not None:
+                def drain_stdout() -> None:
+                    captured.append(result.stdout.read())
+
+                stdout_reader = threading.Thread(target=drain_stdout, daemon=True)
+                stdout_reader.start()
             started = time.monotonic()
             last_heartbeat = started - 60
             previous_cpu = None
-            captured = []
             while result.poll() is None:
                 now = time.monotonic()
                 if now - last_heartbeat >= 60:
@@ -228,8 +236,9 @@ class Producer:
                     }), flush=True)
                     last_heartbeat = now
                 time.sleep(1)
-            if capture_output and result.stdout is not None:
-                captured.append(result.stdout.read())
+            if stdout_reader is not None:
+                stdout_reader.join()
+                result.stdout.close()
             result.wait()
             output = "".join(captured)
         finished_at_ms = time.time_ns() // 1_000_000
