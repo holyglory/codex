@@ -53,7 +53,12 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(
                 ["build", "//codex-rs/cli:codex"], {"BAZEL_JOBS": "56"}
             ),
-            ["build", "--jobs=56", "//codex-rs/cli:codex"],
+            [
+                "build",
+                "--jobs=56",
+                "--local_cpu_resources=56",
+                "//codex-rs/cli:codex",
+            ],
         )
 
     def test_invalid_runner_parallelism_is_rejected(self) -> None:

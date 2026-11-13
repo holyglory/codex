@@ -167,6 +167,7 @@ class Producer:
         started_at_ms = time.time_ns() // 1_000_000
         telemetry = {
             "name": name,
+            "command": command,
             "started_at_ms": started_at_ms,
             "pid": None,
             "heartbeat_interval_seconds": 60,

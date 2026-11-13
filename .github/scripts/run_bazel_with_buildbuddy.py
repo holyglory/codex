@@ -183,6 +183,7 @@ def bazel_args_with_remote_config(
             configured_args = [
                 configured_args[0],
                 f"--jobs={jobs}",
+                f"--local_cpu_resources={jobs}",
                 *configured_args[1:],
             ]
 
