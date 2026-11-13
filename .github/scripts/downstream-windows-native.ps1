@@ -83,7 +83,9 @@ class Producer:
         self.evidence = Path(os.environ["CODEX_WINDOWS_EVIDENCE"])
         self.handoff = self.evidence / "windows-handoff"
         self.logs = self.handoff / "logs"
+        self.telemetry = self.evidence / "telemetry"
         self.logs.mkdir(parents=True, exist_ok=True)
+        self.telemetry.mkdir(parents=True, exist_ok=True)
 
     def run(self, name: str, command: list[str], *, environment: dict | None = None, capture_output: bool = False) -> str:
         log = self.logs / f"{name}.log"
@@ -91,6 +93,18 @@ class Producer:
             raise ValueError(f"Refusing to replace retained check evidence: {name}")
         print(json.dumps({"check": name, "state": "started"}), flush=True)
         effective_environment = dict(os.environ if environment is None else environment)
+        telemetry_root = getattr(self, "telemetry", self.evidence / "telemetry")
+        telemetry_root.mkdir(parents=True, exist_ok=True)
+        telemetry_path = telemetry_root / f"{name}.json"
+        started_at_ms = time.time_ns() // 1_000_000
+        telemetry = {
+            "name": name,
+            "started_at_ms": started_at_ms,
+            "pid": None,
+            "heartbeat_interval_seconds": 60,
+            "state": "running",
+        }
+        write_json(telemetry_path, telemetry)
         with log.open("w", encoding="utf-8") as stream:
             result = subprocess.Popen(
                 command,
@@ -102,25 +116,50 @@ class Producer:
                 encoding="utf-8",
                 errors="replace",
             )
+            telemetry["pid"] = result.pid
+            write_json(telemetry_path, telemetry)
             started = time.monotonic()
             last_heartbeat = started - 60
             captured = []
             while result.poll() is None:
                 now = time.monotonic()
                 if now - last_heartbeat >= 60:
-                    print(json.dumps({"check": name, "state": "running", "elapsed_seconds": int(now - started)}), flush=True)
+                    log_bytes = log.stat().st_size if log.exists() else 0
+                    telemetry.update({
+                        "state": "running",
+                        "elapsed_seconds": int(now - started),
+                        "log_bytes": log_bytes,
+                        "heartbeat_at_ms": time.time_ns() // 1_000_000,
+                    })
+                    write_json(telemetry_path, telemetry)
+                    print(json.dumps({
+                        "check": name,
+                        "state": "running",
+                        "pid": result.pid,
+                        "elapsed_seconds": int(now - started),
+                        "log_bytes": log_bytes,
+                    }), flush=True)
                     last_heartbeat = now
                 time.sleep(1)
             if capture_output and result.stdout is not None:
                 captured.append(result.stdout.read())
             result.wait()
             output = "".join(captured)
-        receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command}
+        finished_at_ms = time.time_ns() // 1_000_000
+        telemetry.update({
+            "state": "completed",
+            "finished_at_ms": finished_at_ms,
+            "duration_ms": finished_at_ms - started_at_ms,
+            "exit_code": result.returncode,
+            "log_bytes": log.stat().st_size if log.exists() else 0,
+        })
+        write_json(telemetry_path, telemetry)
+        receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command, "telemetry_path": f"telemetry/{telemetry_path.name}"}
         if "--config-file" in command:
             config = Path(command[command.index("--config-file") + 1])
             receipt["test_config_sha256"] = digest(config)
         write_json(self.evidence / "checks" / f"{name}.json", receipt)
-        print(json.dumps({"check": name, "exit_code": result.returncode, "elapsed_seconds": int(time.monotonic() - started)}), flush=True)
+        print(json.dumps({"check": name, "exit_code": result.returncode, "elapsed_seconds": int(time.monotonic() - started), "log_bytes": log.stat().st_size if log.exists() else 0}), flush=True)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, command)
         return output if capture_output else ""
@@ -135,6 +174,15 @@ class Producer:
             "name": name, "exit_code": 0, "log_sha256": digest(log),
             "log_path": f"logs/{log.name}", "command": ["in-process-verification"],
         })
+
+    def capture_cargo_timings(self, target: str, environment: dict) -> None:
+        """Retain Cargo's compiler timing report for the target build."""
+        target_dir = environment.get("CARGO_TARGET_DIR")
+        if not target_dir:
+            return
+        source = Path(target_dir) / target / "cargo-timings"
+        if source.is_dir():
+            shutil.copytree(source, self.telemetry / "cargo-timings" / target, dirs_exist_ok=True)
 
     def bazel(self, name: str, *arguments: str, capture_output: bool = False) -> str:
         return self.run(name, [sys.executable, str(ROOT / ".github/scripts/run_bazel_with_buildbuddy.py"), *arguments], capture_output=capture_output)
@@ -309,8 +357,9 @@ class Producer:
             # clang-cl needs explicit C++ exceptions for bundled DuckDB.
             cxx_flags = "CXXFLAGS_aarch64_pc_windows_msvc"
             environment[cxx_flags] = (environment.get(cxx_flags, "") + " /EHsc").strip()
-        arguments = ["cargo", "build", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--release", "--target", target]
+        arguments = ["cargo", "build", "--timings=info", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--release", "--target", target]
         self.run(f"{target}-build", [*arguments, *(value for binary in BINARIES for value in ("--bin", binary))], environment=environment)
+        self.capture_cargo_timings(target, environment)
         release = Path(environment["CARGO_TARGET_DIR"]) / target / "release"
         output = self.handoff / target
         output.mkdir()

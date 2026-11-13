@@ -50,6 +50,9 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn('"elapsed_seconds"', helper)
         self.assertIn("last_heartbeat", helper)
         self.assertIn("time.sleep(1)", helper)
+        self.assertIn('"log_bytes"', helper)
+        self.assertIn("self.telemetry", helper)
+        self.assertIn('"--timings=info"', helper)
 
     def test_downstream_version_must_advance_existing_tag(self) -> None:
         with patch("release_identity.git", return_value="npm-v0.166.0-multi.4\n"):
