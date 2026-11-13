@@ -33,12 +33,16 @@ jobs:
     outputs:
       npm_version: ${{ steps.identity.outputs.npm_version }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
+      packaging_commit: ${{ steps.identity.outputs.packaging_commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.tag }}
+          # The immutable tag identifies the product producer. The workflow
+          # itself may run from a later packaging-only commit, which is the
+          # commit that produced the candidate run and must be staged.
+          ref: ${{ github.sha }}
       - name: Match annotated tag, candidate workflow, commit, and release version
         id: identity
         env:
@@ -52,13 +56,17 @@ jobs:
           source_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           npm_version="$(python3 -c 'from scripts.release_identity import version; print(version()[1])')"
           [[ "$RELEASE_TAG" == "npm-v$npm_version" ]]
-          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
           [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/candidate-jobs.json"
-          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$source_commit" --jobs-file "$RUNNER_TEMP/candidate-jobs.json" < "$RUNNER_TEMP/candidate-run.json"
+          packaging_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/candidate-run.json")"
+          [[ "$packaging_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$packaging_commit" == "$(git rev-parse HEAD)" ]]
+          python3 scripts/release_identity.py --producer "$source_commit" --packaging "$packaging_commit"
+          python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$packaging_commit" --jobs-file "$RUNNER_TEMP/candidate-jobs.json" < "$RUNNER_TEMP/candidate-run.json"
           echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "packaging_commit=$packaging_commit" >> "$GITHUB_OUTPUT"
 
   stage-npm:
     name: Stage npm versions for final human approval
@@ -73,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.validate.outputs.source_commit }}
+          ref: ${{ needs.validate.outputs.packaging_commit }}
           persist-credentials: false
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
