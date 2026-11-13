@@ -54,9 +54,15 @@ def process_tree_cpu(pid: int) -> dict | None:
         return None
     script = r"""
 $root = [int]$args[0]
-$processes = @(Get-CimInstance Win32_Process | ForEach-Object {
-  [pscustomobject]@{ id = [int]$_.ProcessId; parent = [int]$_.ParentProcessId }
-})
+try {
+  $processes = @(Get-CimInstance Win32_Process | ForEach-Object {
+    [pscustomobject]@{ id = [int]$_.ProcessId; parent = [int]$_.ParentProcessId }
+  })
+} catch {
+  $process = Get-Process -Id $root -ErrorAction Stop
+  [pscustomobject]@{ cpu_seconds = $process.TotalProcessorTime.TotalSeconds; process_count = 1 } | ConvertTo-Json -Compress
+  exit 0
+}
 $ids = [System.Collections.Generic.HashSet[int]]::new()
 [void]$ids.Add($root)
 do {
@@ -76,19 +82,22 @@ foreach ($id in $ids) {
 }
 [pscustomobject]@{ cpu_seconds = $cpuSeconds; process_count = $count } | ConvertTo-Json -Compress
 """
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
-            capture_output=True,
-            check=True,
-            text=True,
-            encoding="utf-8",
-            timeout=20,
-        )
-        value = json.loads(result.stdout)
-        return value if isinstance(value, dict) else None
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
-        return None
+    errors = []
+    for shell in ("pwsh", "powershell"):
+        try:
+            result = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
+                capture_output=True,
+                check=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+            )
+            value = json.loads(result.stdout)
+            return value if isinstance(value, dict) else {"error": "invalid CPU probe output"}
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
+            errors.append(f"{shell}: {error}")
+    return {"error": "; ".join(errors)[:500]}
 
 
 def host_cpu_count() -> int:
@@ -209,7 +218,7 @@ class Producer:
                     log_bytes = log.stat().st_size if log.exists() else 0
                     cpu = process_tree_cpu(result.pid)
                     cpu_sample = {"at_ms": time.time_ns() // 1_000_000, **cpu} if cpu else None
-                    if cpu_sample and previous_cpu:
+                    if cpu_sample and "cpu_seconds" in cpu_sample and previous_cpu:
                         elapsed = max(0.001, cpu_sample["at_ms"] - previous_cpu["at_ms"])
                         cpu_sample["utilization_percent_of_machine"] = round(
                             100
@@ -217,9 +226,11 @@ class Producer:
                             / (elapsed / 1000 * telemetry["parallelism"]["host_cpu_count"]),
                             2,
                         )
-                    if cpu_sample:
+                    if cpu_sample and "cpu_seconds" in cpu_sample:
                         telemetry["cpu_sample"] = cpu_sample
                         previous_cpu = cpu_sample
+                    elif cpu_sample:
+                        telemetry["cpu_sample_error"] = cpu_sample.get("error")
                     telemetry.update({
                         "state": "running",
                         "elapsed_seconds": int(now - started),
@@ -250,8 +261,10 @@ class Producer:
             "log_bytes": log.stat().st_size if log.exists() else 0,
         })
         final_cpu = process_tree_cpu(result.pid)
-        if final_cpu:
+        if final_cpu and "cpu_seconds" in final_cpu:
             telemetry["cpu_sample"] = {"at_ms": finished_at_ms, **final_cpu}
+        elif final_cpu:
+            telemetry["cpu_sample_error"] = final_cpu.get("error")
         write_json(telemetry_path, telemetry)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command, "telemetry_path": f"telemetry/{telemetry_path.name}"}
         if "--config-file" in command:
@@ -456,7 +469,7 @@ class Producer:
             # clang-cl needs explicit C++ exceptions for bundled DuckDB.
             cxx_flags = "CXXFLAGS_aarch64_pc_windows_msvc"
             environment[cxx_flags] = (environment.get(cxx_flags, "") + " /EHsc").strip()
-        arguments = ["cargo", "build", "--timings=info", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--release", "--target", target]
+        arguments = ["cargo", "build", "--timings", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--release", "--target", target]
         self.run(f"{target}-build", [*arguments, *(value for binary in BINARIES for value in ("--bin", binary))], environment=environment)
         self.capture_cargo_timings(target, environment)
         release = Path(environment["CARGO_TARGET_DIR"]) / target / "release"

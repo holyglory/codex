@@ -55,7 +55,7 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn('"requested_jobs"', helper)
         self.assertIn("utilization_percent_of_machine", helper)
         self.assertIn("BAZEL_JOBS", workflow)
-        self.assertIn('"--timings=info"', helper)
+        self.assertIn('"--timings"', helper)
 
     def test_exact_reserved_tag_is_allowed_only_for_its_producer(self) -> None:
         with patch("release_identity.git", side_effect=lambda *args: {
