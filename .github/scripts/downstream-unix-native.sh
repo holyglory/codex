@@ -230,6 +230,14 @@ package_native() {
 [[profile.default.overrides]]
 filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
 slow-timeout = { period = "2m", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)'
+slow-timeout = { period = "3m", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(codex-usage) & test(=prepared_window_matches_raw_summary_across_corrections_and_scopes)'
+slow-timeout = { period = "3m", terminate-after = 2 }
 EOF
   run_check product-regressions just test --config-file "$nextest_config" --locked --target "$TARGET" \
     -p codex-code-mode-runtime -p codex-account-registry -p codex-account-selection \

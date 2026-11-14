@@ -11,6 +11,11 @@ on:
         description: Packaging-only workflow/script commit; native source remains source_sha
         required: true
         type: string
+      package_target:
+        description: Build both targets or resume one target using its retained checkpoint
+        required: false
+        default: both
+        type: string
       boot_after_utc:
         description: Optional UTC timestamp; require an actual reboot after it
         required: false
@@ -39,6 +44,7 @@ jobs:
         shell: pwsh
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      PACKAGE_TARGET: ${{ inputs.package_target }}
       EXPECTED_BOOT_AFTER_UTC: ${{ inputs.boot_after_utc }}
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       INSTA_UPDATE: 'no'
@@ -47,6 +53,7 @@ jobs:
       - name: Require an exact public source commit
         run: |
           if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full lowercase commit ID.' }
+          if ($env:PACKAGE_TARGET -cnotin @('both', 'x64', 'arm64')) { throw 'Unknown Windows package target.' }
       - name: Enable long paths for dependency checkouts
         run: |
           git config --global core.longpaths true
@@ -211,10 +218,13 @@ jobs:
       - name: Validate native Windows account, usage and V8 regressions
         run: python .github/scripts-packaging/downstream-windows-native.ps1 acceptance
       - name: Build, assemble and run the x64 package
+        if: inputs.package_target != 'arm64'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target x86_64-pc-windows-msvc
       - name: Seal the x64 handoff checkpoint
+        if: inputs.package_target != 'arm64'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize-target --target x86_64-pc-windows-msvc
       - name: Upload the x64 handoff checkpoint
+        if: inputs.package_target != 'arm64'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: windows-handoff-${{ inputs.source_sha }}-x86_64
@@ -222,6 +232,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Import the preinstalled ARM64 cross SDK
+        if: inputs.package_target != 'x64'
         run: |
           $ErrorActionPreference = 'Stop'
           $lines = & $env:ComSpec /d /c '"C:\BuildTools\Common7\Tools\VsDevCmd.bat" -no_logo -arch=arm64 -host_arch=x64 >nul && set'
@@ -232,12 +243,16 @@ jobs:
             }
           }
       - name: Verify the published ARM64 V8 pair against source-pinned checksums
+        if: inputs.package_target != 'x64'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 published-v8
       - name: Cross compile and assemble the ARM64 package
+        if: inputs.package_target != 'x64'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 package --target aarch64-pc-windows-msvc
       - name: Seal the ARM64 handoff checkpoint
+        if: inputs.package_target != 'x64'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize-target --target aarch64-pc-windows-msvc
       - name: Upload the ARM64 handoff checkpoint
+        if: inputs.package_target != 'x64'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: windows-handoff-${{ inputs.source_sha }}-aarch64
@@ -245,6 +260,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Seal exact source, checksums and Windows handoff
+        if: inputs.package_target == 'both'
         run: python .github/scripts-packaging/downstream-windows-native.ps1 finalize
       - name: Preserve native diagnostic evidence
         if: always()
@@ -255,6 +271,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload the verified Windows package handoff
+        if: inputs.package_target == 'both'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: windows-handoff-${{ inputs.source_sha }}

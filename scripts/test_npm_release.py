@@ -58,10 +58,18 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn('"--timings"', helper)
 
     def test_exact_reserved_tag_is_allowed_only_for_its_producer(self) -> None:
-        with patch("release_identity.git", side_effect=lambda *args: {
-            ("tag", "--list", "v0.166.0-multi.*", "npm-v0.166.0-multi.*"): "npm-v0.166.0-multi.7\n",
-            ("rev-parse", "npm-v0.166.0-multi.7^{commit}"): "a" * 40,
-        }[args]):
+        with patch(
+            "release_identity.git",
+            side_effect=lambda *args: {
+                (
+                    "tag",
+                    "--list",
+                    "v0.166.0-multi.*",
+                    "npm-v0.166.0-multi.*",
+                ): "npm-v0.166.0-multi.7\n",
+                ("rev-parse", "npm-v0.166.0-multi.7^{commit}"): "a" * 40,
+            }[args],
+        ):
             verify_new_downstream_version("0.166.0+multi.7", "a" * 40)
             with self.assertRaisesRegex(ValueError, "already reserved"):
                 verify_new_downstream_version("0.166.0+multi.7", "b" * 40)
@@ -273,12 +281,22 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             self.assertEqual(tracked.read_bytes(), original)
             self.assertEqual(
                 tomllib.loads(config.read_text())["profile"]["default"]["overrides"][
-                    -1
+                    -3:
                 ],
-                {
-                    "filter": "package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)",
-                    "slow-timeout": {"period": "2m", "terminate-after": 2},
-                },
+                [
+                    {
+                        "filter": "package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)",
+                        "slow-timeout": {"period": "2m", "terminate-after": 2},
+                    },
+                    {
+                        "filter": "package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)",
+                        "slow-timeout": {"period": "3m", "terminate-after": 2},
+                    },
+                    {
+                        "filter": "package(codex-usage) & test(=prepared_window_matches_raw_summary_across_corrections_and_scopes)",
+                        "slow-timeout": {"period": "3m", "terminate-after": 2},
+                    },
+                ],
             )
 
     def test_hosted_reuse_keeps_the_real_producer_and_unchanged_native_inputs(
