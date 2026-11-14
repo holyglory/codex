@@ -153,7 +153,7 @@ jobs:
 
   native:
     name: Build and test ${{ matrix.target }}
-    if: inputs.hosted_native_run_id == ''
+    if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff
     needs: identity
     permissions:
       contents: read
@@ -183,7 +183,37 @@ jobs:
       source_version: ${{ needs.identity.outputs.source_version }}
       v8_run_id: ${{ inputs.hosted_v8_run_id }}
       v8_source_commit: ${{ needs.identity.outputs.hosted_v8_source_commit }}
-      skip_package: ${{ inputs.reuse_linux_arm_handoff && matrix.target == 'aarch64-unknown-linux-musl' }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
+  native-mac:
+    name: Build and test ${{ matrix.target }} with verified Linux ARM handoff
+    if: inputs.reuse_linux_arm_handoff
+    needs: identity
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos_amd64
+            bazel_config: ci-macos
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+            platform: macos_arm64
+            bazel_config: ci-macos
+    uses: ./.github/workflows/downstream-unix-native-target.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      platform: ${{ matrix.platform }}
+      bazel_config: ${{ matrix.bazel_config }}
+      source_version: ${{ needs.identity.outputs.source_version }}
+      v8_run_id: ${{ inputs.hosted_v8_run_id }}
+      v8_source_commit: ${{ needs.identity.outputs.hosted_v8_source_commit }}
     secrets:
       BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
@@ -192,9 +222,9 @@ jobs:
     if: >-
       !cancelled() && !inputs.native_only && needs.identity.result == 'success' &&
       needs.handoff.result == 'success' &&
-      (needs.native.result == 'success' ||
-       (needs.native.result == 'skipped' && inputs.hosted_native_run_id != ''))
-    needs: [identity, handoff, native]
+      (needs.native.result == 'success' || needs.native-mac.result == 'success' ||
+       (needs.native.result == 'skipped' && needs.native-mac.result == 'skipped' && inputs.hosted_native_run_id != ''))
+    needs: [identity, handoff, native, native-mac]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -251,19 +281,24 @@ jobs:
   candidate-result:
     name: Candidate checks passed
     if: ${{ !inputs.native_only && always() }}
-    needs: [identity, handoff, native, npm]
+    needs: [identity, handoff, native, native-mac, npm]
     runs-on: ubuntu-24.04
     steps:
       - env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           HOSTED_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          REUSE_LINUX_ARM: ${{ inputs.reuse_linux_arm_handoff }}
         run: |
           python3 - <<'PY'
           import json, os
           results = {name: job['result'] for name, job in json.loads(os.environ['NEEDS_JSON']).items()}
-          expected = {name: 'success' for name in ('identity', 'handoff', 'native', 'npm')}
+          expected = {name: 'success' for name in ('identity', 'handoff', 'npm')}
           if os.environ['HOSTED_RUN_ID']:
-              expected['native'] = 'skipped'
+              expected.update(native='skipped', **{'native-mac': 'skipped'})
+          elif os.environ['REUSE_LINUX_ARM'] == 'true':
+              expected.update(native='skipped', **{'native-mac': 'success'})
+          else:
+              expected.update(native='success', **{'native-mac': 'skipped'})
           if results != expected:
               raise SystemExit(f'Candidate gates did not all pass: {results}')
           print('All native producers and seven npm packages passed their declared checks.')
