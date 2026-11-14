@@ -4,6 +4,8 @@
 import argparse
 import base64
 from contextlib import nullcontext
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import math
@@ -90,12 +92,7 @@ foreach ($id in $ids) {
     if ($process.ProcessName -in @('rustc', 'cl', 'clang-cl', 'clang')) { $compilerCount++ }
   } catch {}
 }
-$sample = @{ cpu_seconds = $cpuSeconds; process_count = $count; compiler_process_count = $compilerCount }
-try {
-  $hostCpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop
-  if ($null -ne $hostCpu) { $sample.host_cpu_percent = [double]$hostCpu.PercentProcessorTime }
-} catch {}
-[pscustomobject]$sample | ConvertTo-Json -Compress
+[pscustomobject]@{ cpu_seconds = $cpuSeconds; process_count = $count; compiler_process_count = $compilerCount } | ConvertTo-Json -Compress
 """
     encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     environment = {**os.environ, "CODEX_WINDOWS_CPU_PROBE_PID": str(pid)}
@@ -129,13 +126,6 @@ try {
                     and process_count > 0
                 ):
                     sample = {"cpu_seconds": cpu_seconds, "process_count": process_count}
-                    host_cpu_percent = value.get("host_cpu_percent")
-                    if (
-                        type(host_cpu_percent) in (int, float)
-                        and 0 <= host_cpu_percent <= 100
-                        and math.isfinite(host_cpu_percent)
-                    ):
-                        sample["host_cpu_percent"] = host_cpu_percent
                     compiler_process_count = value.get("compiler_process_count")
                     if type(compiler_process_count) is int and 0 <= compiler_process_count <= process_count:
                         sample["compiler_process_count"] = compiler_process_count
@@ -144,6 +134,49 @@ try {
         except (OSError, subprocess.SubprocessError, ValueError, OverflowError) as error:
             errors.append(f"{shell}: {error}")
     return {"error": "; ".join(errors)[:500]}
+
+
+def host_cpu_sample(previous: dict | None = None) -> dict | None:
+    """Sample all-machine CPU counters without waiting for a second interval."""
+    if os.name != "nt":
+        return None
+    logical_cpus = os.cpu_count()
+    if logical_cpus is None:
+        return {"error": "logical CPU count unavailable; GetSystemTimes machine coverage is unknown"}
+    if logical_cpus > 64:
+        return {"error": "GetSystemTimes covers only one processor group on hosts with more than 64 logical CPUs"}
+    try:
+        get_system_times = ctypes.WinDLL("kernel32", use_last_error=True).GetSystemTimes
+        get_system_times.argtypes = [ctypes.POINTER(wintypes.FILETIME)] * 3
+        get_system_times.restype = wintypes.BOOL
+        counters = [wintypes.FILETIME() for _ in range(3)]
+        if not get_system_times(*(ctypes.byref(counter) for counter in counters)):
+            raise OSError(f"Windows error {ctypes.get_last_error()}")
+    except (AttributeError, OSError) as error:
+        return {"error": f"GetSystemTimes unavailable: {error}"[:500]}
+    sample = {
+        "at_ms": time.time_ns() // 1_000_000,
+        "source": "GetSystemTimes",
+        "scope": "machine",
+        "logical_cpu_count": logical_cpus,
+        **{
+            name: (counter.dwHighDateTime << 32) | counter.dwLowDateTime
+            for name, counter in zip(("idle_100ns", "kernel_100ns", "user_100ns"), counters)
+        },
+        "utilization_percent": None,
+        "utilization_unavailable_reason": "a second counter sample is required",
+    }
+    if previous is not None:
+        idle = sample["idle_100ns"] - previous["idle_100ns"]
+        kernel = sample["kernel_100ns"] - previous["kernel_100ns"]
+        user = sample["user_100ns"] - previous["user_100ns"]
+        total = kernel + user  # Windows kernel time includes idle time.
+        if min(idle, kernel, user) >= 0 and total > 0 and idle <= total:
+            sample["utilization_percent"] = round(100 * (total - idle) / total, 2)
+            sample.pop("utilization_unavailable_reason")
+        else:
+            sample["utilization_unavailable_reason"] = "host CPU counters did not advance consistently"
+    return sample
 
 
 def host_cpu_count() -> int:
@@ -259,6 +292,7 @@ class Producer:
             started = time.monotonic()
             last_heartbeat = started - 60
             previous_cpu = None
+            previous_host_cpu = None
             while result.poll() is None:
                 now = time.monotonic()
                 if now - last_heartbeat >= 60:
@@ -282,6 +316,13 @@ class Producer:
                         previous_cpu = cpu_sample
                     elif cpu_sample:
                         telemetry["cpu_sample_error"] = cpu_sample.get("error")
+                    host_sample = host_cpu_sample(previous_host_cpu)
+                    if host_sample and "error" not in host_sample:
+                        telemetry["host_cpu_sample"] = host_sample
+                        telemetry.pop("host_cpu_sample_error", None)
+                        previous_host_cpu = host_sample
+                    elif host_sample:
+                        telemetry["host_cpu_sample_error"] = host_sample["error"]
                     telemetry.update({
                         "state": "running",
                         "elapsed_seconds": int(now - started),
@@ -297,6 +338,8 @@ class Producer:
                         "log_bytes": log_bytes,
                         "cpu_sample": telemetry.get("cpu_sample"),
                         "cpu_sample_error": telemetry.get("cpu_sample_error"),
+                        "host_cpu_sample": telemetry.get("host_cpu_sample"),
+                        "host_cpu_sample_error": telemetry.get("host_cpu_sample_error"),
                     }), flush=True)
                     last_heartbeat = now
                 time.sleep(1)

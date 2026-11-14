@@ -35,7 +35,6 @@ class WindowsNativeHelperTest(unittest.TestCase):
         sample = {
             "cpu_seconds": 12.5,
             "process_count": 3,
-            "host_cpu_percent": 54.0,
             "compiler_process_count": 2,
         }
         result = subprocess.CompletedProcess(
@@ -67,11 +66,11 @@ class WindowsNativeHelperTest(unittest.TestCase):
     def test_cpu_probe_ignores_invalid_optional_metrics(self) -> None:
         sample = {"cpu_seconds": 1.5, "process_count": 2}
         for optional in (
-            {"host_cpu_percent": -1, "compiler_process_count": -1},
-            {"host_cpu_percent": 101, "compiler_process_count": 3},
-            {"host_cpu_percent": True, "compiler_process_count": True},
-            {"host_cpu_percent": float("nan"), "compiler_process_count": 1.5},
-            {"host_cpu_percent": 10**400, "compiler_process_count": "1"},
+            {"compiler_process_count": -1},
+            {"compiler_process_count": 3},
+            {"compiler_process_count": True},
+            {"compiler_process_count": 1.5},
+            {"compiler_process_count": "1"},
         ):
             with (
                 self.subTest(optional=optional),
@@ -172,6 +171,101 @@ class WindowsNativeHelperTest(unittest.TestCase):
         self.assertGreaterEqual(sample["cpu_seconds"], 0)
         self.assertGreaterEqual(sample["process_count"], 1)
 
+    def test_host_cpu_counter_deltas_distinguish_usage_idle_and_unavailable(
+        self,
+    ) -> None:
+        base = 1 << 35
+        snapshots = iter(
+            [
+                (base + 100, base + 300, base + 200),
+                (base + 140, base + 380, base + 220),
+                (base + 240, base + 480, base + 220),
+                (base + 240, base + 480, base + 220),
+                (base + 200, base + 400, base + 200),
+            ]
+        )
+
+        def get_system_times(*pointers):
+            for pointer, value in zip(pointers, next(snapshots)):
+                pointer._obj.dwLowDateTime = value & 0xFFFFFFFF
+                pointer._obj.dwHighDateTime = value >> 32
+            return 1
+
+        with (
+            patch.object(
+                MODULE, "os", SimpleNamespace(name="nt", cpu_count=lambda: 64)
+            ),
+            patch.object(
+                MODULE.ctypes,
+                "WinDLL",
+                create=True,
+                return_value=(
+                    SimpleNamespace(GetSystemTimes=Mock(side_effect=get_system_times))
+                ),
+            ),
+        ):
+            sample = None
+            samples = []
+            for expected in (None, 60.0, 0.0, None, None):
+                sample = MODULE.host_cpu_sample(sample)
+                samples.append(sample)
+                with self.subTest(expected=expected):
+                    self.assertEqual(sample["utilization_percent"], expected)
+                    self.assertEqual(
+                        "utilization_unavailable_reason" in sample, expected is None
+                    )
+            self.assertEqual(samples[0]["source"], "GetSystemTimes")
+            self.assertEqual(samples[0]["scope"], "machine")
+            self.assertEqual(samples[0]["logical_cpu_count"], 64)
+            self.assertEqual(samples[0]["idle_100ns"], base + 100)
+            self.assertEqual(samples[0]["kernel_100ns"], base + 300)
+            self.assertEqual(samples[0]["user_100ns"], base + 200)
+
+    def test_host_cpu_reports_api_failure_and_unsupported_machine_scope(self) -> None:
+        with (
+            patch.object(
+                MODULE, "os", SimpleNamespace(name="nt", cpu_count=lambda: 64)
+            ),
+            patch.object(
+                MODULE.ctypes,
+                "WinDLL",
+                create=True,
+                return_value=(SimpleNamespace(GetSystemTimes=Mock(return_value=0))),
+            ),
+            patch.object(MODULE.ctypes, "get_last_error", create=True, return_value=5),
+        ):
+            self.assertEqual(
+                MODULE.host_cpu_sample(),
+                {"error": "GetSystemTimes unavailable: Windows error 5"},
+            )
+        with (
+            patch.object(
+                MODULE, "os", SimpleNamespace(name="nt", cpu_count=lambda: 128)
+            ),
+            patch.object(MODULE.ctypes, "WinDLL", create=True) as load_library,
+        ):
+            self.assertIn(
+                "more than 64 logical CPUs", MODULE.host_cpu_sample()["error"]
+            )
+            load_library.assert_not_called()
+
+    @unittest.skipUnless(
+        os.name == "nt" and (os.cpu_count() or 0) <= 64,
+        "requires Windows host with at most 64 logical CPUs",
+    )
+    def test_host_cpu_samples_real_windows_counter_delta(self) -> None:
+        first = MODULE.host_cpu_sample()
+        self.assertNotIn("error", first)
+        MODULE.time.sleep(0.05)
+        second = MODULE.host_cpu_sample(first)
+        self.assertNotIn("error", second)
+        self.assertEqual(second["scope"], "machine")
+        self.assertIsInstance(second.get("utilization_percent"), (int, float))
+        self.assertGreaterEqual(second["utilization_percent"], 0)
+        self.assertLessEqual(second["utilization_percent"], 100)
+        self.assertNotIn("utilization_unavailable_reason", second)
+        print(json.dumps({"native_host_cpu_sample": second}))
+
     def test_run_reports_cpu_errors_and_recovery_in_live_heartbeats(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -182,6 +276,16 @@ class WindowsNativeHelperTest(unittest.TestCase):
             process = Mock(pid=4321, returncode=0)
             process.poll.side_effect = [None, None, None, None, 0]
             sample = {"cpu_seconds": 1.5, "process_count": 2}
+            host_samples = [
+                {"error": "host counters unavailable"},
+                {
+                    "at_ms": 4000,
+                    "utilization_percent": None,
+                    "utilization_unavailable_reason": "a second counter sample is required",
+                },
+                {"at_ms": 6000, "utilization_percent": 0.0},
+                {"at_ms": 8000, "utilization_percent": 100.0},
+            ]
             stdout = io.StringIO()
             with (
                 redirect_stdout(stdout),
@@ -196,6 +300,9 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 ),
                 patch.object(MODULE.time, "sleep"),
                 patch.object(MODULE, "host_cpu_count", return_value=4),
+                patch.object(
+                    MODULE, "host_cpu_sample", side_effect=host_samples
+                ) as host_probe,
                 patch.object(
                     MODULE,
                     "process_tree_cpu",
@@ -242,6 +349,19 @@ class WindowsNativeHelperTest(unittest.TestCase):
             self.assertEqual(telemetry["cpu_sample"], heartbeats[3]["cpu_sample"])
             self.assertNotIn("cpu_sample_error", telemetry)
             self.assertEqual(cpu_probe.call_args_list, [call(4321)] * 4)
+            self.assertEqual(
+                heartbeats[0]["host_cpu_sample_error"], "host counters unavailable"
+            )
+            self.assertIsNone(heartbeats[0]["host_cpu_sample"])
+            for heartbeat, host_sample in zip(heartbeats[1:], host_samples[1:]):
+                self.assertEqual(heartbeat["host_cpu_sample"], host_sample)
+                self.assertIsNone(heartbeat["host_cpu_sample_error"])
+            self.assertEqual(telemetry["host_cpu_sample"], host_samples[-1])
+            self.assertNotIn("host_cpu_sample_error", telemetry)
+            self.assertEqual(
+                host_probe.call_args_list,
+                [call(None), call(None), call(host_samples[1]), call(host_samples[2])],
+            )
 
     def test_prerequisites_use_source_toolchain_channel_for_version_and_targets(
         self,
