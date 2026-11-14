@@ -22,6 +22,8 @@ PACKAGING_PATHS = frozenset(
         "scripts/verify_npm_release.py",
         "scripts/check_npm_install.py",
         "scripts/release_identity.py",
+        "scripts/release_producer_inputs.py",
+        "scripts/test_release_producer_inputs.py",
         "scripts/runner_handoff.py",
         "scripts/prepare_runner_handoff.py",
         "scripts/stage_verified_npm_release.py",
@@ -44,7 +46,6 @@ PACKAGING_PATHS = frozenset(
         ".github/workflows/downstream-npm-publish.yml",
         ".github/workflows/trusted-windows-native.yml",
         ".github/scripts/downstream-windows-native.ps1",
-        ".github/scripts/run_bazel_with_buildbuddy.py",
         ".github/scripts/test_run_bazel_with_buildbuddy.py",
         ".github/scripts/test_downstream_windows_native.py",
         ".github/scripts/downstream-unix-native.sh",
@@ -288,6 +289,15 @@ def verify_native_source(producer: str, packaging: str) -> dict:
         git("diff", "--name-only", "--no-renames", producer, packaging).splitlines()
     )
     unexpected = changed - PACKAGING_PATHS
+    wrapper = ".github/scripts/run_bazel_with_buildbuddy.py"
+    if wrapper in unexpected:
+        before = git("show", f"{producer}:{wrapper}")
+        after = git("show", f"{packaging}:{wrapper}")
+        removed = '                f"--local_cpu_resources={jobs}",\n'
+        # This exact compatibility repair is not a generic helper exemption.
+        # Artifact reuse still requires matching effective locked inputs below.
+        if before.count(removed) == 1 and before.replace(removed, "") == after:
+            unexpected.remove(wrapper)
     if (
         unexpected
         or native["native_tree"] != candidate["native_tree"]
@@ -380,7 +390,9 @@ def version() -> tuple[str, str]:
     return source, source.replace("+multi.", "-multi.", 1)
 
 
-def verify_new_downstream_version(source: str, producer_commit: str | None = None) -> None:
+def verify_new_downstream_version(
+    source: str, producer_commit: str | None = None
+) -> None:
     """Reject a downstream version that has already been tagged for this upstream release."""
     match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)\+multi\.(?P<revision>\d+)", source)
     if match is None:
@@ -455,8 +467,10 @@ def verify_acceptance(
 def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
     try:
         from verify_npm_release import PLATFORMS
+        from release_producer_inputs import verify as verify_producer_inputs
     except ModuleNotFoundError:
         from scripts.verify_npm_release import PLATFORMS
+        from scripts.release_producer_inputs import verify as verify_producer_inputs
     result = []
     for platform in PLATFORMS.values():
         target = platform["target_triple"]
@@ -517,15 +531,20 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
         for field in ("source_tree", "native_tree", "v8_tree"):
             if field in pair and pair[field] != pair_source[field]:
                 raise ValueError(f"V8 pair {field} differs from its source: {target}")
-        expected_v8_inputs = v8_input_manifest(pair_source_commit)
+        proof = verify_producer_inputs(folder, packaging)
+        expected_v8_inputs = (
+            proof["v8_inputs"] if proof else v8_input_manifest(pair_source_commit)
+        )
         if v8_input_manifest(packaging) != expected_v8_inputs:
             raise ValueError(f"V8 locked inputs differ: {target}")
         if pair.get("v8_inputs") not in (None, expected_v8_inputs):
             raise ValueError(f"V8 receipt input manifest differs: {target}")
-        for key in ("producer_run_id", "producer_run_attempt"):
-            if pair.get(key) is not None and not re.fullmatch(
-                r"[0-9]+", str(pair[key])
-            ):
+        producer_run = proof["github_run_id"] if proof else pair.get("producer_run_id")
+        producer_attempt = (
+            proof["github_run_attempt"] if proof else pair.get("producer_run_attempt")
+        )
+        for value in (producer_run, producer_attempt):
+            if value is not None and not re.fullmatch(r"[0-9]+", str(value)):
                 raise ValueError(f"V8 producer run identity is invalid: {target}")
         if target == "aarch64-pc-windows-msvc":
             reason = receipt.get("runtime_not_executed_reason") or receipt.get(
@@ -571,8 +590,17 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
                 "runtime_executed": receipt["runtime_executed"],
                 "v8_source_commit": pair_source_commit,
                 "v8_inputs_sha256": expected_v8_inputs["sha256"],
-                "v8_producer_run_id": pair.get("producer_run_id"),
-                "v8_producer_run_attempt": pair.get("producer_run_attempt"),
+                "v8_producer_run_id": producer_run,
+                "v8_producer_run_attempt": producer_attempt,
+                **(
+                    {
+                        "v8_local_producer_marker": proof["local_marker"],
+                        "v8_coordinator_run_id": proof["coordinator_run_id"],
+                        "v8_original_pair_sha256": proof["raw_pair_sha256"],
+                    }
+                    if proof and proof.get("local_marker")
+                    else {}
+                ),
             }
         )
     return result
