@@ -570,9 +570,7 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 patch.object(MODULE, "ROOT", root),
                 patch.object(MODULE, "os", SimpleNamespace(environ=environment)),
                 patch.object(MODULE.shutil, "which", return_value="existing-tool"),
-                patch.object(
-                    MODULE, "verify_pe"
-                ),
+                patch.object(MODULE, "verify_pe"),
                 patch.object(
                     MODULE.subprocess,
                     "check_output",
@@ -610,9 +608,7 @@ class WindowsNativeHelperTest(unittest.TestCase):
             )
             with (
                 patch.object(MODULE, "ROOT", root),
-                self.assertRaisesRegex(
-                    ValueError, "conflicting Rust toolchain pins"
-                ),
+                self.assertRaisesRegex(ValueError, "conflicting Rust toolchain pins"),
             ):
                 MODULE.resolve_rust_channel()
 
