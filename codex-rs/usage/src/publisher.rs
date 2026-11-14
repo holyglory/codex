@@ -491,14 +491,31 @@ impl UsagePublisher {
         }
         manifest.summaries_include_corrections = manifest.pending_corrections.is_empty();
         if index_complete && membership_changed {
-            let file = format!("membership-{generation:020}_{stamp}.parquet");
-            let cumulative = manifest.segment_files.len() < CUMULATIVE_MEMBERSHIP_SEGMENT_LIMIT;
+            // A cumulative shard can name earlier raw generations as well as
+            // this batch. Encode an upper bound for every known raw origin.
+            let cumulative = manifest.segment_files.len() < CUMULATIVE_MEMBERSHIP_SEGMENT_LIMIT
+                && manifest.membership_files.len() <= 1;
+            let membership_generation = if cumulative {
+                manifest
+                    .segment_files
+                    .iter()
+                    .filter_map(|file| crate::detail_retention::file_generation(file, "segment-"))
+                    .max()
+                    .unwrap_or(generation)
+                    .max(generation)
+            } else {
+                generation
+            };
+            let file = format!("membership-{membership_generation:020}_{stamp}.parquet");
+            let previous = manifest
+                .membership_files
+                .first()
+                .map(String::as_str)
+                .or(manifest.membership_file.as_deref());
             write_membership(
                 &connection,
                 &directory,
-                cumulative
-                    .then_some(manifest.membership_file.as_deref())
-                    .flatten(),
+                cumulative.then_some(previous).flatten(),
                 &file,
                 membership,
             )?;

@@ -206,6 +206,20 @@ pub(crate) fn segment_hour(file: &str, prefix: &str) -> Option<i64> {
         .ok()
 }
 
+/// Known publication names carry an origin bound. Raw rewrites preserve their
+/// lower bound; membership rewrites preserve the referenced raw upper bound.
+/// Older or opaque names provide no proof and must remain conservative.
+pub(crate) fn file_generation(file: &str, prefix: &str) -> Option<u64> {
+    let (generation, _) = file
+        .strip_prefix(prefix)?
+        .strip_suffix(".parquet")?
+        .split_once('_')?;
+    (generation.len() == 20 && generation.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(generation)?
+        .parse()
+        .ok()
+}
+
 pub(crate) fn stamp() -> String {
     format!(
         "retained_{}_{}",
