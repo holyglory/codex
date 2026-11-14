@@ -88,8 +88,17 @@ class NpmReleaseContractTest(unittest.TestCase):
         packaging = "c" * 40
         calls = {}
 
-        def relationship(product_source: str, hosted_producer: str) -> dict:
-            calls["relationship"] = (product_source, hosted_producer)
+        def relationship(
+            product_source: str,
+            hosted_producer: str,
+            *,
+            allow_v8_reuse: bool = False,
+        ) -> dict:
+            calls["relationship"] = (
+                product_source,
+                hosted_producer,
+                allow_v8_reuse,
+            )
             return {"product_source": {"source_commit": product_source}}
 
         def version_guard(source: str, producer: str) -> None:
@@ -134,7 +143,48 @@ class NpmReleaseContractTest(unittest.TestCase):
         ):
             release_identity.main()
 
-        self.assertEqual(calls["relationship"], (product, hosted))
+        self.assertEqual(calls["relationship"], (product, hosted, False))
+        self.assertEqual(calls["tag"], ("0.166.0+multi.8", product))
+        calls.clear()
+        with (
+            patch.object(
+                release_identity,
+                "verify_hosted_producer_source",
+                side_effect=relationship,
+            ),
+            patch.object(
+                release_identity,
+                "verify_hosted_v8_source",
+                return_value={},
+            ),
+            patch.object(
+                release_identity,
+                "version",
+                return_value=("0.166.0+multi.8", "0.166.0-multi.8"),
+            ),
+            patch.object(
+                release_identity,
+                "verify_new_downstream_version",
+                side_effect=version_guard,
+            ),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "release_identity.py",
+                    "--producer",
+                    hosted,
+                    "--product-source",
+                    product,
+                    "--packaging",
+                    packaging,
+                    "--hosted-v8",
+                ],
+            ),
+            patch.object(sys, "stdout", io.StringIO()),
+        ):
+            release_identity.main()
+        self.assertEqual(calls["relationship"], (product, hosted, True))
         self.assertEqual(calls["tag"], ("0.166.0+multi.8", product))
 
     def test_hosted_cli_rejects_missing_product_source(self) -> None:
@@ -630,6 +680,17 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             packaging = commit("usage fix")
 
             with patch("release_identity.ROOT", root):
+                relationship = verify_hosted_producer_source(
+                    producer, packaging, allow_v8_reuse=True
+                )
+                self.assertEqual(
+                    relationship["product_source"]["source_commit"], producer
+                )
+                self.assertEqual(
+                    relationship["hosted_producer"]["source_commit"], packaging
+                )
+                with self.assertRaisesRegex(ValueError, "Native reuse changes"):
+                    verify_hosted_producer_source(producer, packaging)
                 result = verify_hosted_v8_source(producer, packaging)
                 self.assertEqual(result["native_producer"]["source_commit"], producer)
                 self.assertEqual(result["packaging"]["source_commit"], packaging)
@@ -717,6 +778,12 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                     ValueError, "V8 reuse changes|locked inputs"
                 ):
                     verify_hosted_v8_source(producer, changed_inputs)
+                with self.assertRaisesRegex(
+                    ValueError, "Hosted V8 (product source|reuse changes)"
+                ):
+                    verify_hosted_producer_source(
+                        producer, changed_inputs, allow_v8_reuse=True
+                    )
 
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires Unix Bash"

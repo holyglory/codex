@@ -377,9 +377,66 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
     return result
 
 
-def verify_hosted_producer_source(product: str, producer: str) -> dict:
+def verify_hosted_producer_source(
+    product: str, producer: str, *, allow_v8_reuse: bool = False
+) -> dict:
     """Bind a hosted producer to the immutable product source it packages."""
-    result = verify_native_source(product, producer)
+    if not allow_v8_reuse:
+        result = verify_native_source(product, producer)
+    else:
+        product_identity = identity(product)
+        hosted_identity = identity(producer)
+        subprocess.run(
+            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", product, producer],
+            check=True,
+        )
+        changed = set(
+            git("diff", "--name-only", "--no-renames", product, producer).splitlines()
+        )
+        wrapper = ".github/scripts/run_bazel_with_buildbuddy.py"
+        unexpected = {
+            path
+            for path in changed
+            if path not in PACKAGING_PATHS
+            and not any(path.startswith(prefix) for prefix in V8_REUSE_SOURCE_PREFIXES)
+        }
+        if wrapper in unexpected:
+            before = git("show", f"{product}:{wrapper}")
+            after = git("show", f"{producer}:{wrapper}")
+            removed = '                f"--local_cpu_resources={jobs}",\n'
+            if before.count(removed) == 1 and before.replace(removed, "") == after:
+                unexpected.remove(wrapper)
+        if unexpected or product_identity["v8_tree"] != hosted_identity["v8_tree"]:
+            raise ValueError(
+                f"Hosted V8 reuse changes product/build inputs: {sorted(unexpected)}"
+            )
+        product_inputs = v8_input_manifest(product)
+        hosted_inputs = v8_input_manifest(producer)
+        changed_inputs = {
+            path
+            for path in product_inputs["paths"] | hosted_inputs["paths"]
+            if product_inputs["paths"].get(path) != hosted_inputs["paths"].get(path)
+        }
+        if changed_inputs:
+            before = git("show", f"{product}:{wrapper}")
+            after = git("show", f"{producer}:{wrapper}")
+            removed = '                f"--local_cpu_resources={jobs}",\n'
+            if (
+                changed_inputs != {wrapper}
+                or before.count(removed) != 1
+                or before.replace(removed, "") != after
+            ):
+                raise ValueError(
+                    "Hosted V8 product source inputs differ from its producer"
+                )
+        if product_inputs != hosted_inputs and changed_inputs != {wrapper}:
+            raise ValueError("Hosted V8 product source inputs differ from its producer")
+        _verify_v8_recipe(product, producer)
+        result = {
+            "native_producer": product_identity,
+            "packaging": hosted_identity,
+            "packaging_only_paths": sorted(changed),
+        }
     return {
         "product_source": result["native_producer"],
         "hosted_producer": result["packaging"],
@@ -666,7 +723,7 @@ def main() -> None:
         if not args.product_source:
             parser.error("hosted producer checks require --product-source")
         hosted_relationship = verify_hosted_producer_source(
-            product_source, args.producer
+            product_source, args.producer, allow_v8_reuse=args.hosted_v8
         )
     elif args.product_source and args.product_source != args.producer:
         parser.error("--product-source is only distinct for hosted producer checks")
