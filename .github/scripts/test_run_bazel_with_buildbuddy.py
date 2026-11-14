@@ -56,7 +56,6 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             [
                 "build",
                 "--jobs=56",
-                "--local_cpu_resources=56",
                 "//codex-rs/cli:codex",
             ],
         )
