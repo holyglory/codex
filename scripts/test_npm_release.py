@@ -681,13 +681,13 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
 
             with patch("release_identity.ROOT", root):
                 relationship = verify_hosted_producer_source(
-                    producer, packaging, allow_v8_reuse=True
+                    packaging, producer, allow_v8_reuse=True
                 )
                 self.assertEqual(
-                    relationship["product_source"]["source_commit"], producer
+                    relationship["product_source"]["source_commit"], packaging
                 )
                 self.assertEqual(
-                    relationship["hosted_producer"]["source_commit"], packaging
+                    relationship["hosted_producer"]["source_commit"], producer
                 )
                 with self.assertRaisesRegex(ValueError, "Native reuse changes"):
                     verify_hosted_producer_source(producer, packaging)
@@ -756,6 +756,10 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                     ValueError, "unapproved product/build inputs"
                 ):
                     verify_hosted_v8_source(producer, changed_app_server)
+                with self.assertRaisesRegex(ValueError, "V8 reuse changes"):
+                    verify_hosted_producer_source(
+                        changed_app_server, producer, allow_v8_reuse=True
+                    )
                 unrelated_app_server.unlink()
 
                 script_path.write_text(
@@ -779,10 +783,26 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 ):
                     verify_hosted_v8_source(producer, changed_inputs)
                 with self.assertRaisesRegex(
-                    ValueError, "Hosted V8 (product source|reuse changes)"
+                    ValueError, "(?:Hosted V8|V8 reuse) (?:product source|changes)"
                 ):
                     verify_hosted_producer_source(
-                        producer, changed_inputs, allow_v8_reuse=True
+                        changed_inputs, producer, allow_v8_reuse=True
+                    )
+                git("checkout", "-q", "-b", "divergent-product", producer)
+                divergent_usage = root / "codex-rs/usage/src/runtime.rs"
+                divergent_usage.parent.mkdir(parents=True, exist_ok=True)
+                divergent_usage.write_text("divergent product fix\n")
+                divergent_product = commit("divergent product")
+                git("checkout", "-q", "-b", "divergent-producer", producer)
+                divergent_packaging = root / "scripts/qualify_local_delivery.py"
+                divergent_packaging.parent.mkdir(parents=True, exist_ok=True)
+                divergent_packaging.write_text("divergent producer helper\n")
+                divergent_producer = commit("divergent producer")
+                with self.assertRaisesRegex(ValueError, "no valid ancestry"):
+                    verify_hosted_producer_source(
+                        divergent_product,
+                        divergent_producer,
+                        allow_v8_reuse=True,
                     )
 
     @unittest.skipUnless(
