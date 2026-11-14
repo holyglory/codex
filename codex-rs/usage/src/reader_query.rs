@@ -79,9 +79,19 @@ impl SnapshotQuery {
         filter: &UsageFilter,
     ) -> Result<Self> {
         let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
-        let directory = reader.root.join("segments");
         let files = matching_files(&connection, reader, range, filter)?;
-        let immutable = parquet_source(&directory, &files, RECORD_COLUMNS)?;
+        Self::from_files(connection, reader, range, filter, &files)
+    }
+
+    fn from_files(
+        connection: Connection,
+        reader: &UsageReader,
+        range: TimeRange,
+        filter: &UsageFilter,
+        files: &[String],
+    ) -> Result<Self> {
+        let directory = reader.root.join("segments");
+        let immutable = parquet_source(&directory, files, RECORD_COLUMNS)?;
         let tail = values_source(
             &crate::report_query::canonical_tail(reader, &connection)?,
             RECORD_COLUMNS,
@@ -395,6 +405,22 @@ pub(crate) fn matching_files(
     filter: &UsageFilter,
 ) -> Result<Vec<String>> {
     let (coarse_start, coarse_end) = range.coarse_seconds();
+    let candidates = reader
+        .manifest
+        .segment_files
+        .iter()
+        .filter(|file| {
+            let hour = file
+                .strip_prefix("segment-")
+                .and_then(|name| name.strip_suffix(".parquet"))
+                .and_then(|name| name.split_once('-'))
+                .and_then(|(_, hour)| hour.parse::<i64>().ok());
+            hour.is_none_or(|hour| {
+                hour >= coarse_start.saturating_sub(crate::HOUR_SECONDS - 1) && hour < coarse_end
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let dimension = filter
         .repository_id
         .as_deref()
@@ -418,69 +444,22 @@ pub(crate) fn matching_files(
     } else {
         reader.manifest.membership_files.clone()
     };
-    if !membership_files.is_empty() && (dimension.is_some() || filter.thread_ids.is_some()) {
-        let source = parquet_source(
-            &reader.root.join("segments"),
-            &membership_files,
-            &[
-                ("dimension_kind", "VARCHAR"),
-                ("dimension_id", "VARCHAR"),
-                ("hour_start", "BIGINT"),
-                ("segment_file", "VARCHAR"),
-            ],
-        )?;
-        let dimension_predicate = if let Some((kind, id)) = dimension {
-            format!(
-                "dimension_kind = {} AND dimension_id = {}",
-                quoted(kind),
-                quoted(id)
-            )
-        } else if let Some(threads) = &filter.thread_ids {
-            format!(
-                "dimension_kind = 'thread' AND dimension_id IN ({})",
-                threads
-                    .iter()
-                    .map(|id| quoted(id))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        } else {
-            unreachable!("an indexed dimension is required above")
-        };
-        let query = format!(
-            "SELECT DISTINCT segment_file FROM ({source}) WHERE {dimension_predicate} \
-             AND hour_start >= ? AND hour_start < ? ORDER BY segment_file"
-        );
-        let mut statement = connection.prepare(&query).map_err(query_error)?;
-        let rows = statement
-            .query_map(
-                duckdb::params![
-                    coarse_start.saturating_sub(crate::HOUR_SECONDS - 1),
-                    coarse_end
-                ],
-                |row| row.get(0),
-            )
-            .map_err(query_error)?;
-        return rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(query_error);
-    }
-    Ok(reader
-        .manifest
-        .segment_files
-        .iter()
+    let oldest_origin = candidates.iter().try_fold(u64::MAX, |oldest, file| {
+        Some(oldest.min(crate::detail_retention::file_generation(file, "segment-")?))
+    });
+    let membership_files = membership_files
+        .into_iter()
         .filter(|file| {
-            let hour = file
-                .strip_prefix("segment-")
-                .and_then(|name| name.strip_suffix(".parquet"))
-                .and_then(|name| name.split_once('-'))
-                .and_then(|(_, hour)| hour.parse::<i64>().ok());
-            hour.is_none_or(|hour| {
-                hour >= coarse_start.saturating_sub(crate::HOUR_SECONDS - 1) && hour < coarse_end
+            oldest_origin.is_none_or(|oldest| {
+                crate::detail_retention::file_generation(file, "membership-")
+                    .is_none_or(|bound| bound >= oldest)
             })
         })
-        .cloned()
-        .collect())
+        .collect::<Vec<_>>();
+    if !membership_files.is_empty() && (dimension.is_some() || filter.thread_ids.is_some()) {
+        return indexed_files(connection, reader, range, filter, &membership_files);
+    }
+    Ok(candidates)
 }
 
 pub(crate) fn parquet_source(
@@ -612,3 +591,67 @@ impl duckdb::types::FromSql for crate::UsageOutcome {
             .map_err(|error: StorageError| duckdb::types::FromSqlError::Other(Box::new(error)))
     }
 }
+
+fn indexed_files(
+    connection: &Connection,
+    reader: &UsageReader,
+    range: TimeRange,
+    filter: &UsageFilter,
+    membership_files: &[String],
+) -> Result<Vec<String>> {
+    let (coarse_start, coarse_end) = range.coarse_seconds();
+    let dimension = filter
+        .repository_id
+        .as_deref()
+        .map(|id| ("repository", id))
+        .or_else(|| filter.thread_id.as_deref().map(|id| ("thread", id)))
+        .or_else(|| filter.account_id.as_deref().map(|id| ("account", id)));
+    let source = parquet_source(
+        &reader.root.join("segments"),
+        membership_files,
+        &[
+            ("dimension_kind", "VARCHAR"),
+            ("dimension_id", "VARCHAR"),
+            ("hour_start", "BIGINT"),
+            ("segment_file", "VARCHAR"),
+        ],
+    )?;
+    let dimension_predicate = if let Some((kind, id)) = dimension {
+        format!(
+            "dimension_kind = {} AND dimension_id = {}",
+            quoted(kind),
+            quoted(id)
+        )
+    } else if let Some(threads) = &filter.thread_ids {
+        format!(
+            "dimension_kind = 'thread' AND dimension_id IN ({})",
+            threads
+                .iter()
+                .map(|id| quoted(id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        unreachable!("an indexed dimension is required above")
+    };
+    let query = format!(
+        "SELECT DISTINCT segment_file FROM ({source}) WHERE {dimension_predicate} \
+             AND hour_start >= ? AND hour_start < ? ORDER BY segment_file"
+    );
+    let mut statement = connection.prepare(&query).map_err(query_error)?;
+    let rows = statement
+        .query_map(
+            duckdb::params![
+                coarse_start.saturating_sub(crate::HOUR_SECONDS - 1),
+                coarse_end
+            ],
+            |row| row.get(0),
+        )
+        .map_err(query_error)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(query_error)
+}
+
+#[cfg(test)]
+#[path = "reader_query_tests.rs"]
+pub(crate) mod tests;

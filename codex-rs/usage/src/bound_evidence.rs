@@ -189,6 +189,23 @@ impl UsageReader {
             return Ok(Vec::new());
         }
         let query = ReportQuery::new(self, range, filter)?;
+        self.bound_effort_from_query(range, operation_ids, &query)
+    }
+
+    pub(crate) fn bound_effort_from_query(
+        &self,
+        range: TimeRange,
+        operation_ids: &BTreeSet<String>,
+        query: &ReportQuery,
+    ) -> Result<Vec<BoundOperationEffort>> {
+        if operation_ids.len() > 256 {
+            return Err(StorageError::InvalidData(
+                "too many explicit operation bindings".into(),
+            ));
+        }
+        if operation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let selected = operation_ids
             .iter()
             .map(|id| quoted(id))

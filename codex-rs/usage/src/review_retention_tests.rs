@@ -84,6 +84,153 @@ fn advances_review_cutoff_without_a_projection() {
 }
 
 #[test]
+fn raw_index_origins_survive_mixed_retirement_and_cumulative_republication() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    for records in [
+        vec![token("history", DAY, "active", /*input*/ 3)],
+        vec![
+            token("mixed-inactive", 11 * DAY, "inactive", /*input*/ 5),
+            token("mixed-active", 11 * DAY + 1_000, "active", /*input*/ 7),
+        ],
+        vec![token("now", 14 * DAY, "active", /*input*/ 11)],
+    ] {
+        journal
+            .append_batch(records.into_iter().map(JournalPayload::Record).collect())
+            .expect("capture");
+        publish(&root);
+    }
+    let before = UsageReader::open(home.path()).expect("pin before retirement");
+    let mut maintenance = Default::default();
+    for _ in 0..24 {
+        crate::retention::maintain(
+            &root,
+            RetentionPolicy {
+                raw_retention_days: 7,
+                inactive_chat_days: 1,
+            },
+            14 * DAY,
+            &mut maintenance,
+        )
+        .expect("retire real mixed data");
+    }
+    let retired = UsageReader::open(home.path()).expect("pin retirement");
+    assert!(retired.manifest().retired_observations >= 2);
+    assert!(retired.manifest().retired_review_contributions >= 2);
+    let filter = UsageFilter::default().for_repository("repository-a");
+    let recent = TimeRange::from_millis(11 * DAY, 12 * DAY).expect("recent window");
+    assert_eq!(
+        before.totals(recent, &filter).expect("earlier pin"),
+        crate::UsageTotals {
+            input_tokens: 12,
+            output_tokens: 2,
+            records: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        retired.totals(recent, &filter).expect("retained detail"),
+        crate::UsageTotals {
+            input_tokens: 12,
+            output_tokens: 2,
+            records: 2,
+            ..Default::default()
+        }
+    );
+    journal
+        .append_batch(vec![JournalPayload::Correction(UsageCorrection::new(
+            "late-fix",
+            "mixed-active",
+            14 * DAY / 1_000 + 1,
+            /*input_tokens_delta*/ 2,
+            /*output_tokens_delta*/ 0,
+            "retained target",
+        ))])
+        .expect("late correction");
+    publish(&root);
+    journal
+        .append_batch(vec![JournalPayload::Record(token(
+            "resumed",
+            14 * DAY + 2_000,
+            "active",
+            /*input*/ 13,
+        ))])
+        .expect("new facts");
+    publish(&root);
+    let resumed = UsageReader::open(home.path()).expect("pin republication");
+    for (range, expected) in [
+        (
+            recent,
+            crate::UsageTotals {
+                input_tokens: 14,
+                output_tokens: 2,
+                records: 2,
+                ..Default::default()
+            },
+        ),
+        (
+            TimeRange::from_millis(11 * DAY + 500, 11 * DAY + 1_500)
+                .expect("partial retained hour"),
+            crate::UsageTotals {
+                input_tokens: 9,
+                output_tokens: 1,
+                records: 1,
+                ..Default::default()
+            },
+        ),
+        (
+            TimeRange::from_millis(14 * DAY, 15 * DAY).expect("current window"),
+            crate::UsageTotals {
+                input_tokens: 24,
+                output_tokens: 2,
+                records: 2,
+                ..Default::default()
+            },
+        ),
+        (
+            TimeRange::all(),
+            crate::UsageTotals {
+                input_tokens: 41,
+                output_tokens: 5,
+                records: 5,
+                ..Default::default()
+            },
+        ),
+    ] {
+        assert_eq!(
+            resumed.totals(range, &filter).expect("selected totals"),
+            expected
+        );
+        assert_eq!(
+            crate::reader_query::tests::full_index_totals(&resumed, range, &filter)
+                .expect("full raw index"),
+            expected
+        );
+        assert_eq!(
+            resumed
+                .prepare_window(range, &filter)
+                .expect("prepared")
+                .summary()
+                .expect("summary"),
+            resumed.summary(range, &filter).expect("raw summary")
+        );
+    }
+    crate::reader_query::tests::assert_generation_bounds(&resumed).expect("retained shard bounds");
+    assert_eq!(
+        retired
+            .totals(recent, &filter)
+            .expect("earlier retirement pin"),
+        crate::UsageTotals {
+            input_tokens: 12,
+            output_tokens: 2,
+            records: 2,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() {
     let home = tempdir().expect("home");
     let root = home.path().join(crate::USAGE_DIRECTORY_NAME);

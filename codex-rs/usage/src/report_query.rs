@@ -39,6 +39,7 @@ pub(crate) struct ReportQuery {
     work_operations: String,
     pub(crate) complete_from_sequence: u64,
     pub(crate) work_assignment_coverage: crate::WorkAssignmentCoverage,
+    pub(crate) complete_observations: bool,
 }
 
 impl ReportQuery {
@@ -299,6 +300,15 @@ impl ReportQuery {
             work_operations,
             complete_from_sequence,
             work_assignment_coverage,
+            complete_observations: complete_from_sequence == 1
+                && reader.manifest.retired_observations == 0
+                && reader.manifest.retired_review_contributions == 0
+                && reader.manifest.unapplied_retention_records == 0
+                && reader.manifest.unapplied_retention_corrections == 0
+                && descriptor.as_ref().is_some_and(|value| {
+                    value.retired_contribution_rows == 0
+                        && value.contribution_rollup_files.is_empty()
+                }),
         })
     }
 

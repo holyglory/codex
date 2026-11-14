@@ -33,6 +33,27 @@ fn capture(root: &Path, records: Vec<UsageRecord>) {
 }
 
 fn totals(reader: &UsageReader, filter: &UsageFilter) -> Vec<Value> {
+    crate::reader_query::tests::assert_generation_bounds(reader)
+        .expect("published raw origin bounds");
+    for range in [
+        TimeRange::all(),
+        TimeRange::from_millis(/*start_ms*/ 0, /*end_ms*/ 30 * DAY).expect("whole fixture"),
+        TimeRange::from_millis(DAY + 500, DAY + 1_500).expect("partial retained hour"),
+        TimeRange::from_millis(11 * DAY, 12 * DAY).expect("recent retained detail"),
+    ] {
+        let prepared = reader.prepare_window(range, filter).expect("pinned window");
+        assert_eq!(
+            prepared.summary().expect("prepared summary"),
+            reader.summary(range, filter).expect("raw summary")
+        );
+        if filter.repository_id.is_some() || filter.thread_id.is_some() {
+            assert_eq!(
+                reader.totals(range, filter).expect("selected raw totals"),
+                crate::reader_query::tests::full_index_totals(reader, range, filter)
+                    .expect("full raw index")
+            );
+        }
+    }
     let query = ReportQuery::new(reader, TimeRange::all(), filter).expect("real report query");
     query_rows(&query.connection, &format!(
         "WITH effort AS (SELECT work_native_project_id,workstream_id,work_outcome_id, \

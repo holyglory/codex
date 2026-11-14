@@ -211,7 +211,13 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
             .trim_end_matches(".parquet")
             .rsplit_once('-')
             .map_or("unknown", |(_, hour)| hour);
-        let replacement = format!("segment-retained_{stamp}-{hour}.parquet");
+        // This rewrites a subset of one raw file, so its previous origin is a
+        // conservative lower bound for every surviving reference.
+        let origin = crate::detail_retention::file_generation(&file, "segment-").map_or_else(
+            || "retained".to_owned(),
+            |generation| format!("{generation:020}_retained"),
+        );
+        let replacement = format!("segment-{origin}_{stamp}-{hour}.parquet");
         write_query(
             &connection,
             root,
@@ -237,7 +243,14 @@ pub(crate) fn compact_one(root: &Path, policy: RetentionPolicy, now_ms: i64) -> 
             rewritten.push(membership);
             continue;
         }
-        let output = format!("membership-retained-{stamp}-{index}.parquet");
+        // Replacing that file never raises its raw origin, and all other rows
+        // are unchanged; the shard's previous upper bound stays valid.
+        let origin = crate::detail_retention::file_generation(&membership, "membership-")
+            .map_or_else(
+                || "retained".to_owned(),
+                |generation| format!("{generation:020}_retained"),
+            );
+        let output = format!("membership-{origin}-{stamp}-{index}.parquet");
         let query = match &replacement {
             Some(replacement) => format!(
                 "SELECT * REPLACE (CASE WHEN segment_file = {selected} THEN {} ELSE segment_file END AS segment_file) FROM read_parquet({path})",
