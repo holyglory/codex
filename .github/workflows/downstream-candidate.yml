@@ -87,6 +87,7 @@ jobs:
         if: inputs.hosted_native_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}
           HOSTED_RUN_ID: ${{ inputs.hosted_native_run_id }}
           HOSTED_V8_RUN_ID: ${{ inputs.hosted_v8_run_id }}
           NATIVE_ONLY: ${{ inputs.native_only }}
@@ -97,7 +98,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-jobs.json"
           hosted_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/hosted-run.json")"
-          python3 scripts/release_identity.py --producer "$hosted_commit" --packaging "$GITHUB_SHA" --hosted-native
+          python3 scripts/release_identity.py --producer "$hosted_commit" --product-source "$NATIVE_SOURCE_COMMIT" --packaging "$GITHUB_SHA" --hosted-native
           python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$hosted_commit" --jobs-file "$RUNNER_TEMP/hosted-jobs.json" --hosted-native < "$RUNNER_TEMP/hosted-run.json"
 
       - name: Verify the optional hosted V8 producer
@@ -105,6 +106,7 @@ jobs:
         if: inputs.hosted_v8_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}
           HOSTED_RUN_ID: ${{ inputs.hosted_v8_run_id }}
           HOSTED_NATIVE_RUN_ID: ${{ inputs.hosted_native_run_id }}
         run: |
@@ -114,7 +116,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID" > "$RUNNER_TEMP/hosted-v8-run.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/jobs?filter=latest&per_page=100" > "$RUNNER_TEMP/hosted-v8-jobs.json"
           hosted_commit="$(jq -r '.head_sha' "$RUNNER_TEMP/hosted-v8-run.json")"
-          python3 scripts/release_identity.py --producer "$hosted_commit" --packaging "$GITHUB_SHA" --hosted-v8
+          python3 scripts/release_identity.py --producer "$hosted_commit" --product-source "$NATIVE_SOURCE_COMMIT" --packaging "$GITHUB_SHA" --hosted-v8
           python3 codex-cli/scripts/verify_candidate_run.py --repository "$GITHUB_REPOSITORY" --commit "$hosted_commit" --jobs-file "$RUNNER_TEMP/hosted-v8-jobs.json" --hosted-v8 < "$RUNNER_TEMP/hosted-v8-run.json"
           echo "source_commit=$hosted_commit" >> "$GITHUB_OUTPUT"
 

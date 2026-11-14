@@ -377,6 +377,16 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
     return result
 
 
+def verify_hosted_producer_source(product: str, producer: str) -> dict:
+    """Bind a hosted producer to the immutable product source it packages."""
+    result = verify_native_source(product, producer)
+    return {
+        "product_source": result["native_producer"],
+        "hosted_producer": result["packaging"],
+        "product_packaging_paths": result["packaging_only_paths"],
+    }
+
+
 def verify_hosted_v8_source(producer: str, packaging: str) -> dict:
     native = identity(producer)
     candidate = identity(packaging)
@@ -639,6 +649,7 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--producer", required=True)
+    parser.add_argument("--product-source")
     parser.add_argument("--packaging", required=True)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--local-acceptance")
@@ -649,16 +660,28 @@ def main() -> None:
     args = parser.parse_args()
     if args.hosted_native and args.hosted_v8:
         parser.error("--hosted-native and --hosted-v8 are mutually exclusive")
+    product_source = args.product_source or args.producer
+    hosted_relationship = None
+    if args.hosted_native or args.hosted_v8:
+        if not args.product_source:
+            parser.error("hosted producer checks require --product-source")
+        hosted_relationship = verify_hosted_producer_source(
+            product_source, args.producer
+        )
+    elif args.product_source and args.product_source != args.producer:
+        parser.error("--product-source is only distinct for hosted producer checks")
     if args.hosted_v8:
         result = verify_hosted_v8_source(args.producer, args.packaging)
     elif args.hosted_native:
         result = verify_hosted_native_source(args.producer, args.packaging)
     else:
         result = verify_native_source(args.producer, args.packaging)
+    if hosted_relationship is not None:
+        result["product_source"] = hosted_relationship
     if args.local_acceptance or args.candidate_mode:
         verify_acceptance(
             json.loads(args.local_acceptance) if args.local_acceptance else None,
-            args.producer,
+            product_source,
             mode=args.candidate_mode or "complete",
         )
     if args.artifacts_dir:
@@ -666,7 +689,7 @@ def main() -> None:
             args.artifacts_dir, args.packaging
         )
     source, npm = version()
-    verify_new_downstream_version(source, args.producer)
+    verify_new_downstream_version(source, product_source)
     result.update({"source_version": source, "npm_version": npm})
     if args.github_output:
         with args.github_output.open("a") as output:

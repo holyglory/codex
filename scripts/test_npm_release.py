@@ -2,6 +2,7 @@
 """Focused checks for release identity and archive naming guards."""
 
 import importlib.util
+import io
 import hashlib
 import json
 import os
@@ -19,10 +20,12 @@ from release_identity import (
     V8_INPUT_PATHS,
     verify_acceptance,
     verify_hosted_native_source,
+    verify_hosted_producer_source,
     verify_hosted_v8_source,
     verify_native_source,
     verify_new_downstream_version,
 )
+import release_identity
 
 SPEC = importlib.util.spec_from_file_location(
     "verify_candidate_run",
@@ -78,6 +81,80 @@ class NpmReleaseContractTest(unittest.TestCase):
         with patch("release_identity.git", return_value="npm-v0.166.0-multi.4\n"):
             with self.assertRaisesRegex(ValueError, r"use \+multi\.5"):
                 verify_new_downstream_version("0.166.0+multi.4")
+
+    def test_hosted_cli_reserves_tag_for_product_source(self) -> None:
+        product = "a" * 40
+        hosted = "b" * 40
+        packaging = "c" * 40
+        calls = {}
+
+        def relationship(product_source: str, hosted_producer: str) -> dict:
+            calls["relationship"] = (product_source, hosted_producer)
+            return {"product_source": {"source_commit": product_source}}
+
+        def version_guard(source: str, producer: str) -> None:
+            calls["tag"] = (source, producer)
+
+        with (
+            patch.object(
+                release_identity,
+                "verify_hosted_producer_source",
+                side_effect=relationship,
+            ),
+            patch.object(
+                release_identity,
+                "verify_hosted_native_source",
+                return_value={},
+            ),
+            patch.object(
+                release_identity,
+                "version",
+                return_value=("0.166.0+multi.8", "0.166.0-multi.8"),
+            ),
+            patch.object(
+                release_identity,
+                "verify_new_downstream_version",
+                side_effect=version_guard,
+            ),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "release_identity.py",
+                    "--producer",
+                    hosted,
+                    "--product-source",
+                    product,
+                    "--packaging",
+                    packaging,
+                    "--hosted-native",
+                ],
+            ),
+            patch.object(sys, "stdout", io.StringIO()),
+        ):
+            release_identity.main()
+
+        self.assertEqual(calls["relationship"], (product, hosted))
+        self.assertEqual(calls["tag"], ("0.166.0+multi.8", product))
+
+    def test_hosted_cli_rejects_missing_product_source(self) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "release_identity.py",
+                    "--producer",
+                    "a" * 40,
+                    "--packaging",
+                    "b" * 40,
+                    "--hosted-v8",
+                ],
+            ),
+            patch.object(sys, "stderr", io.StringIO()),
+        ):
+            with self.assertRaises(SystemExit):
+                release_identity.main()
 
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
@@ -361,6 +438,19 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                     result["native_producer"]["native_tree"],
                     result["packaging"]["native_tree"],
                 )
+                relationship = verify_hosted_producer_source(producer, packaging)
+                self.assertEqual(
+                    relationship["product_source"]["source_commit"], producer
+                )
+                self.assertEqual(
+                    relationship["hosted_producer"]["source_commit"], packaging
+                )
+                invalid_product = commit(
+                    "codex-rs/product.rs", inputs["codex-rs/product.rs"] + "changed\n"
+                )
+                with self.assertRaisesRegex(ValueError, "Native reuse changes"):
+                    verify_hosted_producer_source(producer, invalid_product)
+                packaging = commit("codex-rs/product.rs", inputs["codex-rs/product.rs"])
                 timeout_additions = (
                     "\n[[profile.default.overrides]]\n"
                     "filter = 'package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)'\n"
@@ -739,6 +829,11 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             Path(__file__).resolve().parents[1]
             / ".github/workflows/downstream-candidate.yml"
         ).read_text()
+        self.assertEqual(source.count('--product-source "$NATIVE_SOURCE_COMMIT"'), 2)
+        self.assertEqual(
+            source.count("NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}"),
+            4,
+        )
         step = source.split(
             "      - name: Verify the optional hosted V8 producer\n", 1
         )[1]
@@ -756,6 +851,7 @@ python3() {
 }
 """
         producer = "a" * 40
+        product_source = "c" * 40
         packaging = "b" * 40
         for mode, run_id, native_id, reject, accepted in (
             ("true", "123", "", "", True),
@@ -786,6 +882,7 @@ python3() {
                             "RUNNER_TEMP": directory,
                             "GITHUB_OUTPUT": str(output),
                             "FIXTURE_PRODUCER": producer,
+                            "NATIVE_SOURCE_COMMIT": product_source,
                             "FIXTURE_CHECKS": str(checks),
                             "FIXTURE_REJECT": reject,
                         },
@@ -799,7 +896,7 @@ python3() {
                         self.assertEqual(
                             checks.read_text().splitlines(),
                             [
-                                f"scripts/release_identity.py --producer {producer} --packaging {packaging} --hosted-v8",
+                                f"scripts/release_identity.py --producer {producer} --product-source {product_source} --packaging {packaging} --hosted-v8",
                                 f"codex-cli/scripts/verify_candidate_run.py --repository holyglory/codex --commit {producer} --jobs-file {root / 'hosted-v8-jobs.json'} --hosted-v8",
                             ],
                         )
