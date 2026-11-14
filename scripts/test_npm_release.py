@@ -327,13 +327,23 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 return git("rev-parse", "HEAD")
 
             git("init", "-q")
+            native_script = ".github/scripts/downstream-unix-native.sh"
+            native_recipe = (
+                "cat >> \"$nextest_config\" <<'EOF'\n\n"
+                "[[profile.default.overrides]]\n"
+                "filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'\n"
+                'slow-timeout = { period = "2m", terminate-after = 2 }\n'
+                "EOF\n"
+                "run_check product-regressions just test --locked -p codex-usage\n"
+                "run_check product-build cargo build --locked --release\n"
+            )
             inputs = {
                 "codex-rs/product.rs": "product source\n",
                 "third_party/v8/source.bzl": "V8 source\n",
                 "MODULE.bazel": "toolchain source\n",
                 ".github/scripts/rusty_v8_bazel.py": "V8 helper\n",
                 ".github/scripts/prepare_downstream_musl.py": "musl helper\n",
-                ".github/scripts/downstream-unix-native.sh": "hosted helper\n",
+                native_script: native_recipe,
                 ".github/scripts/bootstrap_bazel_distdir.py": "distdir helper\n",
                 ".github/workflows/downstream-unix-native-target.yml": "name: target\non:\n  workflow_call:\njobs:\n  v8:\n    name: V8 source pair\n  package:\n    name: Package native target\n",
                 ".github/workflows/downstream-candidate.yml": "env:\n  BUILD_MODE: release\njobs:\n  native:\n    runs-on: ubuntu-24.04-arm\n    steps:\n      - run: echo hosted\n  npm:\n    steps:\n      - run: echo assembly\n",
@@ -350,6 +360,84 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 self.assertEqual(
                     result["native_producer"]["native_tree"],
                     result["packaging"]["native_tree"],
+                )
+                timeout_additions = (
+                    "\n[[profile.default.overrides]]\n"
+                    "filter = 'package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)'\n"
+                    'slow-timeout = { period = "3m", terminate-after = 2 }\n'
+                    "\n[[profile.default.overrides]]\n"
+                    "filter = 'package(codex-usage) & test(=prepared_window_matches_raw_summary_across_corrections_and_scopes)'\n"
+                    'slow-timeout = { period = "3m", terminate-after = 2 }\n'
+                )
+                extended_recipe = native_recipe.replace(
+                    "EOF\n", timeout_additions + "EOF\n"
+                )
+                extended = commit(native_script, extended_recipe)
+                verify_hosted_native_source(producer, extended)
+                for before, after in (
+                    ('period = "3m"', 'period = "4m"'),
+                    ("terminate-after = 2", "terminate-after = 3"),
+                    (
+                        "test(=prepared_window_matches_raw_summary_across_corrections_and_scopes)",
+                        "test(=another_test)",
+                    ),
+                    ("--locked", "--offline"),
+                    ("--release", ""),
+                    (
+                        "run_check product-regressions just test --locked -p codex-usage\n",
+                        "",
+                    ),
+                    ("run_check product-build", "echo skipped-product-build"),
+                ):
+                    with self.subTest(recipe_change=(before, after)):
+                        changed = commit(
+                            native_script, extended_recipe.replace(before, after)
+                        )
+                        with self.assertRaisesRegex(
+                            ValueError, "Hosted native recipe changed"
+                        ):
+                            verify_hosted_native_source(producer, changed)
+                for invalid_recipe in (
+                    extended_recipe + "\n",
+                    "\n" + extended_recipe,
+                    extended_recipe.replace(
+                        timeout_additions,
+                        timeout_additions.rsplit("\n[[profile.default.overrides]]", 1)[
+                            0
+                        ],
+                    ),
+                    native_recipe + timeout_additions,
+                    extended_recipe.replace("EOF\n", timeout_additions + "EOF\n"),
+                ):
+                    invalid = commit(native_script, invalid_recipe)
+                    with self.assertRaisesRegex(
+                        ValueError, "Hosted native recipe changed"
+                    ):
+                        verify_hosted_native_source(producer, invalid)
+                removed = commit(native_script, native_recipe)
+                with self.assertRaisesRegex(ValueError, "Hosted native recipe changed"):
+                    verify_hosted_native_source(extended, removed)
+                git("update-index", "--chmod=+x", native_script)
+                git(
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    "commit",
+                    "-qm",
+                    "mode changed",
+                )
+                with self.assertRaisesRegex(ValueError, "recipe file identity changed"):
+                    verify_hosted_native_source(producer, git("rev-parse", "HEAD"))
+                git("update-index", "--chmod=-x", native_script)
+                git(
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    "commit",
+                    "-qm",
+                    "restore mode",
                 )
                 workflow = ".github/workflows/downstream-candidate.yml"
                 orchestration = commit(
