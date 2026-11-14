@@ -200,7 +200,11 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 "WinDLL",
                 create=True,
                 return_value=(
-                    SimpleNamespace(GetSystemTimes=Mock(side_effect=get_system_times))
+                    SimpleNamespace(
+                        GetActiveProcessorCount=Mock(return_value=64),
+                        GetActiveProcessorGroupCount=Mock(return_value=1),
+                        GetSystemTimes=Mock(side_effect=get_system_times),
+                    )
                 ),
             ),
         ):
@@ -217,6 +221,7 @@ class WindowsNativeHelperTest(unittest.TestCase):
             self.assertEqual(samples[0]["source"], "GetSystemTimes")
             self.assertEqual(samples[0]["scope"], "machine")
             self.assertEqual(samples[0]["logical_cpu_count"], 64)
+            self.assertEqual(samples[0]["processor_group_count"], 1)
             self.assertEqual(samples[0]["idle_100ns"], base + 100)
             self.assertEqual(samples[0]["kernel_100ns"], base + 300)
             self.assertEqual(samples[0]["user_100ns"], base + 200)
@@ -230,7 +235,11 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 MODULE.ctypes,
                 "WinDLL",
                 create=True,
-                return_value=(SimpleNamespace(GetSystemTimes=Mock(return_value=0))),
+                return_value=SimpleNamespace(
+                    GetActiveProcessorCount=Mock(return_value=64),
+                    GetActiveProcessorGroupCount=Mock(return_value=1),
+                    GetSystemTimes=Mock(return_value=0),
+                ),
             ),
             patch.object(MODULE.ctypes, "get_last_error", create=True, return_value=5),
         ):
@@ -238,24 +247,56 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 MODULE.host_cpu_sample(),
                 {"error": "GetSystemTimes unavailable: Windows error 5"},
             )
-        with (
-            patch.object(
-                MODULE, "os", SimpleNamespace(name="nt", cpu_count=lambda: 128)
-            ),
-            patch.object(MODULE.ctypes, "WinDLL", create=True) as load_library,
+        for native_cpus, groups, expected_error in (
+            (128, 2, "more than 64 logical CPUs"),
+            (64, 2, "2 active processor groups"),
+            (64, 0, "0 active processor groups"),
+            (0, 1, "GetActiveProcessorCount failed: Windows error 5"),
         ):
-            self.assertIn(
-                "more than 64 logical CPUs", MODULE.host_cpu_sample()["error"]
+            kernel32 = SimpleNamespace(
+                GetActiveProcessorCount=Mock(return_value=native_cpus),
+                GetActiveProcessorGroupCount=Mock(return_value=groups),
+                GetSystemTimes=Mock(),
             )
-            load_library.assert_not_called()
+            with (
+                self.subTest(native_cpus=native_cpus, groups=groups),
+                patch.object(
+                    MODULE, "os", SimpleNamespace(name="nt", cpu_count=lambda: 64)
+                ),
+                patch.object(
+                    MODULE.ctypes, "WinDLL", create=True, return_value=kernel32
+                ),
+                patch.object(
+                    MODULE.ctypes, "get_last_error", create=True, return_value=5
+                ),
+            ):
+                sample = MODULE.host_cpu_sample()
+                self.assertIn(expected_error, sample["error"])
+                self.assertNotIn("scope", sample)
+                kernel32.GetActiveProcessorCount.assert_called_once_with(0xFFFF)
+                kernel32.GetSystemTimes.assert_not_called()
 
-    @unittest.skipUnless(
-        os.name == "nt" and (os.cpu_count() or 0) <= 64,
-        "requires Windows host with at most 64 logical CPUs",
-    )
+    @unittest.skipUnless(os.name == "nt", "requires Windows host CPU counters")
     def test_host_cpu_samples_real_windows_counter_delta(self) -> None:
+        kernel32 = MODULE.ctypes.WinDLL("kernel32", use_last_error=True)
+        processor_count = kernel32.GetActiveProcessorCount
+        processor_count.argtypes = [MODULE.wintypes.WORD]
+        processor_count.restype = MODULE.wintypes.DWORD
+        native_cpus = processor_count(0xFFFF)
+        group_count = kernel32.GetActiveProcessorGroupCount
+        group_count.argtypes = []
+        group_count.restype = MODULE.wintypes.WORD
+        native_groups = group_count()
+        self.assertGreater(native_cpus, 0)
+        self.assertGreater(native_groups, 0)
+        if native_cpus > 64 or native_groups > 1:
+            self.skipTest(
+                "GetSystemTimes whole-host counters require one processor group with at most 64 CPUs"
+            )
         first = MODULE.host_cpu_sample()
         self.assertNotIn("error", first)
+        self.assertEqual(first["logical_cpu_count"], native_cpus)
+        self.assertEqual(first["processor_group_count"], native_groups)
         MODULE.time.sleep(0.05)
         second = MODULE.host_cpu_sample(first)
         self.assertNotIn("error", second)

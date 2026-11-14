@@ -140,13 +140,23 @@ def host_cpu_sample(previous: dict | None = None) -> dict | None:
     """Sample all-machine CPU counters without waiting for a second interval."""
     if os.name != "nt":
         return None
-    logical_cpus = os.cpu_count()
-    if logical_cpus is None:
-        return {"error": "logical CPU count unavailable; GetSystemTimes machine coverage is unknown"}
-    if logical_cpus > 64:
-        return {"error": "GetSystemTimes covers only one processor group on hosts with more than 64 logical CPUs"}
     try:
-        get_system_times = ctypes.WinDLL("kernel32", use_last_error=True).GetSystemTimes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        processor_count = kernel32.GetActiveProcessorCount
+        processor_count.argtypes = [wintypes.WORD]
+        processor_count.restype = wintypes.DWORD
+        logical_cpus = processor_count(0xFFFF)  # ALL_PROCESSOR_GROUPS
+        if logical_cpus == 0:
+            raise OSError(f"GetActiveProcessorCount failed: Windows error {ctypes.get_last_error()}")
+        if logical_cpus > 64:
+            return {"error": "GetSystemTimes covers only one processor group on hosts with more than 64 logical CPUs"}
+        group_count = kernel32.GetActiveProcessorGroupCount
+        group_count.argtypes = []
+        group_count.restype = wintypes.WORD
+        processor_groups = group_count()
+        if processor_groups != 1:
+            return {"error": f"GetSystemTimes machine coverage is unavailable with {processor_groups} active processor groups"}
+        get_system_times = kernel32.GetSystemTimes
         get_system_times.argtypes = [ctypes.POINTER(wintypes.FILETIME)] * 3
         get_system_times.restype = wintypes.BOOL
         counters = [wintypes.FILETIME() for _ in range(3)]
@@ -159,6 +169,7 @@ def host_cpu_sample(previous: dict | None = None) -> dict | None:
         "source": "GetSystemTimes",
         "scope": "machine",
         "logical_cpu_count": logical_cpus,
+        "processor_group_count": processor_groups,
         **{
             name: (counter.dwHighDateTime << 32) | counter.dwLowDateTime
             for name, counter in zip(("idle_100ns", "kernel_100ns", "user_100ns"), counters)
