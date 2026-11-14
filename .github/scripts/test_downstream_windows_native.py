@@ -328,22 +328,25 @@ class WindowsNativeHelperTest(unittest.TestCase):
             producer.telemetry.mkdir()
             observed_stdout = []
             popen = MODULE.subprocess.Popen
+            command = [
+                sys.executable,
+                "-c",
+                "import os,sys,threading; "
+                "watchdog=threading.Timer(10, lambda: os._exit(124)); "
+                "watchdog.daemon=True; watchdog.start(); "
+                "sys.stdout.write('x' * 2_000_000); sys.stdout.flush(); watchdog.cancel()",
+            ]
 
             def record_stdout(*args, **kwargs):
-                observed_stdout.append(kwargs["stdout"])
+                # The live Windows CPU probe also launches subprocesses.
+                if args[0] == command:
+                    observed_stdout.append(kwargs["stdout"])
                 return popen(*args, **kwargs)
 
             with patch.object(MODULE.subprocess, "Popen", side_effect=record_stdout):
                 output = producer.run(
                     "large-capture",
-                    [
-                        sys.executable,
-                        "-c",
-                        "import os,sys,threading; "
-                        "watchdog=threading.Timer(10, lambda: os._exit(124)); "
-                        "watchdog.daemon=True; watchdog.start(); "
-                        "sys.stdout.write('x' * 2_000_000); sys.stdout.flush(); watchdog.cancel()",
-                    ],
+                    command,
                     capture_output=True,
                 )
             self.assertEqual(len(output), 2_000_000)
