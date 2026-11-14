@@ -2,6 +2,7 @@
 """Build exact-source Windows packages inside the private owner-only controller."""
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import struct
 import subprocess
 import sys
 import tarfile
-import threading
+import tempfile
 import time
 import tomllib
 
@@ -193,12 +194,21 @@ class Producer:
             "state": "running",
         }
         write_json(telemetry_path, telemetry)
-        with log.open("w", encoding="utf-8") as stream:
+        with (
+            log.open("w", encoding="utf-8") as stream,
+            (
+                tempfile.TemporaryFile(
+                    mode="w+", encoding="utf-8", errors="replace"
+                )
+                if capture_output
+                else nullcontext(stream)
+            ) as stdout_stream,
+        ):
             result = subprocess.Popen(
                 command,
                 cwd=ROOT,
                 env=effective_environment,
-                stdout=subprocess.PIPE if capture_output else stream,
+                stdout=stdout_stream,
                 stderr=stream,
                 text=True,
                 encoding="utf-8",
@@ -206,14 +216,6 @@ class Producer:
             )
             telemetry["pid"] = result.pid
             write_json(telemetry_path, telemetry)
-            captured = []
-            stdout_reader = None
-            if capture_output and result.stdout is not None:
-                def drain_stdout() -> None:
-                    captured.append(result.stdout.read())
-
-                stdout_reader = threading.Thread(target=drain_stdout, daemon=True)
-                stdout_reader.start()
             started = time.monotonic()
             last_heartbeat = started - 60
             previous_cpu = None
@@ -252,11 +254,13 @@ class Producer:
                     }), flush=True)
                     last_heartbeat = now
                 time.sleep(1)
-            if stdout_reader is not None:
-                stdout_reader.join()
-                result.stdout.close()
             result.wait()
-            output = "".join(captured)
+            if capture_output:
+                stdout_stream.flush()
+                stdout_stream.seek(0)
+                output = stdout_stream.read()
+            else:
+                output = ""
         finished_at_ms = time.time_ns() // 1_000_000
         telemetry.update({
             "state": "completed",

@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +23,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class WindowsNativeHelperTest(unittest.TestCase):
-    def test_capture_output_drains_large_child_pipe_before_waiting(self) -> None:
+    def test_capture_output_uses_file_backed_stdout_for_large_child_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             producer = MODULE.Producer.__new__(MODULE.Producer)
@@ -31,15 +32,26 @@ class WindowsNativeHelperTest(unittest.TestCase):
             producer.telemetry = root / "telemetry"
             producer.logs.mkdir()
             producer.telemetry.mkdir()
-            producer.run(
-                "large-capture",
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys; sys.stdout.write('x' * 2_000_000)",
-                ],
-                capture_output=True,
-            )
+            observed_stdout = []
+            popen = MODULE.subprocess.Popen
+
+            def record_stdout(*args, **kwargs):
+                observed_stdout.append(kwargs["stdout"])
+                return popen(*args, **kwargs)
+
+            with patch.object(MODULE.subprocess, "Popen", side_effect=record_stdout):
+                output = producer.run(
+                    "large-capture",
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write('x' * 2_000_000)",
+                    ],
+                    capture_output=True,
+                )
+            self.assertEqual(len(output), 2_000_000)
+            self.assertEqual(len(observed_stdout), 1)
+            self.assertIsNot(observed_stdout[0], MODULE.subprocess.PIPE)
             receipt = (root / "checks/large-capture.json").read_text()
             self.assertIn('"exit_code": 0', receipt)
 
