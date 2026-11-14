@@ -250,6 +250,13 @@ def _verify_v8_recipe(producer: str, packaging: str) -> None:
     for workflow in candidate_workflows:
         job = _extract_yaml_job(workflow, "native")
         job = job.replace(" && inputs.hosted_v8_run_id == ''", "")
+        # A candidate may route one repeatedly failing target through an
+        # independently verified handoff. This exact condition only removes
+        # that target from the fresh matrix; the Mac matrix and V8 recipe stay
+        # byte-equivalent for reuse.
+        job = job.replace(
+            " && !inputs.reuse_linux_arm_handoff", ""
+        )
         job = re.sub(r"^      v8_run_id:.*\n", "", job, flags=re.MULTILINE)
         job = re.sub(r"^      v8_source_commit:.*\n", "", job, flags=re.MULTILINE)
         native_jobs.append(job)

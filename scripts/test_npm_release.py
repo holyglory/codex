@@ -674,6 +674,32 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                     ["scripts/qualify_local_delivery.py"],
                 )
                 verify_hosted_v8_source(producer, qualification_commit)
+            candidate_workflow = root / ".github/workflows/downstream-candidate.yml"
+            candidate_workflow.write_text(
+                candidate_workflow.read_text().replace(
+                    "if: inputs.hosted_native_run_id == ''",
+                    "if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff",
+                )
+            )
+            handoff_matrix = commit("allow verified Linux ARM handoff")
+            with patch("release_identity.ROOT", root):
+                verify_hosted_v8_source(producer, handoff_matrix)
+            candidate_workflow.write_text(
+                candidate_workflow.read_text().replace(
+                    "if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff",
+                    "if: inputs.hosted_native_run_id == '' && inputs.reuse_linux_arm_handoff",
+                )
+            )
+            invalid_handoff_matrix = commit("reject broad native matrix change")
+            with patch("release_identity.ROOT", root):
+                with self.assertRaisesRegex(ValueError, "Hosted native matrix"):
+                    verify_hosted_v8_source(producer, invalid_handoff_matrix)
+            candidate_workflow.write_text(
+                candidate_workflow.read_text().replace(
+                    "if: inputs.hosted_native_run_id == '' && inputs.reuse_linux_arm_handoff",
+                    "if: inputs.hosted_native_run_id == ''",
+                )
+            )
             usage = root / "codex-rs/usage/src/runtime.rs"
             usage.parent.mkdir(parents=True, exist_ok=True)
             usage.write_text("usage fix\n")
