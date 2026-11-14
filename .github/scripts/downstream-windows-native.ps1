@@ -302,7 +302,8 @@ class Producer:
             shutil.copytree(source, self.telemetry / "cargo-timings" / target, dirs_exist_ok=True)
 
     def bazel(self, name: str, *arguments: str, capture_output: bool = False) -> str:
-        return self.run(name, [sys.executable, str(ROOT / ".github/scripts/run_bazel_with_buildbuddy.py"), *arguments], capture_output=capture_output)
+        wrapper = Path(__file__).with_name("run_bazel_with_buildbuddy.py")
+        return self.run(name, [sys.executable, str(wrapper), *arguments], capture_output=capture_output)
 
     def prerequisites(self) -> None:
         if os.environ.get("VSCMD_ARG_HOST_ARCH") != "x64" or os.environ.get("VSCMD_ARG_TGT_ARCH") != "x64":
