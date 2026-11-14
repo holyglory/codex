@@ -44,8 +44,18 @@ impl UsageReader {
         after: Option<&RecordCursor>,
         limit: usize,
     ) -> Result<OperationPage> {
-        let limit = limit.clamp(1, 50);
         let query = ReportQuery::new(self, range, filter)?;
+        self.operation_page_from_query(selection, after, limit, &query)
+    }
+
+    pub(crate) fn operation_page_from_query(
+        &self,
+        selection: OperationSelection,
+        after: Option<&RecordCursor>,
+        limit: usize,
+        query: &ReportQuery,
+    ) -> Result<OperationPage> {
+        let limit = limit.clamp(1, 50);
         let mut predicates = vec![match selection {
             OperationSelection::All => "true".to_string(),
             OperationSelection::Tools => "kind = 'tool'".to_string(),

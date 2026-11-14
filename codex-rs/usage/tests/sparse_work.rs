@@ -64,6 +64,124 @@ fn operation(home: &Path, id: &str, at: i64, tokens: u64) -> codex_usage::Result
 }
 
 #[test]
+fn prepared_window_matches_raw_summary_across_corrections_and_scopes() -> codex_usage::Result<()> {
+    let home = tempfile::tempdir()?;
+    let root = home.path().join("usage-v2");
+    let early = start("early", /*at*/ 100).with_repository("repo-a");
+    let left = UsageRecord::new_millis(
+        "left", /*observed_at_ms*/ 1_000, /*input_tokens*/ 10, /*output_tokens*/ 4,
+    )
+    .with_thread("thread")
+    .with_repository("repo-a");
+    let mut missing = UsageRecord::new_millis(
+        "missing", /*observed_at_ms*/ 1_500, /*input_tokens*/ 3, /*output_tokens*/ 2,
+    )
+    .with_repository("repo-a");
+    missing.provider_total_tokens = None;
+    let other = UsageRecord::new_millis(
+        "other", /*observed_at_ms*/ 1_500, /*input_tokens*/ 20, /*output_tokens*/ 6,
+    )
+    .with_thread("other-thread")
+    .with_repository("repo-b");
+    let right = UsageRecord::new_millis(
+        "right", /*observed_at_ms*/ 2_000, /*input_tokens*/ 100,
+        /*output_tokens*/ 30,
+    )
+    .with_thread("thread")
+    .with_repository("repo-a");
+    capture_records(
+        home.path(),
+        vec![
+            early.clone(),
+            finish(early, /*at*/ 200, /*tokens*/ 7),
+            left.clone(),
+            missing,
+            other,
+            right,
+        ],
+    )?;
+    UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    let mut duplicate = left;
+    duplicate.input_tokens = 999;
+    let mut late = UsageRecord::new_millis(
+        "late", /*observed_at_ms*/ 1_750, /*input_tokens*/ 11, /*output_tokens*/ 5,
+    )
+    .with_thread("thread")
+    .with_repository("repo-a");
+    late.operation_id = Some("early".into());
+    capture_records(home.path(), vec![duplicate, late])?;
+    let mut store = codex_usage::UsageStore::open(home.path())?;
+    store.append_correction(codex_usage::UsageCorrection::new(
+        "fix-left",
+        "left",
+        /*observed_at*/ 3,
+        /*input_tokens_delta*/ -2,
+        /*output_tokens_delta*/ 1,
+        "fixture correction",
+    ))?;
+    let filters = [
+        UsageFilter::default(),
+        UsageFilter::default().for_repository("repo-a"),
+        UsageFilter::default().for_thread("thread"),
+        UsageFilter {
+            repository_id: Some("repo-a".into()),
+            thread_id: Some("thread".into()),
+            ..Default::default()
+        },
+        UsageFilter {
+            repository_id: Some("repo-b".into()),
+            thread_ids: Some(["thread".to_owned(), "other-thread".to_owned()].into()),
+            ..Default::default()
+        },
+    ];
+    for published in [false, true] {
+        if published {
+            UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+                max_bytes: 1024 * 1024,
+                max_entries: 64,
+            })?;
+        }
+        let reader = UsageReader::open(home.path())?;
+        for filter in &filters {
+            for range in [
+                TimeRange::all(),
+                TimeRange::from_millis(/*start_ms*/ 1_000, /*end_ms*/ 2_000)?,
+                TimeRange::from_millis(/*start_ms*/ 1_000, /*end_ms*/ 1_001)?,
+                TimeRange::from_millis(/*start_ms*/ 2_000, /*end_ms*/ 2_001)?,
+            ] {
+                let window = reader.prepare_window(range, filter)?;
+                assert_eq!(window.summary()?, reader.summary(range, filter)?);
+            }
+        }
+        let range = TimeRange::from_millis(/*start_ms*/ 1_000, /*end_ms*/ 2_000)?;
+        let filter = UsageFilter::default().for_repository("repo-a");
+        let expected = reader.summary(range, &filter)?;
+        assert_eq!(
+            json!({"input":expected["inputTokens"],"output":expected["outputTokens"],"records":expected["records"]}),
+            json!({"input":22,"output":12,"records":3})
+        );
+        if published {
+            let pinned = reader.prepare_window(range, &filter)?;
+            capture_record(
+                home.path(),
+                UsageRecord::new_millis(
+                    "after-pin",
+                    /*observed_at_ms*/ 1_800,
+                    /*input_tokens*/ 50,
+                    /*output_tokens*/ 10,
+                )
+                .with_repository("repo-a"),
+            )?;
+            assert_eq!(pinned.summary()?, expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn unrelated_scope_review_ignores_corrupt_history_and_keeps_scoped_errors()
 -> codex_usage::Result<()> {
     let home = tempfile::tempdir()?;
@@ -130,6 +248,129 @@ fn unrelated_scope_review_ignores_corrupt_history_and_keeps_scoped_errors()
         "metadata":unavailable["workBindings"]["metadataCoverage"],
         "tokens":unavailable["outcomes"]["totals"]["providerTotalTokens"]["measured"]}),
         json!({"coverage":"unavailable","metadata":"unavailable","tokens":11})
+    );
+    Ok(())
+}
+
+#[test]
+fn finite_raw_totals_prune_history_and_preserve_exact_row_filters() -> codex_usage::Result<()> {
+    let home = tempfile::tempdir()?;
+    let root = home.path().join("usage-v2");
+    const HOUR: i64 = 3_600_000;
+    let history = (0..6)
+        .map(|hour| {
+            UsageRecord::new_millis(
+                format!("old-{hour}"),
+                hour * HOUR + 1,
+                /*input_tokens*/ 1,
+                /*output_tokens*/ 0,
+            )
+            .with_repository("repo-a")
+        })
+        .collect();
+    capture_records(home.path(), history)?;
+    UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    let legacy = UsageRecord::new(
+        "legacy",
+        8 * 3_600 + 1,
+        /*input_tokens*/ 3,
+        /*output_tokens*/ 1,
+    )
+    .with_thread("thread")
+    .with_repository("repo-a");
+    let records = vec![
+        legacy,
+        UsageRecord::new_millis(
+            "before",
+            8 * HOUR + 999,
+            /*input_tokens*/ 99,
+            /*output_tokens*/ 99,
+        )
+        .with_thread("thread")
+        .with_repository("repo-a"),
+        UsageRecord::new_millis(
+            "exact",
+            8 * HOUR + 1_999,
+            /*input_tokens*/ 10,
+            /*output_tokens*/ 2,
+        )
+        .with_thread("thread")
+        .with_repository("repo-a"),
+        UsageRecord::new_millis(
+            "after",
+            8 * HOUR + 2_000,
+            /*input_tokens*/ 100,
+            /*output_tokens*/ 100,
+        )
+        .with_thread("thread")
+        .with_repository("repo-a"),
+        UsageRecord::new_millis(
+            "other-repo",
+            8 * HOUR + 1_500,
+            /*input_tokens*/ 50,
+            /*output_tokens*/ 3,
+        )
+        .with_thread("thread")
+        .with_repository("repo-b"),
+        UsageRecord::new_millis(
+            "other-thread",
+            8 * HOUR + 1_500,
+            /*input_tokens*/ 60,
+            /*output_tokens*/ 4,
+        )
+        .with_thread("other")
+        .with_repository("repo-a"),
+    ];
+    capture_records(home.path(), records)?;
+    UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    let mut store = codex_usage::UsageStore::open(home.path())?;
+    store.append_correction(codex_usage::UsageCorrection::new(
+        "old-fix",
+        "old-0",
+        9 * 3_600,
+        /*input_tokens_delta*/ 7,
+        /*output_tokens_delta*/ 0,
+        "old observation",
+    ))?;
+    store.append_correction(codex_usage::UsageCorrection::new(
+        "fix",
+        "legacy",
+        9 * 3_600,
+        /*input_tokens_delta*/ 2,
+        /*output_tokens_delta*/ -1,
+        "outside observation window",
+    ))?;
+    UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    let reader = UsageReader::open(home.path())?;
+    assert!(reader.manifest().membership_files.len() > 1);
+    let range = TimeRange::from_millis(8 * HOUR + 1_000, 8 * HOUR + 2_000)?;
+    let filter = UsageFilter {
+        repository_id: Some("repo-a".into()),
+        thread_id: Some("thread".into()),
+        ..Default::default()
+    };
+    let totals = reader.totals(range, &filter)?;
+    assert_eq!(
+        totals,
+        codex_usage::UsageTotals {
+            input_tokens: 15,
+            output_tokens: 2,
+            records: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        reader.prepare_window(range, &filter)?.summary()?,
+        reader.summary(range, &filter)?
     );
     Ok(())
 }

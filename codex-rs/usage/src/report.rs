@@ -16,6 +16,15 @@ impl UsageReader {
     /// observation fragments. Timing sums describe overlap, never active time.
     pub fn performance_review(&self, range: TimeRange, filter: &UsageFilter) -> Result<Value> {
         let query = ReportQuery::new(self, range, filter)?;
+        self.review_from_query(range, filter, &query)
+    }
+
+    pub(crate) fn review_from_query(
+        &self,
+        range: TimeRange,
+        filter: &UsageFilter,
+        query: &ReportQuery,
+    ) -> Result<Value> {
         let start = range.start_ms();
         let end = range.end_ms();
         let exact_token_window = self.manifest.unapplied_retention_corrections == 0
@@ -142,7 +151,7 @@ impl UsageReader {
             ),
             32,
         )?;
-        let retries = crate::report_retries::RetryEvidence::read(&query)?;
+        let retries = crate::report_retries::RetryEvidence::read(query)?;
         let links = &retries.links;
         let rework_operations: u64 = query
             .connection
@@ -246,7 +255,7 @@ impl UsageReader {
             "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available execution intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Retry waits are measured separately and excluded from execution counts and sums. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
         });
         let sparse = crate::work_binding_report::bound_work_effort_from_query(
-            &query,
+            query,
             range,
             &Default::default(),
         )?;

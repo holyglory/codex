@@ -70,23 +70,73 @@ impl UsageReader {
             self.count_tail(descriptor.as_deref(), filter, base)?
         } else {
             let query = ReportQuery::new(self, range, filter)?;
-            query_rows::<ReviewCounts>(&query.connection, &format!(
-                "SELECT COALESCE(sum(operation_count),0)::UBIGINT operations, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_request'),0)::UBIGINT model_requests, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'tool'),0)::UBIGINT tools, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_warmup'),0)::UBIGINT warmups, \
-                 COALESCE(sum(unfinished),0)::UBIGINT unfinished, \
-                 COALESCE(sum(unknown_intervals),0)::UBIGINT unknown_intervals, \
-                 COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
-                 COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT missing_repository, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='completed'),0)::UBIGINT tool_completed, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='failed'),0)::UBIGINT tool_failed, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='blocked'),0)::UBIGINT tool_blocked, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='cancelled'),0)::UBIGINT tool_cancelled, \
-                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='incomplete'),0)::UBIGINT tool_incomplete FROM ({}) WHERE kind <> 'wait'", query.operation_statistics
-            ), 1)?.remove(0)
+            counts_from_query(&query)?
         };
-        let value = json!({
+        let value = self.summary_value(range, totals, counts, complete_from);
+        crate::summary_cache::insert(
+            self.root.clone(),
+            self.metadata_revision,
+            self.manifest.snapshot_generation,
+            self.manifest.watermark,
+            self.journal_watermark(),
+            self.pending_entries(),
+            self.manifest.pending_corrections.len(),
+            range,
+            filter,
+            value.clone(),
+        );
+        Ok(value)
+    }
+
+    pub(crate) fn summary_from_query(
+        &self,
+        range: TimeRange,
+        filter: &UsageFilter,
+        query: &ReportQuery,
+    ) -> Result<Value> {
+        let totals = if query.complete_observations {
+            query
+                .connection
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(sum(input_tokens),0)::BIGINT, \
+                 COALESCE(sum(cached_input_tokens),0)::BIGINT, \
+                 COALESCE(sum(output_tokens),0)::BIGINT, \
+                 COALESCE(sum(reasoning_output_tokens),0)::BIGINT, \
+                 COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT FROM ({})",
+                        query.contributions
+                    ),
+                    [],
+                    |row| {
+                        Ok(crate::UsageTotals {
+                            input_tokens: row.get(0)?,
+                            cached_input_tokens: row.get(1)?,
+                            output_tokens: row.get(2)?,
+                            reasoning_output_tokens: row.get(3)?,
+                            records: row.get(4)?,
+                        })
+                    },
+                )
+                .map_err(query_error)?
+        } else {
+            self.totals(range, filter)?
+        };
+        Ok(self.summary_value(
+            range,
+            totals,
+            counts_from_query(query)?,
+            query.complete_from_sequence,
+        ))
+    }
+
+    fn summary_value(
+        &self,
+        range: TimeRange,
+        totals: crate::UsageTotals,
+        counts: ReviewCounts,
+        complete_from: u64,
+    ) -> Value {
+        json!({
             "schemaVersion":1,"kind":"usageSummary", "records":totals.records,
             "inputTokens":totals.input_tokens,"cachedInputTokens":totals.cached_input_tokens,
             "outputTokens":totals.output_tokens,"reasoningOutputTokens":totals.reasoning_output_tokens,
@@ -110,20 +160,7 @@ impl UsageReader {
                 "projectionCompleteFromSequence":complete_from,"unobservedFamilies":["work_bindings"],"waits":"partial","observedWaitFamilies":["http_retry","stream_retry","compaction_retry"],"unobservedWaitFamilies":["user","agent","approval","websocket_connection","auth_refresh"]},
             "formulas":{"tokens":"Input and output are disjoint components. Cached input and reasoning output are subsets; do not add them again.",
                 "counts":"Operations count canonical tool/model lifecycles, not the number of journal observations."}
-        });
-        crate::summary_cache::insert(
-            self.root.clone(),
-            self.metadata_revision,
-            self.manifest.snapshot_generation,
-            self.manifest.watermark,
-            self.journal_watermark(),
-            self.pending_entries(),
-            self.manifest.pending_corrections.len(),
-            range,
-            filter,
-            value.clone(),
-        );
-        Ok(value)
+        })
     }
 
     fn count_tail(
@@ -287,4 +324,22 @@ fn matches_filter(state: &ReviewOperation, filter: &UsageFilter) -> bool {
             .as_ref()
             .is_some_and(|id| threads.contains(id))
     })
+}
+
+fn counts_from_query(query: &ReportQuery) -> Result<ReviewCounts> {
+    query_rows::<ReviewCounts>(&query.connection, &format!(
+                "SELECT COALESCE(sum(operation_count),0)::UBIGINT operations, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_request'),0)::UBIGINT model_requests, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'tool'),0)::UBIGINT tools, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_warmup'),0)::UBIGINT warmups, \
+                 COALESCE(sum(unfinished),0)::UBIGINT unfinished, \
+                 COALESCE(sum(unknown_intervals),0)::UBIGINT unknown_intervals, \
+                 COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
+                 COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT missing_repository, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='completed'),0)::UBIGINT tool_completed, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='failed'),0)::UBIGINT tool_failed, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='blocked'),0)::UBIGINT tool_blocked, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='cancelled'),0)::UBIGINT tool_cancelled, \
+                 COALESCE(sum(operation_count) FILTER (WHERE kind='tool' AND outcome='incomplete'),0)::UBIGINT tool_incomplete FROM ({}) WHERE kind <> 'wait'", query.operation_statistics
+            ), 1).map(|mut rows|rows.remove(0))
 }

@@ -212,18 +212,23 @@ fn read(
         );
         return Err(error);
     }
-    let native_summary = reader.summary(range, &filter).map_err(unavailable)?;
+    let window = params
+        .from_at_ms
+        .map(|_| reader.prepare_window(range, &filter))
+        .transpose()
+        .map_err(unavailable)?;
+    let native_summary = match &window {
+        Some(window) => window.summary(),
+        None => reader.summary(range, &filter),
+    }
+    .map_err(unavailable)?;
     // Unbounded requests stay on the precomputed summary path. Rich facts are
     // an explicitly finite-window query, never a foreground full-history scan.
-    let facts = if params.from_at_ms.is_some() && params.to_at_ms.is_some() {
-        Some(
-            reader
-                .performance_review(range, &filter)
-                .map_err(unavailable)?,
-        )
-    } else {
-        None
-    };
+    let facts = window
+        .as_ref()
+        .map(codex_usage::UsageWindow::performance_review)
+        .transpose()
+        .map_err(unavailable)?;
     let generated_at = now_ms()?;
     let snapshot = LocalUsageSnapshot {
         source_watermark: view.watermark.clone(),
@@ -258,9 +263,9 @@ fn read(
         .as_ref()
         .map(|review| review["outcomes"]["totals"].clone());
     let (mut work_contexts, operation_bindings) = if let Some(source) = &binding_source {
-        let evidence = if facts.is_some() {
-            reader
-                .bound_operation_effort(range, &filter, &source.operation_ids())
+        let evidence = if let Some(window) = &window {
+            window
+                .bound_operation_effort(&source.operation_ids())
                 .map_err(unavailable)?
         } else {
             Vec::new()
@@ -338,7 +343,7 @@ fn read(
     } else {
         (Vec::new(), Vec::new())
     };
-    if let Some(facts) = &facts {
+    if let (Some(facts), Some(window)) = (&facts, &window) {
         if facts["workBindings"]["coverage"] == "unavailable" {
             report["workBindings"]["sparseCoverage"] = json!("unavailable");
             if binding_source.is_none() {
@@ -355,12 +360,12 @@ fn read(
         let explicit_ids = binding_source
             .as_ref()
             .map_or_else(Default::default, Bindings::operation_ids);
-        let sparse = reader
-            .bound_work_effort(range, &filter, &explicit_ids)
+        let sparse = window
+            .bound_work_effort(&explicit_ids)
             .map_err(unavailable)?;
         if !sparse.is_empty() {
-            let explicit_evidence = reader
-                .bound_operation_effort(range, &filter, &explicit_ids)
+            let explicit_evidence = window
+                .bound_operation_effort(&explicit_ids)
                 .map_err(unavailable)?;
             let native_bound = sparse
                 .iter()
@@ -434,10 +439,10 @@ fn read(
         (None, None)
     } else {
         let after = params.operations_after.clone().map(cursor);
-        let page = reader
+        let page = window
+            .as_ref()
+            .ok_or_else(|| unavailable(()))?
             .operation_page(
-                range,
-                &filter,
                 OperationSelection::All,
                 after.as_ref(),
                 params.operation_limit as usize,
