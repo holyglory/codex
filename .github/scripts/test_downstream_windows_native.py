@@ -30,6 +30,37 @@ SPEC.loader.exec_module(MODULE)
 
 
 class WindowsNativeHelperTest(unittest.TestCase):
+    def test_successive_target_builds_retain_distinct_cargo_timing_reports(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cargo_target = root / "cargo-target"
+            report = cargo_target / "cargo-timings" / "cargo-timing.html"
+            report.parent.mkdir(parents=True)
+            producer = MODULE.Producer.__new__(MODULE.Producer)
+            producer.telemetry = root / "telemetry"
+            for target, contents in (
+                ("x86_64-pc-windows-msvc", "x64 report"),
+                ("aarch64-pc-windows-msvc", "ARM64 report"),
+            ):
+                report.write_text(contents)
+                producer.capture_cargo_timings(
+                    target, {"CARGO_TARGET_DIR": str(cargo_target)}
+                )
+            retained = {
+                path.parent.name: path.read_text()
+                for path in producer.telemetry.glob("cargo-timings/*/cargo-timing.html")
+            }
+            self.assertEqual(
+                retained,
+                {
+                    "x86_64-pc-windows-msvc": "x64 report",
+                    "aarch64-pc-windows-msvc": "ARM64 report",
+                },
+            )
+            self.assertEqual(report.read_text(), "ARM64 report")
+
     def test_cpu_probe_passes_pid_outside_encoded_script_and_skips_noise(self) -> None:
         environment = {"PATH": "tools", "CODEX_WINDOWS_CPU_PROBE_PID": "old"}
         sample = {

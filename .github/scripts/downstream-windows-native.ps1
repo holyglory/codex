@@ -397,9 +397,13 @@ class Producer:
         target_dir = environment.get("CARGO_TARGET_DIR")
         if not target_dir:
             return
-        source = Path(target_dir) / target / "cargo-timings"
-        if source.is_dir():
-            shutil.copytree(source, self.telemetry / "cargo-timings" / target, dirs_exist_ok=True)
+        # Cargo keeps timings at the target root, even with --target. Its
+        # canonical report is replaced by the next build, so copy it per target.
+        source = Path(target_dir) / "cargo-timings" / "cargo-timing.html"
+        if source.is_file():
+            destination = self.telemetry / "cargo-timings" / target
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination / source.name)
 
     def bazel(self, name: str, *arguments: str, capture_output: bool = False) -> str:
         wrapper = Path(__file__).with_name("run_bazel_with_buildbuddy.py")
