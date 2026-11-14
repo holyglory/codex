@@ -142,10 +142,14 @@ jobs:
       - name: Select the source-pinned Rust toolchain and available processors
         run: |
           $ErrorActionPreference = 'Stop'
-          $toolchain = python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('codex-rs/rust-toolchain.toml').read_text())['toolchain']['channel'])"
+          $toolchain = python .github/scripts-packaging/downstream-windows-native.ps1 resolve-toolchain
           if ($LASTEXITCODE -ne 0 -or $toolchain -cnotmatch '^\d+\.\d+\.\d+$') { throw 'An exact source-pinned Rust toolchain is required.' }
           rustup toolchain install $toolchain --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'The source-pinned Rust toolchain is unavailable.' }
+          $rustcVersion = rustup run $toolchain rustc --version
+          if ($LASTEXITCODE -ne 0 -or $rustcVersion -notmatch "^rustc $toolchain ") { throw "The selected Rust toolchain did not provide rustc $toolchain." }
+          $cargoVersion = rustup run $toolchain cargo --version
+          if ($LASTEXITCODE -ne 0 -or $cargoVersion -notmatch "^cargo $toolchain ") { throw "The selected Rust toolchain did not provide cargo $toolchain." }
           "RUSTUP_TOOLCHAIN=$toolchain" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $cpuCount = [Environment]::ProcessorCount
           if ($cpuCount -lt 1) { throw 'The Windows runner reported no processors.' }
@@ -156,14 +160,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Command just -ErrorAction SilentlyContinue)) {
-            cargo install just --locked --version 1.51.0 --root 'H:\codex-ci\cargo-home'
+            rustup run $env:RUSTUP_TOOLCHAIN cargo install just --locked --version 1.51.0 --root 'H:\codex-ci\cargo-home'
           }
           if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Pinned just was not installed.' }
-          $nextest = cargo nextest --version 2>$null
+          $nextest = rustup run $env:RUSTUP_TOOLCHAIN cargo nextest --version 2>$null
           if ($LASTEXITCODE -ne 0 -or -not $nextest) {
-            cargo install cargo-nextest --locked --version 0.9.103 --root 'H:\codex-ci\cargo-home'
+            rustup run $env:RUSTUP_TOOLCHAIN cargo install cargo-nextest --locked --version 0.9.103 --root 'H:\codex-ci\cargo-home'
           }
-          cargo nextest --version
+          rustup run $env:RUSTUP_TOOLCHAIN cargo nextest --version
           if ($LASTEXITCODE -ne 0) { throw 'Pinned cargo-nextest was not installed.' }
       - name: Install pinned DotSlash
         shell: bash

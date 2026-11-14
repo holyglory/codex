@@ -451,6 +451,7 @@ class WindowsNativeHelperTest(unittest.TestCase):
             producer.run = Mock(
                 side_effect=lambda name, *args, **kwargs: {
                     "rust-version": "rustc 1.94.0 (fixture)\n",
+                    "cargo-version": "cargo 1.94.0 (fixture)\n",
                     "git-longpaths": "true\n",
                 }.get(name, "")
             )
@@ -458,6 +459,7 @@ class WindowsNativeHelperTest(unittest.TestCase):
                 "VSCMD_ARG_HOST_ARCH": "x64",
                 "VSCMD_ARG_TGT_ARCH": "x64",
                 "ComSpec": "cmd.exe",
+                "RUSTUP_TOOLCHAIN": "1.94.0",
             }
             with (
                 patch.object(MODULE, "ROOT", root),
@@ -499,13 +501,120 @@ class WindowsNativeHelperTest(unittest.TestCase):
                     producer, "run", return_value="rustc 1.95.0 (mismatched)\n"
                 ) as run,
                 self.assertRaisesRegex(
-                    ValueError, r"Rust 1\.94\.0 from rust-toolchain\.toml is required"
+                    ValueError, r"Rust 1\.94\.0 is required for Windows acceptance"
                 ),
             ):
                 producer.prerequisites()
             run.assert_called_once_with(
                 "rust-version", ["rustc", "--version"], capture_output=True
             )
+            producer.run = Mock(
+                side_effect=lambda name, *args, **kwargs: {
+                    "rust-version": "rustc 1.94.0 (fixture)\n",
+                    "cargo-version": "cargo 1.95.0 (mismatched)\n",
+                }.get(name, "")
+            )
+            with (
+                patch.object(MODULE, "ROOT", root),
+                patch.object(MODULE, "os", SimpleNamespace(environ=environment)),
+                patch.object(MODULE.shutil, "which", return_value="existing-tool"),
+                self.assertRaisesRegex(
+                    ValueError, r"Cargo 1\.94\.0 is required for Windows acceptance"
+                ),
+            ):
+                producer.prerequisites()
+            self.assertEqual(
+                producer.run.call_args_list,
+                [
+                    call("rust-version", ["rustc", "--version"], capture_output=True),
+                    call("cargo-version", ["cargo", "--version"], capture_output=True),
+                ],
+            )
+
+    def test_prerequisites_prefer_release_workflow_pin_over_stale_source_toolchain(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "codex-rs").mkdir()
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "codex-rs/rust-toolchain.toml").write_text(
+                '[toolchain]\nchannel = "1.94.0"\n'
+            )
+            (root / ".github/workflows/rust-release.yml").write_text(
+                """
+                jobs:
+                  build:
+                    steps:
+                      - uses: dtolnay/rust-toolchain@release-pin # 1.95.0
+                """
+            )
+            producer = MODULE.Producer.__new__(MODULE.Producer)
+            producer.evidence = root
+            producer.handoff = root / "windows-handoff"
+            producer.identity = {"commit": "fixture-source"}
+            producer.run = Mock(
+                side_effect=lambda name, *args, **kwargs: {
+                    "rust-version": "rustc 1.95.0 (fixture)\n",
+                    "cargo-version": "cargo 1.95.0 (fixture)\n",
+                    "git-longpaths": "true\n",
+                }.get(name, "")
+            )
+            environment = {
+                "VSCMD_ARG_HOST_ARCH": "x64",
+                "VSCMD_ARG_TGT_ARCH": "x64",
+                "ComSpec": "cmd.exe",
+                "RUSTUP_TOOLCHAIN": "1.95.0",
+            }
+            with (
+                patch.object(MODULE, "ROOT", root),
+                patch.object(MODULE, "os", SimpleNamespace(environ=environment)),
+                patch.object(MODULE.shutil, "which", return_value="existing-tool"),
+                patch.object(
+                    MODULE, "verify_pe"
+                ),
+                patch.object(
+                    MODULE.subprocess,
+                    "check_output",
+                    return_value=(
+                        "PATH=tools\nVSCMD_ARG_HOST_ARCH=x64\nVSCMD_ARG_TGT_ARCH=arm64\n"
+                    ),
+                ),
+            ):
+                producer.prerequisites()
+            self.assertIn(
+                call(
+                    "rust-targets",
+                    [
+                        "rustup",
+                        "target",
+                        "add",
+                        "--toolchain",
+                        "1.95.0",
+                        *MODULE.TARGETS,
+                    ],
+                ),
+                producer.run.call_args_list,
+            )
+
+    def test_conflicting_release_workflow_pins_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github/workflows"
+            workflow.mkdir(parents=True)
+            (workflow / "rust-release.yml").write_text(
+                """
+                - uses: dtolnay/rust-toolchain@first # 1.95.0
+                - uses: dtolnay/rust-toolchain@second # 1.96.0
+                """
+            )
+            with (
+                patch.object(MODULE, "ROOT", root),
+                self.assertRaisesRegex(
+                    ValueError, "conflicting Rust toolchain pins"
+                ),
+            ):
+                MODULE.resolve_rust_channel()
 
     def test_capture_output_uses_file_backed_stdout_for_large_child_output(
         self,

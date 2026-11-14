@@ -234,6 +234,53 @@ def source_identity(expected: str) -> dict:
     }
 
 
+def _release_rust_channel() -> str | None:
+    """Read the exact Rust channel declared by the release workflow."""
+    try:
+        contents = (ROOT / ".github/workflows/rust-release.yml").read_text(
+            encoding="utf-8"
+        )
+    except FileNotFoundError:
+        return None
+    declarations = [
+        line for line in contents.splitlines() if "dtolnay/rust-toolchain" in line
+    ]
+    if not declarations:
+        return None
+    channels = []
+    for declaration in declarations:
+        match = re.search(
+            r"dtolnay/rust-toolchain@[^\s#]+\s+#\s*(?P<channel>\d+\.\d+\.\d+)\s*$",
+            declaration,
+        )
+        if match is None:
+            raise ValueError(
+                "The release workflow must declare an exact Rust toolchain pin."
+            )
+        channels.append(match.group("channel"))
+    if len(set(channels)) != 1:
+        raise ValueError(
+            "The release workflow declares conflicting Rust toolchain pins."
+        )
+    return channels[0]
+
+
+def resolve_rust_channel() -> str:
+    """Resolve the release-tested Rust channel, falling back to source metadata."""
+    release_channel = _release_rust_channel()
+    if release_channel is not None:
+        return release_channel
+    manifest = ROOT / "codex-rs/rust-toolchain.toml"
+    try:
+        with manifest.open("rb") as stream:
+            channel = tomllib.load(stream)["toolchain"]["channel"]
+    except (KeyError, OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"Unable to resolve the Rust toolchain from {manifest}.") from error
+    if not isinstance(channel, str) or re.fullmatch(r"\d+\.\d+\.\d+", channel) is None:
+        raise ValueError(f"The Rust toolchain channel in {manifest} must be an exact version.")
+    return channel
+
+
 def verify_pe(path: Path, target: str) -> None:
     with path.open("rb") as stream:
         header = stream.read(64)
@@ -415,10 +462,21 @@ class Producer:
         for name in ("just", "cargo", "rustc", "rustup", "bazel", "cl", "git", "bash", "node", "dotslash"):
             if shutil.which(name) is None:
                 raise ValueError(f"Provision the existing non-admin runner prerequisite: {name}")
-        with (ROOT / "codex-rs/rust-toolchain.toml").open("rb") as stream:
-            rust_channel = tomllib.load(stream)["toolchain"]["channel"]
-        if not self.run("rust-version", ["rustc", "--version"], capture_output=True).startswith(f"rustc {rust_channel} "):
-            raise ValueError(f"Rust {rust_channel} from rust-toolchain.toml is required.")
+        rust_channel = resolve_rust_channel()
+        if os.environ.get("RUSTUP_TOOLCHAIN") != rust_channel:
+            raise ValueError(
+                f"RUSTUP_TOOLCHAIN must select the release Rust channel {rust_channel}."
+            )
+        rustc_version = self.run(
+            "rust-version", ["rustc", "--version"], capture_output=True
+        )
+        if not rustc_version.startswith(f"rustc {rust_channel} "):
+            raise ValueError(f"Rust {rust_channel} is required for Windows acceptance.")
+        cargo_version = self.run(
+            "cargo-version", ["cargo", "--version"], capture_output=True
+        )
+        if not cargo_version.startswith(f"cargo {rust_channel} "):
+            raise ValueError(f"Cargo {rust_channel} is required for Windows acceptance.")
         self.run("nextest-version", ["cargo", "nextest", "--version"])
         self.run("rust-targets", ["rustup", "target", "add", "--toolchain", rust_channel, *TARGETS])
         if self.run("git-longpaths", ["git", "config", "--global", "--get", "core.longpaths"], capture_output=True).strip() != "true":
@@ -714,9 +772,24 @@ class Producer:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prerequisites", "source-v8", "acceptance", "published-v8", "package", "finalize-target", "finalize"))
+    parser.add_argument(
+        "phase",
+        choices=(
+            "resolve-toolchain",
+            "prerequisites",
+            "source-v8",
+            "acceptance",
+            "published-v8",
+            "package",
+            "finalize-target",
+            "finalize",
+        ),
+    )
     parser.add_argument("--target", choices=TARGETS)
     args = parser.parse_args()
+    if args.phase == "resolve-toolchain":
+        print(resolve_rust_channel())
+        return
     if os.name != "nt":
         parser.error("Native execution belongs to the existing private Windows controller.")
     producer = Producer()
