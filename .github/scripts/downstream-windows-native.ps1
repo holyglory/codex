@@ -93,8 +93,13 @@ foreach ($id in $ids) {
                 encoding="utf-8",
                 timeout=20,
             )
-            value = json.loads(result.stdout)
-            return value if isinstance(value, dict) else {"error": "invalid CPU probe output"}
+            for line in reversed(result.stdout.splitlines()):
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                return value if isinstance(value, dict) else {"error": "invalid CPU probe output"}
+            return {"error": "CPU probe returned no JSON record"}
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
             errors.append(f"{shell}: {error}")
     return {"error": "; ".join(errors)[:500]}
