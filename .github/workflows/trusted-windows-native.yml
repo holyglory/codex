@@ -193,6 +193,10 @@ jobs:
           [[profile.default.overrides]]
           filter = 'package(codex-usage) & test(=repeated_switches_aggregate_by_job_before_report_limits)'
           slow-timeout = { period = "2m", terminate-after = 2 }
+
+          [[profile.default.overrides]]
+          filter = 'package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)'
+          slow-timeout = { period = "3m", terminate-after = 2 }
           '@
           "CODEX_WINDOWS_NEXTEST_CONFIG_FILE=$config" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build a matching x64 V8 archive and binding
