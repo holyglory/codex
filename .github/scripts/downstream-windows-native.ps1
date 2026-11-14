@@ -2,9 +2,11 @@
 """Build exact-source Windows packages inside the private owner-only controller."""
 
 import argparse
+import base64
 from contextlib import nullcontext
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -53,8 +55,13 @@ def process_tree_cpu(pid: int) -> dict | None:
     """Sample CPU time for a Windows process and all descendants."""
     if os.name != "nt":
         return None
+    if type(pid) is not int or not 0 < pid <= 2_147_483_647:
+        return {"error": "CPU probe requires a positive 32-bit process ID"}
     script = r"""
-$root = [int]$args[0]
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [int]$env:CODEX_WINDOWS_CPU_PROBE_PID
 try {
   $processes = @(Get-CimInstance Win32_Process | ForEach-Object {
     [pscustomobject]@{ id = [int]$_.ProcessId; parent = [int]$_.ParentProcessId }
@@ -74,34 +81,67 @@ do {
 } while ($changed)
 $cpuSeconds = 0.0
 $count = 0
+$compilerCount = 0
 foreach ($id in $ids) {
   try {
     $process = Get-Process -Id $id -ErrorAction Stop
     $cpuSeconds += $process.TotalProcessorTime.TotalSeconds
     $count++
+    if ($process.ProcessName -in @('rustc', 'cl', 'clang-cl', 'clang')) { $compilerCount++ }
   } catch {}
 }
-[pscustomobject]@{ cpu_seconds = $cpuSeconds; process_count = $count } | ConvertTo-Json -Compress
+$sample = @{ cpu_seconds = $cpuSeconds; process_count = $count; compiler_process_count = $compilerCount }
+try {
+  $hostCpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop
+  if ($null -ne $hostCpu) { $sample.host_cpu_percent = [double]$hostCpu.PercentProcessorTime }
+} catch {}
+[pscustomobject]$sample | ConvertTo-Json -Compress
 """
+    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    environment = {**os.environ, "CODEX_WINDOWS_CPU_PROBE_PID": str(pid)}
     errors = []
     for shell in ("pwsh", "powershell"):
         try:
             result = subprocess.run(
-                [shell, "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
+                [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
+                env=environment,
                 capture_output=True,
                 check=True,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 timeout=20,
             )
             for line in reversed(result.stdout.splitlines()):
                 try:
-                    value = json.loads(line)
+                    value = json.loads(line.lstrip("\ufeff"))
                 except json.JSONDecodeError:
                     continue
-                return value if isinstance(value, dict) else {"error": "invalid CPU probe output"}
-            return {"error": "CPU probe returned no JSON record"}
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
+                if not isinstance(value, dict):
+                    continue
+                cpu_seconds = value.get("cpu_seconds")
+                process_count = value.get("process_count")
+                if (
+                    type(cpu_seconds) in (int, float)
+                    and math.isfinite(cpu_seconds)
+                    and cpu_seconds >= 0
+                    and type(process_count) is int
+                    and process_count > 0
+                ):
+                    sample = {"cpu_seconds": cpu_seconds, "process_count": process_count}
+                    host_cpu_percent = value.get("host_cpu_percent")
+                    if (
+                        type(host_cpu_percent) in (int, float)
+                        and 0 <= host_cpu_percent <= 100
+                        and math.isfinite(host_cpu_percent)
+                    ):
+                        sample["host_cpu_percent"] = host_cpu_percent
+                    compiler_process_count = value.get("compiler_process_count")
+                    if type(compiler_process_count) is int and 0 <= compiler_process_count <= process_count:
+                        sample["compiler_process_count"] = compiler_process_count
+                    return sample
+            raise ValueError("CPU probe returned no valid CPU sample")
+        except (OSError, subprocess.SubprocessError, ValueError, OverflowError) as error:
             errors.append(f"{shell}: {error}")
     return {"error": "; ".join(errors)[:500]}
 
@@ -227,14 +267,18 @@ class Producer:
                     cpu_sample = {"at_ms": time.time_ns() // 1_000_000, **cpu} if cpu else None
                     if cpu_sample and "cpu_seconds" in cpu_sample and previous_cpu:
                         elapsed = max(0.001, cpu_sample["at_ms"] - previous_cpu["at_ms"])
-                        cpu_sample["utilization_percent_of_machine"] = round(
-                            100
-                            * (cpu_sample["cpu_seconds"] - previous_cpu["cpu_seconds"])
-                            / (elapsed / 1000 * telemetry["parallelism"]["host_cpu_count"]),
-                            2,
-                        )
+                        cpu_delta = cpu_sample["cpu_seconds"] - previous_cpu["cpu_seconds"]
+                        if cpu_delta >= 0:
+                            cpu_sample["utilization_percent_of_machine"] = round(
+                                100 * cpu_delta / (elapsed / 1000 * telemetry["parallelism"]["host_cpu_count"]),
+                                2,
+                            )
+                        else:
+                            cpu_sample["utilization_percent_of_machine"] = None
+                            cpu_sample["utilization_unavailable_reason"] = "process tree CPU counter decreased as processes exited"
                     if cpu_sample and "cpu_seconds" in cpu_sample:
                         telemetry["cpu_sample"] = cpu_sample
+                        telemetry.pop("cpu_sample_error", None)
                         previous_cpu = cpu_sample
                     elif cpu_sample:
                         telemetry["cpu_sample_error"] = cpu_sample.get("error")
@@ -251,6 +295,8 @@ class Producer:
                         "pid": result.pid,
                         "elapsed_seconds": int(now - started),
                         "log_bytes": log_bytes,
+                        "cpu_sample": telemetry.get("cpu_sample"),
+                        "cpu_sample_error": telemetry.get("cpu_sample_error"),
                     }), flush=True)
                     last_heartbeat = now
                 time.sleep(1)
@@ -269,11 +315,7 @@ class Producer:
             "exit_code": result.returncode,
             "log_bytes": log.stat().st_size if log.exists() else 0,
         })
-        final_cpu = process_tree_cpu(result.pid)
-        if final_cpu and "cpu_seconds" in final_cpu:
-            telemetry["cpu_sample"] = {"at_ms": finished_at_ms, **final_cpu}
-        elif final_cpu:
-            telemetry["cpu_sample_error"] = final_cpu.get("error")
+        # Keep the last live sample: the exited process can no longer be probed.
         write_json(telemetry_path, telemetry)
         receipt = {"name": name, "exit_code": result.returncode, "log_sha256": digest(log), "log_path": f"logs/{log.name}", "command": command, "telemetry_path": f"telemetry/{telemetry_path.name}"}
         if "--config-file" in command:
@@ -315,10 +357,12 @@ class Producer:
         for name in ("just", "cargo", "rustc", "rustup", "bazel", "cl", "git", "bash", "node", "dotslash"):
             if shutil.which(name) is None:
                 raise ValueError(f"Provision the existing non-admin runner prerequisite: {name}")
-        if not self.run("rust-version", ["rustc", "--version"], capture_output=True).startswith("rustc 1.95.0 "):
-            raise ValueError("Rust 1.95.0 is required.")
+        with (ROOT / "codex-rs/rust-toolchain.toml").open("rb") as stream:
+            rust_channel = tomllib.load(stream)["toolchain"]["channel"]
+        if not self.run("rust-version", ["rustc", "--version"], capture_output=True).startswith(f"rustc {rust_channel} "):
+            raise ValueError(f"Rust {rust_channel} from rust-toolchain.toml is required.")
         self.run("nextest-version", ["cargo", "nextest", "--version"])
-        self.run("rust-targets", ["rustup", "target", "add", "--toolchain", "1.95.0-x86_64-pc-windows-msvc", *TARGETS])
+        self.run("rust-targets", ["rustup", "target", "add", "--toolchain", rust_channel, *TARGETS])
         if self.run("git-longpaths", ["git", "config", "--global", "--get", "core.longpaths"], capture_output=True).strip() != "true":
             raise ValueError("Git long-path support is required for the pinned dependency checkouts.")
         # Match nextest's dependency discovery before the expensive native V8
