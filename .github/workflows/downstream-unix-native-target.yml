@@ -26,6 +26,11 @@ on:
         description: Exact source commit that produced the reused V8 pair
         required: false
         type: string
+      skip_package:
+        description: Reuse an independently verified native handoff for this target
+        required: false
+        default: false
+        type: boolean
     secrets:
       BUILDBUDDY_API_KEY:
         required: false
@@ -106,6 +111,7 @@ jobs:
     needs: v8
     if: >-
       !cancelled() &&
+      !inputs.skip_package &&
       (needs.v8.result == 'success' ||
        (needs.v8.result == 'skipped' && inputs.v8_run_id != ''))
     runs-on: ${{ inputs.runner }}

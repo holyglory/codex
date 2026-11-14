@@ -32,6 +32,11 @@ on:
         description: Hash-bound handoff JSON from the private Windows controller
         type: string
         required: false
+      reuse_linux_arm_handoff:
+        description: Reuse a separately verified Linux ARM64 handoff when its hosted runner is unavailable
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -137,7 +142,7 @@ jobs:
           WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
           RUNNER_HANDOFF_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/runner_handoff.py download --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets x86_64-unknown-linux-musl --destination native-artifacts
+          python3 scripts/runner_handoff.py download --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets x86_64-unknown-linux-musl,aarch64-unknown-linux-musl --destination native-artifacts
           python3 scripts/runner_handoff.py download --manifest "$WINDOWS_HANDOFF" --commit "$GITHUB_SHA" --producer windows-private-controller --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --destination native-artifacts
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -178,6 +183,7 @@ jobs:
       source_version: ${{ needs.identity.outputs.source_version }}
       v8_run_id: ${{ inputs.hosted_v8_run_id }}
       v8_source_commit: ${{ needs.identity.outputs.hosted_v8_source_commit }}
+      skip_package: ${{ inputs.reuse_linux_arm_handoff && matrix.target == 'aarch64-unknown-linux-musl' }}
     secrets:
       BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
