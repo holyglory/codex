@@ -305,15 +305,22 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         review["outcomes"]["rows"][0]["outcomeId"],
         "fixture-outcome"
     );
-    for effort in [
-        &review["outcomes"]["totals"],
-        &review["outcomes"]["attributed"],
-        &review["outcomes"]["unattributed"],
-        &review["outcomes"]["rows"][0]["effort"],
-    ] {
-        assert_eq!(effort["elapsedExecutionMs"]["measured"], 0);
-        assert_eq!(effort["elapsedExecutionMs"]["exact"], Value::Null);
-    }
+    assert_eq!(
+        review["outcomes"]["totals"]["elapsedExecutionMs"]["measured"],
+        1500
+    );
+    assert_eq!(
+        review["outcomes"]["attributed"]["elapsedExecutionMs"]["measured"],
+        0
+    );
+    assert_eq!(
+        review["outcomes"]["unattributed"]["elapsedExecutionMs"]["measured"],
+        1500
+    );
+    assert_eq!(
+        review["outcomes"]["rows"][0]["effort"]["elapsedExecutionMs"]["measured"],
+        0
+    );
     assert!(
         scoped.report["measuredExecutionIntervalSumMs"]
             .as_u64()

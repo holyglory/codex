@@ -382,6 +382,9 @@ fn hourly_contribution_source(
         "NULL::VARCHAR work_native_project_id".into(),
         "NULL::VARCHAR workstream_id".into(),
         "NULL::VARCHAR work_outcome_id".into(),
+        "NULL::VARCHAR context_size".into(),
+        "NULL::VARCHAR cost_provenance".into(),
+        "NULL::UBIGINT actual_billing_micros".into(),
     ]
     .join(", ");
     Ok(Some(format!(

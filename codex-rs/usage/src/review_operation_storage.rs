@@ -86,6 +86,15 @@ pub(crate) fn write_operation_rows(
         column!(StringArray, |row| row.workstream_id.as_deref()),
         column!(StringArray, |row| row.work_outcome_id.as_deref()),
         column!(UInt64Array, |row| row.work_binding_start_sequence),
+        column!(StringArray, |row| row
+            .context_size
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())),
+        column!(StringArray, |row| row
+            .cost_provenance
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())),
+        column!(UInt64Array, |row| row.actual_billing_micros),
     ];
     let fields = OPERATION_COLUMNS
         .iter()

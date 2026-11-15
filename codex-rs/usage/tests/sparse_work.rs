@@ -5,6 +5,8 @@ use std::time::Instant;
 
 use codex_usage::JournalReadLimits;
 use codex_usage::TimeRange;
+use codex_usage::UsageContextSize;
+use codex_usage::UsageCostProvenance;
 use codex_usage::UsageFilter;
 use codex_usage::UsageOutcome;
 use codex_usage::UsagePublisher;
@@ -721,5 +723,70 @@ fn clear_and_conflicting_revisions_have_explicit_unattributed_coverage() -> code
         "coverage":report["outcomes"]["coverage"],"tokens":report["outcomes"]["unattributed"]["providerTotalTokens"]["measured"]}),
         json!({"basis":"explicit_sparse_transitions","bound":0,"coverage":"unattributed","tokens":7})
     );
+    Ok(())
+}
+
+#[test]
+fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut first = start("first", 1_000);
+    first.agent_id = Some("agent".into());
+    let mut first_finished = finish(first, 2_000, 20);
+    first_finished.agent_id = Some("agent".into());
+    first_finished.context_size = Some(UsageContextSize {
+        prompt_tokens: Some(10),
+        context_tokens: Some(12),
+        cache_tokens: Some(2),
+        compaction_count: Some(1),
+        context_window_tokens: Some(16),
+        window_class: Some("short".into()),
+    });
+    first_finished.cost_provenance = Some(UsageCostProvenance {
+        model: Some("gpt-6.1-sol".into()),
+        provider: Some("openai".into()),
+        service_tier: Some("standard".into()),
+        context_class: Some("short".into()),
+        region: Some("us".into()),
+        rate_card: Some("openai-standard".into()),
+        rate_card_version: Some("2026-11-15".into()),
+        pricing_basis: Some("api_equivalent".into()),
+        estimated_api_equivalent_cost_micros: Some(7),
+    });
+    first_finished.actual_billing_micros = Some(11);
+    let mut second = start("second", 1_500);
+    second.agent_id = Some("agent".into());
+    let mut second_finished = finish(second, 2_500, 20);
+    second_finished.agent_id = Some("agent".into());
+    second_finished.context_size = first_finished.context_size.clone();
+    second_finished.cost_provenance = first_finished.cost_provenance.clone();
+    second_finished.actual_billing_micros = Some(13);
+    let mut wait = UsageRecord::new_millis("wait:start", 1_200, 0, 0).with_operation("wait");
+    wait.event = Some("retry_wait_started".into());
+    wait.started_at_ms = Some(1_200);
+    let mut wait_finished = wait.clone();
+    wait_finished.id = "wait:finish".into();
+    wait_finished.event = Some("retry_wait_finished".into());
+    wait_finished.observed_at_ms = Some(1_700);
+    wait_finished.ended_at_ms = Some(1_700);
+    wait_finished.duration_ms = Some(500);
+    wait_finished.outcome = Some(UsageOutcome::Completed);
+    capture_records(
+        home.path(),
+        vec![first_finished, second_finished, wait, wait_finished],
+    )?;
+    let report = UsageReader::open(home.path())?
+        .performance_review(TimeRange::from_millis(0, 3_000)?, &UsageFilter::default())?;
+    assert_eq!(report["timing"]["elapsedMs"]["measured"], 1_500);
+    assert_eq!(report["timing"]["wallTimeMs"]["measured"], 1_500);
+    assert_eq!(report["timing"]["activeMs"]["measured"], 1_500);
+    assert_eq!(report["timing"]["waitMs"]["measured"], 500);
+    assert_eq!(report["lifecycle"]["firstStartedAtMs"], 1_000);
+    assert_eq!(report["lifecycle"]["lastEndedAtMs"], 2_500);
+    assert_eq!(report["contextSize"]["promptTokens"]["measured"], 20);
+    assert_eq!(
+        report["cost"]["estimatedApiEquivalentCostMicros"]["measured"],
+        14
+    );
+    assert_eq!(report["cost"]["actualBillingMicros"]["measured"], 24);
     Ok(())
 }

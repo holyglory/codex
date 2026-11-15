@@ -437,6 +437,9 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
             workstream_id: None,
             work_outcome_id: None,
             work_binding_start_sequence: Some(1),
+            context_size: None,
+            cost_provenance: None,
+            actual_billing_micros: None,
         }]
     );
     assert_eq!(closed.partitions[0].open_operations, 0);

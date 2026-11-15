@@ -88,6 +88,21 @@ impl DuckDbSnapshot {
                 taxonomy_version: row.get(36).map_err(duckdb_error)?,
                 heartbeat_count: row.get(37).map_err(duckdb_error)?,
                 retry_of_operation_id: row.get(38).map_err(duckdb_error)?,
+                context_size: row
+                    .get::<_, Option<String>>(39)
+                    .map_err(duckdb_error)?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|_| StorageError::InvalidData("invalid context size JSON".into()))?,
+                cost_provenance: row
+                    .get::<_, Option<String>>(40)
+                    .map_err(duckdb_error)?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|_| {
+                        StorageError::InvalidData("invalid cost provenance JSON".into())
+                    })?,
+                actual_billing_micros: row.get(41).map_err(duckdb_error)?,
             });
         }
         Ok(records)

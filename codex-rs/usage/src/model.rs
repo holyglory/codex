@@ -45,6 +45,45 @@ pub enum UsageOutcome {
     Incomplete,
 }
 
+/// Context accounting captured at a model request boundary.
+///
+/// Each value is optional because providers and runtimes may expose different
+/// parts of the request context. A missing value remains unknown in reports;
+/// it is never inferred from provider token totals.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageContextSize {
+    /// Uncached prompt tokens sent for the request.
+    pub prompt_tokens: Option<u64>,
+    /// Total input tokens occupying the provider context window.
+    pub context_tokens: Option<u64>,
+    /// Cached input tokens included in the context window.
+    pub cache_tokens: Option<u64>,
+    pub compaction_count: Option<u64>,
+    /// Numeric provider context-window capacity, when known.
+    pub context_window_tokens: Option<u64>,
+    pub window_class: Option<String>,
+}
+
+/// Immutable provenance for an API-equivalent cost estimate.
+///
+/// This is a rate-card observation, not an invoice or subscription charge.
+/// The optional actual billing value lives on [`UsageRecord`] separately and
+/// is never synthesized from this estimate.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCostProvenance {
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub service_tier: Option<String>,
+    pub context_class: Option<String>,
+    pub region: Option<String>,
+    pub rate_card: Option<String>,
+    pub rate_card_version: Option<String>,
+    pub pricing_basis: Option<String>,
+    pub estimated_api_equivalent_cost_micros: Option<u64>,
+}
+
 impl UsageOutcome {
     /// Stable content-free representation used by columnar facts and reports.
     pub fn as_str(self) -> &'static str {
@@ -193,6 +232,16 @@ pub struct UsageRecord {
     /// Prior operation retried by the transport/runtime, distinct from an explicit redo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_of_operation_id: Option<String>,
+    /// Request context size and compaction provenance, when captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_size: Option<UsageContextSize>,
+    /// Immutable rate-card provenance for the API-equivalent estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_provenance: Option<UsageCostProvenance>,
+    /// Explicit billing amount, if a billing source supplied one. This is
+    /// intentionally separate from API-equivalent estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_billing_micros: Option<u64>,
 }
 
 impl UsageRecord {
@@ -243,6 +292,9 @@ impl UsageRecord {
             taxonomy_version: None,
             heartbeat_count: None,
             retry_of_operation_id: None,
+            context_size: None,
+            cost_provenance: None,
+            actual_billing_micros: None,
         }
     }
 
@@ -321,6 +373,18 @@ impl UsageRecord {
     /// Attach a model/provider label to the observation.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// Attach request context-size accounting.
+    pub fn with_context_size(mut self, context_size: UsageContextSize) -> Self {
+        self.context_size = Some(context_size);
+        self
+    }
+
+    /// Attach immutable API-equivalent cost provenance.
+    pub fn with_cost_provenance(mut self, cost_provenance: UsageCostProvenance) -> Self {
+        self.cost_provenance = Some(cost_provenance);
         self
     }
 

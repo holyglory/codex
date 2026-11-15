@@ -134,6 +134,44 @@ fn immutable_hourly_segment_validates_and_round_trips_through_jsonl() {
 }
 
 #[test]
+fn optional_context_and_cost_provenance_round_trip_through_storage_codecs() {
+    let mut record = record("provenance", 7_230, 3, 5);
+    record.context_size = Some(UsageContextSize {
+        prompt_tokens: Some(3),
+        context_tokens: Some(8),
+        cache_tokens: Some(2),
+        compaction_count: Some(1),
+        context_window_tokens: Some(16),
+        window_class: Some("short".into()),
+    });
+    record.cost_provenance = Some(UsageCostProvenance {
+        model: Some("gpt-6.1-sol".into()),
+        provider: Some("openai".into()),
+        service_tier: Some("standard".into()),
+        context_class: Some("short".into()),
+        region: Some("us".into()),
+        rate_card: Some("openai-standard".into()),
+        rate_card_version: Some("2026-11-15".into()),
+        pricing_basis: Some("api_equivalent".into()),
+        estimated_api_equivalent_cost_micros: Some(7),
+    });
+    record.actual_billing_micros = Some(11);
+    let segment = UsageSegment::from_records(vec![record.clone()]).expect("segment");
+    let jsonl = JsonLinesSegmentCodec
+        .decode(&JsonLinesSegmentCodec.encode(&segment).expect("json encode"))
+        .expect("json decode");
+    assert_eq!(jsonl.records(), &[record.clone()]);
+    let parquet = ParquetSegmentCodec
+        .decode(
+            &ParquetSegmentCodec
+                .encode(&segment)
+                .expect("parquet encode"),
+        )
+        .expect("parquet decode");
+    assert_eq!(parquet.records(), &[record]);
+}
+
+#[test]
 fn in_memory_store_queries_snapshot_tail_and_corrections() {
     let snapshot_record = record("snapshot", 3_610, 10, 2).with_account("one");
     let duplicate = record("snapshot", 3_620, 100, 100).with_account("one");

@@ -254,7 +254,8 @@ impl Bindings {
         evidence: &[BoundOperationEffort],
         workstream: Option<&str>,
     ) -> Result<Value, ()> {
-        outcomes_from_contexts(facts, total, &self.bound_rows(evidence)?, workstream)
+        let rows = self.bound_rows(evidence)?;
+        outcomes_from_contexts(facts, total, &rows, workstream)
     }
 }
 
@@ -314,10 +315,8 @@ fn outcomes_from_contexts(
     let unattributed_observations = facts["coverage"]["rawTokenObservations"]
         .as_u64()
         .ok_or(())?
-        .checked_sub(excluded_observations)
-        .ok_or(())?
-        .checked_sub(attributed_observations)
-        .ok_or(())?;
+        .saturating_sub(excluded_observations)
+        .saturating_sub(attributed_observations);
     let rows = groups.into_iter().map(|((native_project_id,outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"nativeProjectId":native_project_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
     let full = unattributed["operations"] == 0
         && scoped_total["providerTotalTokens"]["unknown"] == 0
@@ -402,11 +401,10 @@ pub(super) fn zero_effort() -> Value {
 fn combine(target: &mut Value, delta: &Value, subtract: bool) -> Result<(), ()> {
     let amount = |a: u64, b: u64| {
         if subtract {
-            a.checked_sub(b)
+            Ok(a.saturating_sub(b))
         } else {
-            a.checked_add(b)
+            a.checked_add(b).ok_or(())
         }
-        .ok_or(())
     };
     for key in ["operations", "retryOperations", "reworkOperations"] {
         target[key] = json!(amount(

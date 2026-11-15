@@ -614,6 +614,9 @@ fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &s
          sum(CASE WHEN cache_write_unknowns IS NOT NULL THEN cache_write_unknowns \
                   WHEN cache_write_input_tokens IS NULL THEN 1 ELSE 0 END)::UBIGINT AS cache_write_unknowns, \
          NULLIF(sum(COALESCE(missing_observations_sum, missing_observations, 0)), 0)::UBIGINT AS missing_observations_sum \
+         ,any_value(context_size) AS context_size, any_value(cost_provenance) AS cost_provenance, \
+         CASE WHEN count(*) FILTER (WHERE actual_billing_micros IS NULL) = count(*) THEN NULL \
+              ELSE sum(actual_billing_micros::HUGEINT)::UBIGINT END AS actual_billing_micros \
          FROM {source} GROUP BY ALL"
     );
     format!(
@@ -625,7 +628,7 @@ fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &s
          provider_total_tokens, cache_write_input_tokens, NULL::UBIGINT AS missing_observations, \
          observation_count, provider_total_unknowns, cache_write_unknowns, missing_observations_sum, \
          NULL::UBIGINT AS attempt_number, NULL::VARCHAR AS rework_of_operation_id, \
-         work_native_project_id, workstream_id, work_outcome_id \
+         work_native_project_id, workstream_id, work_outcome_id, context_size, cost_provenance, actual_billing_micros \
          FROM ({grouped})"
     )
 }

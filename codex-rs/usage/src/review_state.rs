@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use crate::Result;
 use crate::StorageError;
+use crate::UsageContextSize;
+use crate::UsageCostProvenance;
 use crate::UsageOutcome;
 use crate::UsageRecord;
 
@@ -71,6 +73,12 @@ pub struct ReviewOperation {
     /// An observed first start; a terminal-first or legacy row has no anchor.
     #[serde(default)]
     pub work_binding_start_sequence: Option<u64>,
+    #[serde(default)]
+    pub context_size: Option<UsageContextSize>,
+    #[serde(default)]
+    pub cost_provenance: Option<UsageCostProvenance>,
+    #[serde(default)]
+    pub actual_billing_micros: Option<u64>,
 }
 
 impl ReviewOperation {
@@ -113,6 +121,9 @@ impl ReviewOperation {
             workstream_id: None,
             work_outcome_id: None,
             work_binding_start_sequence: None,
+            context_size: None,
+            cost_provenance: None,
+            actual_billing_micros: None,
         };
         state.merge(sequence, record)?;
         Ok(state)
@@ -152,6 +163,12 @@ impl ReviewOperation {
             fill(field, incoming.clone())?;
         }
         fill(&mut self.attempt_number, record.attempt_number)?;
+        fill(&mut self.context_size, record.context_size.clone())?;
+        fill(&mut self.cost_provenance, record.cost_provenance.clone())?;
+        fill(
+            &mut self.actual_billing_micros,
+            record.actual_billing_micros,
+        )?;
         fill(&mut self.started_at_ms, record.effective_started_at_ms())?;
         if terminal {
             fill(&mut self.ended_at_ms, record.effective_ended_at_ms())?;
@@ -243,6 +260,12 @@ pub struct ReviewContribution {
     pub workstream_id: Option<String>,
     #[serde(default)]
     pub work_outcome_id: Option<String>,
+    #[serde(default)]
+    pub context_size: Option<UsageContextSize>,
+    #[serde(default)]
+    pub cost_provenance: Option<UsageCostProvenance>,
+    #[serde(default)]
+    pub actual_billing_micros: Option<u64>,
 }
 
 impl ReviewContribution {
@@ -279,6 +302,9 @@ impl ReviewContribution {
             work_native_project_id: None,
             workstream_id: None,
             work_outcome_id: None,
+            context_size: fact.context_size.clone(),
+            cost_provenance: fact.cost_provenance.clone(),
+            actual_billing_micros: fact.actual_billing_micros,
         }
     }
 }

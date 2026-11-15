@@ -442,6 +442,43 @@ impl SegmentCodec for ParquetSegmentCodec {
                         .map(|record| record.retry_of_operation_id.as_deref())
                         .collect::<Vec<_>>(),
                 )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| {
+                            record
+                                .context_size
+                                .as_ref()
+                                .map(|value| {
+                                    serde_json::to_string(value).map_err(StorageError::from)
+                                })
+                                .transpose()
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                )),
+                Arc::new(StringArray::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| {
+                            record
+                                .cost_provenance
+                                .as_ref()
+                                .map(|value| {
+                                    serde_json::to_string(value).map_err(StorageError::from)
+                                })
+                                .transpose()
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                )),
+                Arc::new(UInt64Array::from(
+                    segment
+                        .records()
+                        .iter()
+                        .map(|record| record.actual_billing_micros)
+                        .collect::<Vec<_>>(),
+                )),
             ],
         )
         .map_err(columnar_error)?;
@@ -466,6 +503,8 @@ impl SegmentCodec for ParquetSegmentCodec {
             .set_column_dictionary_enabled(ColumnPath::from("approval_decision"), true)
             .set_column_dictionary_enabled(ColumnPath::from("approval_source"), true)
             .set_column_dictionary_enabled(ColumnPath::from("retry_of_operation_id"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("context_size"), true)
+            .set_column_dictionary_enabled(ColumnPath::from("cost_provenance"), true)
             .build();
         let mut writer =
             ArrowWriter::try_new(&mut bytes, schema, Some(properties)).map_err(columnar_error)?;
@@ -528,6 +567,10 @@ impl SegmentCodec for ParquetSegmentCodec {
             let heartbeat_count = optional_column::<UInt64Array>(&batch, "heartbeat_count")?;
             let retry_of_operation_id =
                 optional_column::<StringArray>(&batch, "retry_of_operation_id")?;
+            let context_size = optional_column::<StringArray>(&batch, "context_size")?;
+            let cost_provenance = optional_column::<StringArray>(&batch, "cost_provenance")?;
+            let actual_billing_micros =
+                optional_column::<UInt64Array>(&batch, "actual_billing_micros")?;
             for index in 0..batch.num_rows() {
                 let current_hour = hours.value(index);
                 if hour_start
@@ -614,6 +657,16 @@ impl SegmentCodec for ParquetSegmentCodec {
                     retry_of_operation_id: retry_of_operation_id.and_then(|column| {
                         (!column.is_null(index)).then(|| column.value(index).to_string())
                     }),
+                    context_size: context_size
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index)))
+                        .map(serde_json::from_str)
+                        .transpose()?,
+                    cost_provenance: cost_provenance
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index)))
+                        .map(serde_json::from_str)
+                        .transpose()?,
+                    actual_billing_micros: actual_billing_micros
+                        .and_then(|column| (!column.is_null(index)).then(|| column.value(index))),
                 });
             }
         }
@@ -872,6 +925,13 @@ fn parquet_schema() -> Arc<Schema> {
         Field::new(
             "retry_of_operation_id",
             DataType::Utf8,
+            /*nullable*/ true,
+        ),
+        Field::new("context_size", DataType::Utf8, /*nullable*/ true),
+        Field::new("cost_provenance", DataType::Utf8, /*nullable*/ true),
+        Field::new(
+            "actual_billing_micros",
+            DataType::UInt64,
             /*nullable*/ true,
         ),
     ]))

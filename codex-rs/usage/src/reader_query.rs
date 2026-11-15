@@ -54,6 +54,9 @@ pub(crate) const RECORD_COLUMNS: &[(&str, &str)] = &[
     ("taxonomy_version", "UBIGINT"),
     ("heartbeat_count", "UBIGINT"),
     ("retry_of_operation_id", "VARCHAR"),
+    ("context_size", "VARCHAR"),
+    ("cost_provenance", "VARCHAR"),
+    ("actual_billing_micros", "UBIGINT"),
 ];
 pub(crate) const CORRECTION_COLUMNS: &[(&str, &str)] = &[
     ("id", "VARCHAR"),
@@ -317,6 +320,17 @@ impl SnapshotQuery {
                     taxonomy_version: row.get(36)?,
                     heartbeat_count: row.get(37)?,
                     retry_of_operation_id: row.get(38)?,
+                    context_size: row
+                        .get::<_, Option<String>>(39)?
+                        .map(|value| serde_json::from_str(&value))
+                        .transpose()
+                        .map_err(|_| duckdb::Error::InvalidQuery)?,
+                    cost_provenance: row
+                        .get::<_, Option<String>>(40)?
+                        .map(|value| serde_json::from_str(&value))
+                        .transpose()
+                        .map_err(|_| duckdb::Error::InvalidQuery)?,
+                    actual_billing_micros: row.get(41)?,
                 })
             })
             .map_err(query_error)?;
@@ -501,6 +515,9 @@ pub(crate) fn parquet_source(
                     | "taxonomy_version"
                     | "heartbeat_count"
                     | "retry_of_operation_id"
+                    | "context_size"
+                    | "cost_provenance"
+                    | "actual_billing_micros"
                     | "retry_operations"
                     | "observed_attempts"
                     | "linked_operations"
@@ -544,16 +561,19 @@ pub(crate) fn values_source<T: Serialize>(rows: &[T], columns: &[(&str, &str)]) 
             let row = serde_json::to_value(row)?;
             let values = columns
                 .iter()
-                .map(|(name, ty)| {
+                .map(|(name, ty)| -> Result<String> {
                     let value = match &row[name] {
                         serde_json::Value::String(value) => quoted(value),
                         serde_json::Value::Number(value) => value.to_string(),
                         serde_json::Value::Bool(value) => value.to_string(),
+                        serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                            quoted(&serde_json::to_string(&row[name])?)
+                        }
                         _ => "NULL".to_string(),
                     };
-                    format!("{value}::{ty}")
+                    Ok(format!("{value}::{ty}"))
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>>>()?
                 .join(", ");
             Ok(format!("({values})"))
         })

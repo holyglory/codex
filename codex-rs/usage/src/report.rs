@@ -8,6 +8,8 @@ use crate::UsageFilter;
 use crate::UsageReader;
 use crate::reader_query::query_error;
 use crate::report_facets::operation_facet;
+use crate::report_metrics::context_and_cost_metrics;
+use crate::report_metrics::interval_metrics;
 use crate::report_query::ReportQuery;
 use crate::review_storage::query_rows;
 
@@ -27,6 +29,9 @@ impl UsageReader {
     ) -> Result<Value> {
         let start = range.start_ms();
         let end = range.end_ms();
+        let intervals = interval_metrics(&query.connection, &query.operations, start, end)?;
+        let (context_size, cost) =
+            context_and_cost_metrics(&query.connection, &query.contributions)?;
         let exact_token_window = self.manifest.unapplied_retention_corrections == 0
             && self.manifest.unapplied_retention_records == 0
             && (range == TimeRange::all() || self.manifest.retired_review_contributions == 0);
@@ -246,6 +251,8 @@ impl UsageReader {
                 "unappliedCorrectionsAfterRetention":self.manifest.unapplied_retention_corrections,
                 "unappliedObservationsAfterRetention":self.manifest.unapplied_retention_records,
                 "criticalPath":"unobserved","repeatedInputComparison":"unobserved","waits":"partial"},
+            "timing":intervals.value(),"lifecycle":intervals.lifecycle_value(),
+            "contextSize":context_size,"cost":cost,
             "workBindings":{"references":[],"boundOperations":0,"unknownOperations":total_operations,"basis":"unobserved"},
             "outcomes":{"schemaVersion":1,"coverage":"unobserved","totals":effort,"attributed":Value::Null,"unattributed":effort,
                 "unattributedReasons":{"work_binding_unobserved":total_operations},"rows":[],"totalRows":0,"nextCursor":Value::Null,
@@ -276,6 +283,10 @@ impl UsageReader {
         if query.work_assignment_coverage == crate::WorkAssignmentCoverage::Unavailable {
             report["workBindings"]["metadataCoverage"] = json!("unavailable");
         }
+        report["outcomes"]["timing"] = report["timing"].clone();
+        report["outcomes"]["lifecycle"] = report["lifecycle"].clone();
+        report["outcomes"]["contextSize"] = report["contextSize"].clone();
+        report["outcomes"]["cost"] = report["cost"].clone();
         Ok(report)
     }
 }

@@ -41,6 +41,7 @@ pub(crate) const OPERATION_COLUMNS: &[(&str, DataType)] = columns![
     process_id:Utf8, agent_id:Utf8, retry_of_operation_id:Utf8,
     work_native_project_id:Utf8, workstream_id:Utf8, work_outcome_id:Utf8,
     work_binding_start_sequence:UInt64,
+    context_size:Utf8, cost_provenance:Utf8, actual_billing_micros:UInt64,
 ];
 pub(crate) const OPERATION_INDEX_COLUMNS: &[(&str, DataType)] = columns![
     operation_id:Utf8, first_sequence:UInt64,
@@ -57,6 +58,7 @@ pub(crate) const CONTRIBUTION_COLUMNS: &[(&str, DataType)] = columns![
     missing_observations_sum:UInt64, attempt_number:UInt64,
     rework_of_operation_id:Utf8,
     work_native_project_id:Utf8, workstream_id:Utf8, work_outcome_id:Utf8,
+    context_size:Utf8, cost_provenance:Utf8, actual_billing_micros:UInt64,
 ];
 pub(crate) const CLASSIFICATION_COLUMNS: &[(&str, DataType)] = columns![
     record_id:Utf8, operation_id:Utf8, source_sequence:UInt64, observed_at_ms:Int64,
@@ -91,7 +93,15 @@ pub(crate) fn write_rows<T: Serialize>(
             let cells = values.iter().map(|row| &row[*name]);
             let array: ArrayRef = match kind {
                 DataType::Utf8 => Arc::new(StringArray::from(
-                    cells.map(serde_json::Value::as_str).collect::<Vec<_>>(),
+                    cells
+                        .map(|value| match value {
+                            serde_json::Value::String(value) => Some(value.clone()),
+                            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                                serde_json::to_string(value).ok()
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
                 )),
                 DataType::Int64 => Arc::new(Int64Array::from(
                     cells.map(serde_json::Value::as_i64).collect::<Vec<_>>(),
