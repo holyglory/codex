@@ -170,6 +170,7 @@ def download_artifact(
 
     digest = hashlib.sha256()
     size = 0
+    created = False
     try:
         with (
             build_opener(GithubRedirects()).open(
@@ -177,6 +178,7 @@ def download_artifact(
             ) as response,
             path.open("xb") as output,
         ):
+            created = True
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
                 if size > artifact["size_bytes"]:
@@ -186,7 +188,8 @@ def download_artifact(
         if size != artifact["size_bytes"] or digest.hexdigest() != artifact["sha256"]:
             raise ValueError("Artifact does not match its retained digest and size")
     except BaseException:
-        path.unlink(missing_ok=True)
+        if created:
+            path.unlink(missing_ok=True)
         raise
 
 

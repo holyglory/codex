@@ -440,6 +440,56 @@ class HostedArtifactDownloadTest(unittest.TestCase):
                 )
             self.assertFalse(path.exists())
 
+    def test_failure_cleanup_only_removes_files_created_by_this_download(self):
+        payload = b"native artifact"
+        for actions_artifact in (False, True):
+            for failure, error in (
+                ("existing-file", FileExistsError),
+                ("network-open", OSError),
+                ("network-read", OSError),
+                ("digest", ValueError),
+            ):
+                with (
+                    self.subTest(actions_artifact=actions_artifact, failure=failure),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    path = Path(directory) / "artifact.zip"
+                    existing = failure in ("existing-file", "network-open")
+                    if existing:
+                        path.write_bytes(b"preserve existing artifact")
+                    with patch("runner_handoff.build_opener") as opener:
+                        response = (
+                            opener.return_value.open.return_value.__enter__.return_value
+                        )
+                        response.read.side_effect = [payload, b""]
+                        if failure == "network-open":
+                            opener.return_value.open.side_effect = OSError(
+                                "network open failed"
+                            )
+                        elif failure == "network-read":
+                            response.read.side_effect = [
+                                b"partial",
+                                OSError("network read failed"),
+                            ]
+                        with self.assertRaises(error):
+                            runner_handoff.download_artifact(
+                                {
+                                    "url": "https://api.github.com/repos/holyglory/codex/actions/artifacts/123/zip",
+                                    "size_bytes": len(payload),
+                                    "sha256": "0" * 64
+                                    if failure == "digest"
+                                    else hashlib.sha256(payload).hexdigest(),
+                                },
+                                path,
+                                actions_artifact=actions_artifact,
+                            )
+                    if existing:
+                        self.assertEqual(
+                            path.read_bytes(), b"preserve existing artifact"
+                        )
+                    else:
+                        self.assertFalse(path.exists())
+
     def test_release_default_stays_scoped_and_unsafe_redirects_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
