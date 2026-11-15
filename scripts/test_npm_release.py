@@ -616,6 +616,14 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
     def test_hosted_v8_reuse_allows_usage_fix_and_rejects_v8_input_changes(
         self,
     ) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/downstream-candidate.yml"
+        ).read_text()
+        native_job = release_identity._extract_yaml_job(workflow, "native").replace(
+            " && !inputs.reuse_linux_arm_handoff", ""
+        )
+        mac_job = release_identity._extract_yaml_job(workflow, "native-mac")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
@@ -661,7 +669,9 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 "name: target\njobs:\n  v8:\n    name: V8 source pair\n    runs-on: ubuntu\n    steps:\n      - run: echo source\n  package:\n    name: Package native target\n"
             )
             (root / ".github/workflows/downstream-candidate.yml").write_text(
-                "env:\n  BUILD_MODE: release\njobs:\n  native:\n    if: inputs.hosted_native_run_id == ''\n    uses: target\n    with:\n      target: test\n  npm:\n    name: npm\n"
+                "env:\n  BUILD_MODE: release\njobs:\n"
+                + native_job
+                + "  npm:\n    name: npm\n"
             )
             producer = commit("producer")
             qualification = root / "scripts/qualify_local_delivery.py"
@@ -676,16 +686,50 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 verify_hosted_v8_source(producer, qualification_commit)
             candidate_workflow = root / ".github/workflows/downstream-candidate.yml"
             candidate_workflow.write_text(
-                candidate_workflow.read_text().replace(
+                candidate_workflow.read_text()
+                .replace(
                     "if: inputs.hosted_native_run_id == ''",
                     "if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff",
                 )
+                .replace("  npm:\n", mac_job + "  npm:\n")
             )
             handoff_matrix = commit("allow verified Linux ARM handoff")
             with patch("release_identity.ROOT", root):
                 verify_hosted_v8_source(producer, handoff_matrix)
+            handoff_workflow = candidate_workflow.read_text()
+            for original, changed in (
+                ("macos-15-intel", "macos-14"),
+                ("platform: macos_arm64", "platform: linux_arm64_musl"),
+                ("bazel_config: ci-macos", "bazel_config: ci"),
+                (
+                    "source_version: ${{ needs.identity.outputs.source_version }}",
+                    "source_version: changed",
+                ),
+                (
+                    "./.github/workflows/downstream-unix-native-target.yml",
+                    "./.github/workflows/other.yml",
+                ),
+                ("if: inputs.reuse_linux_arm_handoff", "if: true"),
+            ):
+                with self.subTest(mac_input=original):
+                    candidate_workflow.write_text(
+                        handoff_workflow.replace(
+                            mac_job, mac_job.replace(original, changed)
+                        )
+                    )
+                    invalid_mac = commit("reject changed Mac producer input")
+                    with patch("release_identity.ROOT", root):
+                        with self.assertRaisesRegex(
+                            ValueError, "Hosted native Mac matrix"
+                        ):
+                            verify_hosted_v8_source(producer, invalid_mac)
+            candidate_workflow.write_text(handoff_workflow.replace(mac_job, ""))
+            missing_mac = commit("reject missing Mac producer alternative")
+            with patch("release_identity.ROOT", root):
+                with self.assertRaisesRegex(ValueError, "Hosted native matrix"):
+                    verify_hosted_v8_source(producer, missing_mac)
             candidate_workflow.write_text(
-                candidate_workflow.read_text().replace(
+                handoff_workflow.replace(
                     "if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff",
                     "if: inputs.hosted_native_run_id == '' && inputs.reuse_linux_arm_handoff",
                 )
@@ -695,10 +739,12 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                 with self.assertRaisesRegex(ValueError, "Hosted native matrix"):
                     verify_hosted_v8_source(producer, invalid_handoff_matrix)
             candidate_workflow.write_text(
-                candidate_workflow.read_text().replace(
+                candidate_workflow.read_text()
+                .replace(
                     "if: inputs.hosted_native_run_id == '' && inputs.reuse_linux_arm_handoff",
                     "if: inputs.hosted_native_run_id == ''",
                 )
+                .replace(mac_job, "")
             )
             usage = root / "codex-rs/usage/src/runtime.rs"
             usage.parent.mkdir(parents=True, exist_ok=True)
@@ -933,6 +979,108 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
         verify_acceptance(None, producer, mode="native-only")
         with self.assertRaisesRegex(ValueError, "require the local release"):
             verify_acceptance(None, producer, mode="complete")
+
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires Unix Bash"
+    )
+    def test_candidate_arm_handoff_modes_and_target_selection(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/downstream-candidate.yml"
+        ).read_text()
+        mode_step = source.split("      - name: Check native producer modes\n", 1)[1]
+        mode_command = "\n".join(
+            line[10:]
+            for line in mode_step.split("        run: |\n", 1)[1]
+            .split("      - name: Check the completed local proof", 1)[0]
+            .splitlines()
+        )
+        for native_only, hosted_native, reuse_arm, accepted in (
+            ("false", "", "false", True),
+            ("true", "", "false", True),
+            ("false", "123", "false", True),
+            ("false", "", "true", True),
+            ("true", "", "true", False),
+            ("false", "123", "true", False),
+        ):
+            with self.subTest(
+                native_only=native_only,
+                hosted_native=hosted_native,
+                reuse_arm=reuse_arm,
+            ):
+                result = subprocess.run(
+                    ["bash", "-c", mode_command],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "NATIVE_ONLY": native_only,
+                        "HOSTED_NATIVE_RUN_ID": hosted_native,
+                        "REUSE_LINUX_ARM": reuse_arm,
+                    },
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+        handoff_step = source.split(
+            "      - name: Import authenticated and digested native bundles\n", 1
+        )[1]
+        handoff_command = "\n".join(
+            line[10:]
+            for line in handoff_step.split("        run: |\n", 1)[1]
+            .split("      - uses:", 1)[0]
+            .splitlines()
+        )
+        harness = """python3() {
+  "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"
+}
+"""
+        commit = "a" * 40
+        for reuse_arm, targets in (
+            ("false", "x86_64-unknown-linux-musl"),
+            ("true", "x86_64-unknown-linux-musl,aarch64-unknown-linux-musl"),
+        ):
+            with self.subTest(reuse_arm=reuse_arm):
+                result = subprocess.run(
+                    ["bash", "-c", harness + handoff_command],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "FIXTURE_PYTHON": sys.executable,
+                        "LINUX_HANDOFF": "linux-fixture",
+                        "WINDOWS_HANDOFF": "windows-fixture",
+                        "GITHUB_SHA": commit,
+                        "REUSE_LINUX_ARM": reuse_arm,
+                    },
+                )
+                self.assertEqual(
+                    [json.loads(line) for line in result.stdout.splitlines()],
+                    [
+                        [
+                            "scripts/runner_handoff.py",
+                            "download",
+                            "--manifest",
+                            manifest,
+                            "--commit",
+                            commit,
+                            "--producer",
+                            producer,
+                            "--targets",
+                            required,
+                            "--destination",
+                            "native-artifacts",
+                        ]
+                        for manifest, producer, required in (
+                            ("linux-fixture", "linux-local", targets),
+                            (
+                                "windows-fixture",
+                                "windows-private-controller",
+                                "x86_64-pc-windows-msvc,aarch64-pc-windows-msvc",
+                            ),
+                        )
+                    ],
+                )
 
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires Unix Bash"

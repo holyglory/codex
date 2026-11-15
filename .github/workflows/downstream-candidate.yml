@@ -72,6 +72,16 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Check native producer modes
+        env:
+          NATIVE_ONLY: ${{ inputs.native_only }}
+          HOSTED_NATIVE_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          REUSE_LINUX_ARM: ${{ inputs.reuse_linux_arm_handoff }}
+        run: |
+          if [[ "$REUSE_LINUX_ARM" == true && ( "$NATIVE_ONLY" == true || -n "$HOSTED_NATIVE_RUN_ID" ) ]]; then
+            echo 'Linux ARM handoff reuse requires a complete candidate without hosted native reuse.' >&2
+            exit 1
+          fi
       - name: Check the completed local proof and permitted packaging-only diff
         id: identity
         env:
@@ -143,9 +153,14 @@ jobs:
         env:
           LINUX_HANDOFF: ${{ inputs.linux_handoff }}
           WINDOWS_HANDOFF: ${{ inputs.windows_handoff }}
+          REUSE_LINUX_ARM: ${{ inputs.reuse_linux_arm_handoff }}
           RUNNER_HANDOFF_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/runner_handoff.py download --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets x86_64-unknown-linux-musl,aarch64-unknown-linux-musl --destination native-artifacts
+          linux_targets=x86_64-unknown-linux-musl
+          if [[ "$REUSE_LINUX_ARM" == true ]]; then
+            linux_targets+=,aarch64-unknown-linux-musl
+          fi
+          python3 scripts/runner_handoff.py download --manifest "$LINUX_HANDOFF" --commit "$GITHUB_SHA" --producer linux-local --targets "$linux_targets" --destination native-artifacts
           python3 scripts/runner_handoff.py download --manifest "$WINDOWS_HANDOFF" --commit "$GITHUB_SHA" --producer windows-private-controller --targets x86_64-pc-windows-msvc,aarch64-pc-windows-msvc --destination native-artifacts
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

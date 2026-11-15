@@ -249,14 +249,45 @@ def _verify_v8_recipe(producer: str, packaging: str) -> None:
     native_jobs = []
     for workflow in candidate_workflows:
         job = _extract_yaml_job(workflow, "native")
+        arm_handoff = " && !inputs.reuse_linux_arm_handoff"
+        if (arm_handoff in job) != bool(
+            re.search(r"^  native-mac:\n", workflow, flags=re.MULTILINE)
+        ):
+            raise ValueError(
+                "Hosted native matrix is missing its Linux ARM alternative"
+            )
+        if arm_handoff in job:
+            expected_mac = (
+                job.replace("  native:\n", "  native-mac:\n", 1)
+                .replace(
+                    "    name: Build and test ${{ matrix.target }}\n",
+                    "    name: Build and test ${{ matrix.target }} with verified Linux ARM handoff\n",
+                    1,
+                )
+                .replace(
+                    f"    if: inputs.hosted_native_run_id == ''{arm_handoff}\n",
+                    "    if: inputs.reuse_linux_arm_handoff\n",
+                    1,
+                )
+                .replace(
+                    "          - runner: ubuntu-24.04-arm\n"
+                    "            target: aarch64-unknown-linux-musl\n"
+                    "            platform: linux_arm64_musl\n"
+                    "            bazel_config: ci\n",
+                    "",
+                    1,
+                )
+            )
+            if _extract_yaml_job(workflow, "native-mac") != expected_mac:
+                raise ValueError(
+                    "Hosted native Mac matrix differs from its original recipe"
+                )
         job = job.replace(" && inputs.hosted_v8_run_id == ''", "")
         # A candidate may route one repeatedly failing target through an
         # independently verified handoff. This exact condition only removes
         # that target from the fresh matrix; the Mac matrix and V8 recipe stay
         # byte-equivalent for reuse.
-        job = job.replace(
-            " && !inputs.reuse_linux_arm_handoff", ""
-        )
+        job = job.replace(arm_handoff, "")
         job = re.sub(r"^      v8_run_id:.*\n", "", job, flags=re.MULTILINE)
         job = re.sub(r"^      v8_source_commit:.*\n", "", job, flags=re.MULTILINE)
         native_jobs.append(job)
