@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack
 import copy
+from email.message import Message
 import hashlib
 import io
 import json
@@ -9,10 +10,13 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.request import HTTPSHandler, build_opener
+from urllib.response import addinfourl
 import zipfile
 
 import hosted_native_handoff as handoff
 import release_identity as release
+import runner_handoff
 
 
 class HostedNativeHandoffTest(unittest.TestCase):
@@ -361,6 +365,123 @@ class HostedNativeHandoffTest(unittest.TestCase):
             handoff.parse_runs(
                 '{"aarch64-unknown-linux-musl":123,"aarch64-unknown-linux-musl":123,"x86_64-apple-darwin":456}'
             )
+
+
+class HostedArtifactDownloadTest(unittest.TestCase):
+    def download(
+        self, destination, location, *, actions_artifact, code=303, digest=None
+    ):
+        requests = []
+        payload = b"original artifact ZIP bytes"
+        api_url = (
+            "https://api.github.com/repos/holyglory/codex/actions/artifacts/123/zip"
+        )
+
+        class FixtureHTTPS(HTTPSHandler):
+            def https_open(self, request):
+                requests.append(request)
+                headers = Message()
+                if request.full_url == api_url:
+                    headers["Location"] = location
+                    response = addinfourl(io.BytesIO(), headers, api_url, code)
+                    response.msg = "Redirect"
+                else:
+                    response = addinfourl(
+                        io.BytesIO(payload), headers, request.full_url, 200
+                    )
+                    response.msg = "OK"
+                return response
+
+        with (
+            patch.dict("os.environ", {"RUNNER_HANDOFF_TOKEN": "fixture-secret"}),
+            patch(
+                "runner_handoff.build_opener",
+                side_effect=lambda redirect: build_opener(redirect, FixtureHTTPS()),
+            ),
+        ):
+            runner_handoff.download_artifact(
+                {
+                    "url": api_url,
+                    "size_bytes": len(payload),
+                    "sha256": digest or hashlib.sha256(payload).hexdigest(),
+                },
+                destination,
+                actions_artifact=actions_artifact,
+            )
+        self.assertEqual(destination.read_bytes(), payload)
+        self.assertEqual(
+            requests[0].get_header("Authorization"), "Bearer fixture-secret"
+        )
+        self.assertEqual(
+            requests[0].get_header("Accept"),
+            "application/vnd.github+json"
+            if actions_artifact
+            else "application/octet-stream",
+        )
+        self.assertIsNone(requests[-1].get_header("Authorization"))
+
+    def test_actions_redirects_drop_auth_and_verify_downloaded_bytes(self):
+        for code in (302, 303):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                self.download(
+                    Path(directory) / "artifact.zip",
+                    "https://productionresultssa9.blob.core.windows.net/actions-results/artifact.zip?signature=fixture",
+                    actions_artifact=True,
+                    code=code,
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corrupt.zip"
+            with self.assertRaisesRegex(ValueError, "digest and size"):
+                self.download(
+                    path,
+                    "https://productionresultssa9.blob.core.windows.net/artifact.zip",
+                    actions_artifact=True,
+                    digest="0" * 64,
+                )
+            self.assertFalse(path.exists())
+
+    def test_release_default_stays_scoped_and_unsafe_redirects_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.download(
+                root / "release.zip",
+                "https://release-assets.githubusercontent.com/artifact.zip",
+                actions_artifact=False,
+            )
+            for location, actions_artifact in (
+                (
+                    "https://productionresultssa9.blob.core.windows.net/artifact.zip",
+                    False,
+                ),
+                ("https://unrelated.blob.core.windows.net/artifact.zip", True),
+                (
+                    "https://productionresultssa9.blob.core.windows.net.evil.example/artifact.zip",
+                    True,
+                ),
+                (
+                    "http://productionresultssa9.blob.core.windows.net/artifact.zip",
+                    True,
+                ),
+                (
+                    "https://user:password@productionresultssa9.blob.core.windows.net/artifact.zip",
+                    True,
+                ),
+                (
+                    "https://@productionresultssa9.blob.core.windows.net/artifact.zip",
+                    True,
+                ),
+                (
+                    "https://productionresultssa9.blob.core.windows.net:8443/artifact.zip",
+                    True,
+                ),
+            ):
+                with self.subTest(location=location), self.assertRaises(ValueError):
+                    self.download(
+                        root / "blocked.zip",
+                        location,
+                        actions_artifact=actions_artifact,
+                    )
+                self.assertFalse((root / "blocked.zip").exists())
 
 
 if __name__ == "__main__":

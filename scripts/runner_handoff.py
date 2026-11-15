@@ -123,10 +123,21 @@ def validate(
     return manifest
 
 
-def download_artifact(artifact: dict, path: Path) -> None:
+def download_artifact(
+    artifact: dict, path: Path, *, actions_artifact: bool = False
+) -> None:
+    if actions_artifact and not re.fullmatch(
+        r"https://api\.github\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/artifacts/[1-9][0-9]*/zip",
+        artifact["url"],
+    ):
+        raise ValueError(
+            "Actions artifact download requires its original GitHub API URL"
+        )
     headers = {
         "User-Agent": "codex-release-handoff/1",
-        "Accept": "application/octet-stream",
+        "Accept": "application/vnd.github+json"
+        if actions_artifact
+        else "application/octet-stream",
     }
     token = os.environ.get("RUNNER_HANDOFF_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
@@ -134,9 +145,17 @@ def download_artifact(artifact: dict, path: Path) -> None:
 
     class GithubRedirects(HTTPRedirectHandler):
         def redirect_request(self, request, fp, code, msg, headers, newurl):
+            parsed = urlparse(newurl)
+            actions_blob = actions_artifact and re.fullmatch(
+                r"productionresultssa[0-9]+\.blob\.core\.windows\.net",
+                parsed.hostname or "",
+            )
             if (
-                urlparse(newurl).scheme != "https"
-                or urlparse(newurl).hostname not in HOSTS
+                parsed.scheme != "https"
+                or (parsed.hostname not in HOSTS and not actions_blob)
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in (None, 443)
             ):
                 raise ValueError("Artifact redirected outside the GitHub boundary")
             redirected = super().redirect_request(

@@ -205,6 +205,7 @@ def import_targets(
                     "size_bytes": size,
                 },
                 archive,
+                actions_artifact=True,
             )
             folder = staging / target
             extract(archive, folder, target)
