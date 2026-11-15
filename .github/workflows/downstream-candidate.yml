@@ -20,6 +20,10 @@ on:
         description: Successful hosted run with unchanged product and hosted build inputs
         type: string
         required: false
+      hosted_native_runs:
+        description: JSON mapping each of the three hosted targets to a completed producer run ID
+        type: string
+        required: false
       hosted_v8_run_id:
         description: Completed hosted run whose successful V8 jobs may be reused for fresh package builds
         type: string
@@ -76,10 +80,16 @@ jobs:
         env:
           NATIVE_ONLY: ${{ inputs.native_only }}
           HOSTED_NATIVE_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          HOSTED_NATIVE_RUNS: ${{ inputs.hosted_native_runs }}
+          HOSTED_V8_RUN_ID: ${{ inputs.hosted_v8_run_id }}
           REUSE_LINUX_ARM: ${{ inputs.reuse_linux_arm_handoff }}
         run: |
           if [[ "$REUSE_LINUX_ARM" == true && ( "$NATIVE_ONLY" == true || -n "$HOSTED_NATIVE_RUN_ID" ) ]]; then
             echo 'Linux ARM handoff reuse requires a complete candidate without hosted native reuse.' >&2
+            exit 1
+          fi
+          if [[ -n "$HOSTED_NATIVE_RUNS" && ( "$NATIVE_ONLY" == true || -n "$HOSTED_NATIVE_RUN_ID" || -n "$HOSTED_V8_RUN_ID" || "$REUSE_LINUX_ARM" == true ) ]]; then
+            echo 'Per-target native reuse requires a complete candidate without another reuse mode.' >&2
             exit 1
           fi
       - name: Check the completed local proof and permitted packaging-only diff
@@ -97,6 +107,7 @@ jobs:
         run: |
           python3 -m unittest discover -s codex-cli/tests -p test_build_npm_package.py -v
           python3 -m unittest discover -s scripts -p test_npm_release.py -v
+          python3 -m unittest discover -s scripts -p test_hosted_native_handoff.py -v
           python3 .github/scripts/test_bootstrap_bazel_distdir.py -v
       - name: Verify the optional hosted native producer
         if: inputs.hosted_native_run_id != ''
@@ -171,7 +182,7 @@ jobs:
 
   native:
     name: Build and test ${{ matrix.target }}
-    if: inputs.hosted_native_run_id == '' && !inputs.reuse_linux_arm_handoff
+    if: inputs.hosted_native_run_id == '' && inputs.hosted_native_runs == '' && !inputs.reuse_linux_arm_handoff
     needs: identity
     permissions:
       contents: read
@@ -241,7 +252,8 @@ jobs:
       !cancelled() && !inputs.native_only && needs.identity.result == 'success' &&
       needs.handoff.result == 'success' &&
       (needs.native.result == 'success' || needs.native-mac.result == 'success' ||
-       (needs.native.result == 'skipped' && needs.native-mac.result == 'skipped' && inputs.hosted_native_run_id != ''))
+       (needs.native.result == 'skipped' && needs.native-mac.result == 'skipped' &&
+        (inputs.hosted_native_run_id != '' || inputs.hosted_native_runs != '')))
     needs: [identity, handoff, native, native-mac]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -260,12 +272,23 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.hosted_native_runs == ''
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.hosted_native_run_id || github.run_id }}
           path: native-artifacts
           pattern: "{aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin}"
+      - name: Import verified hosted native targets
+        if: inputs.hosted_native_runs != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOSTED_NATIVE_RUNS: ${{ inputs.hosted_native_runs }}
+          PRODUCT_SOURCE: ${{ inputs.native_source_commit }}
+        run: >-
+          python3 scripts/hosted_native_handoff.py --runs "$HOSTED_NATIVE_RUNS"
+          --repository "$GITHUB_REPOSITORY" --product-source "$PRODUCT_SOURCE"
+          --packaging "$GITHUB_SHA" --destination native-artifacts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: runner-handoff-${{ github.sha }}
@@ -284,6 +307,9 @@ jobs:
           python3 scripts/verify_npm_release.py --version "$VERSION" --dist-dir dist/npm
           python3 scripts/check_npm_install.py --version "$VERSION" --dist-dir dist/npm
           cp native-receipts.json dist/npm/
+          if [[ -f native-artifacts/hosted-native-producers.json ]]; then
+            cp native-artifacts/hosted-native-producers.json dist/npm/
+          fi
           cd dist/npm
           sha256sum *.tgz > SHA256SUMS
       - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
@@ -305,13 +331,14 @@ jobs:
       - env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           HOSTED_RUN_ID: ${{ inputs.hosted_native_run_id }}
+          HOSTED_NATIVE_RUNS: ${{ inputs.hosted_native_runs }}
           REUSE_LINUX_ARM: ${{ inputs.reuse_linux_arm_handoff }}
         run: |
           python3 - <<'PY'
           import json, os
           results = {name: job['result'] for name, job in json.loads(os.environ['NEEDS_JSON']).items()}
           expected = {name: 'success' for name in ('identity', 'handoff', 'npm')}
-          if os.environ['HOSTED_RUN_ID']:
+          if os.environ['HOSTED_RUN_ID'] or os.environ['HOSTED_NATIVE_RUNS']:
               expected.update(native='skipped', **{'native-mac': 'skipped'})
           elif os.environ['REUSE_LINUX_ARM'] == 'true':
               expected.update(native='skipped', **{'native-mac': 'success'})

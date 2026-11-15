@@ -1017,13 +1017,18 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             .split("      - name: Check the completed local proof", 1)[0]
             .splitlines()
         )
-        for native_only, hosted_native, reuse_arm, accepted in (
-            ("false", "", "false", True),
-            ("true", "", "false", True),
-            ("false", "123", "false", True),
-            ("false", "", "true", True),
-            ("true", "", "true", False),
-            ("false", "123", "true", False),
+        for native_only, hosted_native, reuse_arm, mapped_runs, v8_run, accepted in (
+            ("false", "", "false", "", "", True),
+            ("true", "", "false", "", "", True),
+            ("false", "123", "false", "", "", True),
+            ("false", "", "true", "", "", True),
+            ("true", "", "true", "", "", False),
+            ("false", "123", "true", "", "", False),
+            ("false", "", "false", "{}", "", True),
+            ("true", "", "false", "{}", "", False),
+            ("false", "123", "false", "{}", "", False),
+            ("false", "", "false", "{}", "456", False),
+            ("false", "", "true", "{}", "", False),
         ):
             with self.subTest(
                 native_only=native_only,
@@ -1038,10 +1043,43 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                         **os.environ,
                         "NATIVE_ONLY": native_only,
                         "HOSTED_NATIVE_RUN_ID": hosted_native,
+                        "HOSTED_NATIVE_RUNS": mapped_runs,
+                        "HOSTED_V8_RUN_ID": v8_run,
                         "REUSE_LINUX_ARM": reuse_arm,
                     },
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+        final_command = "\n".join(
+            line[10:]
+            for line in source.split("\n  candidate-result:", 1)[1]
+            .split("        run: |\n", 1)[1]
+            .splitlines()
+        )
+        for failed in (None, "identity", "handoff", "npm", "native"):
+            results = {
+                name: {
+                    "result": "success"
+                    if name in ("identity", "handoff", "npm")
+                    else "skipped"
+                }
+                for name in ("identity", "handoff", "npm", "native", "native-mac")
+            }
+            if failed:
+                results[failed]["result"] = "failure"
+            result = subprocess.run(
+                ["bash", "-c", final_command],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "NEEDS_JSON": json.dumps(results),
+                    "HOSTED_RUN_ID": "",
+                    "HOSTED_NATIVE_RUNS": "{}",
+                    "REUSE_LINUX_ARM": "false",
+                },
+            )
+            self.assertEqual(result.returncode == 0, failed is None, result.stderr)
 
         handoff_step = source.split(
             "      - name: Import authenticated and digested native bundles\n", 1

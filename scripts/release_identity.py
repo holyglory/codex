@@ -28,6 +28,8 @@ PACKAGING_PATHS = frozenset(
         "scripts/prepare_runner_handoff.py",
         "scripts/stage_verified_npm_release.py",
         "scripts/test_npm_release.py",
+        "scripts/hosted_native_handoff.py",
+        "scripts/test_hosted_native_handoff.py",
         "scripts/package_native_release.py",
         "scripts/account_cli_compat/captured_credits.py",
         "scripts/local_deploy_owner.py",
