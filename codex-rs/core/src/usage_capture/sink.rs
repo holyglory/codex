@@ -1,6 +1,10 @@
+use super::work_binding::BoundaryTracker;
 use super::work_binding::PendingWork;
 use super::work_binding::UsageWorkAction;
+use super::work_binding::UsageWorkBoundaryState;
+use super::work_binding::UsageWorkBoundaryStatus;
 use super::work_binding::UsageWorkReceipt;
+use super::work_binding::boundary_status;
 use codex_usage::UsageRecord;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -44,6 +48,7 @@ pub(super) struct CaptureSink {
     deferred: AtomicBool,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     flushing: tokio::sync::Semaphore,
+    boundaries: Mutex<BoundaryTracker>,
 }
 
 #[derive(Default)]
@@ -65,6 +70,7 @@ impl CaptureSink {
             deferred: AtomicBool::new(false),
             tasks: Mutex::default(),
             flushing: tokio::sync::Semaphore::new(/*permits*/ 1),
+            boundaries: Mutex::default(),
         })
     }
 
@@ -104,6 +110,93 @@ impl CaptureSink {
                 "usage_work persistence pending; inspect status before retrying".to_string()
             })?
             .map_err(|_| "usage_work capture unavailable".to_string())?
+    }
+
+    pub(super) async fn submit_work_for_turn(
+        self: &Arc<Self>,
+        thread_id: String,
+        action: UsageWorkAction,
+        boundary_id: Option<String>,
+        boundary_state: Option<UsageWorkBoundaryState>,
+    ) -> Result<UsageWorkReceipt, String> {
+        let mut receipt = self.submit_work(thread_id.clone(), action).await?;
+        if let Some(boundary_id) = boundary_id {
+            receipt.boundary = Some(
+                self.boundary_status(thread_id, boundary_id, boundary_state)
+                    .await?,
+            );
+        }
+        Ok(receipt)
+    }
+
+    pub(super) async fn boundary_status(
+        self: &Arc<Self>,
+        thread_id: String,
+        boundary_id: String,
+        explicit_state: Option<UsageWorkBoundaryState>,
+    ) -> Result<UsageWorkBoundaryStatus, String> {
+        // A boundary must observe all earlier operation starts and declarations. The
+        // flush is bounded by the same worker coordination used by ordinary controls.
+        self.flush().await;
+        if explicit_state == Some(UsageWorkBoundaryState::Clear) {
+            let current =
+                codex_usage::read_current_work_binding(&self.home, &thread_id).map_err(|_| {
+                    "usage_work storage unavailable; inspect status before retrying".to_string()
+                })?;
+            if let Some(current) = current.filter(|value| value.update.native_project_id.is_some())
+            {
+                self.submit_work(
+                    thread_id.clone(),
+                    UsageWorkAction::Clear {
+                        expected_revision: current.update.transition_sequence,
+                    },
+                )
+                .await?;
+            }
+        }
+        let home = self.home.clone();
+        let tracker = &self.boundaries;
+        boundary_status(&home, tracker, thread_id, boundary_id, explicit_state)
+    }
+
+    pub(super) async fn inherit_work(
+        self: &Arc<Self>,
+        parent_thread_id: String,
+        child_thread_id: String,
+    ) -> Result<Option<UsageWorkReceipt>, String> {
+        self.flush().await;
+        let parent = codex_usage::read_current_work_binding(&self.home, &parent_thread_id)
+            .map_err(|_| {
+                "usage_work storage unavailable; inspect status before retrying".to_string()
+            })?;
+        let Some(parent) = parent else {
+            return Ok(None);
+        };
+        let Some(native_project_id) = parent.update.native_project_id else {
+            return Ok(None);
+        };
+        // A host or child-side declaration made before inheritance is authoritative for
+        // the child. Inheritance must never replace that explicit selection.
+        if codex_usage::read_current_work_binding(&self.home, &child_thread_id)
+            .map_err(|_| {
+                "usage_work storage unavailable; inspect status before retrying".to_string()
+            })?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let result = self
+            .submit_work(
+                child_thread_id,
+                UsageWorkAction::Set {
+                    native_project_id,
+                    workstream_id: parent.update.workstream_id,
+                    outcome_id: parent.update.outcome_id,
+                    expected_revision: 0,
+                },
+            )
+            .await?;
+        Ok(Some(result))
     }
 
     fn enqueue(self: &Arc<Self>, item: PendingCapture) {

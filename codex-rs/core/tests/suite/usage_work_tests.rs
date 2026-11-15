@@ -246,3 +246,48 @@ async fn sparse_switches_follow_model_tools_without_per_operation_metadata() -> 
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn boundary_prompt_is_one_shot_and_explicit_unknown_is_retained() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("boundary-request"),
+                responses::ev_function_call("boundary-call", "usage_work_boundary", "{}"),
+                responses::ev_completed("boundary-request"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("boundary-answer"),
+                responses::ev_function_call(
+                    "boundary-answer-call",
+                    "usage_work_boundary",
+                    &json!({"state":"unknown"}).to_string(),
+                ),
+                responses::ev_completed("boundary-answer"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("boundary-final"),
+                responses::ev_assistant_message("boundary-message", "done"),
+                responses::ev_completed("boundary-final"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    test.submit_turn("start an unattributed job").await?;
+    let first_status = output(&first.requests()[0], "boundary-call")?;
+    assert_eq!(first_status["state"], json!("unknown"));
+    assert_eq!(first_status["request"]["reason"], json!("missing_binding"));
+    assert_eq!(
+        first_status["request"]["options"].as_array().map(Vec::len),
+        Some(5)
+    );
+    let second_status = output(&first.requests()[1], "boundary-answer-call")?;
+    assert_eq!(second_status["state"], json!("unknown"));
+    assert!(second_status.get("request").is_none());
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}

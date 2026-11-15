@@ -2674,6 +2674,25 @@ impl ThreadManagerState {
                 return Err(error);
             }
         };
+        // Bind a child before it can accept its first turn. Resume keeps its persisted
+        // thread-scoped binding and therefore does not copy from a parent again.
+        if !is_resumed_thread
+            && let Some(parent_thread_id) = parent_thread_id.or(startup_context.attachment_source)
+            && let Some(capture) = &self.usage_capture
+            && let Err(error) = capture
+                .inherit_work(
+                    parent_thread_id.to_string(),
+                    session.thread_id().to_string(),
+                )
+                .await
+        {
+            warn!(
+                %parent_thread_id,
+                child_thread_id = %session.thread_id(),
+                %error,
+                "failed to inherit usage work binding"
+            );
+        }
         if let Some(source_thread_id) = startup_context.attachment_source
             && session.live_thread().is_some()
             && self.thread_store.supports_thread_attachments()

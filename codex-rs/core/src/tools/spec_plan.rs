@@ -31,6 +31,7 @@ use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::UsageActivityHandler;
 use crate::tools::handlers::UsageStatsHandler;
+use crate::tools::handlers::UsageWorkBoundaryHandler;
 use crate::tools::handlers::UsageWorkHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
@@ -1397,6 +1398,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(UsageStatsHandler);
         registry.add(UsageActivityHandler);
         registry.add(UsageWorkHandler);
+        registry.add(UsageWorkBoundaryHandler);
         registry.add(AccountManagementHandler);
     }
     if features.enabled(Feature::SleepTool)

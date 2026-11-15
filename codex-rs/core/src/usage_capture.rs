@@ -38,6 +38,8 @@ pub(crate) use approval::ApprovalObservation;
 pub(crate) use entities::annotate_record;
 pub(crate) use model_transport::retry_wait;
 pub(crate) use sink::Persistence;
+pub(crate) use work_binding::UsageWorkBoundaryState;
+pub(crate) use work_binding::UsageWorkBoundaryStatus;
 
 struct ThreadLineage {
     thread_id: String,
@@ -109,6 +111,23 @@ impl UsageCaptureRuntime {
         builder.thread_lifecycle_contributor(contributor.clone());
         builder.turn_lifecycle_contributor(contributor);
         Arc::new(builder.build())
+    }
+
+    pub(crate) async fn usage_work_boundary(
+        &self,
+        thread_id: String,
+        boundary_id: String,
+        state: Option<UsageWorkBoundaryState>,
+    ) -> Result<UsageWorkBoundaryStatus, String> {
+        self.0.boundary_status(thread_id, boundary_id, state).await
+    }
+
+    pub(crate) async fn inherit_work(
+        &self,
+        parent_thread_id: String,
+        child_thread_id: String,
+    ) -> Result<Option<work_binding::UsageWorkReceipt>, String> {
+        self.0.inherit_work(parent_thread_id, child_thread_id).await
     }
 }
 
