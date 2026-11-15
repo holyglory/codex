@@ -70,6 +70,11 @@ pub(crate) struct UsageCaptureRuntime(Arc<CaptureSink>);
 pub(crate) async fn missing_work_boundary_prompt(
     turn_context: &TurnContext,
 ) -> Option<UsageWorkBoundaryPrompt> {
+    // Child, fork, and prediction turns inherit the root boundary decision. Prompting
+    // each derived thread would add a cache-changing reminder without creating a new job.
+    if turn_context.parent_thread_id.is_some() || turn_context.config.ephemeral {
+        return None;
+    }
     let turn = turn_context.extension_data.get::<TurnCapture>()?;
     let boundary_id = turn_context.root_turn_id();
     let status = turn
