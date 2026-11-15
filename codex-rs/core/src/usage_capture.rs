@@ -12,6 +12,7 @@ pub(crate) mod work_binding;
 
 use crate::client::ModelClient;
 use crate::config::Config;
+use crate::context::UsageWorkBoundaryPrompt;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
@@ -60,6 +61,27 @@ struct TurnCapture {
 pub(crate) struct CapturedModelClient(pub(crate) ModelClient);
 
 pub(crate) struct UsageCaptureRuntime(Arc<CaptureSink>);
+
+/// Returns the one-shot model guidance for a turn whose boundary has no binding.
+///
+/// The sink tracker records that the request was emitted, so retries and context rebuilds for the
+/// same boundary do not append another fragment. Bound, cleared, unknown, and inherited states
+/// therefore remain quiet after their first resolution.
+pub(crate) async fn missing_work_boundary_prompt(
+    turn_context: &TurnContext,
+) -> Option<UsageWorkBoundaryPrompt> {
+    let turn = turn_context.extension_data.get::<TurnCapture>()?;
+    let boundary_id = turn_context.root_turn_id();
+    let status = turn
+        .context
+        .sink
+        .boundary_status(turn.context.thread_id.clone(), boundary_id, None)
+        .await
+        .ok()?;
+    status
+        .request
+        .map(|request| UsageWorkBoundaryPrompt::new(request.boundary_id))
+}
 
 struct CaptureContext {
     sink: Arc<CaptureSink>,

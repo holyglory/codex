@@ -1,5 +1,6 @@
 ---
 source: app-server/tests/suite/v2/thread_sample.rs
+assertion_line: 358
 expression: "context_snapshot::format_request_history_snapshot(\"A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.
@@ -16,8 +17,8 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=4b50edba86b0a299):
-        - namespace/functions; hash=f773ad4c14a8f49b
+00:additional_tools/developer (3; hash=c50de80654bb0c47):
+        - namespace/functions; hash=0507c24929e139d3
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -25,6 +26,7 @@ Settings:
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
           - function/get_goal
@@ -81,8 +83,8 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=4b50edba86b0a299):
-        - namespace/functions; hash=f773ad4c14a8f49b
+00:additional_tools/developer (3; hash=c50de80654bb0c47):
+        - namespace/functions; hash=0507c24929e139d3
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -90,6 +92,7 @@ Settings: same as window 1
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
           - function/get_goal
@@ -145,8 +148,8 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=4b50edba86b0a299):
-        - namespace/functions; hash=f773ad4c14a8f49b
+00:additional_tools/developer (3; hash=c50de80654bb0c47):
+        - namespace/functions; hash=0507c24929e139d3
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -154,6 +157,7 @@ Settings: same as window 1
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
           - function/get_goal

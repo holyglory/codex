@@ -105,6 +105,8 @@ pub(super) fn record_page(
             "durationMs":row.duration_ms,"status":row.outcome,"phase":row.phase,"activity":row.activity,
             "provenance":row.classification,"coverage":row.coverage,"attemptNumber":row.attempt_number,
             "reworkOfOperationId":row.rework_of_operation_id,
+            "contextSize":row.context_size,"costProvenance":row.cost_provenance,
+            "actualBillingMicros":row.actual_billing_micros,
         })).collect::<Vec<_>>();
         (data, page.next_cursor, cursors, "recorded_operations")
     } else {

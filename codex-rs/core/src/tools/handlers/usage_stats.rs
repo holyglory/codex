@@ -345,6 +345,9 @@ fn record_fields(record: &codex_usage::UsageRecord) -> Value {
         "cachedInputTokens": record.cached_input_tokens,
         "outputTokens": record.output_tokens,
         "reasoningOutputTokens": record.reasoning_output_tokens,
+        "contextSize": record.context_size,
+        "costProvenance": record.cost_provenance,
+        "actualBillingMicros": record.actual_billing_micros,
     })
 }
 

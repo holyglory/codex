@@ -414,6 +414,8 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
+use codex_usage::UsageContextSize;
+use codex_usage::UsageCostProvenance;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -4696,9 +4698,14 @@ impl Session {
             }
         }
 
-        crate::context_manager::updates::build_rendered_message(developer_sections)
+        let mut items = crate::context_manager::updates::build_rendered_message(developer_sections)
             .into_iter()
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(prompt) = crate::usage_capture::missing_work_boundary_prompt(turn_context).await
+        {
+            items.push(ContextualUserFragment::into(prompt));
+        }
+        items
     }
 
     /// Normally both inputs come from the same step. Async compaction uses the prefix's
@@ -4791,6 +4798,10 @@ impl Session {
             {
                 developer_sections.push(fragment.into());
             }
+        }
+        if let Some(prompt) = crate::usage_capture::missing_work_boundary_prompt(turn_context).await
+        {
+            contextual_user_sections.push(prompt.render_fragment());
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
@@ -5229,6 +5240,7 @@ impl Session {
                 turn_context,
                 response_id,
                 incomplete.token_usage.as_ref(),
+                None,
             )
             .await;
         }
@@ -5277,7 +5289,7 @@ impl Session {
             }),
         )
         .await;
-        self.record_response_token_usage(turn_context, response_id, usage)
+        self.record_response_token_usage(turn_context, response_id, usage, usage_metadata)
             .await;
     }
 
@@ -5286,6 +5298,7 @@ impl Session {
         turn_context: &TurnContext,
         response_id: &str,
         usage: Option<&TokenUsage>,
+        usage_metadata: Option<&ResponseUsageMetadata>,
     ) {
         let Some(usage) = usage else {
             return;
@@ -5334,6 +5347,46 @@ impl Session {
             u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
         usage_record.reasoning_output_tokens =
             u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default();
+        let cached_input_tokens =
+            u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
+        let input_tokens = u64::try_from(usage.input_tokens.max(0)).unwrap_or_default();
+        let context_window_tokens = turn_context
+            .model_context_window()
+            .and_then(|value| u64::try_from(value).ok());
+        let mut cost_provenance = UsageCostProvenance {
+            model: Some(turn_context.model_info().slug.clone()),
+            provider: Some(turn_context.provider.info().name.clone()),
+            service_tier: turn_context.initial_settings.service_tier.clone(),
+            context_class: Some(Self::context_class(input_tokens, context_window_tokens)),
+            region: turn_context.provider.info().location.clone(),
+            rate_card: None,
+            rate_card_version: None,
+            pricing_basis: Some("provider_tokens_without_rate_card".to_string()),
+            estimated_api_equivalent_cost_micros: None,
+        };
+        if let Some(metadata) = usage_metadata.and_then(|value| value.metadata.as_ref()) {
+            cost_provenance.rate_card = metadata_string(metadata, "rateCard")
+                .or_else(|| metadata_string(metadata, "rate_card"));
+            cost_provenance.rate_card_version = metadata_string(metadata, "rateCardVersion")
+                .or_else(|| metadata_string(metadata, "rate_card_version"));
+            cost_provenance.pricing_basis = metadata_string(metadata, "pricingBasis")
+                .or_else(|| metadata_string(metadata, "pricing_basis"))
+                .or(cost_provenance.pricing_basis);
+            cost_provenance.estimated_api_equivalent_cost_micros =
+                metadata_u64(metadata, "estimatedApiEquivalentCostMicros")
+                    .or_else(|| metadata_u64(metadata, "estimated_api_equivalent_cost_micros"));
+        }
+        usage_record = usage_record
+            .with_context_size(UsageContextSize {
+                prompt_tokens: Some(input_tokens.saturating_sub(cached_input_tokens)),
+                context_tokens: Some(input_tokens),
+                cache_tokens: Some(cached_input_tokens),
+                compaction_count: None,
+                context_window_tokens,
+                window_class: context_window_tokens.map(Self::context_window_class),
+            })
+            .with_cost_provenance(cost_provenance);
+        usage_record.actual_billing_micros = usage_metadata.and_then(Self::actual_billing_micros);
         let usage_cwd = turn_context.config.cwd.clone();
         if !matches!(
             tokio::task::spawn_blocking(move || {
@@ -5348,6 +5401,43 @@ impl Session {
         ) {
             tracing::warn!("local usage observation could not be persisted");
         }
+    }
+
+    fn context_window_class(window_tokens: u64) -> String {
+        if window_tokens >= 1_000_000 {
+            let millions = window_tokens / 1_000_000;
+            format!("{millions}m")
+        } else if window_tokens >= 1_000 {
+            let thousands = window_tokens / 1_000;
+            format!("{thousands}k")
+        } else {
+            window_tokens.to_string()
+        }
+    }
+
+    fn context_class(input_tokens: u64, window_tokens: Option<u64>) -> String {
+        let Some(window_tokens) = window_tokens else {
+            return "unknown_window".to_string();
+        };
+        if input_tokens > window_tokens {
+            "over_window".to_string()
+        } else if input_tokens.saturating_mul(100) >= window_tokens.saturating_mul(90) {
+            "near_window_limit".to_string()
+        } else {
+            "within_window".to_string()
+        }
+    }
+
+    fn actual_billing_micros(metadata: &ResponseUsageMetadata) -> Option<u64> {
+        metadata
+            .metadata
+            .as_ref()
+            .and_then(|value| {
+                metadata_u64(value, "actualBillingMicros")
+                    .or_else(|| metadata_u64(value, "actual_billing_micros"))
+                    .or_else(|| metadata_u64(value, "billingMicros"))
+            })
+            .or_else(|| metadata.amount.as_deref().and_then(parse_usd_micros))
     }
 
     pub(crate) async fn record_token_usage_info(
@@ -5791,6 +5881,39 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
+}
+
+fn metadata_string(metadata: &serde_json::Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+fn metadata_u64(metadata: &serde_json::Value, key: &str) -> Option<u64> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn parse_usd_micros(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('-') {
+        return None;
+    }
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty() || !whole.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if fraction.len() > 6 && fraction[6..].bytes().any(|byte| byte != b'0')
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let fraction = &fraction[..fraction.len().min(6)];
+    let whole = whole.parse::<u64>().ok()?.checked_mul(1_000_000)?;
+    let padded = format!("{fraction:0<6}");
+    whole.checked_add(padded.parse::<u64>().ok()?)
 }
 
 #[cfg(test)]

@@ -53,6 +53,26 @@ use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::WindowsSandboxModeToml;
 use core_test_support::test_codex::TurnInputRequest as ExternalTurnInputRequest;
 
+#[test]
+fn usage_metadata_preserves_exact_billing_and_rate_card_provenance() {
+    assert_eq!(super::parse_usd_micros("0.123456"), Some(123_456));
+    assert_eq!(super::parse_usd_micros("0.123456000"), Some(123_456));
+    assert_eq!(super::parse_usd_micros("0.1234567"), None);
+    let metadata = codex_protocol::ResponseUsageMetadata {
+        amount: Some("0.123456".into()),
+        metadata: Some(serde_json::json!({
+            "pricingBasis": "api_equivalent",
+            "rateCard": "openai-standard",
+            "rateCardVersion": "2026-11-15",
+            "estimatedApiEquivalentCostMicros": 987654,
+        })),
+    };
+    assert_eq!(
+        super::Session::actual_billing_micros(&metadata),
+        Some(123_456)
+    );
+}
+
 use codex_features::Feature;
 use codex_file_system::FileSystemSandboxContext;
 use codex_http_client::ClientRouteClass;

@@ -2,13 +2,20 @@
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::StartThreadOptions;
+use codex_core::TurnInputRequest;
 use codex_core::UsageWorkAction;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::user_input::UserInput;
 use codex_usage::UsageJournal;
 use codex_usage::read_work_binding_transitions;
 use core_test_support::responses;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -20,6 +27,15 @@ fn output(request: &ResponsesRequest, id: &str) -> Result<Value> {
     let content = content.context("JSON receipt")?;
     serde_json::from_str(&content)
         .with_context(|| format!("tool {id} returned a non-JSON receipt: {content:.512}"))
+}
+
+fn boundary_prompt_count(request: &ResponsesRequest) -> usize {
+    request
+        .message_input_text_groups("user")
+        .iter()
+        .flatten()
+        .filter(|text| text.contains("<usage_work_boundary>"))
+        .count()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -65,7 +81,12 @@ async fn sparse_switches_follow_model_tools_without_per_operation_metadata() -> 
         .usage_work(thread_id, UsageWorkAction::Status)
         .await
         .map_err(anyhow::Error::msg)?;
-    assert_eq!(serde_json::to_value(&current)?, b);
+    let current_value = serde_json::to_value(&current)?;
+    assert_eq!(
+        (&current_value["revision"], &current_value["transition"]),
+        (&b["revision"], &b["transition"]),
+        "host and tool receipts share the persisted binding; turn-only boundary status is extra",
+    );
     // A lost reply and an unchanged declaration both recover the same receipt.
     for expected_revision in [1, 2] {
         assert_eq!(
@@ -278,16 +299,108 @@ async fn boundary_prompt_is_one_shot_and_explicit_unknown_is_retained() -> Resul
     .await;
     let test = test_codex().build_with_auto_env(&server).await?;
     test.submit_turn("start an unattributed job").await?;
-    let first_status = output(&first.requests()[0], "boundary-call")?;
-    assert_eq!(first_status["state"], json!("unknown"));
-    assert_eq!(first_status["request"]["reason"], json!("missing_binding"));
-    assert_eq!(
-        first_status["request"]["options"].as_array().map(Vec::len),
-        Some(5)
+    let requests = first.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| boundary_prompt_count(request) == 1)
     );
-    let second_status = output(&first.requests()[1], "boundary-answer-call")?;
+    assert!(requests.iter().any(|request| {
+        request
+            .body_json()
+            .to_string()
+            .contains("A usage-work attribution boundary is missing")
+    }));
+    let first_request = requests
+        .iter()
+        .find(|request| request.has_function_call("boundary-call"))
+        .expect("boundary request");
+    let second_request = requests
+        .iter()
+        .find(|request| request.has_function_call("boundary-answer-call"))
+        .expect("boundary answer request");
+    let first_status = output(first_request, "boundary-call")?;
+    assert_eq!(first_status["state"], json!("unknown"));
+    assert!(first_status.get("request").is_none());
+    let second_status = output(second_request, "boundary-answer-call")?;
     assert_eq!(second_status["state"], json!("unknown"));
     assert!(second_status.get("request").is_none());
     test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inherited_and_resumed_bindings_skip_boundary_prompt() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("parent-response"),
+                responses::ev_assistant_message("parent-message", "parent done"),
+                responses::ev_completed("parent-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("child-response"),
+                responses::ev_assistant_message("child-message", "child done"),
+                responses::ev_completed("child-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resumed-response"),
+                responses::ev_assistant_message("resumed-message", "resumed done"),
+                responses::ev_completed("resumed-response"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let parent_id = test.session_configured.thread_id;
+    test.thread_manager
+        .usage_work(
+            parent_id,
+            UsageWorkAction::Set {
+                native_project_id: "project-child".into(),
+                workstream_id: Some("stream-child".into()),
+                outcome_id: Some("outcome-child".into()),
+                expected_revision: 0,
+            },
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    test.submit_turn("continue the bound parent job").await?;
+    assert_eq!(boundary_prompt_count(&first.requests()[0]), 0);
+
+    let child = test
+        .thread_manager
+        .spawn_internal_session(
+            parent_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                ..StartThreadOptions::new(test.config.clone())
+            },
+        )
+        .await?;
+    child
+        .thread
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue the inherited child job".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&child.thread, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(boundary_prompt_count(&first.requests()[1]), 0);
+    child.thread.shutdown_and_wait().await?;
+
+    let resumed = test_codex().restart(&server, &test).await?;
+    resumed
+        .submit_turn("continue the resumed parent job")
+        .await?;
+    assert_eq!(boundary_prompt_count(&first.requests()[2]), 0);
+    resumed.codex.shutdown_and_wait().await?;
     Ok(())
 }

@@ -33,7 +33,7 @@ impl ToolExecutor<ToolInvocation> for UsageWorkBoundaryHandler {
     fn spec(&self) -> ToolSpec {
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.into(),
-            description: "Resolve the current turn or job attribution boundary exactly once when no usage_work binding is available. Omit state to inspect the bounded request, then ask the user to choose continue, select, new, clear, or unknown. Use an explicit state after the user answers. Never call per operation, never infer identifiers, and keep the same boundary decision across retries and compaction. A bound or explicitly cleared boundary returns no request.".into(),
+            description: "Resolve the current turn or job attribution boundary exactly once when the runtime supplies a missing-binding reminder. Omit state to inspect the bounded request. Use known authoritative identifiers with usage_work when available; ask the user only when the attribution decision or identifiers are genuinely unresolved, then use an explicit state. Never call per operation, retry, or compaction, never infer identifiers, and keep the same boundary decision. A bound, inherited, or explicitly cleared boundary returns no request.".into(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -89,7 +89,3 @@ impl CoreToolRuntime for UsageWorkBoundaryHandler {
 fn error(message: &str) -> FunctionCallError {
     FunctionCallError::RespondToModel(message.into())
 }
-
-#[cfg(test)]
-#[path = "usage_work_boundary_tests.rs"]
-mod tests;

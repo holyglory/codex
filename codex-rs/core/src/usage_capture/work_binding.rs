@@ -261,13 +261,52 @@ pub(super) fn boundary_status(
     let revision = transition
         .as_ref()
         .map_or(0, |value| value.update.transition_sequence);
-    let key = format!("{thread_id}:{boundary_id}");
+    let transition_key = transition.as_ref().map_or_else(
+        || "none".to_string(),
+        |value| value.update.transition_sequence.to_string(),
+    );
+    // Several model requests can belong to one user turn and receive different
+    // sub-turn IDs. Keep the one-shot decision on the thread's binding generation.
+    let key = format!("{thread_id}:{transition_key}");
     let mut state = tracker
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = state.entry_mut(key);
+    let explicit_state_supplied = explicit_state.is_some();
     if let Some(explicit_state) = explicit_state {
         entry.explicit_state = Some(explicit_state);
+    }
+    // A later persistent transition supersedes an answer from an earlier inspection of this
+    // boundary. Keep the explicit `select`/`clear` receipt states produced by the matching tool
+    // call, but discard stale answers that no longer describe the binding on disk.
+    if !explicit_state_supplied && let Some(transition) = &transition {
+        let stale = match (
+            transition.update.native_project_id.is_some(),
+            entry.explicit_state,
+        ) {
+            (
+                true,
+                Some(
+                    UsageWorkBoundaryState::Unknown
+                    | UsageWorkBoundaryState::New
+                    | UsageWorkBoundaryState::Clear
+                    | UsageWorkBoundaryState::Select,
+                ),
+            )
+            | (
+                false,
+                Some(
+                    UsageWorkBoundaryState::Continue
+                    | UsageWorkBoundaryState::Select
+                    | UsageWorkBoundaryState::New
+                    | UsageWorkBoundaryState::Unknown,
+                ),
+            ) => true,
+            _ => false,
+        };
+        if stale {
+            entry.explicit_state = None;
+        }
     }
     let selected = entry.explicit_state.unwrap_or_else(|| {
         if transition
@@ -281,7 +320,10 @@ pub(super) fn boundary_status(
             UsageWorkBoundaryState::Unknown
         }
     });
-    let request = if transition.is_none() && entry.explicit_state.is_none() && !entry.requested {
+    let unbound = transition
+        .as_ref()
+        .is_none_or(|value| value.update.native_project_id.is_none());
+    let request = if unbound && entry.explicit_state.is_none() && !entry.requested {
         entry.requested = true;
         Some(UsageWorkBoundaryRequest {
             boundary_id: boundary_id.clone(),
@@ -334,7 +376,7 @@ pub(crate) async fn apply_work(
         .submit_work_for_turn(
             turn.context.thread_id.clone(),
             action,
-            turn.context.turn_id.clone(),
+            Some(invocation.turn.root_turn_id()),
             boundary_state,
         )
         .await
@@ -349,11 +391,7 @@ pub(crate) async fn apply_work_boundary(
         .extension_data
         .get::<TurnCapture>()
         .ok_or_else(|| "usage_work boundary capture unavailable".to_string())?;
-    let boundary_id = turn
-        .context
-        .turn_id
-        .clone()
-        .ok_or_else(|| "usage_work boundary requires an active turn".to_string())?;
+    let boundary_id = invocation.turn.root_turn_id();
     turn.context
         .sink
         .boundary_status(turn.context.thread_id.clone(), boundary_id, state)
