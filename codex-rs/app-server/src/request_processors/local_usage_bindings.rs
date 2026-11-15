@@ -277,6 +277,9 @@ fn outcomes_from_contexts(
         effort["reworkOperations"] = json!(fact.rework_operations);
         effort["providerTotalTokens"] = json!({"measured":fact.provider_total_tokens,"exact":Value::Null,"unknown":fact.unknown_token_observations});
         effort["activeAgentMs"]["unknown"] = json!(fact.operations);
+        // Per-outcome interval sums can overlap the selected total and cannot be
+        // presented as wall time. Keep the outcome row explicitly unknown; the
+        // report-level union is exposed through review.time and report.timing.
         effort["elapsedExecutionMs"]["unknown"] = json!(fact.operations);
         effort["recordedWaitMs"]["measured"] = json!(fact.recorded_wait_ms);
         if workstream
