@@ -787,6 +787,10 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
         report["cost"]["estimatedApiEquivalentCostMicros"]["measured"],
         14
     );
+    assert_eq!(report["cost"]["status"], "complete");
+    assert_eq!(report["cost"]["basis"], "api_equivalent");
+    assert_eq!(report["cost"]["currency"], "USD");
+    assert_eq!(report["cost"]["pricedObservations"], 2);
     assert_eq!(report["cost"]["actualBillingMicros"]["measured"], 24);
     Ok(())
 }

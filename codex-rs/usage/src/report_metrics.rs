@@ -1,5 +1,6 @@
 //! Bounded context, cost, and interval metrics used by performance reports.
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use duckdb::Connection;
 use serde_json::Value;
@@ -171,6 +172,8 @@ pub(crate) fn context_and_cost_metrics(
         connection,
         &format!(
             "SELECT context_size, cost_provenance, actual_billing_micros, \
+             input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, \
+             reasoning_output_tokens, provider_total_tokens, \
              COALESCE(observation_count, 1)::UBIGINT observation_count \
              FROM ({contributions}) \
              WHERE ({})",
@@ -184,6 +187,24 @@ pub(crate) fn context_and_cost_metrics(
         let count = row["observation_count"].as_u64().unwrap_or(1);
         context.observations = context.observations.saturating_add(count);
         cost.observations = cost.observations.saturating_add(count);
+        cost.input_tokens = cost
+            .input_tokens
+            .saturating_add(row["input_tokens"].as_u64().unwrap_or_default());
+        cost.cached_input_tokens = cost
+            .cached_input_tokens
+            .saturating_add(row["cached_input_tokens"].as_u64().unwrap_or_default());
+        cost.cache_write_tokens = cost
+            .cache_write_tokens
+            .saturating_add(row["cache_write_input_tokens"].as_u64().unwrap_or_default());
+        cost.output_tokens = cost
+            .output_tokens
+            .saturating_add(row["output_tokens"].as_u64().unwrap_or_default());
+        cost.reasoning_tokens = cost
+            .reasoning_tokens
+            .saturating_add(row["reasoning_output_tokens"].as_u64().unwrap_or_default());
+        cost.provider_total_tokens = cost
+            .provider_total_tokens
+            .saturating_add(row["provider_total_tokens"].as_u64().unwrap_or_default());
         // Retained rollups may carry a representative JSON value for many source
         // observations. Do not multiply that representative into a false exact total.
         let context_size = (count == 1)
@@ -295,6 +316,14 @@ struct CostTotals {
     estimated_unknown: u64,
     actual_unknown: u64,
     provenance: BTreeMap<String, (UsageCostProvenance, u64)>,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    cache_write_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    provider_total_tokens: u64,
+    priced_observations: u64,
+    rate_card_refs: BTreeSet<String>,
 }
 
 impl CostTotals {
@@ -310,6 +339,7 @@ impl CostTotals {
         };
         if let Some(amount) = value.estimated_api_equivalent_cost_micros {
             self.estimated = self.estimated.saturating_add(amount.saturating_mul(count));
+            self.priced_observations = self.priced_observations.saturating_add(count);
         } else {
             self.estimated_unknown = self.estimated_unknown.saturating_add(count);
         }
@@ -324,11 +354,55 @@ impl CostTotals {
             .entry(key)
             .or_insert_with(|| (value.clone(), 0));
         entry.1 = entry.1.saturating_add(count);
+        if let Some(card) = &value.rate_card {
+            self.rate_card_refs.insert(match &value.rate_card_version {
+                Some(version) => format!("{card}@{version}"),
+                None => card.clone(),
+            });
+        }
     }
 
     fn value(&self) -> Value {
+        let status = if self.observations == 0 {
+            "unavailable"
+        } else if self.estimated_unknown == 0 && !self.rate_card_refs.is_empty() {
+            "complete"
+        } else if self.estimated != 0 {
+            "partial"
+        } else {
+            "unavailable"
+        };
+        let estimated_usd = (self.estimated > 0).then(|| {
+            format!(
+                "{}.{:06}",
+                self.estimated / 1_000_000,
+                self.estimated % 1_000_000
+            )
+        });
         json!({
-            "coverage": if self.observations == 0 { "unobserved" } else if self.estimated_unknown != 0 || self.actual_unknown != 0 { "partial" } else { "recorded" },
+            "status": status,
+            "basis": "api_equivalent",
+            "currency": "USD",
+            "processingTier": "standard",
+            "estimatedUsd": estimated_usd,
+            "estimatedUsdMicros": (self.estimated > 0).then_some(self.estimated),
+            "inputUsdMicros": Value::Null,
+            "cachedInputUsdMicros": Value::Null,
+            "cacheWriteUsdMicros": Value::Null,
+            "outputUsdMicros": Value::Null,
+            "inputTokens": self.input_tokens,
+            "cachedInputTokens": self.cached_input_tokens,
+            "cacheWriteTokens": self.cache_write_tokens,
+            "uncachedInputTokens": self.input_tokens.saturating_sub(self.cached_input_tokens),
+            "outputTokens": self.output_tokens,
+            "reasoningTokens": self.reasoning_tokens,
+            "providerTotalTokens": self.provider_total_tokens,
+            "pricedObservations": self.priced_observations,
+            "unknownObservations": self.estimated_unknown.max(self.actual_unknown),
+            "unknownRequests": self.estimated_unknown,
+            "unknownTokens": 0,
+            "rateCardRefs": self.rate_card_refs,
+            "unavailableReasons": if status == "unavailable" { json!({"rate_card_missing": self.estimated_unknown.max(1)}) } else { json!({}) },
             "pricingBasis": "api_equivalent",
             "estimatedApiEquivalentCostMicros": measurement(self.estimated, self.estimated_unknown),
             "actualBillingMicros": measurement(self.actual, self.actual_unknown),

@@ -337,6 +337,7 @@ fn read(
             for key in ["timing", "lifecycle", "contextSize", "cost"] {
                 outcomes[key] = report[key].clone();
             }
+            outcomes["totals"]["cost"] = report["cost"].clone();
             review["outcomes"] = outcomes;
             review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] = json!(unknown);
             review["semantics"]["coverage"] = json!(
@@ -403,6 +404,7 @@ fn read(
                 for key in ["timing", "lifecycle", "contextSize", "cost"] {
                     outcomes[key] = report[key].clone();
                 }
+                outcomes["totals"]["cost"] = report["cost"].clone();
                 review["outcomes"] = outcomes;
                 review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] =
                     json!(unknown);
@@ -627,6 +629,7 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
         }
     }
     let mut effort = facts["outcomes"]["totals"].clone();
+    effort["cost"] = facts["cost"].clone();
     // These are counts of observed links, not estimates for missing links.
     effort["retryOperations"] = json!(count(&effort["retryOperations"]));
     // The reader's interval sums are diagnostic effort, not a wall union.
