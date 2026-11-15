@@ -259,6 +259,18 @@ pub struct LocalUsageSummaryResponse {
     pub next_operations_cursor: Option<LocalUsageCursor>,
     pub work_contexts: Vec<LocalUsageWorkContext>,
     pub operation_bindings: Vec<LocalUsageOperationBinding>,
+    /// Context-size measurements from the bounded report, when available.
+    #[serde(default)]
+    pub context_size: Option<Value>,
+    /// Cost provenance and API-equivalent estimate, when available.
+    #[serde(default)]
+    pub cost_provenance: Option<Value>,
+    /// Lifecycle timestamps and coverage for the selected report.
+    #[serde(default)]
+    pub lifecycle: Option<Value>,
+    /// Union-safe elapsed, active, and wait measurements.
+    #[serde(default)]
+    pub timing: Option<Value>,
 }
 
 #[cfg(test)]

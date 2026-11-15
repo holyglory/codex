@@ -335,7 +335,7 @@ fn read(
                 )
                 .map_err(unavailable)?;
             for key in ["timing", "lifecycle", "contextSize", "cost"] {
-                outcomes[key] = review[key].clone();
+                outcomes[key] = report[key].clone();
             }
             review["outcomes"] = outcomes;
             review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] = json!(unknown);
@@ -401,7 +401,7 @@ fn read(
                 )
                 .map_err(unavailable)?;
                 for key in ["timing", "lifecycle", "contextSize", "cost"] {
-                    outcomes[key] = review[key].clone();
+                    outcomes[key] = report[key].clone();
                 }
                 review["outcomes"] = outcomes;
                 review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] =
@@ -467,6 +467,10 @@ fn read(
             page.next_cursor.map(api_cursor),
         )
     };
+    let context_size = report.get("contextSize").cloned();
+    let cost_provenance = report.get("cost").cloned();
+    let lifecycle = report.get("lifecycle").cloned();
+    let timing = report.get("timing").cloned();
     let response = LocalUsageSummaryResponse {
         contract_version: 1,
         source: "usage-v2".into(),
@@ -481,6 +485,10 @@ fn read(
         next_operations_cursor,
         work_contexts,
         operation_bindings,
+        context_size,
+        cost_provenance,
+        lifecycle,
+        timing,
     };
     let encoded_bytes = serde_json::to_vec(&response).map_err(unavailable)?.len();
     if encoded_bytes > MAX_RESPONSE_BYTES {

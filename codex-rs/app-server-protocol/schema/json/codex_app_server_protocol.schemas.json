@@ -15512,15 +15512,27 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "Content-free summary with opt-in finite diagnostics. `report` preserves the existing localUsage/summary envelope; `summary` is the native usage-v2 view.",
         "properties": {
+          "contextSize": {
+            "default": null,
+            "description": "Context-size measurements from the bounded report, when available."
+          },
           "contractVersion": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
+          "costProvenance": {
+            "default": null,
+            "description": "Cost provenance and API-equivalent estimate, when available."
+          },
           "generatedAt": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "lifecycle": {
+            "default": null,
+            "description": "Lifecycle timestamps and coverage for the selected report."
           },
           "nextOperationsCursor": {
             "anyOf": [
@@ -15571,6 +15583,10 @@
             "type": "string"
           },
           "summary": true,
+          "timing": {
+            "default": null,
+            "description": "Union-safe elapsed, active, and wait measurements."
+          },
           "workContexts": {
             "items": {
               "$ref": "#/definitions/v2/LocalUsageWorkContext"

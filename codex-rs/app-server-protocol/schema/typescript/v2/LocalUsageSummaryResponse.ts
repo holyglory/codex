@@ -11,4 +11,20 @@ import type { LocalUsageWorkContext } from "./LocalUsageWorkContext";
  * Content-free summary with opt-in finite diagnostics. `report` preserves the
  * existing localUsage/summary envelope; `summary` is the native usage-v2 view.
  */
-export type LocalUsageSummaryResponse = { contractVersion: number, source: string, generatedAt: bigint, snapshot: LocalUsageSnapshot, report: JsonValue, summary: JsonValue, review: JsonValue | null, observations: Array<JsonValue> | null, nextRecordsCursor: LocalUsageCursor | null, operations: Array<JsonValue> | null, nextOperationsCursor: LocalUsageCursor | null, workContexts: Array<LocalUsageWorkContext>, operationBindings: Array<LocalUsageOperationBinding>, };
+export type LocalUsageSummaryResponse = { contractVersion: number, source: string, generatedAt: bigint, snapshot: LocalUsageSnapshot, report: JsonValue, summary: JsonValue, review: JsonValue | null, observations: Array<JsonValue> | null, nextRecordsCursor: LocalUsageCursor | null, operations: Array<JsonValue> | null, nextOperationsCursor: LocalUsageCursor | null, workContexts: Array<LocalUsageWorkContext>, operationBindings: Array<LocalUsageOperationBinding>,
+/**
+ * Context-size measurements from the bounded report, when available.
+ */
+contextSize: JsonValue | null,
+/**
+ * Cost provenance and API-equivalent estimate, when available.
+ */
+costProvenance: JsonValue | null,
+/**
+ * Lifecycle timestamps and coverage for the selected report.
+ */
+lifecycle: JsonValue | null,
+/**
+ * Union-safe elapsed, active, and wait measurements.
+ */
+timing: JsonValue | null, };

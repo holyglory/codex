@@ -9398,8 +9398,25 @@ class LocalUsageSummaryResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    context_size: Annotated[
+        Any | None,
+        Field(
+            alias="contextSize",
+            description="Context-size measurements from the bounded report, when available.",
+        ),
+    ] = None
     contract_version: Annotated[int, Field(alias="contractVersion", ge=0)]
+    cost_provenance: Annotated[
+        Any | None,
+        Field(
+            alias="costProvenance",
+            description="Cost provenance and API-equivalent estimate, when available.",
+        ),
+    ] = None
     generated_at: Annotated[int, Field(alias="generatedAt", ge=0)]
+    lifecycle: Annotated[
+        Any | None, Field(description="Lifecycle timestamps and coverage for the selected report.")
+    ] = None
     next_operations_cursor: Annotated[
         LocalUsageCursor | None, Field(alias="nextOperationsCursor")
     ] = None
@@ -9414,6 +9431,9 @@ class LocalUsageSummaryResponse(BaseModel):
     snapshot: LocalUsageSnapshot
     source: str
     summary: Any
+    timing: Annotated[
+        Any | None, Field(description="Union-safe elapsed, active, and wait measurements.")
+    ] = None
     work_contexts: Annotated[list[LocalUsageWorkContext], Field(alias="workContexts")]
 
 
