@@ -282,6 +282,14 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         global.snapshot.source_watermark
     );
     assert_eq!(scoped.report["providerTokens"][0]["measuredTokens"], 187);
+    assert!(matches!(
+        scoped.cost_provenance.as_ref().unwrap()["status"].as_str(),
+        Some("complete" | "partial" | "unavailable")
+    ));
+    assert_eq!(
+        scoped.timing.as_ref().unwrap()["wallTimeMs"]["measured"],
+        1_500
+    );
     assert_ne!(
         scoped.work_contexts[0].repository_id.as_deref(),
         Some(repository.as_str())
@@ -291,6 +299,10 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     assert_eq!(
         review["outcomes"]["totals"]["providerTotalTokens"]["measured"],
         147
+    );
+    assert_eq!(
+        review["outcomes"]["totals"]["cost"]["basis"],
+        "api_equivalent"
     );
     assert_eq!(
         review["outcomes"]["attributed"]["providerTotalTokens"]["measured"],
