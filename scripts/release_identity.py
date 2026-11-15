@@ -249,6 +249,7 @@ def _verify_v8_recipe(producer: str, packaging: str) -> None:
     native_jobs = []
     for workflow in candidate_workflows:
         job = _extract_yaml_job(workflow, "native")
+        job = job.replace(" && inputs.hosted_native_runs == ''", "")
         arm_handoff = " && !inputs.reuse_linux_arm_handoff"
         if (arm_handoff in job) != bool(
             re.search(r"^  native-mac:\n", workflow, flags=re.MULTILINE)
@@ -351,7 +352,9 @@ def verify_native_source(producer: str, packaging: str) -> dict:
     }
 
 
-def verify_hosted_native_source(producer: str, packaging: str) -> dict:
+def verify_hosted_native_source(
+    producer: str, packaging: str, *, target: str | None = None
+) -> dict:
     result = verify_native_source(producer, packaging)
     if git(
         "diff",
@@ -397,9 +400,23 @@ def verify_hosted_native_source(producer: str, packaging: str) -> dict:
                 f"Hosted native recipe changed after its producer run: {path}"
             )
     workflows = [
-        git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        git("show", f"{commit}:.github/workflows/downstream-candidate.yml").replace(
+            " && inputs.hosted_native_runs == ''", ""
+        )
         for commit in (producer, packaging)
     ]
+    if target is not None:
+        if target not in (
+            "aarch64-unknown-linux-musl",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ):
+            raise ValueError("Unsupported hosted native target")
+        _verify_v8_recipe(producer, packaging)
+        workflows = [
+            workflow.replace(" && !inputs.reuse_linux_arm_handoff", "")
+            for workflow in workflows
+        ]
     # Keep the hosted native wrapper and workflow-wide execution settings
     # byte-identical. Identity, handoff and npm orchestration may evolve.
     for pattern in (
@@ -570,7 +587,9 @@ def verify_acceptance(
         )
 
 
-def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
+def verify_artifacts(
+    directory: Path, packaging: str, *, targets: tuple[str, ...] | None = None
+) -> list[dict]:
     try:
         from verify_npm_release import PLATFORMS
         from release_producer_inputs import verify as verify_producer_inputs
@@ -578,8 +597,15 @@ def verify_artifacts(directory: Path, packaging: str) -> list[dict]:
         from scripts.verify_npm_release import PLATFORMS
         from scripts.release_producer_inputs import verify as verify_producer_inputs
     result = []
+    if targets is not None and (
+        not targets
+        or not set(targets) <= {p["target_triple"] for p in PLATFORMS.values()}
+    ):
+        raise ValueError("Unsupported native artifact targets")
     for platform in PLATFORMS.values():
         target = platform["target_triple"]
+        if targets is not None and target not in targets:
+            continue
         folder = directory / target
         receipt = json.loads((folder / "native-manifest.json").read_text())
         producer = receipt.get("source_commit")

@@ -23,26 +23,19 @@ CANDIDATE_JOBS = (
     "Assemble and verify all seven npm tarballs",
     "Candidate checks passed",
 )
+UPLOAD_STEP = "Run actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f"
 
 
-def verify_candidate_run(
-    run: dict,
-    repository: str,
-    commit: str,
-    jobs: list[dict],
-    *,
-    hosted_native: bool = False,
-    hosted_v8: bool = False,
+def _verify_run_identity(
+    run: dict, repository: str, commit: str, *, allow_partial: bool
 ) -> None:
-    if hosted_native and hosted_v8:
-        raise ValueError("Hosted native and V8 reuse modes are mutually exclusive")
     expected = {
         "status": "completed",
         "path": ".github/workflows/downstream-candidate.yml",
         "event": "workflow_dispatch",
         "head_sha": commit,
     }
-    if hosted_v8:
+    if allow_partial:
         if run.get("status") != "completed" or run.get("conclusion") not in {
             "success",
             "failure",
@@ -62,6 +55,100 @@ def verify_candidate_run(
             or run[field].get("full_name") != repository
         ):
             raise ValueError(f"Candidate {field} differs from the release repository")
+
+
+def _verify_job_steps(job: dict, required: tuple[str, ...]) -> None:
+    steps = job.get("steps")
+    if (
+        job.get("status") != "completed"
+        or job.get("conclusion") != "success"
+        or not isinstance(steps, list)
+        or not 0 < len(steps) <= 100
+        or any(
+            not isinstance(step, dict)
+            or step.get("status") != "completed"
+            or step.get("conclusion") not in {"success", "skipped"}
+            for step in steps
+        )
+    ):
+        raise ValueError("Hosted target job or steps did not complete successfully")
+    for name in required:
+        matches = [step for step in steps if step.get("name") == name]
+        if len(matches) != 1 or matches[0].get("conclusion") != "success":
+            raise ValueError(f"Required hosted target step did not pass: {name}")
+
+
+def verify_hosted_target_run(
+    run: dict, repository: str, commit: str, jobs: list[dict], target: str
+) -> dict:
+    """Qualify one successful producer, never the overall npm candidate."""
+    if target not in HOSTED_TARGETS:
+        raise ValueError("Unsupported hosted native target")
+    _verify_run_identity(run, repository, commit, allow_partial=True)
+    if (
+        not isinstance(jobs, list)
+        or len(jobs) > 500
+        or any(not isinstance(job, dict) for job in jobs)
+    ):
+        raise ValueError("Hosted target jobs must be a bounded complete API result")
+    selected = {}
+    for key, name in (
+        ("identity", CANDIDATE_JOBS[0]),
+        ("package", f"Build and test {target} / Package native target"),
+        ("v8", f"Build and test {target} / V8 source pair"),
+    ):
+        matches = [job for job in jobs if job.get("name") == name]
+        if len(matches) != 1:
+            raise ValueError(f"Hosted target job is missing or duplicated: {name}")
+        selected[key] = matches[0]
+    _verify_job_steps(
+        selected["identity"],
+        (
+            "Check the completed local proof and permitted packaging-only diff",
+            "Verify the seven-package fixture and release receipt regressions",
+        ),
+    )
+    _verify_job_steps(
+        selected["package"],
+        (
+            "Verify the V8 handoff before package setup",
+            "Verify the V8 handoff, run native regressions, and assemble packages",
+            UPLOAD_STEP,
+        ),
+    )
+    v8 = selected["v8"]
+    if v8.get("status") == "completed" and v8.get("conclusion") == "skipped":
+        _verify_job_steps(
+            selected["identity"], ("Verify the optional hosted V8 producer",)
+        )
+        _verify_job_steps(
+            selected["package"], ("Download V8 handoff from the producer run",)
+        )
+    else:
+        _verify_job_steps(
+            v8,
+            (
+                "Build and seal the matching V8 pair",
+                "Require a complete V8 handoff before upload",
+                UPLOAD_STEP,
+            ),
+        )
+        _verify_job_steps(selected["package"], ("Download V8 handoff from this run",))
+    return selected
+
+
+def verify_candidate_run(
+    run: dict,
+    repository: str,
+    commit: str,
+    jobs: list[dict],
+    *,
+    hosted_native: bool = False,
+    hosted_v8: bool = False,
+) -> None:
+    if hosted_native and hosted_v8:
+        raise ValueError("Hosted native and V8 reuse modes are mutually exclusive")
+    _verify_run_identity(run, repository, commit, allow_partial=hosted_v8)
     required = (
         HOSTED_V8_JOBS
         if hosted_v8

@@ -620,8 +620,10 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             Path(__file__).resolve().parents[1]
             / ".github/workflows/downstream-candidate.yml"
         ).read_text()
-        native_job = release_identity._extract_yaml_job(workflow, "native").replace(
-            " && !inputs.reuse_linux_arm_handoff", ""
+        native_job = (
+            release_identity._extract_yaml_job(workflow, "native")
+            .replace(" && !inputs.reuse_linux_arm_handoff", "")
+            .replace(" && inputs.hosted_native_runs == ''", "")
         )
         mac_job = release_identity._extract_yaml_job(workflow, "native-mac")
         with tempfile.TemporaryDirectory() as directory:
@@ -664,6 +666,9 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             )
             script_path = root / ".github/scripts/downstream-unix-native.sh"
             script_path.write_text(native_script)
+            (root / ".github/scripts/bootstrap_bazel_distdir.py").write_text(
+                "bootstrap fixture\n"
+            )
             (root / ".github/workflows").mkdir(parents=True, exist_ok=True)
             (root / ".github/workflows/downstream-unix-native-target.yml").write_text(
                 "name: target\njobs:\n  v8:\n    name: V8 source pair\n    runs-on: ubuntu\n    steps:\n      - run: echo source\n  package:\n    name: Package native target\n"
@@ -696,7 +701,24 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             handoff_matrix = commit("allow verified Linux ARM handoff")
             with patch("release_identity.ROOT", root):
                 verify_hosted_v8_source(producer, handoff_matrix)
+                verify_hosted_native_source(
+                    producer, handoff_matrix, target="aarch64-unknown-linux-musl"
+                )
+                with self.assertRaisesRegex(ValueError, "Hosted native job"):
+                    verify_hosted_native_source(producer, handoff_matrix)
             handoff_workflow = candidate_workflow.read_text()
+            candidate_workflow.write_text(
+                handoff_workflow.replace(
+                    "if: inputs.hosted_native_run_id == ''",
+                    "if: inputs.hosted_native_run_id == '' && inputs.hosted_native_runs == ''",
+                )
+            )
+            mapped_reuse = commit("allow exact per-target native reuse routing")
+            with patch("release_identity.ROOT", root):
+                verify_hosted_native_source(
+                    producer, mapped_reuse, target="x86_64-apple-darwin"
+                )
+                verify_hosted_native_source(handoff_matrix, mapped_reuse)
             for original, changed in (
                 ("macos-15-intel", "macos-14"),
                 ("platform: macos_arm64", "platform: linux_arm64_musl"),
