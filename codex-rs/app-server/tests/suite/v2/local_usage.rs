@@ -319,7 +319,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     );
     assert_eq!(
         review["outcomes"]["totals"]["elapsedExecutionMs"]["measured"],
-        1500
+        0
     );
     assert_eq!(
         review["outcomes"]["attributed"]["elapsedExecutionMs"]["measured"],
@@ -327,7 +327,19 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     );
     assert_eq!(
         review["outcomes"]["unattributed"]["elapsedExecutionMs"]["measured"],
-        1500
+        0
+    );
+    assert_eq!(
+        review["outcomes"]["totals"]["elapsedExecutionMs"]["unknown"],
+        4
+    );
+    assert_eq!(
+        review["outcomes"]["attributed"]["elapsedExecutionMs"]["unknown"],
+        1
+    );
+    assert_eq!(
+        review["outcomes"]["unattributed"]["elapsedExecutionMs"]["unknown"],
+        3
     );
     assert_eq!(
         review["outcomes"]["rows"][0]["effort"]["elapsedExecutionMs"]["measured"],

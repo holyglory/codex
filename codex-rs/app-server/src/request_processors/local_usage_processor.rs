@@ -632,10 +632,9 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
     effort["cost"] = facts["cost"].clone();
     // These are counts of observed links, not estimates for missing links.
     effort["retryOperations"] = json!(count(&effort["retryOperations"]));
-    // The reader's interval sums are diagnostic effort, not a wall union.
-    effort["activeAgentMs"] = facts["timing"]["activeMs"].clone();
-    effort["elapsedExecutionMs"] = facts["timing"]["elapsedMs"].clone();
-    effort["recordedWaitMs"] = facts["timing"]["waitMs"].clone();
+    // Outcome effort keeps lifecycle measurements unknown unless the producer
+    // captured a union for that exact outcome. Report-level wall-time unions
+    // are exposed through `time` and `timing` below.
     let zero_measurement = json!({"measured":0,"exact":Value::Null,"unknown":0});
     let attributed = json!({"operations":0,"retryOperations":0,"reworkOperations":0,
         "providerTotalTokens":zero_measurement,"activeAgentMs":zero_measurement,
