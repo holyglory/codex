@@ -12,10 +12,13 @@ use codex_app_server_protocol::LocalUsageSummaryResponse;
 use codex_app_server_protocol::LocalUsageWorkContextBinding;
 use codex_app_server_protocol::RequestId;
 use codex_usage::JournalReadLimits;
+use codex_usage::UsageContextSize;
 use codex_usage::UsageCorrection;
+use codex_usage::UsageCostProvenance;
 use codex_usage::UsageJournal;
 use codex_usage::UsageOutcome;
 use codex_usage::UsagePublisher;
+use codex_usage::UsageReader;
 use codex_usage::UsageRecord;
 use codex_usage::UsageStore;
 use pretty_assertions::assert_eq;
@@ -27,6 +30,9 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::timeout;
+
+#[path = "local_usage_contract.rs"]
+mod contract;
 
 fn fixture_repository() -> Result<TempDir> {
     let directory = TempDir::new()?;
@@ -148,7 +154,27 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
             5,
         ),
     ] {
-        store.append_record(fixture_fact(id, thread, turn, &repository, base, total))?;
+        let mut fact = fixture_fact(id, thread, turn, &repository, base, total);
+        if id == "fixture-model" {
+            fact.context_size = Some(UsageContextSize {
+                prompt_tokens: Some(total),
+                context_tokens: Some(total),
+                cache_tokens: Some(0),
+                context_window_tokens: Some(4_096),
+                ..Default::default()
+            });
+            fact.cost_provenance = Some(UsageCostProvenance {
+                model: Some("fixture-model".into()),
+                provider: Some("fixture-provider".into()),
+                rate_card: Some("fixture-rate-card".into()),
+                rate_card_version: Some("1".into()),
+                pricing_basis: Some("api_equivalent".into()),
+                estimated_api_equivalent_cost_micros: Some(7),
+                ..Default::default()
+            });
+            fact.actual_billing_micros = Some(11);
+        }
+        store.append_record(fact)?;
     }
     UsagePublisher::open_at(store.root())?.publish_batch(JournalReadLimits {
         max_bytes: 1024 * 1024,
@@ -185,6 +211,21 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         base + 500,
         7,
     ))?;
+    let native_review = UsageReader::open(home.path())?
+        .performance_review(
+            codex_usage::TimeRange::from_millis(base, base + 5_000)?,
+            &codex_usage::UsageFilter {
+                repository_id: Some(repository.clone()),
+                ..Default::default()
+            },
+        )
+        .context("priced fixture must support the same finite native review as IPC")?;
+    assert_eq!(native_review["cost"]["estimatedUsdMicros"], 7);
+    assert_eq!(
+        native_review["contextSize"]["promptTokens"]["measured"],
+        120
+    );
+    assert_eq!(native_review["cost"]["actualBillingMicros"]["measured"], 11);
     let info = json!({"fixtureKind":"codex-usage-v2-synthetic-v1","repositoryPath":repository_path,"repositoryId":repository,
         "windowStartMs":base,"windowEndMs":base+5_000,"capturedAtMs":base+500,
         "operationId":"fixture-model","threadId":"fixture-thread","turnId":"fixture-turn","nativeProjectId":"fixture-project",
@@ -264,6 +305,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         to_at_ms: Some(base + 5_000),
         repository_id: Some(repository.clone()),
         include_review: true,
+        operation_limit: 1,
         workstream_id: Some("fixture-workstream".into()),
         work_context_bindings: Some(declarations.clone()),
         expected_snapshot: Some(global.snapshot.source_watermark.clone()),
@@ -295,6 +337,30 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         Some(repository.as_str())
     );
     let review = scoped.review.as_ref().unwrap();
+    contract::assert_review(review)?;
+    assert_eq!(
+        review["time"]["request_to_delivery"],
+        json!({"measured_ms":0,"unknown_intervals":1})
+    );
+    assert_eq!(review["time"]["execution_wall"]["measured_ms"], 1_500);
+    assert_eq!(scoped.report["cost"]["estimatedUsdMicros"], 7);
+    let operation = &scoped.operations.as_ref().unwrap()[0];
+    assert_eq!(operation["operation_id"], "fixture-model");
+    assert_eq!(
+        operation["cost_provenance"]["estimatedApiEquivalentCostMicros"],
+        7
+    );
+    assert_eq!(operation["context_size"]["promptTokens"], 120);
+    assert_eq!(operation["actual_billing_micros"], 11);
+    assert_eq!(review["totals"]["cost"]["estimated_usd_micros"], 7);
+    assert_eq!(
+        review["outcomes"]["totals"]["cost"]["estimated_usd_micros"],
+        Value::Null
+    );
+    assert_eq!(
+        review["outcomes"]["totals"]["cost"]["unavailable_reasons"],
+        json!({"workstream_cost_unobserved":1})
+    );
     assert_eq!(review["totals"]["total_tokens"], 187);
     assert_eq!(
         review["outcomes"]["totals"]["providerTotalTokens"]["measured"],
@@ -440,6 +506,11 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
             params: unscoped_params,
         })
         .await?;
+    contract::assert_review(all.review.as_ref().unwrap())?;
+    assert_eq!(
+        all.review.as_ref().unwrap()["outcomes"]["totals"]["cost"]["estimated_usd_micros"],
+        7
+    );
     assert_eq!(
         all.review.as_ref().unwrap()["outcomes"]["totals"]["providerTotalTokens"]["measured"],
         198
@@ -558,6 +629,22 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     assert_eq!(finite.summary["inputTokens"], 199);
     drop(correction_guard);
     tokio::time::sleep(Duration::from_millis(5_100)).await;
+    let reopened_review = UsageReader::open(home.path())?.performance_review(
+        codex_usage::TimeRange::from_millis(base, base + 5_000)?,
+        &codex_usage::UsageFilter {
+            repository_id: Some(repository.clone()),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(reopened_review["cost"]["estimatedUsdMicros"], 7);
+    assert_eq!(
+        reopened_review["contextSize"]["promptTokens"]["measured"],
+        120
+    );
+    assert_eq!(
+        reopened_review["cost"]["actualBillingMicros"]["measured"],
+        11
+    );
     let id = server
         .send_request(
             "localUsage/summary",
@@ -714,6 +801,16 @@ async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_ef
     assert!(result.work_contexts.is_empty());
     assert!(result.operation_bindings.is_empty());
     let review = result.review.as_ref().unwrap();
+    contract::assert_review(review)?;
+    assert_eq!(
+        review["time"]["request_to_delivery"],
+        json!({"measured_ms":0,"unknown_intervals":1})
+    );
+    assert_eq!(review["totals"]["cost"]["status"], "unavailable");
+    assert_eq!(
+        review["totals"]["cost"]["estimated_usd_micros"],
+        Value::Null
+    );
     assert_eq!(review["totals"]["total_tokens"], 120);
     assert_eq!(review["outcomes"]["coverage"], "unattributed");
     assert_eq!(
@@ -933,6 +1030,7 @@ async fn local_usage_summary_joins_only_explicit_sidecar_bindings() -> Result<()
         Some("outcome-one")
     );
     let review = result.review.as_ref().unwrap();
+    contract::assert_review(review)?;
     assert_eq!(review["totals"]["total_tokens"], 135);
     assert_eq!(review["outcomes"]["rows"].as_array().unwrap().len(), 1);
     assert_eq!(review["outcomes"]["rows"][0]["outcomeId"], "outcome-one");

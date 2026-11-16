@@ -524,11 +524,17 @@ def verify_new_downstream_version(
         raise ValueError("Expected a Rust version with a downstream +multi revision")
     revision = int(match.group("revision"))
     base = match.group("base")
-    tags = git("tag", "--list", f"v{base}-multi.*", f"npm-v{base}-multi.*").splitlines()
+    tags = git(
+        "tag",
+        "--list",
+        f"v{base}-multi.*",
+        f"npm-v{base}-multi.*",
+        f"local-v{base}-multi.*",
+    ).splitlines()
     prior = []
     for tag in tags:
         tag_match = re.fullmatch(
-            r"(?:npm-)?v" + re.escape(base) + r"-multi\.(\d+)", tag
+            r"(?:(?:npm|local)-)?v" + re.escape(base) + r"-multi\.(\d+)", tag
         )
         if tag_match is not None:
             prior.append((int(tag_match.group(1)), tag))
@@ -538,8 +544,9 @@ def verify_new_downstream_version(
             f"Downstream version {source} is not newer than existing tag {tag}; "
             f"use +multi.{highest + 1} or later"
         )
-    if prior and revision == max(number for number, _ in prior):
-        tag = max(prior)[1]
+    for number, tag in prior:
+        if number != revision:
+            continue
         tagged_commit = git("rev-parse", f"{tag}^{{commit}}")
         if producer_commit != tagged_commit:
             raise ValueError(

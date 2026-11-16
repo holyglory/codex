@@ -9,7 +9,7 @@ use crate::UsageFilter;
 use crate::UsageReader;
 use crate::reader_query::quoted;
 use crate::report_query::ReportQuery;
-use crate::review_storage::query_rows;
+use crate::review_storage::query_rows_with_provenance;
 
 /// Factual operation families exposed by the list and detail actions.
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +69,7 @@ impl UsageReader {
                 quoted(&after.id)
             ));
         }
-        let mut data = query_rows::<ReviewOperation>(
+        let mut data = query_rows_with_provenance::<ReviewOperation>(
             &query.connection,
             &format!(
                 "SELECT * FROM ({}) WHERE {} ORDER BY COALESCE(started_at_ms,observed_at_ms),operation_id LIMIT {}",

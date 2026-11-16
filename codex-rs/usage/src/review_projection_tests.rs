@@ -79,7 +79,7 @@ fn all_operations(root: &Path, descriptor: &ReviewProjectionDescriptor) -> Vec<R
             .collect::<Vec<_>>(),
     )
     .expect("current files");
-    query_rows(
+    query_rows_with_provenance(
         &connection,
         &format!("SELECT * FROM {source} ORDER BY operation_id"),
         REVIEW_PARTITION_SIZE as usize,
@@ -475,7 +475,7 @@ fn spanning_operations_tokens_and_late_classification_survive_publication_and_re
         .expect("indexed record coverage files");
     let connection = crate::duckdb_connection::open_in_memory().expect("connection");
     let source = parquet_source(root, &files).expect("contribution source");
-    let rows: Vec<ReviewContribution> = query_rows(
+    let rows: Vec<ReviewContribution> = query_rows_with_provenance(
         &connection,
         &format!("SELECT * FROM {source} WHERE observed_at_ms >= 4000 AND observed_at_ms < 5000"),
         /*max_rows*/ 4,

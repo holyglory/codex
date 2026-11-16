@@ -154,6 +154,23 @@ pub(crate) fn write_json<T: Serialize>(root: &Path, file: &str, value: &T) -> Re
     Ok(())
 }
 
+/// Restore structured provenance from the current Parquet string columns
+/// before deserializing operation or contribution rows into their domain types.
+pub(crate) fn query_rows_with_provenance<T: DeserializeOwned>(
+    connection: &Connection,
+    source: &str,
+    max_rows: usize,
+) -> Result<Vec<T>> {
+    query_rows(
+        connection,
+        &format!(
+            "SELECT * REPLACE (CAST(context_size AS JSON) AS context_size, \
+             CAST(cost_provenance AS JSON) AS cost_provenance) FROM ({source}) AS provenance_rows"
+        ),
+        max_rows,
+    )
+}
+
 /// Deserialize only explicitly selected rows, with a hard caller-provided cap.
 pub(crate) fn query_rows<T: DeserializeOwned>(
     connection: &Connection,

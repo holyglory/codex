@@ -17,6 +17,8 @@ import tempfile
 import time
 import tomllib
 
+from release_identity import git, verify_new_downstream_version
+
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
 VERSION = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())["workspace"][
@@ -94,6 +96,9 @@ def preflight(work):
         raise RuntimeError(
             "Package version differs from the compiled workspace version"
         )
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise RuntimeError("Native package source must be clean and committed")
+    verify_new_downstream_version(VERSION, git("rev-parse", "HEAD"))
     for command in [
         "cargo",
         "rustc",

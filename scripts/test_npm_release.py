@@ -26,6 +26,7 @@ from release_identity import (
     verify_new_downstream_version,
 )
 import release_identity
+import package_native_release
 
 SPEC = importlib.util.spec_from_file_location(
     "verify_candidate_run",
@@ -61,21 +62,111 @@ class NpmReleaseContractTest(unittest.TestCase):
         self.assertIn('"--timings"', helper)
 
     def test_exact_reserved_tag_is_allowed_only_for_its_producer(self) -> None:
-        with patch(
-            "release_identity.git",
-            side_effect=lambda *args: {
-                (
-                    "tag",
-                    "--list",
-                    "v0.166.0-multi.*",
-                    "npm-v0.166.0-multi.*",
-                ): "npm-v0.166.0-multi.7\n",
-                ("rev-parse", "npm-v0.166.0-multi.7^{commit}"): "a" * 40,
-            }[args],
-        ):
-            verify_new_downstream_version("0.166.0+multi.7", "a" * 40)
-            with self.assertRaisesRegex(ValueError, "already reserved"):
-                verify_new_downstream_version("0.166.0+multi.7", "b" * 40)
+        for prefix in ("v", "npm-v", "local-v"):
+            tag = f"{prefix}0.166.0-multi.7"
+            with (
+                self.subTest(tag=tag),
+                patch(
+                    "release_identity.git",
+                    side_effect=lambda *args: {
+                        (
+                            "tag",
+                            "--list",
+                            "v0.166.0-multi.*",
+                            "npm-v0.166.0-multi.*",
+                            "local-v0.166.0-multi.*",
+                        ): tag,
+                        ("rev-parse", f"{tag}^{{commit}}"): "a" * 40,
+                    }[args],
+                ),
+            ):
+                verify_new_downstream_version("0.166.0+multi.7", "a" * 40)
+                with self.assertRaisesRegex(ValueError, "already reserved"):
+                    verify_new_downstream_version("0.166.0+multi.7", "b" * 40)
+
+    def test_native_preflight_checks_local_tags_before_staging_or_building(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            root.mkdir()
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args], text=True, stderr=subprocess.PIPE
+                ).strip()
+
+            def commit() -> None:
+                git("add", ".")
+                git(
+                    "-c",
+                    "user.name=release-fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    "commit",
+                    "-qm",
+                    "fixture",
+                )
+
+            git("init", "-q")
+            (root / "codex-rs").mkdir()
+            (root / "codex-rs/Cargo.toml").write_text(
+                '[workspace.package]\nversion = "0.166.0+multi.7"\n'
+            )
+            product = root / "codex-rs/product.rs"
+            product.write_text("original product\n")
+            commit()
+            git("tag", "local-v0.166.0-multi.7")
+            identity = {"source_sha256": "a" * 64, "config_file_sha256": "b" * 64}
+            with (
+                patch.object(package_native_release, "ROOT", root),
+                patch.object(package_native_release, "VERSION", "0.166.0+multi.7"),
+                patch.object(release_identity, "ROOT", root),
+                patch.object(
+                    package_native_release.shutil, "which", return_value="tool"
+                ),
+                patch.object(package_native_release, "run") as command,
+                patch.object(
+                    package_native_release, "source_identity", return_value=identity
+                ) as source_identity,
+            ):
+                retry = Path(directory) / "retry"
+                package_native_release.preflight(retry)
+                self.assertEqual(
+                    json.loads((retry / "source.json").read_text()), identity
+                )
+                command.assert_called_once_with(
+                    ["pkg-config", "--exists", "libcap", "openssl"]
+                )
+                command.reset_mock()
+                source_identity.reset_mock()
+
+                for path in (product, root / "untracked.rs"):
+                    with self.subTest(dirty_path=path.name):
+                        previous = path.read_text() if path.exists() else None
+                        path.write_text("changed source\n")
+                        rejected = Path(directory) / "dirty"
+                        with self.assertRaisesRegex(
+                            RuntimeError, "clean and committed"
+                        ):
+                            package_native_release.preflight(rejected)
+                        self.assertFalse(rejected.exists())
+                        command.assert_not_called()
+                        source_identity.assert_not_called()
+                        if previous is None:
+                            path.unlink()
+                        else:
+                            path.write_text(previous)
+
+                product.write_text("new committed product\n")
+                commit()
+                git("tag", "npm-v0.166.0-multi.7")
+                rejected = Path(directory) / "reserved"
+                with self.assertRaisesRegex(ValueError, "local-v0.166.0-multi.7"):
+                    package_native_release.preflight(rejected)
+                self.assertFalse(rejected.exists())
+                command.assert_not_called()
+                source_identity.assert_not_called()
 
     def test_downstream_version_must_advance_existing_tag(self) -> None:
         with patch("release_identity.git", return_value="npm-v0.166.0-multi.4\n"):

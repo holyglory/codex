@@ -367,7 +367,7 @@ fn old_v3_missing_columns_and_terminal_first_late_starts_remain_unattributed() {
     let mut projection = descriptor(&root);
     let source =
         parquet_source(&root, &[projection.partitions[0].file.clone()]).expect("operations");
-    let rows = query_rows::<ReviewOperation>(
+    let rows = query_rows_with_provenance::<ReviewOperation>(
         &connection,
         &format!("SELECT * FROM {source} ORDER BY operation_id"),
         /*max_rows*/ 10,

@@ -22,7 +22,7 @@ use crate::review_state::ReviewOperation;
 use crate::review_storage::CONTRIBUTION_COLUMNS;
 use crate::review_storage::parquet_source;
 use crate::review_storage::query_error;
-use crate::review_storage::query_rows;
+use crate::review_storage::query_rows_with_provenance;
 use crate::review_storage::quoted;
 use crate::review_storage::write_json;
 use crate::review_storage::write_query;
@@ -184,7 +184,7 @@ fn retire(
     let mut assignment_changed = false;
     if let Some(partition) = descriptor.partitions.get(index).cloned() {
         let source = parquet_source(root, std::slice::from_ref(&partition.file))?;
-        let mut rows = query_rows::<ReviewOperation>(
+        let mut rows = query_rows_with_provenance::<ReviewOperation>(
             &connection,
             &format!("SELECT * FROM {source}"),
             REVIEW_PARTITION_SIZE as usize,

@@ -363,16 +363,29 @@ impl CostTotals {
     }
 
     fn value(&self) -> Value {
-        let status = if self.observations == 0 {
-            "unavailable"
-        } else if self.estimated_unknown == 0 && !self.rate_card_refs.is_empty() {
-            "complete"
-        } else if self.estimated != 0 {
+        let has_estimate = self.priced_observations > 0;
+        // A provider total does not supply the component prices required by
+        // consumers for complete cost coverage. Preserve the known estimate,
+        // including zero, without inventing an input/output price breakdown.
+        let status = if has_estimate {
             "partial"
         } else {
             "unavailable"
         };
-        let estimated_usd = (self.estimated > 0).then(|| {
+        let mut unavailable_reasons = BTreeMap::new();
+        if self.observations == 0 {
+            unavailable_reasons.insert("no_token_observations", 1);
+        }
+        if self.estimated_unknown > 0 {
+            unavailable_reasons.insert("rate_card_missing", self.estimated_unknown);
+        }
+        if has_estimate {
+            unavailable_reasons.insert(
+                "component_cost_breakdown_unavailable",
+                self.priced_observations,
+            );
+        }
+        let estimated_usd = has_estimate.then(|| {
             format!(
                 "{}.{:06}",
                 self.estimated / 1_000_000,
@@ -385,7 +398,7 @@ impl CostTotals {
             "currency": "USD",
             "processingTier": "standard",
             "estimatedUsd": estimated_usd,
-            "estimatedUsdMicros": (self.estimated > 0).then_some(self.estimated),
+            "estimatedUsdMicros": has_estimate.then_some(self.estimated),
             "inputUsdMicros": Value::Null,
             "cachedInputUsdMicros": Value::Null,
             "cacheWriteUsdMicros": Value::Null,
@@ -398,11 +411,11 @@ impl CostTotals {
             "reasoningTokens": self.reasoning_tokens,
             "providerTotalTokens": self.provider_total_tokens,
             "pricedObservations": self.priced_observations,
-            "unknownObservations": self.estimated_unknown.max(self.actual_unknown),
+            "unknownObservations": self.estimated_unknown,
             "unknownRequests": self.estimated_unknown,
             "unknownTokens": 0,
             "rateCardRefs": self.rate_card_refs,
-            "unavailableReasons": if status == "unavailable" { json!({"rate_card_missing": self.estimated_unknown.max(1)}) } else { json!({}) },
+            "unavailableReasons": unavailable_reasons,
             "pricingBasis": "api_equivalent",
             "estimatedApiEquivalentCostMicros": measurement(self.estimated, self.estimated_unknown),
             "actualBillingMicros": measurement(self.actual, self.actual_unknown),

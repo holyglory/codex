@@ -18,6 +18,7 @@ use crate::UsageRecord;
 use crate::review_projection::load_review_operations;
 use crate::review_state::ReviewClassification;
 use crate::review_state::ReviewContribution;
+use crate::review_storage::query_rows;
 
 const DAY: i64 = 86_400_000;
 
@@ -351,7 +352,7 @@ fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() 
             .collect::<Vec<_>>(),
     )
     .expect("recent detail");
-    let rows = query_rows::<ReviewContribution>(
+    let rows = query_rows_with_provenance::<ReviewContribution>(
         &connection,
         &format!("SELECT * FROM {contribution_source}"),
         /*max_rows*/ 20,
@@ -399,7 +400,7 @@ fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() 
     );
     let rollup_source =
         parquet_source(&root, &retained.contribution_rollup_files).expect("weighted rollups");
-    let idle_rows = query_rows::<ReviewContribution>(
+    let idle_rows = query_rows_with_provenance::<ReviewContribution>(
         &connection,
         &format!(
             "SELECT * FROM {rollup_source} WHERE thread_id = 'idle' AND event = 'token_observation'"
@@ -430,7 +431,7 @@ fn mixed_detail_retires_without_losing_live_membership_or_resumed_chat_totals() 
     let after_resume = descriptor(&root);
     let source = parquet_source(&root, &after_resume.contribution_rollup_files)
         .expect("retained lifetime state");
-    let rows = query_rows::<ReviewContribution>(
+    let rows = query_rows_with_provenance::<ReviewContribution>(
         &connection,
         &format!("SELECT * FROM {source} WHERE thread_id = 'idle' AND event = 'token_observation'"),
         /*max_rows*/ 10,

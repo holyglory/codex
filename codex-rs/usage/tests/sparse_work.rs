@@ -787,10 +787,36 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
         report["cost"]["estimatedApiEquivalentCostMicros"]["measured"],
         14
     );
-    assert_eq!(report["cost"]["status"], "complete");
+    assert_eq!(report["cost"]["status"], "partial");
     assert_eq!(report["cost"]["basis"], "api_equivalent");
     assert_eq!(report["cost"]["currency"], "USD");
     assert_eq!(report["cost"]["pricedObservations"], 2);
     assert_eq!(report["cost"]["actualBillingMicros"]["measured"], 24);
+    assert_eq!(
+        report["cost"]["unavailableReasons"],
+        json!({"component_cost_breakdown_unavailable": 2})
+    );
+    // A trusted zero estimate is available even without actual invoice data.
+    let mut zero = finish(start("zero-cost", 4_000), 4_500, 1);
+    zero.cost_provenance = Some(UsageCostProvenance {
+        rate_card: Some("trusted-zero-rate".into()),
+        rate_card_version: Some("1".into()),
+        pricing_basis: Some("api_equivalent".into()),
+        estimated_api_equivalent_cost_micros: Some(0),
+        ..Default::default()
+    });
+    capture_record(home.path(), zero)?;
+    let restarted = UsageReader::open(home.path())?.performance_review(
+        TimeRange::from_millis(4_000, 5_000)?,
+        &UsageFilter::default(),
+    )?;
+    assert_eq!(
+        json!({"status":restarted["cost"]["status"],
+        "estimate":restarted["cost"]["estimatedUsdMicros"],
+        "unknown":restarted["cost"]["unknownObservations"],
+        "actualUnknown":restarted["cost"]["actualBillingMicros"]["unknown"],
+        "breakdown":restarted["cost"]["inputUsdMicros"]}),
+        json!({"status":"partial","estimate":0,"unknown":0,"actualUnknown":1,"breakdown":null})
+    );
     Ok(())
 }

@@ -29,6 +29,9 @@ use super::local_usage_snapshots::ViewError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 
+#[path = "local_usage_review_metrics.rs"]
+mod review_metrics;
+
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) async fn summary(
@@ -334,10 +337,9 @@ fn read(
                     params.workstream_id.as_deref(),
                 )
                 .map_err(unavailable)?;
-            for key in ["timing", "lifecycle", "contextSize", "cost"] {
+            for key in ["timing", "lifecycle", "contextSize"] {
                 outcomes[key] = report[key].clone();
             }
-            outcomes["totals"]["cost"] = report["cost"].clone();
             review["outcomes"] = outcomes;
             review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] = json!(unknown);
             review["semantics"]["coverage"] = json!(
@@ -357,7 +359,7 @@ fn read(
             }
             if let Some(review) = &mut review {
                 review["coverage"]["unavailable_reasons"]["sparse_binding_metadata_unavailable"] =
-                    json!(true);
+                    json!(1);
             }
         } else if facts["workBindings"]["basis"] == "explicit_sparse_transitions" {
             report["workBindings"]["basis"] = json!("explicit_sparse_transitions");
@@ -401,10 +403,9 @@ fn read(
                     &sparse,
                 )
                 .map_err(unavailable)?;
-                for key in ["timing", "lifecycle", "contextSize", "cost"] {
+                for key in ["timing", "lifecycle", "contextSize"] {
                     outcomes[key] = report[key].clone();
                 }
-                outcomes["totals"]["cost"] = report["cost"].clone();
                 review["outcomes"] = outcomes;
                 review["coverage"]["unavailable_reasons"]["work_binding_unobserved"] =
                     json!(unknown);
@@ -420,6 +421,9 @@ fn read(
             work_contexts.sort_by(|a, b| a.id.cmp(&b.id));
             work_contexts.dedup();
         }
+    }
+    if let Some(review) = &mut review {
+        review_metrics::apply_costs(review, &report["cost"], params.workstream_id.as_deref());
     }
     let (observations, next_records_cursor) = if params.record_limit == 0 {
         (None, None)
@@ -629,7 +633,6 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
         }
     }
     let mut effort = facts["outcomes"]["totals"].clone();
-    effort["cost"] = facts["cost"].clone();
     // These are counts of observed links, not estimates for missing links.
     effort["retryOperations"] = json!(count(&effort["retryOperations"]));
     // Outcome effort keeps lifecycle measurements unknown unless the producer
@@ -681,14 +684,14 @@ fn review(facts: &Value, report: &Value, summary: &Value, snapshot: &LocalUsageS
             "output_tokens":exact("output_tokens"),"reasoning_tokens":exact("reasoning_output_tokens"),
             "model_requests":facts["counts"]["model_requests"],"tool_calls":facts["counts"]["tools"],"operations":operations},
         "activities":activities,
-        "time":{"request_to_delivery":{"measured_ms":facts["timing"]["elapsedMs"]["measured"],"unknown_intervals":facts["timing"]["elapsedMs"]["unknown"]},
+        "time":{"request_to_delivery":{"measured_ms":0,"unknown_intervals":1},
             "execution_wall":{"measured_ms":facts["timing"]["elapsedMs"]["measured"],"unknown_intervals":facts["timing"]["elapsedMs"]["unknown"]},
-            "summed_agent_active":{"measured_ms":facts["timing"]["activeMs"]["measured"],"unknown_intervals":facts["timing"]["activeMs"]["unknown"]},"wait":{"measured_ms":facts["timing"]["waitMs"]["measured"],"unknown_intervals":facts["timing"]["waitMs"]["unknown"]},"lifecycle":facts["lifecycle"],"phases":[]},
+            "summed_agent_active":{"measured_ms":facts["timing"]["activeMs"]["measured"],"unknown_intervals":facts["timing"]["activeMs"]["unknown"]},"phases":[]},
         "tools":{"outcomes":summary["tools"]["outcomes"],"families":families},
         "semantics":{"tokens":"Provider totals are reported, not inferred. Cached input and reasoning output are subsets; do not add them again.",
-            "time":"Active and elapsed intervals are unions of observed lifecycle intervals. Unknown endpoints and identities remain explicit; measured operation interval sums are diagnostic and may overlap.",
+            "time":"Active and elapsed intervals are unions of observed lifecycle intervals. Request-to-delivery time is unknown because delivery facts are not captured. Unknown endpoints and identities remain explicit; measured operation interval sums are diagnostic and may overlap.",
             "coverage":"Missing work bindings remain unattributed. No task, workstream, or delivery outcome is inferred. Retry/wait counts include observed links only; unobserved families are listed in report.coverage.details."},
-        "outcomes":{"schemaVersion":1,"coverage":"unattributed","totals":effort,"attributed":attributed,"unattributed":effort,"timing":facts["timing"],"lifecycle":facts["lifecycle"],"contextSize":facts["contextSize"],"cost":facts["cost"],
+        "outcomes":{"schemaVersion":1,"coverage":"unattributed","totals":effort,"attributed":attributed,"unattributed":effort,"timing":facts["timing"],"lifecycle":facts["lifecycle"],"contextSize":facts["contextSize"],
             "unattributedReasons":{"work_binding_unobserved":operations},"rows":[],"totalRows":0,"nextCursor":Value::Null,
             "basis":"No explicit work-context bindings are captured by this producer; operation completion does not prove delivery."}
     })

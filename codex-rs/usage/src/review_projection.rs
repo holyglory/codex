@@ -36,6 +36,7 @@ use crate::review_storage::CONTRIBUTION_COLUMNS;
 use crate::review_storage::OPERATION_INDEX_COLUMNS;
 use crate::review_storage::parquet_source;
 use crate::review_storage::query_rows;
+use crate::review_storage::query_rows_with_provenance;
 use crate::review_storage::quoted;
 use crate::review_storage::segment_path;
 use crate::review_storage::write_json;
@@ -354,7 +355,7 @@ pub(crate) fn publish_review_projection(
         if let Some(previous) = partitions.get(&partition) {
             replaced_operation_files.push(previous.file.clone());
             let source = parquet_source(root, std::slice::from_ref(&previous.file))?;
-            for state in query_rows::<ReviewOperation>(
+            for state in query_rows_with_provenance::<ReviewOperation>(
                 connection,
                 &format!("SELECT * FROM {source}"),
                 REVIEW_PARTITION_SIZE as usize,
@@ -755,7 +756,7 @@ pub(crate) fn load_review_operations(
         .map(|id| quoted(id))
         .collect::<Vec<_>>()
         .join(", ");
-    let rows = query_rows::<ReviewOperation>(
+    let rows = query_rows_with_provenance::<ReviewOperation>(
         connection,
         &format!("SELECT * FROM {source} WHERE operation_id IN ({candidates})"),
         ids.len(),
