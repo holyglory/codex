@@ -51,6 +51,7 @@ pub struct WorkEffort {
     pub unknown_token_observations: u64,
     pub execution_interval_sum_ms: u64,
     pub unknown_execution_intervals: u64,
+    /// Diagnostic wait interval sum. OutcomeTimings measures each set's union.
     pub recorded_wait_ms: u64,
 }
 
@@ -187,12 +188,6 @@ pub(crate) fn apply_sparse_report(report: &mut Value, sparse: &[BoundWorkEffort]
         effort["reworkOperations"] = json!(row.effort.rework_operations);
         effort["providerTotalTokens"]["measured"] = json!(row.effort.provider_total_tokens);
         effort["providerTotalTokens"]["unknown"] = json!(row.effort.unknown_token_observations);
-        effort["activeAgentMs"]["unknown"] = json!(row.effort.operations);
-        // Per-outcome interval sums can overlap one another and are not wall
-        // time. Keep elapsed outcome time unknown; report-level timing exposes
-        // the union of measured lifecycle intervals.
-        effort["elapsedExecutionMs"]["unknown"] = json!(row.effort.operations);
-        effort["recordedWaitMs"]["measured"] = json!(row.effort.recorded_wait_ms);
         combine(&mut attributed, &effort, /*subtract*/ false)?;
         let group = groups
             .entry((outcome.clone(), row.context.workstream_id.clone(), project))
@@ -239,21 +234,14 @@ fn combine(target: &mut Value, delta: &Value, subtract: bool) -> Result<()> {
     for key in ["operations", "retryOperations", "reworkOperations"] {
         amount(&mut target[key], &delta[key], subtract)?;
     }
-    for key in [
-        "providerTotalTokens",
-        "activeAgentMs",
-        "elapsedExecutionMs",
-        "recordedWaitMs",
-    ] {
-        for component in ["measured", "unknown"] {
-            amount(
-                &mut target[key][component],
-                &delta[key][component],
-                subtract,
-            )?;
-        }
-        target[key]["exact"] = Value::Null;
+    for component in ["measured", "unknown"] {
+        amount(
+            &mut target["providerTotalTokens"][component],
+            &delta["providerTotalTokens"][component],
+            subtract,
+        )?;
     }
+    target["providerTotalTokens"]["exact"] = Value::Null;
     Ok(())
 }
 

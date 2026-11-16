@@ -9,7 +9,6 @@ use crate::UsageReader;
 use crate::reader_query::query_error;
 use crate::report_facets::operation_facet;
 use crate::report_metrics::context_and_cost_metrics;
-use crate::report_metrics::interval_metrics;
 use crate::report_query::ReportQuery;
 use crate::review_storage::query_rows;
 
@@ -29,7 +28,15 @@ impl UsageReader {
     ) -> Result<Value> {
         let start = range.start_ms();
         let end = range.end_ms();
-        let intervals = interval_metrics(&query.connection, &query.operations, start, end)?;
+        let outcome_timings = crate::outcome_timing::from_query(
+            self,
+            query,
+            range,
+            filter,
+            &Default::default(),
+            /*workstream*/ None,
+        )?;
+        let intervals = outcome_timings.total();
         let (context_size, cost) =
             context_and_cost_metrics(&query.connection, &query.contributions)?;
         let exact_token_window = self.manifest.unapplied_retention_corrections == 0
@@ -227,10 +234,10 @@ impl UsageReader {
         } else {
             "unobserved"
         };
+        let timing = intervals.value();
         let effort = json!({"operations": total_operations, "retryOperations": retry_operations, "reworkOperations": rework_operations,
-            "providerTotalTokens": measurement, "activeAgentMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
-            "elapsedExecutionMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
-            "recordedWaitMs": {"measured":retries.wait_ms,"exact":Value::Null,"unknown":0}});
+            "providerTotalTokens": measurement, "activeAgentMs": timing["activeMs"],
+            "elapsedExecutionMs": timing["elapsedMs"], "recordedWaitMs": timing["waitMs"]});
         let mut report = json!({
             "schemaVersion":1,"kind":"performanceReview", "window":{"fromAtMs":(start != i64::MIN).then_some(start),"toAtMs":(end != i64::MAX).then_some(end)},
             "tokens":tokens,"tokensByActivity":by_activity,"operations":operations,
@@ -283,6 +290,7 @@ impl UsageReader {
         if query.work_assignment_coverage == crate::WorkAssignmentCoverage::Unavailable {
             report["workBindings"]["metadataCoverage"] = json!("unavailable");
         }
+        outcome_timings.apply(&mut report["outcomes"]);
         report["outcomes"]["timing"] = report["timing"].clone();
         report["outcomes"]["lifecycle"] = report["lifecycle"].clone();
         report["outcomes"]["contextSize"] = report["contextSize"].clone();

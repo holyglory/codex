@@ -263,6 +263,47 @@ fn job_totals_survive_hourly_lifetime_restart_and_resumed_work() {
         )
         .expect("retained-only metrics");
     assert_eq!(retained_count, 2);
+    for range in [
+        TimeRange::all(),
+        TimeRange::from_millis(29 * DAY, 29 * DAY + 1_000).expect("recent window"),
+    ] {
+        let report = resumed
+            .performance_review(range, &filter)
+            .expect("measured live and unknown retired timing");
+        assert_eq!(
+            json!({"overall":report["timing"]["elapsedMs"],
+                "reason":report["timing"]["unknownReasons"],
+                "total":report["outcomes"]["totals"]["elapsedExecutionMs"],
+                "active":report["outcomes"]["totals"]["activeAgentMs"],
+                "attributed":report["outcomes"]["attributed"]["elapsedExecutionMs"]}),
+            json!({"overall":{"measured":1_000,"exact":null,"unknown":2},
+                "reason":{"tool:retired_interval":2},
+                "total":{"measured":1_000,"exact":null,"unknown":2},
+                "active":{"measured":1_000,"exact":null,"unknown":2},
+                "attributed":{"measured":1_000,"exact":null,"unknown":2}})
+        );
+        if range == TimeRange::all() {
+            assert_eq!(
+                report["outcomes"]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| (
+                        row["outcomeId"].as_str().unwrap(),
+                        row["effort"]["elapsedExecutionMs"].clone()
+                    ))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                std::collections::BTreeMap::from([
+                    ("outcome-a", json!({"measured":0,"exact":null,"unknown":1})),
+                    ("outcome-b", json!({"measured":0,"exact":null,"unknown":1})),
+                    (
+                        "outcome-c",
+                        json!({"measured":1_000,"exact":1_000,"unknown":0})
+                    ),
+                ])
+            );
+        }
+    }
     assert!(totals(&resumed, &UsageFilter::default().for_account("other")).is_empty());
 }
 
@@ -450,6 +491,16 @@ fn late_token_uses_exact_operation_identity_outside_the_time_slice() {
     .expect("project-only assignment");
     let mut start = started("early", DAY, "active");
     start.response_id = Some("early-response".into());
+    start.context_size = Some(crate::UsageContextSize {
+        prompt_tokens: Some(123),
+        context_window_tokens: Some(4_096),
+        ..Default::default()
+    });
+    start.cost_provenance = Some(crate::UsageCostProvenance {
+        rate_card: Some("quoted-'rate'-card".into()),
+        estimated_api_equivalent_cost_micros: Some(7),
+        ..Default::default()
+    });
     capture(&root, vec![start.clone(), finished(&start)]);
     bind(home.path(), "b", /*sequence*/ 2);
     let mut legacy = token(
@@ -479,6 +530,29 @@ fn late_token_uses_exact_operation_identity_outside_the_time_slice() {
         )
         .expect("time slice");
     assert_eq!(operation_count, 0);
+    let provenance: (String, String, String, String) = query
+        .connection
+        .query_row(
+            "SELECT typeof(context_size), typeof(cost_provenance), context_size, cost_provenance \
+         FROM work_operation_lookup WHERE operation_id='early'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("indexed provenance stays in SQL string columns");
+    assert_eq!(
+        (
+            provenance.0,
+            provenance.1,
+            serde_json::from_str::<Value>(&provenance.2).expect("context JSON"),
+            serde_json::from_str::<Value>(&provenance.3).expect("cost JSON")
+        ),
+        (
+            "VARCHAR".into(),
+            "VARCHAR".into(),
+            json!(start.context_size),
+            json!(start.cost_provenance)
+        )
+    );
     let work = query.work_contributions();
     let rows = query_rows::<Value>(&query.connection, &format!(
         "SELECT record_id,work_operation_id,work_native_project_id,workstream_id,work_outcome_id \

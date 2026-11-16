@@ -20,6 +20,9 @@ pub struct LocalUsageAccountingCapability {
     pub supports_work_context_bindings: bool,
     #[serde(default)]
     pub supports_workstream_outcomes: bool,
+    /// Omitting review and detail pages reads only the published token projection.
+    #[serde(default)]
+    pub supports_token_headlines: bool,
     #[serde(default)]
     pub snapshot_retention_ms: u32,
 }
@@ -62,6 +65,8 @@ pub struct LocalUsageSummaryParams {
     #[serde(default)]
     pub include_unassigned: bool,
     #[serde(default)]
+    /// False with no detail pages selects exact published token headlines;
+    /// counts, costs, timing, lifecycle, context, and work attribution are deferred.
     pub include_review: bool,
     /// Zero/omission excludes detail; a requested page is limited to 50 rows.
     #[serde(default)]

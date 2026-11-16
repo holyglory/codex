@@ -41,6 +41,22 @@ impl UsageReader {
 }
 
 impl UsageWindow<'_> {
+    /// Measure independently selected outcome sets using this prepared view.
+    pub fn outcome_timings(
+        &self,
+        overrides: &std::collections::BTreeMap<String, crate::OutcomeTimingContext>,
+        workstream: Option<&str>,
+    ) -> Result<crate::OutcomeTimings> {
+        crate::outcome_timing::from_query(
+            self.reader,
+            &self.query,
+            self.range,
+            self.filter,
+            overrides,
+            workstream,
+        )
+    }
+
     /// Read exact totals and canonical counts from this prepared selection.
     pub fn summary(&self) -> Result<Value> {
         self.reader

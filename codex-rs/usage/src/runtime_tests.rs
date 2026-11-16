@@ -19,8 +19,10 @@ fn unrelated_publication_failure_requests_full_maintenance() {
     let (wake, receiver) = mpsc::channel();
     let (warm, _ready) = mpsc::channel();
     let (maintenance, requests) = mpsc::sync_channel(/*bound*/ 1);
+    let (headline, _headlines) = mpsc::sync_channel(/*bound*/ 1);
     std::thread::scope(|scope| {
-        let publisher = scope.spawn(move || publish_loop(root, receiver, warm, maintenance));
+        let publisher =
+            scope.spawn(move || publish_loop(root, receiver, warm, maintenance, headline));
         wake.send(()).expect("publication wake");
         let request = requests.recv_timeout(Duration::from_secs(/*secs*/ 5));
         drop(wake);

@@ -25,7 +25,6 @@ use serde_json::json;
 use super::local_usage_bindings::Bindings;
 use super::local_usage_bindings::safe_identifier;
 use super::local_usage_snapshots;
-use super::local_usage_snapshots::ViewError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 
@@ -39,9 +38,7 @@ pub(crate) async fn summary(
     params: LocalUsageSummaryParams,
 ) -> Result<LocalUsageSummaryResponse, JSONRPCErrorError> {
     validate(&params)?;
-    tokio::task::spawn_blocking(move || read(codex_home, params))
-        .await
-        .map_err(|_| internal_error("local usage reader unavailable"))?
+    super::local_usage_admission::summary(codex_home, params).await
 }
 
 pub(crate) async fn repository_identity(
@@ -157,19 +154,16 @@ fn validate(params: &LocalUsageSummaryParams) -> Result<(), JSONRPCErrorError> {
     Ok(())
 }
 
-fn read(
+pub(super) fn read(
     codex_home: PathBuf,
     params: LocalUsageSummaryParams,
 ) -> Result<LocalUsageSummaryResponse, JSONRPCErrorError> {
     let view = local_usage_snapshots::open(&codex_home, params.expected_snapshot.as_deref())
-        .map_err(|error| match error {
-            ViewError::Expired => {
-                invalid_params("local usage snapshot changed; restart pagination")
-            }
-            ViewError::Unavailable => unavailable(()),
-        })?;
+        .map_err(super::local_usage_leases::rpc_error)?;
     if let Some(mut response) = view.response(&params).map_err(unavailable)? {
         response.generated_at = now_ms()?;
+        view.retain_after_response()
+            .map_err(super::local_usage_leases::rpc_error)?;
         return Ok(response);
     }
     let binding_source = Bindings::merge_request(
@@ -265,6 +259,23 @@ fn read(
     let outcome_totals = review
         .as_ref()
         .map(|review| review["outcomes"]["totals"].clone());
+    let outcome_timings = if let Some(window) = &window
+        && review.is_some()
+    {
+        let overrides = binding_source
+            .as_ref()
+            .map(Bindings::timing_contexts)
+            .transpose()
+            .map_err(unavailable)?
+            .unwrap_or_default();
+        Some(
+            window
+                .outcome_timings(&overrides, params.workstream_id.as_deref())
+                .map_err(unavailable)?,
+        )
+    } else {
+        None
+    };
     let (mut work_contexts, operation_bindings) = if let Some(source) = &binding_source {
         let evidence = if let Some(window) = &window {
             window
@@ -335,6 +346,7 @@ fn read(
                     &review["outcomes"]["totals"],
                     &evidence,
                     params.workstream_id.as_deref(),
+                    outcome_timings.as_ref().ok_or_else(|| unavailable(()))?,
                 )
                 .map_err(unavailable)?;
             for key in ["timing", "lifecycle", "contextSize"] {
@@ -401,6 +413,7 @@ fn read(
                     &explicit_evidence,
                     params.workstream_id.as_deref(),
                     &sparse,
+                    outcome_timings.as_ref().ok_or_else(|| unavailable(()))?,
                 )
                 .map_err(unavailable)?;
                 for key in ["timing", "lifecycle", "contextSize"] {
@@ -504,6 +517,8 @@ fn read(
     }
     view.remember(&params, &response, encoded_bytes)
         .map_err(unavailable)?;
+    view.retain_after_response()
+        .map_err(super::local_usage_leases::rpc_error)?;
     Ok(response)
 }
 

@@ -2,20 +2,22 @@
 //! journal tail and snapshot file pin, is retained across scope queries.
 use std::collections::VecDeque;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::Instant;
 
 use codex_app_server_protocol::LocalUsageSummaryParams;
 use codex_app_server_protocol::LocalUsageSummaryResponse;
 use codex_usage::UsageReader;
 
 use super::local_usage_bindings::Bindings;
+use super::local_usage_leases::Lease;
+use super::local_usage_leases::LeaseCache;
+pub(super) use super::local_usage_leases::LeaseError as ViewError;
 
 const RETENTION: Duration = Duration::from_secs(5);
 const MAX_VIEWS: usize = 4;
@@ -23,8 +25,6 @@ const MAX_RESPONSES: usize = 8;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub(super) struct ReadView {
-    home: PathBuf,
-    created: Instant,
     pub(super) captured_at_ms: u64,
     pub(super) watermark: String,
     pub(super) reader: UsageReader,
@@ -32,34 +32,14 @@ pub(super) struct ReadView {
     responses: Mutex<VecDeque<(Vec<u8>, LocalUsageSummaryResponse, usize)>>,
 }
 
-#[derive(Default)]
-struct Cache {
-    views: VecDeque<Arc<ReadView>>,
-    cleanup_running: bool,
-}
+static CACHE: LazyLock<Arc<LeaseCache<ReadView>>> =
+    LazyLock::new(|| LeaseCache::new(MAX_VIEWS, RETENTION));
 
-static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-
-#[derive(Debug)]
-pub(super) enum ViewError {
-    Expired,
-    Unavailable,
-}
-
-pub(super) fn open(home: &Path, expected: Option<&str>) -> Result<Arc<ReadView>, ViewError> {
-    let cache = CACHE.get_or_init(|| Mutex::new(Cache::default()));
+pub(super) fn open(home: &Path, expected: Option<&str>) -> Result<Lease<ReadView>, ViewError> {
     if let Some(expected) = expected {
-        let mut cache = cache.lock().map_err(|_| ViewError::Unavailable)?;
-        cache
-            .views
-            .retain(|view| view.created.elapsed() < RETENTION);
-        return cache
-            .views
-            .iter()
-            .find(|view| view.home == home && view.watermark == expected)
-            .cloned()
-            .ok_or(ViewError::Expired);
+        return CACHE.existing(home, expected);
     }
+    let reservation = CACHE.reserve()?;
     let sidecar = Bindings::read(home).map_err(|_| ViewError::Unavailable)?;
     let reader = UsageReader::open(home).map_err(|_| ViewError::Unavailable)?;
     let captured_at_ms =
@@ -78,57 +58,14 @@ pub(super) fn open(home: &Path, expected: Option<&str>) -> Result<Arc<ReadView>,
             .as_ref()
             .map_or("absent", |source| source.revision.as_str())
     );
-    let view = Arc::new(ReadView {
-        home: home.to_owned(),
-        created: Instant::now(),
+    let view = ReadView {
         captured_at_ms,
-        watermark,
+        watermark: watermark.clone(),
         reader,
         sidecar,
         responses: Mutex::new(VecDeque::new()),
-    });
-    let handle = tokio::runtime::Handle::try_current().map_err(|_| ViewError::Unavailable)?;
-    let start_cleanup = {
-        let mut cache = cache.lock().map_err(|_| ViewError::Unavailable)?;
-        cache
-            .views
-            .retain(|view| view.created.elapsed() < RETENTION);
-        while cache.views.len() >= MAX_VIEWS {
-            cache.views.pop_front();
-        }
-        cache.views.push_back(Arc::clone(&view));
-        if cache.cleanup_running {
-            false
-        } else {
-            cache.cleanup_running = true;
-            true
-        }
     };
-    if start_cleanup {
-        // One cache-owned timer releases idle pins at expiry. It performs no
-        // source I/O, capture, review, or capacity scheduling.
-        handle.spawn(async {
-            loop {
-                let next = {
-                    let Ok(mut cache) = CACHE.get_or_init(|| Mutex::new(Cache::default())).lock()
-                    else {
-                        return;
-                    };
-                    cache
-                        .views
-                        .retain(|view| view.created.elapsed() < RETENTION);
-                    if let Some(view) = cache.views.front() {
-                        view.created + RETENTION
-                    } else {
-                        cache.cleanup_running = false;
-                        return;
-                    }
-                };
-                tokio::time::sleep_until(tokio::time::Instant::from_std(next)).await;
-            }
-        });
-    }
-    Ok(view)
+    reservation.insert(home.to_owned(), watermark, view)
 }
 
 fn response_key(params: &LocalUsageSummaryParams) -> Result<Vec<u8>, ()> {

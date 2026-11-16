@@ -9,6 +9,7 @@ use crate::Result;
 use crate::TimeRange;
 use crate::UsageFilter;
 use crate::UsageReader;
+use crate::duckdb_connection::ReadBudget;
 use crate::reader_query::CORRECTION_COLUMNS;
 use crate::reader_query::RECORD_COLUMNS;
 use crate::reader_query::empty_source;
@@ -30,6 +31,9 @@ use crate::review_storage::CLASSIFICATION_COLUMNS;
 use crate::review_storage::CONTRIBUTION_COLUMNS;
 use crate::review_storage::OPERATION_COLUMNS;
 
+#[path = "report_work_lookup.rs"]
+mod work_lookup;
+
 pub(crate) struct ReportQuery {
     pub(crate) connection: Connection,
     pub(crate) operations: String,
@@ -48,7 +52,8 @@ impl ReportQuery {
         range: TimeRange,
         filter: &UsageFilter,
     ) -> Result<Self> {
-        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_read_in_memory(ReadBudget::Report)
+            .map_err(query_error)?;
         let descriptor = load_review_projection(&reader.root, &reader.manifest)?;
         let directory = reader.root.join("segments");
         let operation_columns = sql_columns(OPERATION_COLUMNS);
@@ -60,6 +65,7 @@ impl ReportQuery {
         let hourly_contribution_source = if reader.manifest.correction_files.is_empty()
             && reader.corrections.is_empty()
             && reader.manifest.review_retention_cutoff_at_ms.is_none()
+            && !crate::review_compaction::has_index(&reader.root)
         {
             hourly_contribution_source(&connection, reader, range, filter)?
         } else {
@@ -246,40 +252,7 @@ impl ReportQuery {
             ))
             .map_err(query_error)?;
         if let Some(descriptor) = &descriptor {
-            let mut after = None;
-            loop {
-                let cursor = after.as_deref().map_or_else(
-                    || "true".into(),
-                    |id| format!("c.operation_id > {}", quoted(id)),
-                );
-                let references = crate::review_storage::query_rows::<serde_json::Value>(
-                    &connection,
-                    &format!(
-                        "SELECT DISTINCT c.operation_id FROM selected_contributions c \
-                         WHERE c.operation_id IS NOT NULL AND c.work_native_project_id IS NULL \
-                         AND ({}) AND {cursor} AND NOT EXISTS \
-                         (SELECT 1 FROM selected_operations o WHERE o.operation_id=c.operation_id) \
-                         ORDER BY c.operation_id LIMIT 256",
-                        crate::review_aggregate::TOKEN_PREDICATE
-                    ),
-                    /*max_rows*/ 256,
-                )?;
-                if references.is_empty() {
-                    break;
-                }
-                let ids = references
-                    .into_iter()
-                    .filter_map(|row| row["operation_id"].as_str().map(str::to_owned))
-                    .collect::<BTreeSet<_>>();
-                after = ids.last().cloned();
-                let rows = load_review_operations(&reader.root, descriptor, &ids, &connection)?;
-                if !rows.is_empty() {
-                    let source = values_source(&rows, &operation_columns)?;
-                    connection
-                        .execute_batch(&format!("INSERT INTO work_operation_lookup {source}"))
-                        .map_err(query_error)?;
-                }
-            }
+            work_lookup::populate(&reader.root, descriptor, &connection)?;
         }
         let names = operation_columns
             .iter()

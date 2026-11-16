@@ -133,6 +133,7 @@ fn retained_files(root: &Path, manifest: &UsageManifest) -> Result<BTreeSet<Stri
     files.extend(manifest.lineage_file.iter().cloned());
     files.extend(manifest.id_index_file.iter().cloned());
     files.extend(manifest.review_projection_file.iter().cloned());
+    files.extend(crate::review_compaction::retained_files(root)?);
     if let Some(file) = &manifest.id_index_file {
         let index = crate::load_id_index(
             root,

@@ -34,11 +34,13 @@ fn source_cost(source: &Value, model_requests: &Value) -> Value {
         "cache_write_tokens": source["cacheWriteTokens"],
         "uncached_input_tokens": source["uncachedInputTokens"],
         "output_tokens": source["outputTokens"], "reasoning_tokens": source["reasoningTokens"],
-        "unknown_requests": source["unknownRequests"], "unknown_tokens": source["unknownTokens"],
+        // A priced observation does not prove a distinct priced model request.
+        "unknown_requests": Value::Null, "unknown_tokens": source["unknownTokens"],
         "unknown_observations": source["unknownObservations"],
+        "priced_observations": source["pricedObservations"],
         "rate_card_ref": source["rateCardRefs"].as_array().and_then(|refs| refs.first()),
         "rate_card_refs": source["rateCardRefs"], "matched_rate_cards": [],
-        "model_requests": model_requests, "priced_requests": source["pricedObservations"],
+        "model_requests": model_requests, "priced_requests": Value::Null,
         "unavailable_reasons": source["unavailableReasons"],
     })
 }
@@ -53,9 +55,9 @@ fn unavailable_cost(effort: &Value, reason: &str) -> Value {
         "cache_write_usd_micros":null, "output_usd_micros":null,
         "input_tokens":null, "cached_input_tokens":null, "cache_write_tokens":null,
         "uncached_input_tokens":null, "output_tokens":null, "reasoning_tokens":null,
-        "unknown_requests":0, "unknown_tokens":effort["providerTotalTokens"]["measured"],
-        "unknown_observations":0, "rate_card_ref":null, "rate_card_refs":[],
-        "matched_rate_cards":[], "model_requests":0, "priced_requests":0,
+        "unknown_requests":null, "unknown_tokens":effort["providerTotalTokens"]["measured"],
+        "unknown_observations":null, "priced_observations":null, "rate_card_ref":null, "rate_card_refs":[],
+        "matched_rate_cards":[], "model_requests":null, "priced_requests":null,
         "unavailable_reasons":{reason:1},
     })
 }

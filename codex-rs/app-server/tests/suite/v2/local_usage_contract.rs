@@ -49,10 +49,10 @@ struct UsageCoverage {
 #[serde(deny_unknown_fields)]
 struct UsageTotals {
     total_tokens: Option<u64>,
-    input_tokens: Option<u64>,
-    cached_input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    reasoning_tokens: Option<u64>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
     model_requests: u64,
     tool_calls: u64,
     operations: u64,
@@ -191,27 +191,29 @@ struct UsageCost {
     cached_input_usd_micros: Option<u64>,
     cache_write_usd_micros: Option<u64>,
     output_usd_micros: Option<u64>,
-    input_tokens: Option<u64>,
-    cached_input_tokens: Option<u64>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
     cache_write_tokens: Option<u64>,
-    uncached_input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    reasoning_tokens: Option<u64>,
+    uncached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
     #[serde(default)]
-    unknown_requests: u64,
+    unknown_requests: Option<u64>,
     #[serde(default)]
     unknown_tokens: u64,
     #[serde(default)]
-    unknown_observations: u64,
+    unknown_observations: Option<u64>,
+    #[serde(default)]
+    priced_observations: Option<u64>,
     rate_card_ref: Option<String>,
     #[serde(default)]
     rate_card_refs: Vec<String>,
     #[serde(default)]
     matched_rate_cards: Vec<Value>,
     #[serde(default)]
-    model_requests: u64,
+    model_requests: Option<u64>,
     #[serde(default)]
-    priced_requests: u64,
+    priced_requests: Option<u64>,
     #[serde(default)]
     unavailable_reasons: BTreeMap<String, u64>,
 }

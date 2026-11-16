@@ -33,6 +33,11 @@
           },
           "type": "array"
         },
+        "supportsTokenHeadlines": {
+          "default": false,
+          "description": "Omitting review and detail pages reads only the published token projection.",
+          "type": "boolean"
+        },
         "supportsWorkContextBindings": {
           "default": false,
           "description": "Accepts explicit read-only workContextBindings supplied on each request.",

@@ -9349,7 +9349,13 @@ class LocalUsageSummaryParams(BaseModel):
         ),
     ] = None
     from_at_ms: Annotated[int | None, Field(alias="fromAtMs")] = None
-    include_review: Annotated[bool | None, Field(alias="includeReview")] = False
+    include_review: Annotated[
+        bool | None,
+        Field(
+            alias="includeReview",
+            description="False with no detail pages selects exact published token headlines; counts, costs, timing, lifecycle, context, and work attribution are deferred.",
+        ),
+    ] = False
     include_unassigned: Annotated[
         bool | None,
         Field(

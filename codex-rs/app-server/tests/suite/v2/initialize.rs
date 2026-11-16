@@ -82,6 +82,7 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     assert_eq!(capability.storage, "usage-v2");
     assert!(capability.supports_work_context_bindings);
     assert!(capability.supports_workstream_outcomes);
+    assert!(capability.supports_token_headlines);
     assert_eq!(capability.snapshot_retention_ms, 5_000);
     Ok(())
 }

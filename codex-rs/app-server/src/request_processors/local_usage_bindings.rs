@@ -42,6 +42,7 @@ impl Bindings {
         evidence: &[BoundOperationEffort],
         workstream: Option<&str>,
         sparse: &[codex_usage::BoundWorkEffort],
+        timings: &codex_usage::OutcomeTimings,
     ) -> Result<Value, ()> {
         let mut rows =
             source.map_or_else(|| Ok(Vec::new()), |source| source.bound_rows(evidence))?;
@@ -50,7 +51,26 @@ impl Bindings {
                 .iter()
                 .map(|row| (sparse_context(&row.context), row.effort.clone())),
         );
-        outcomes_from_contexts(facts, total, &rows, workstream)
+        outcomes_from_contexts(facts, total, &rows, workstream, timings)
+    }
+
+    pub(super) fn timing_contexts(
+        &self,
+    ) -> Result<BTreeMap<String, codex_usage::OutcomeTimingContext>, ()> {
+        self.operations
+            .iter()
+            .map(|(operation, binding)| {
+                let context = self.contexts.get(&binding.work_context_id).ok_or(())?;
+                Ok((
+                    operation.clone(),
+                    codex_usage::OutcomeTimingContext {
+                        native_project_id: context.native_project_id.clone(),
+                        workstream_id: context.workstream_id.clone(),
+                        outcome_id: context.outcome_id.clone(),
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn bound_rows(
@@ -253,9 +273,10 @@ impl Bindings {
         total: &Value,
         evidence: &[BoundOperationEffort],
         workstream: Option<&str>,
+        timings: &codex_usage::OutcomeTimings,
     ) -> Result<Value, ()> {
         let rows = self.bound_rows(evidence)?;
-        outcomes_from_contexts(facts, total, &rows, workstream)
+        outcomes_from_contexts(facts, total, &rows, workstream, timings)
     }
 }
 
@@ -264,6 +285,7 @@ fn outcomes_from_contexts(
     total: &Value,
     rows: &[(LocalUsageWorkContext, codex_usage::WorkEffort)],
     workstream: Option<&str>,
+    timings: &codex_usage::OutcomeTimings,
 ) -> Result<Value, ()> {
     let mut attributed = zero_effort();
     let mut attributed_observations = 0u64;
@@ -276,12 +298,6 @@ fn outcomes_from_contexts(
         effort["retryOperations"] = json!(fact.retry_operations);
         effort["reworkOperations"] = json!(fact.rework_operations);
         effort["providerTotalTokens"] = json!({"measured":fact.provider_total_tokens,"exact":Value::Null,"unknown":fact.unknown_token_observations});
-        effort["activeAgentMs"]["unknown"] = json!(fact.operations);
-        // Per-outcome interval sums can overlap the selected total and cannot be
-        // presented as wall time. Keep the outcome row explicitly unknown; the
-        // report-level union is exposed through review.time and report.timing.
-        effort["elapsedExecutionMs"]["unknown"] = json!(fact.operations);
-        effort["recordedWaitMs"]["measured"] = json!(fact.recorded_wait_ms);
         if workstream
             .zip(context.workstream_id.as_deref())
             .is_some_and(|(selected, actual)| selected != actual)
@@ -320,7 +336,13 @@ fn outcomes_from_contexts(
         .ok_or(())?
         .saturating_sub(excluded_observations)
         .saturating_sub(attributed_observations);
-    let rows = groups.into_iter().map(|((native_project_id,outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"nativeProjectId":native_project_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>();
+    let mut measured = json!({"totals":scoped_total,"attributed":attributed,"unattributed":unattributed,
+        "rows":groups.into_iter().map(|((native_project_id,outcome_id,workstream_id),effort)| json!({"outcomeId":outcome_id,"nativeProjectId":native_project_id,"workstreamId":workstream_id,"title":Value::Null,"effort":effort})).collect::<Vec<_>>()});
+    timings.apply(&mut measured);
+    let scoped_total = &measured["totals"];
+    let attributed = &measured["attributed"];
+    let unattributed = &measured["unattributed"];
+    let rows = measured["rows"].as_array().ok_or(())?;
     let full = unattributed["operations"] == 0
         && scoped_total["providerTotalTokens"]["unknown"] == 0
         && scoped_total["activeAgentMs"]["unknown"] == 0
@@ -338,7 +360,7 @@ fn outcomes_from_contexts(
             "totals":scoped_total,"attributed":attributed,"unattributed":unattributed,
             "unattributedReasons":{"operation_context_or_outcome_unobserved":unattributed["operations"],"token_observation_context_unobserved":unattributed_observations},
             "totalRows":rows.len(),"rows":rows,"nextCursor":Value::Null,
-            "basis":"Explicit sparse assignment intervals and exceptional operation declarations joined to captured operation identity. Repository aggregates retain scope; outcome totals/rows honor the selected workstream and include unknown-stream work as unattributed. Elapsed execution union is unknown; interval sums are diagnostic only. Operation completion does not prove delivery."}),
+            "basis":"Explicit sparse assignment intervals and exceptional operation declarations joined to captured operation identity. Outcome rows and each selected aggregate measure their own execution unions. Unknown-stream work stays unattributed; retired intervals stay unknown. Operation completion does not prove delivery."}),
     )
 }
 
@@ -415,20 +437,14 @@ fn combine(target: &mut Value, delta: &Value, subtract: bool) -> Result<(), ()> 
             delta[key].as_u64().ok_or(())?
         )?);
     }
-    for key in [
-        "providerTotalTokens",
-        "activeAgentMs",
-        "elapsedExecutionMs",
-        "recordedWaitMs",
-    ] {
-        for component in ["measured", "unknown"] {
-            target[key][component] = json!(amount(
-                target[key][component].as_u64().ok_or(())?,
-                delta[key][component].as_u64().ok_or(())?
-            )?);
-        }
-        // Partial measurements are lower bounds, never exact per-outcome totals.
-        target[key]["exact"] = Value::Null;
+    for component in ["measured", "unknown"] {
+        target["providerTotalTokens"][component] = json!(amount(
+            target["providerTotalTokens"][component]
+                .as_u64()
+                .ok_or(())?,
+            delta["providerTotalTokens"][component].as_u64().ok_or(())?
+        )?);
     }
+    target["providerTotalTokens"]["exact"] = Value::Null;
     Ok(())
 }

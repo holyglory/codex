@@ -233,6 +233,7 @@ impl InitializeRequestProcessor {
                     storage: "usage-v2".into(),
                     supports_work_context_bindings: true,
                     supports_workstream_outcomes: true,
+                    supports_token_headlines: true,
                     snapshot_retention_ms: 5_000,
                 },
             ),

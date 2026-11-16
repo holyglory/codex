@@ -153,6 +153,19 @@ pub fn select_review_contribution_files(
     range: TimeRange,
     filter: &UsageFilter,
 ) -> Result<Vec<String>> {
+    if let Some(compacted) = crate::review_compaction::selection(root, descriptor, range)
+        && let Ok(files) = select_memberships(
+            root,
+            compacted
+                .iter()
+                .map(|(file, membership)| (file.as_str(), membership.as_str())),
+            range,
+            filter,
+            None,
+        )
+    {
+        return Ok(files);
+    }
     select_memberships(
         root,
         descriptor
@@ -247,7 +260,9 @@ fn select_memberships<'a>(
         predicates.join(" OR "),
         predicates.len()
     );
-    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+    let connection =
+        crate::duckdb_connection::open_read_in_memory(crate::duckdb_connection::ReadBudget::Report)
+            .map_err(query_error)?;
     let mut statement = connection.prepare(&query).map_err(query_error)?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(0))

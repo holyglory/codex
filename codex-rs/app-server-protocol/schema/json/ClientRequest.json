@@ -2153,6 +2153,7 @@
         },
         "includeReview": {
           "default": false,
+          "description": "False with no detail pages selects exact published token headlines; counts, costs, timing, lifecycle, context, and work attribution are deferred.",
           "type": "boolean"
         },
         "includeUnassigned": {

@@ -43,6 +43,10 @@ fn start(id: &str, at: i64) -> UsageRecord {
     fact
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixture completions require the identity and timestamp supplied by start"
+)]
 fn finish(mut fact: UsageRecord, at: i64, tokens: u64) -> UsageRecord {
     fact.id = format!(
         "{}:finish",
@@ -479,7 +483,7 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
     assert_eq!(
         totals(&report),
         json!({"bound":3,"unknown":2,"tokens":105,"attributed":35,"unattributed":70,
-        "intervals":{"measured":0,"exact":null,"unknown":3}})
+        "intervals":{"measured":1_002,"exact":1_002,"unknown":0}})
     );
     let rows = report["outcomes"]["rows"]
         .as_array()
@@ -507,6 +511,95 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
         json!({"coverage":unavailable["workBindings"]["coverage"],"tokens":unavailable["outcomes"]["totals"]["providerTotalTokens"]["measured"],
             "historical":unavailable["outcomes"]["attributed"]["providerTotalTokens"]["measured"]}),
         json!({"coverage":"partial","tokens":105,"historical":15})
+    );
+    // Concurrent jobs share elapsed time, and unattributed work can overlap
+    // attributed work. Every selected set must compute its own union.
+    let concurrent = directory.path().join("concurrent");
+    for (thread, outcome, stream) in [("first", "a", "alpha"), ("second", "b", "beta")] {
+        let mut binding = assignment(/*sequence*/ 1, Some(outcome));
+        binding.thread_id = thread.into();
+        binding.workstream_id = Some(stream.into());
+        capture_work_binding_transition(&concurrent, binding)?;
+    }
+    let mut records = Vec::new();
+    for (id, thread, agent, begin, end) in [
+        ("overlap-a", "first", "agent-a", 1_000, 2_000),
+        ("overlap-b", "second", "agent-b", 1_500, 2_500),
+        ("unbound-overlap", "unbound", "agent-b", 1_800, 2_200),
+    ] {
+        let mut begin = start(id, begin).with_thread(thread);
+        begin.agent_id = Some(agent.into());
+        records.extend([begin.clone(), finish(begin, end, /*tokens*/ 1)]);
+    }
+    for (id, thread, begin, end) in [
+        ("wait-a1", "first", 1_200, 1_700),
+        ("wait-a2", "first", 1_300, 1_800),
+        ("wait-b", "second", 1_400, 1_900),
+        ("wait-unbound", "unbound", 1_600, 2_000),
+    ] {
+        let mut wait = UsageRecord::new_millis(
+            format!("{id}:start"),
+            begin,
+            /*input_tokens*/ 0,
+            /*output_tokens*/ 0,
+        )
+        .with_operation(id)
+        .with_thread(thread);
+        wait.event = Some("retry_wait_started".into());
+        wait.started_at_ms = Some(begin);
+        let mut ended = wait.clone();
+        ended.id = format!("{id}:finish");
+        ended.event = Some("retry_wait_finished".into());
+        ended.observed_at_ms = Some(end);
+        ended.observed_at = end.div_euclid(1_000);
+        ended.ended_at_ms = Some(end);
+        ended.duration_ms = Some((end - begin) as u64);
+        ended.outcome = Some(UsageOutcome::Completed);
+        records.extend([wait, ended]);
+    }
+    capture_records(&concurrent, records)?;
+    let reader = UsageReader::open(&concurrent)?;
+    let filter = UsageFilter::default();
+    let window = reader.prepare_window(TimeRange::from_millis(1_100, 2_300)?, &filter)?;
+    let report = window.performance_review()?;
+    let measured = |effort: &Value| {
+        json!([
+            effort["elapsedExecutionMs"],
+            effort["activeAgentMs"],
+            effort["recordedWaitMs"]
+        ])
+    };
+    let exact = |amount| json!({"measured":amount,"exact":amount,"unknown":0});
+    assert_eq!(
+        json!({"total":measured(&report["outcomes"]["totals"]),
+            "attributed":measured(&report["outcomes"]["attributed"]),
+            "unattributed":measured(&report["outcomes"]["unattributed"]),
+            "rows":report["outcomes"]["rows"].as_array().unwrap().iter().map(|row|
+                (row["outcomeId"].as_str().unwrap(),measured(&row["effort"]))).collect::<BTreeMap<_,_>>()}),
+        json!({"total":[exact(1_200),exact(1_700),exact(800)],
+            "attributed":[exact(1_200),exact(1_700),exact(700)],
+            "unattributed":[exact(400),exact(400),exact(400)],
+            "rows":{"a":[exact(900),exact(900),exact(600)],"b":[exact(800),exact(800),exact(500)]}})
+    );
+    let mut scoped = json!({"totals":{},"attributed":{},"unattributed":{},"rows":[{
+        "nativeProjectId":"project","workstreamId":"alpha","outcomeId":"a","effort":{}}]});
+    let overrides = BTreeMap::from([(
+        "overlap-b".into(),
+        codex_usage::OutcomeTimingContext {
+            native_project_id: Some("project".into()),
+            workstream_id: Some("alpha".into()),
+            outcome_id: Some("a".into()),
+        },
+    )]);
+    window
+        .outcome_timings(&overrides, Some("alpha"))?
+        .apply(&mut scoped);
+    assert_eq!(
+        json!({"total":measured(&scoped["totals"]),"attributed":measured(&scoped["attributed"]),
+            "unattributed":measured(&scoped["unattributed"]),"row":measured(&scoped["rows"][0]["effort"])}),
+        json!({"total":[exact(1_200),exact(1_700),exact(800)],
+            "attributed":[exact(1_200),exact(1_700),exact(600)],
+            "unattributed":[exact(400),exact(400),exact(400)],"row":[exact(1_200),exact(1_700),exact(600)]})
     );
     Ok(())
 }
@@ -667,8 +760,8 @@ fn cross_partition_retry_keeps_the_original_assignment() -> codex_usage::Result<
         json!({"bound":2,"rows":[{"nativeProjectId":"project","outcomeId":"a","workstreamId":"stream","title":null,
             "effort":{"operations":2,"retryOperations":1,"reworkOperations":0,
                 "providerTotalTokens":{"measured":30,"exact":null,"unknown":0},
-                "activeAgentMs":{"measured":0,"exact":null,"unknown":2},
-                "elapsedExecutionMs":{"measured":0,"exact":null,"unknown":2},
+                "activeAgentMs":{"measured":2,"exact":2,"unknown":0},
+                "elapsedExecutionMs":{"measured":2,"exact":2,"unknown":0},
                 "recordedWaitMs":{"measured":0,"exact":null,"unknown":0}}}]})
     );
     Ok(())
@@ -728,6 +821,18 @@ fn clear_and_conflicting_revisions_have_explicit_unattributed_coverage() -> code
 
 #[test]
 fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage::Result<()> {
+    let started = Instant::now();
+    let mut previous = started;
+    let mut mark = |stage: &str| {
+        let now = Instant::now();
+        eprintln!(
+            "usage-metric-phase {}",
+            json!({"stage":stage,"phaseMs":now.duration_since(previous).as_millis(),
+                "totalMs":now.duration_since(started).as_millis()})
+        );
+        previous = now;
+    };
+    mark("fixture_started");
     let home = tempfile::tempdir()?;
     let mut first = start("first", 1_000);
     first.agent_id = Some("agent".into());
@@ -770,12 +875,17 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
     wait_finished.ended_at_ms = Some(1_700);
     wait_finished.duration_ms = Some(500);
     wait_finished.outcome = Some(UsageOutcome::Completed);
+    let metric_template = first_finished.clone();
+    mark("initial_capture_started");
     capture_records(
         home.path(),
         vec![first_finished, second_finished, wait, wait_finished],
     )?;
+    mark("initial_capture_finished");
+    mark("initial_review_started");
     let report = UsageReader::open(home.path())?
         .performance_review(TimeRange::from_millis(0, 3_000)?, &UsageFilter::default())?;
+    mark("initial_review_finished");
     assert_eq!(report["timing"]["elapsedMs"]["measured"], 1_500);
     assert_eq!(report["timing"]["wallTimeMs"]["measured"], 1_500);
     assert_eq!(report["timing"]["activeMs"]["measured"], 1_500);
@@ -796,8 +906,193 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
         report["cost"]["unavailableReasons"],
         json!({"component_cost_breakdown_unavailable": 2})
     );
+    // Exceed the old raw-row limit with real operations and observations. The
+    // detail groups also exceed their separate cap without truncating totals.
+    let additional = 16_385_u64;
+    mark("scale_fixture_build_started");
+    // Owners repeat every two facts, detail every 33, and intervals every three.
+    // Clone the 66 complete variants instead of allocating replacements twice.
+    let variants = (0..66)
+        .map(|index| {
+            let mut record = metric_template.clone();
+            record.id.clear();
+            record.operation_id = None;
+            record.agent_id = Some(
+                if index % 2 == 0 {
+                    "agent"
+                } else {
+                    "other-agent"
+                }
+                .into(),
+            );
+            if index % 3 != 2 {
+                let interval_start = if index % 3 == 0 { 1_100 } else { 1_300 };
+                record.started_at_ms = Some(interval_start);
+                record.ended_at_ms = Some(interval_start + 100);
+                record.observed_at_ms = record.ended_at_ms;
+                record.observed_at = (interval_start + 100).div_euclid(1_000);
+                record.duration_ms = Some(100);
+            }
+            record.input_tokens = 3;
+            record.cached_input_tokens = 2;
+            record.cache_write_input_tokens = Some(1);
+            record.output_tokens = 4;
+            record.reasoning_output_tokens = 1;
+            record.context_size.as_mut().unwrap().window_class =
+                Some(format!("window-{:02}", index % 33));
+            record.cost_provenance.as_mut().unwrap().rate_card =
+                Some(format!("metric-{:02}", index % 33));
+            record
+        })
+        .collect::<Vec<_>>();
+    let mut records = Vec::with_capacity(additional as usize + 5);
+    for index in 0..additional {
+        let mut record = variants[index as usize % variants.len()].clone();
+        record.id = format!("metric-{index}:finish");
+        record.operation_id = Some(format!("metric-{index}"));
+        records.push(record);
+    }
+    records.push(start("unfinished-metric", /*at*/ 1_300));
+    let mut missing_start = finish(
+        start("missing-start", /*at*/ 1_400),
+        /*at*/ 1_600,
+        /*tokens*/ 2,
+    );
+    missing_start.started_at_ms = None;
+    missing_start.duration_ms = None;
+    records.push(missing_start);
+    let mut missing_owner = metric_template;
+    missing_owner.id = "missing-owner:finish".into();
+    missing_owner.operation_id = Some("missing-owner".into());
+    missing_owner.agent_id = None;
+    missing_owner.thread_id = None;
+    missing_owner.context_size = None;
+    missing_owner.cost_provenance = None;
+    missing_owner.actual_billing_micros = None;
+    records.push(missing_owner);
+    let mut unfinished_wait = UsageRecord::new_millis(
+        "unfinished-wait:start",
+        /*observed_at_ms*/ 1_400,
+        /*input_tokens*/ 0,
+        /*output_tokens*/ 0,
+    )
+    .with_operation("unfinished-wait");
+    unfinished_wait.event = Some("retry_wait_started".into());
+    unfinished_wait.started_at_ms = Some(1_400);
+    records.push(unfinished_wait);
+    let mut provider_only = UsageRecord::new_millis(
+        "provider-only",
+        /*observed_at_ms*/ 1_800,
+        /*input_tokens*/ 0,
+        /*output_tokens*/ 0,
+    );
+    provider_only.provider_total_tokens = Some(5);
+    provider_only.actual_billing_micros = Some(17);
+    records.push(provider_only);
+    mark("scale_fixture_build_finished");
+    mark("scale_capture_started");
+    capture_records(home.path(), records)?;
+    mark("scale_capture_finished");
+    mark("scale_publication_started");
+    UsagePublisher::open_at(home.path().join("usage-v2"))?.publish_batch(JournalReadLimits {
+        max_bytes: 64 * 1024 * 1024,
+        max_entries: 20_000,
+    })?;
+    mark("scale_publication_finished");
+    mark("published_reader_open_started");
+    let published_reader = UsageReader::open(home.path())?;
+    mark("published_reader_open_finished");
+    mark("published_review_started");
+    let published = published_reader
+        .performance_review(TimeRange::from_millis(0, 3_000)?, &UsageFilter::default())?;
+    mark("published_review_finished");
+    assert_eq!(
+        json!({"active":published["timing"]["activeMs"],
+            "elapsed":published["timing"]["elapsedMs"],"wait":published["timing"]["waitMs"],
+            "unknown":published["timing"]["unknownReasons"],
+            "first":published["lifecycle"]["firstStartedAtMs"],
+            "last":published["lifecycle"]["lastEndedAtMs"],
+            "operations":published["counts"]["operations"],
+            "observations":published["coverage"]["rawTokenObservations"]}),
+        json!({"active":{"measured":2_500,"exact":null,"unknown":3},
+            "elapsed":{"measured":1_500,"exact":null,"unknown":3},
+            "wait":{"measured":500,"exact":null,"unknown":1},
+            "unknown":{"model_request:missing_end":1,"model_request:missing_start":1,
+                "model_request:missing_active_owner":1,"wait:missing_end":1},
+            "first":1_000,"last":2_500,"operations":additional+5,"observations":additional+5})
+    );
+    assert_eq!(
+        json!({"context":published["contextSize"],"cost":{
+            "estimate":published["cost"]["estimatedApiEquivalentCostMicros"],
+            "actual":published["cost"]["actualBillingMicros"],
+            "priced":published["cost"]["pricedObservations"],
+            "input":published["cost"]["inputTokens"],"cached":published["cost"]["cachedInputTokens"],
+            "write":published["cost"]["cacheWriteTokens"],"output":published["cost"]["outputTokens"],
+            "reasoning":published["cost"]["reasoningTokens"],
+            "provider":published["cost"]["providerTotalTokens"]}}),
+        json!({"context":{"coverage":"partial","observations":additional+5,
+            "promptTokens":{"measured":10*(additional+2),"exact":null,"unknown":3},
+            "contextTokens":{"measured":12*(additional+2),"exact":null,"unknown":3},
+            "contextWindowTokens":{"measured":16*(additional+2),"exact":null,"unknown":3},
+            "cacheTokens":{"measured":2*(additional+2),"exact":null,"unknown":3},
+            "compactionCount":{"measured":additional+2,"exact":null,"unknown":3},
+            "windowClasses":std::iter::once(json!({"class":"short","observations":2}))
+                .chain((0..31).map(|index| json!({"class":format!("window-{index:02}"),
+                    "observations":if index < 17 { 497 } else { 496 }}))).collect::<Vec<_>>(),
+            "windowClassesOmitted":2,"windowClassObservationsOmitted":992,"unknownWindowClass":3},
+            "cost":{"estimate":{"measured":7*(additional+2),"exact":null,"unknown":3},
+                "actual":{"measured":11*additional+41,"exact":null,"unknown":2},
+                "priced":additional+2,"input":3*additional,"cached":2*additional,
+                "write":additional,"output":4*additional,"reasoning":additional,
+                "provider":20*additional+67}})
+    );
+    assert_eq!(
+        json!({"provenanceRows":published["cost"]["provenance"].as_array().unwrap().len(),
+            "provenanceOmitted":published["cost"]["provenanceOmitted"],
+            "provenanceObservationsOmitted":published["cost"]["provenanceObservationsOmitted"],
+            "rateCardRows":published["cost"]["rateCardRefs"].as_array().unwrap().len(),
+            "rateCardsOmitted":published["cost"]["rateCardRefsOmitted"],
+            "rateCardObservationsOmitted":published["cost"]["rateCardObservationsOmitted"]}),
+        json!({"provenanceRows":32,"provenanceOmitted":2,"provenanceObservationsOmitted":498,
+            "rateCardRows":32,"rateCardsOmitted":2,"rateCardObservationsOmitted":498})
+    );
+    mark("clipped_review_started");
+    let clipped = published_reader.performance_review(
+        TimeRange::from_millis(1_200, 2_200)?,
+        &UsageFilter::default(),
+    )?;
+    mark("clipped_review_finished");
+    assert_eq!(
+        json!({"active":clipped["timing"]["activeMs"]["measured"],
+            "elapsed":clipped["timing"]["elapsedMs"]["measured"],
+            "wait":clipped["timing"]["waitMs"]["measured"]}),
+        json!({"active":1_800,"elapsed":1_000,"wait":500})
+    );
+    mark("reopened_reader_open_started");
+    let reopened_reader = UsageReader::open(home.path())?;
+    mark("reopened_reader_open_finished");
+    mark("reopened_review_started");
+    let reopened = reopened_reader
+        .performance_review(TimeRange::from_millis(0, 3_000)?, &UsageFilter::default())?;
+    mark("reopened_review_finished");
+    assert_eq!(reopened["timing"], published["timing"]);
+    assert_eq!(reopened["contextSize"], published["contextSize"]);
+    assert_eq!(reopened["cost"], published["cost"]);
     // A trusted zero estimate is available even without actual invoice data.
-    let mut zero = finish(start("zero-cost", 4_000), 4_500, 1);
+    let mut zero = finish(
+        start("zero-cost", /*at*/ 4_000),
+        /*at*/ 4_000,
+        /*tokens*/ 1,
+    );
+    zero.thread_id = Some("zero-metric-thread".into());
+    zero.context_size = Some(UsageContextSize {
+        prompt_tokens: Some(1),
+        context_tokens: Some(1),
+        cache_tokens: Some(0),
+        compaction_count: Some(0),
+        context_window_tokens: Some(16),
+        window_class: Some("short".into()),
+    });
     zero.cost_provenance = Some(UsageCostProvenance {
         rate_card: Some("trusted-zero-rate".into()),
         rate_card_version: Some("1".into()),
@@ -805,18 +1100,123 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
         estimated_api_equivalent_cost_micros: Some(0),
         ..Default::default()
     });
-    capture_record(home.path(), zero)?;
-    let restarted = UsageReader::open(home.path())?.performance_review(
+    let mut billed_zero = zero.clone();
+    billed_zero.id = "zero-billing:finish".into();
+    billed_zero.operation_id = Some("zero-billing".into());
+    billed_zero.thread_id = Some("zero-billing-thread".into());
+    billed_zero.actual_billing_micros = Some(0);
+    mark("zero_capture_started");
+    capture_records(home.path(), vec![zero, billed_zero])?;
+    mark("zero_capture_finished");
+    mark("zero_reopen_and_review_started");
+    let restarted_reader = UsageReader::open(home.path())?;
+    let restarted = restarted_reader.performance_review(
         TimeRange::from_millis(4_000, 5_000)?,
-        &UsageFilter::default(),
+        &UsageFilter {
+            thread_id: Some("zero-metric-thread".into()),
+            ..Default::default()
+        },
     )?;
+    mark("zero_reopen_and_review_finished");
     assert_eq!(
         json!({"status":restarted["cost"]["status"],
         "estimate":restarted["cost"]["estimatedUsdMicros"],
         "unknown":restarted["cost"]["unknownObservations"],
-        "actualUnknown":restarted["cost"]["actualBillingMicros"]["unknown"],
+        "estimatedMeasurement":restarted["cost"]["estimatedApiEquivalentCostMicros"],
+        "actualMeasurement":restarted["cost"]["actualBillingMicros"],
+        "cache":restarted["contextSize"]["cacheTokens"],
+        "compaction":restarted["contextSize"]["compactionCount"],
+        "timing":restarted["timing"],
+        "lifecycle":restarted["lifecycle"],
         "breakdown":restarted["cost"]["inputUsdMicros"]}),
-        json!({"status":"partial","estimate":0,"unknown":0,"actualUnknown":1,"breakdown":null})
+        json!({"status":"partial","estimate":0,"unknown":0,
+            "estimatedMeasurement":{"measured":0,"exact":0,"unknown":0},
+            "actualMeasurement":{"measured":0,"exact":null,"unknown":1},
+            "cache":{"measured":0,"exact":0,"unknown":0},
+            "compaction":{"measured":0,"exact":0,"unknown":0},
+            "timing":{"activeMs":{"measured":0,"exact":0,"unknown":0},
+                "elapsedMs":{"measured":0,"exact":0,"unknown":0},
+                "wallTimeMs":{"measured":0,"exact":0,"unknown":0},
+                "waitMs":{"measured":0,"exact":null,"unknown":0},
+                "unknownReasons":{},"coverage":"recorded"},
+            "lifecycle":{"firstStartedAtMs":4_000,"lastEndedAtMs":4_000,
+                "wallTimeMs":{"measured":0,"exact":0,"unknown":0},
+                "unknownReasons":{},"coverage":"recorded"},"breakdown":null})
     );
+    mark("zero_billing_review_started");
+    let billed = restarted_reader.performance_review(
+        TimeRange::from_millis(4_000, 5_000)?,
+        &UsageFilter {
+            thread_id: Some("zero-billing-thread".into()),
+            ..Default::default()
+        },
+    )?;
+    mark("zero_billing_review_finished");
+    assert_eq!(
+        json!({"estimate":billed["cost"]["estimatedApiEquivalentCostMicros"],
+            "actual":billed["cost"]["actualBillingMicros"]}),
+        json!({"estimate":{"measured":0,"exact":0,"unknown":0},
+            "actual":{"measured":0,"exact":0,"unknown":0}})
+    );
+    mark("empty_review_started");
+    let empty = restarted_reader.performance_review(
+        TimeRange::all(),
+        &UsageFilter {
+            thread_id: Some("empty-metric-selection".into()),
+            ..Default::default()
+        },
+    )?;
+    mark("empty_review_finished");
+    assert_eq!(
+        json!({"timing":empty["timing"],"lifecycle":empty["lifecycle"],
+            "context":empty["contextSize"],"cost":{
+                "status":empty["cost"]["status"],"estimate":empty["cost"]["estimatedUsdMicros"],
+                "estimatedMeasurement":empty["cost"]["estimatedApiEquivalentCostMicros"],
+                "actualMeasurement":empty["cost"]["actualBillingMicros"],
+                "reasons":empty["cost"]["unavailableReasons"]}}),
+        json!({"timing":{"activeMs":{"measured":0,"exact":null,"unknown":0},
+                "elapsedMs":{"measured":0,"exact":null,"unknown":0},
+                "wallTimeMs":{"measured":0,"exact":null,"unknown":0},
+                "waitMs":{"measured":0,"exact":null,"unknown":0},
+                "unknownReasons":{},"coverage":"unobserved"},
+            "lifecycle":{"firstStartedAtMs":null,"lastEndedAtMs":null,
+                "wallTimeMs":{"measured":0,"exact":null,"unknown":0},
+                "unknownReasons":{},"coverage":"unobserved"},
+            "context":{"coverage":"unobserved","observations":0,
+                "promptTokens":{"measured":0,"exact":null,"unknown":0},
+                "contextTokens":{"measured":0,"exact":null,"unknown":0},
+                "contextWindowTokens":{"measured":0,"exact":null,"unknown":0},
+                "cacheTokens":{"measured":0,"exact":null,"unknown":0},
+                "compactionCount":{"measured":0,"exact":null,"unknown":0},
+                "windowClasses":[],"windowClassesOmitted":0,
+                "windowClassObservationsOmitted":0,"unknownWindowClass":0},
+            "cost":{"status":"unavailable","estimate":null,
+                "estimatedMeasurement":{"measured":0,"exact":null,"unknown":0},
+                "actualMeasurement":{"measured":0,"exact":null,"unknown":0},
+                "reasons":{"no_token_observations":1}}})
+    );
+    let overflowing = tempfile::tempdir()?;
+    let estimates = (0..3)
+        .map(|index| {
+            let mut fact = finish(
+                start(&format!("overflow-{index}"), /*at*/ 1_000),
+                /*at*/ 2_000,
+                /*tokens*/ 1,
+            );
+            fact.cost_provenance = Some(UsageCostProvenance {
+                rate_card: Some("trusted-overflow-fixture".into()),
+                rate_card_version: Some("1".into()),
+                pricing_basis: Some("api_equivalent".into()),
+                estimated_api_equivalent_cost_micros: Some(1_u64 << 63),
+                ..Default::default()
+            });
+            fact
+        })
+        .collect();
+    capture_records(overflowing.path(), estimates)?;
+    let overflow_error = UsageReader::open(overflowing.path())?
+        .performance_review(TimeRange::all(), &UsageFilter::default())
+        .expect_err("an overflowing sum must not become exact u64::MAX");
+    assert!(overflow_error.to_string().contains("out of range"));
     Ok(())
 }

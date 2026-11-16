@@ -27,7 +27,12 @@ worktreeKeys?: Array<string> | null,
 /**
  * Compatibility flag, meaningful only alongside a worktree selector.
  */
-includeUnassigned: boolean, includeReview: boolean,
+includeUnassigned: boolean,
+/**
+ * False with no detail pages selects exact published token headlines;
+ * counts, costs, timing, lifecycle, context, and work attribution are deferred.
+ */
+includeReview: boolean,
 /**
  * Zero/omission excludes detail; a requested page is limited to 50 rows.
  */

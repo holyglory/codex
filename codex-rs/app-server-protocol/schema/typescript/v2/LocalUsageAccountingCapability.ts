@@ -6,4 +6,8 @@ export type LocalUsageAccountingCapability = { version: number, supportedVersion
 /**
  * Accepts explicit read-only workContextBindings supplied on each request.
  */
-supportsWorkContextBindings: boolean, supportsWorkstreamOutcomes: boolean, snapshotRetentionMs: number, };
+supportsWorkContextBindings: boolean, supportsWorkstreamOutcomes: boolean,
+/**
+ * Omitting review and detail pages reads only the published token projection.
+ */
+supportsTokenHeadlines: boolean, snapshotRetentionMs: number, };

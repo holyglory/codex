@@ -3760,6 +3760,11 @@
           },
           "type": "array"
         },
+        "supportsTokenHeadlines": {
+          "default": false,
+          "description": "Omitting review and detail pages reads only the published token projection.",
+          "type": "boolean"
+        },
         "supportsWorkContextBindings": {
           "default": false,
           "description": "Accepts explicit read-only workContextBindings supplied on each request.",
@@ -15412,6 +15417,7 @@
           },
           "includeReview": {
             "default": false,
+            "description": "False with no detail pages selects exact published token headlines; counts, costs, timing, lifecycle, context, and work attribution are deferred.",
             "type": "boolean"
           },
           "includeUnassigned": {

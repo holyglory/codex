@@ -498,12 +498,28 @@ fn signed_tokens_and_inherited_activity_survive_retirement_restart_and_chat_resu
     observed.cached_input_tokens = 3;
     observed.reasoning_output_tokens = 1;
     observed.provider_total_tokens = Some(7);
+    let mut billed = token("billing-known", DAY + 700, "billing-only", /*input*/ 0);
+    billed.actual_billing_micros = Some(11);
+    let missing_bill = token(
+        "billing-missing",
+        DAY + 800,
+        "billing-only",
+        /*input*/ 0,
+    );
     journal
         .append_batch(
-            [model, model_end, tool.clone(), finished(&tool), observed]
-                .into_iter()
-                .map(JournalPayload::Record)
-                .collect(),
+            [
+                model,
+                model_end,
+                tool.clone(),
+                finished(&tool),
+                observed,
+                billed,
+                missing_bill,
+            ]
+            .into_iter()
+            .map(JournalPayload::Record)
+            .collect(),
         )
         .expect("capture completed operations and provider usage");
     publish(&root);
@@ -547,6 +563,14 @@ fn signed_tokens_and_inherited_activity_survive_retirement_restart_and_chat_resu
     let expected_summary = before
         .summary(TimeRange::all(), &filter)
         .expect("original summary");
+    let billing_filter = UsageFilter::default().for_thread("billing-only");
+    let billing_before = before
+        .performance_review(TimeRange::all(), &billing_filter)
+        .expect("individual billing observations");
+    assert_eq!(
+        billing_before["cost"]["actualBillingMicros"],
+        serde_json::json!({"measured":11,"exact":null,"unknown":1})
+    );
     let policy = RetentionPolicy::default();
     let mut maintenance = Default::default();
     for _ in 0..6 {
@@ -561,6 +585,30 @@ fn signed_tokens_and_inherited_activity_survive_retirement_restart_and_chat_resu
     let actual = after
         .performance_review(TimeRange::all(), &filter)
         .expect("retained report");
+    let billing_after = after
+        .performance_review(TimeRange::all(), &billing_filter)
+        .expect("retained mixed billing availability");
+    assert_eq!(
+        billing_after["cost"]["actualBillingMicros"],
+        serde_json::json!({"measured":11,"exact":null,"unknown":2})
+    );
+    for report in [&billing_before, &billing_after] {
+        assert_eq!(
+            serde_json::json!({"observations":report["contextSize"]["observations"],
+            "estimate":report["cost"]["estimatedApiEquivalentCostMicros"],
+            "unknownObservations":report["cost"]["unknownObservations"]}),
+            serde_json::json!({"observations":2,"estimate":{"measured":0,"exact":null,"unknown":2},
+                "unknownObservations":2})
+        );
+    }
+    for report in [&expected, &actual] {
+        assert_eq!(
+            serde_json::json!({"input":report["cost"]["inputTokens"],
+                "cached":report["cost"]["cachedInputTokens"],"output":report["cost"]["outputTokens"],
+                "reasoning":report["cost"]["reasoningTokens"],"uncached":report["cost"]["uncachedInputTokens"]}),
+            serde_json::json!({"input":-4,"cached":-2,"output":-2,"reasoning":-2,"uncached":-2})
+        );
+    }
     for section in [
         "counts",
         "operations",

@@ -137,6 +137,11 @@ impl UsagePublisherRuntime {
             })?;
         let worker_root = root.clone();
         let (maintenance, maintain) = mpsc::sync_channel::<MaintenanceRequest>(/*bound*/ 1);
+        let (headline, headlines) = mpsc::sync_channel(/*bound*/ 1);
+        let headline_root = root.clone();
+        let headline_worker = std::thread::Builder::new()
+            .name("codex-usage-token-headline".into())
+            .spawn(move || crate::headline_store::run(headline_root, headlines))?;
         let maintenance_root = root.clone();
         let maintenance_worker = std::thread::Builder::new()
             .name("codex-usage-retention".into())
@@ -148,7 +153,7 @@ impl UsagePublisherRuntime {
                         .unwrap_or_default()
                         .as_millis()
                         .min(i64::MAX as u128) as i64;
-                    let result = match request.kind {
+                    let mut result = match request.kind {
                         MaintenanceKind::PublicationRecovery => retention_maintenance
                             .resume_publication(&maintenance_root)
                             .map(|_| ()),
@@ -159,6 +164,19 @@ impl UsagePublisherRuntime {
                             &mut retention_maintenance,
                         ),
                     };
+                    if matches!(request.kind, MaintenanceKind::Retention) && result.is_ok() {
+                        let started = std::time::Instant::now();
+                        while started.elapsed() < Duration::from_secs(10) {
+                            match crate::review_compaction::compact_one(&maintenance_root) {
+                                Ok(true) => {}
+                                Ok(false) => break,
+                                Err(error) => {
+                                    result = Err(error);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if result.is_err() {
                         tracing::debug!("usage maintenance deferred after failure");
                     }
@@ -167,7 +185,7 @@ impl UsagePublisherRuntime {
             })?;
         let publisher_worker = std::thread::Builder::new()
             .name("codex-usage-publisher".into())
-            .spawn(move || publish_loop(worker_root, receiver, warm, maintenance))?;
+            .spawn(move || publish_loop(worker_root, receiver, warm, maintenance, headline))?;
         *owner
             .workers
             .lock()
@@ -175,7 +193,7 @@ impl UsagePublisherRuntime {
             // The publisher owns both wake senders. Join it first so the
             // maintenance and warmup receivers observe channel closure during
             // shutdown instead of waiting on a sender held by the publisher.
-            vec![publisher_worker, maintenance_worker, warm_worker];
+            vec![publisher_worker, maintenance_worker, warm_worker, headline_worker];
         signal.notify();
         publishers.insert(
             root,
@@ -209,6 +227,7 @@ fn publish_loop(
     receiver: mpsc::Receiver<()>,
     warm: mpsc::Sender<()>,
     maintenance: mpsc::SyncSender<MaintenanceRequest>,
+    headline: mpsc::SyncSender<()>,
 ) {
     let mut had_failure = false;
     let mut catch_up = false;
@@ -273,6 +292,7 @@ fn publish_loop(
         let mut maintenance_requested = maintenance_due.then_some(MaintenanceKind::Retention);
         match result {
             Ok(manifest) => {
+                let _ = headline.try_send(());
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
                     .checkpoint()
                     .is_ok_and(|end| end.sequence > manifest.watermark);

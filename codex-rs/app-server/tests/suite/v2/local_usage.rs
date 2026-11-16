@@ -33,6 +33,8 @@ use tokio::time::timeout;
 
 #[path = "local_usage_contract.rs"]
 mod contract;
+#[path = "local_usage_headline.rs"]
+mod headline;
 
 fn fixture_repository() -> Result<TempDir> {
     let directory = TempDir::new()?;
@@ -180,6 +182,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         max_bytes: 1024 * 1024,
         max_entries: 64,
     })?;
+    headline::publish(store.root())?;
     drop(store);
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
@@ -235,28 +238,33 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         "providerTokens":187});
     let exported = export_runtime_fixture(home.path(), &info)?;
     let global_start = Instant::now();
-    let global: Value = server
+    let headline: Value = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
             request_id,
             params: LocalUsageSummaryParams::default(),
         })
         .await?;
     assert_eq!(
-        ["review", "observations", "operations"].map(|field| global.get(field)),
+        ["review", "observations", "operations"].map(|field| headline.get(field)),
         [Some(&Value::Null); 3]
     );
-    let global: LocalUsageSummaryResponse = serde_json::from_value(global)?;
+    let headline: LocalUsageSummaryResponse = serde_json::from_value(headline)?;
     let metadata_cold_ms = global_start.elapsed().as_millis();
-    assert!(
-        global.report["providerTokens"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        global.report["coverage"]["providerTotals"],
-        "unavailable_unbounded"
-    );
+    assert_eq!(headline.report["projection"], "token_headline");
+    assert_eq!(headline.report["counts"], Value::Null);
+    assert_eq!(headline.summary["inputTokens"], 180);
+    assert!(headline.snapshot.pending_entries > 0);
+    let global: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams {
+                from_at_ms: Some(base),
+                to_at_ms: Some(base + 5_000),
+                include_review: true,
+                ..Default::default()
+            },
+        })
+        .await?;
     assert!(
         global.snapshot.journal_watermark > global.snapshot.watermark,
         "test must pin an actual unpublished tail"
@@ -354,6 +362,41 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     assert_eq!(operation["actual_billing_micros"], 11);
     assert_eq!(review["totals"]["cost"]["estimated_usd_micros"], 7);
     assert_eq!(
+        json!({"requests":review["totals"]["cost"]["model_requests"],
+            "pricedRequests":review["totals"]["cost"]["priced_requests"],
+            "unknownRequests":review["totals"]["cost"]["unknown_requests"],
+            "pricedObservations":review["totals"]["cost"]["priced_observations"],
+            "unknownObservations":review["totals"]["cost"]["unknown_observations"]}),
+        json!({"requests":5,"pricedRequests":null,"unknownRequests":null,
+            "pricedObservations":1,"unknownObservations":4})
+    );
+    let outcomes = &review["outcomes"];
+    for cost in std::iter::once(&outcomes["totals"]["cost"])
+        .chain([
+            &outcomes["attributed"]["cost"],
+            &outcomes["unattributed"]["cost"],
+        ])
+        .chain(
+            outcomes["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| &row["effort"]["cost"]),
+        )
+    {
+        assert_eq!(
+            [
+                "model_requests",
+                "priced_requests",
+                "unknown_requests",
+                "priced_observations",
+                "unknown_observations"
+            ]
+            .map(|field| cost.get(field)),
+            [Some(&Value::Null); 5]
+        );
+    }
+    assert_eq!(
         review["outcomes"]["totals"]["cost"]["estimated_usd_micros"],
         Value::Null
     );
@@ -383,33 +426,14 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         review["outcomes"]["rows"][0]["outcomeId"],
         "fixture-outcome"
     );
+    let exact = |amount| json!({"measured":amount,"exact":amount,"unknown":0});
     assert_eq!(
-        review["outcomes"]["totals"]["elapsedExecutionMs"]["measured"],
-        0
-    );
-    assert_eq!(
-        review["outcomes"]["attributed"]["elapsedExecutionMs"]["measured"],
-        0
-    );
-    assert_eq!(
-        review["outcomes"]["unattributed"]["elapsedExecutionMs"]["measured"],
-        0
-    );
-    assert_eq!(
-        review["outcomes"]["totals"]["elapsedExecutionMs"]["unknown"],
-        4
-    );
-    assert_eq!(
-        review["outcomes"]["attributed"]["elapsedExecutionMs"]["unknown"],
-        1
-    );
-    assert_eq!(
-        review["outcomes"]["unattributed"]["elapsedExecutionMs"]["unknown"],
-        3
-    );
-    assert_eq!(
-        review["outcomes"]["rows"][0]["effort"]["elapsedExecutionMs"]["measured"],
-        0
+        json!({"total":[outcomes["totals"]["elapsedExecutionMs"],outcomes["totals"]["activeAgentMs"]],
+            "attributed":[outcomes["attributed"]["elapsedExecutionMs"],outcomes["attributed"]["activeAgentMs"]],
+            "unattributed":[outcomes["unattributed"]["elapsedExecutionMs"],outcomes["unattributed"]["activeAgentMs"]],
+            "row":outcomes["rows"][0]["effort"]["elapsedExecutionMs"]}),
+        json!({"total":[exact(1_500),exact(4_000)],"attributed":[exact(1_000),exact(1_000)],
+            "unattributed":[exact(1_500),exact(3_000)],"row":exact(1_000)})
     );
     assert!(
         scoped.report["measuredExecutionIntervalSumMs"]
@@ -474,6 +498,9 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
                 params: LocalUsageSummaryParams {
                     account_id: account.map(str::to_owned),
                     thread_id: thread.map(str::to_owned),
+                    from_at_ms: Some(base),
+                    to_at_ms: Some(base + 5_000),
+                    include_review: true,
                     expected_snapshot: Some(global.snapshot.source_watermark.clone()),
                     ..Default::default()
                 },
@@ -492,7 +519,12 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     let fresh: LocalUsageSummaryResponse = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
             request_id,
-            params: LocalUsageSummaryParams::default(),
+            params: LocalUsageSummaryParams {
+                from_at_ms: Some(base),
+                to_at_ms: Some(base + 5_000),
+                include_review: true,
+                ..Default::default()
+            },
         })
         .await?;
     assert_eq!(fresh.summary["inputTokens"], 198);
@@ -574,59 +606,132 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         })
         .await?;
     assert!(maximum.operation_bindings.is_empty());
-    // A pending correction cannot send an unbounded read down the historical
-    // fallback. It reports source availability, while finite queries still work.
+    // A pending correction leaves the last consistent published headline usable.
+    // Rich finite queries independently include the corrected journal tail.
     let correction_guard = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(home.path().join("usage-v2/.snapshot.lock"))?;
     correction_guard.lock()?;
-    UsageJournal::new(home.path().join("usage-v2/events.jsonl")).append_correction(
-        UsageCorrection::new(
+    // Earlier publication was released during the invalid-declaration checks.
+    // Finish any in-flight headline build, then fix its exact published prefix.
+    let headline_guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.path().join("usage-v2/.headline.lock"))?;
+    headline_guard.lock()?;
+    let published = UsageReader::open(home.path())?.manifest().clone();
+    let before_correction: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams::default(),
+        })
+        .await?;
+    let mut published_input = headline.summary["inputTokens"]
+        .as_i64()
+        .context("initial published input")?;
+    if before_correction.snapshot.watermark >= global.snapshot.journal_watermark {
+        published_input += 7;
+    }
+    if before_correction.snapshot.watermark >= fresh.snapshot.journal_watermark {
+        published_input += 11;
+    }
+    assert_eq!(before_correction.summary["inputTokens"], published_input);
+    assert!(before_correction.snapshot.generation >= headline.snapshot.generation);
+    assert!(before_correction.snapshot.generation <= published.snapshot_generation);
+    assert!(before_correction.snapshot.watermark >= headline.snapshot.watermark);
+    assert!(before_correction.snapshot.watermark <= published.watermark);
+    let correction = UsageJournal::new(home.path().join("usage-v2/events.jsonl"))
+        .append_correction(UsageCorrection::new(
             "fixture-correction",
             "fixture-model-finished",
             (base + 4_000).div_euclid(1_000),
             1,
             0,
             "fixture correction",
-        ),
-    )?;
-    let id = server
-        .send_request("localUsage/summary", Some(json!({})))
+        ))?;
+    let stale: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams::default(),
+        })
         .await?;
-    let unavailable = timeout(
-        Duration::from_secs(20),
-        server.read_stream_until_error_message(RequestId::Integer(id)),
-    )
-    .await??;
-    assert_eq!(unavailable.error.code, -32603);
+    assert_eq!(stale.summary, before_correction.summary);
     assert_eq!(
-        unavailable.error.data.as_ref().unwrap()["coverage"],
-        "unavailable"
+        stale.report["providerTokens"],
+        before_correction.report["providerTokens"]
     );
     assert_eq!(
-        unavailable.error.data.as_ref().unwrap()["reason"],
-        "metadata_corrections_pending"
+        stale.snapshot.generation,
+        before_correction.snapshot.generation
     );
+    assert_eq!(
+        stale.snapshot.watermark,
+        before_correction.snapshot.watermark
+    );
+    assert_eq!(stale.snapshot.freshness, "stale");
+    assert!(correction.sequence > stale.snapshot.watermark);
+    assert!(stale.snapshot.pending_entries >= correction.sequence - stale.snapshot.watermark);
+    assert!(stale.snapshot.pending_entries > before_correction.snapshot.pending_entries);
+    drop(headline_guard);
     let pinned: LocalUsageSummaryResponse = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
             request_id,
             params: LocalUsageSummaryParams {
                 expected_snapshot: Some(maximum.snapshot.source_watermark.clone()),
+                from_at_ms: Some(base),
+                to_at_ms: Some(base + 5_000),
+                include_review: true,
                 ..Default::default()
             },
         })
         .await?;
     assert_eq!(pinned.summary["inputTokens"], 198);
-    let mut finite = params.clone();
-    finite.expected_snapshot = None;
+    let mut finite_params = params.clone();
+    finite_params.expected_snapshot = None;
     let finite: LocalUsageSummaryResponse = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
             request_id,
-            params: finite,
+            params: finite_params.clone(),
         })
         .await?;
     assert_eq!(finite.summary["inputTokens"], 199);
+    // Start with newly retained responses and reuse the rich request's exact
+    // cache key, rather than spending another view's lease on a different report.
+    finite_params.expected_snapshot = Some(finite.snapshot.source_watermark.clone());
+    let retention_headline: LocalUsageSummaryResponse = server
+        .request(|request_id| ClientRequest::LocalUsageSummary {
+            request_id,
+            params: LocalUsageSummaryParams::default(),
+        })
+        .await?;
+    assert!(retention_headline.snapshot.watermark < correction.sequence);
+    assert!(retention_headline.snapshot.pending_entries > 0);
+    let renewals = [
+        (finite_params, finite.snapshot.clone()),
+        (
+            LocalUsageSummaryParams {
+                expected_snapshot: Some(retention_headline.snapshot.source_watermark.clone()),
+                ..Default::default()
+            },
+            retention_headline.snapshot.clone(),
+        ),
+    ];
+    // The second round is beyond creation+5s, but within five seconds of the
+    // preceding successful responses. Both projections must retain their pins.
+    for delay in [3_100, 2_200] {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        for (params, snapshot) in &renewals {
+            let renewed: LocalUsageSummaryResponse = server
+                .request(|request_id| ClientRequest::LocalUsageSummary {
+                    request_id,
+                    params: params.clone(),
+                })
+                .await?;
+            assert_eq!(&renewed.snapshot, snapshot);
+            assert!(renewed.generated_at >= renewed.snapshot.generated_at);
+        }
+    }
     drop(correction_guard);
     tokio::time::sleep(Duration::from_millis(5_100)).await;
     let reopened_review = UsageReader::open(home.path())?.performance_review(
@@ -645,18 +750,17 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         reopened_review["cost"]["actualBillingMicros"]["measured"],
         11
     );
-    let id = server
-        .send_request(
-            "localUsage/summary",
-            Some(json!({"expectedSnapshot":maximum.snapshot.source_watermark})),
+    for (params, _) in renewals {
+        let id = server
+            .send_request("localUsage/summary", Some(serde_json::to_value(params)?))
+            .await?;
+        let error = timeout(
+            Duration::from_secs(20),
+            server.read_stream_until_error_message(RequestId::Integer(id)),
         )
-        .await?;
-    let error = timeout(
-        Duration::from_secs(20),
-        server.read_stream_until_error_message(RequestId::Integer(id)),
-    )
-    .await??;
-    assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+        .await??;
+        assert_eq!(error.error.code, INVALID_PARAMS_ERROR_CODE);
+    }
     Ok(())
 }
 
@@ -752,6 +856,7 @@ async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_ef
         max_bytes: 1024 * 1024,
         max_entries: 64,
     })?;
+    headline::publish(store.root())?;
     drop(store);
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
@@ -807,6 +912,15 @@ async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_ef
         json!({"measured_ms":0,"unknown_intervals":1})
     );
     assert_eq!(review["totals"]["cost"]["status"], "unavailable");
+    assert_eq!(
+        json!({"requests":review["totals"]["cost"]["model_requests"],
+            "pricedRequests":review["totals"]["cost"]["priced_requests"],
+            "unknownRequests":review["totals"]["cost"]["unknown_requests"],
+            "pricedObservations":review["totals"]["cost"]["priced_observations"],
+            "unknownObservations":review["totals"]["cost"]["unknown_observations"]}),
+        json!({"requests":1,"pricedRequests":null,"unknownRequests":null,
+            "pricedObservations":0,"unknownObservations":1})
+    );
     assert_eq!(
         review["totals"]["cost"]["estimated_usd_micros"],
         Value::Null
@@ -882,7 +996,7 @@ async fn local_usage_summary_reads_published_facts_and_preserves_unattributed_ef
             })
             .await?;
         assert_eq!(scoped.summary["inputTokens"], 100);
-        assert_eq!(scoped.report["counts"]["operations"], 1);
+        assert_eq!(scoped.report["counts"], Value::Null);
     }
     let missing_total: LocalUsageSummaryResponse = server
         .request(|request_id| ClientRequest::LocalUsageSummary {
@@ -948,7 +1062,7 @@ async fn local_usage_summary_rejects_unsupported_versions_and_unstable_paginatio
     let id = server
         .send_request(
             "localUsage/summary",
-            Some(json!({"repositoryKey":"missing","fromAt":0,"toAt":1})),
+            Some(json!({"repositoryKey":"missing","fromAt":0,"toAt":1,"includeReview":true})),
         )
         .await?;
     let result: Value = timeout(Duration::from_secs(20), server.read_response(id)).await??;

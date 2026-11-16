@@ -10,26 +10,24 @@ pub(crate) struct RetryEvidence {
     pub(crate) retries: u64,
     pub(crate) attempts: u64,
     pub(crate) waits: Vec<Value>,
-    pub(crate) wait_ms: u64,
     pub(crate) links: Vec<Value>,
     pub(crate) linked_operations: u64,
 }
 
 impl RetryEvidence {
     pub(crate) fn read(query: &ReportQuery) -> Result<Self> {
-        let (retries, attempts, wait_ms, linked_operations) = query
+        let (retries, attempts, linked_operations) = query
             .connection
             .query_row(
                 &format!(
                     "SELECT COALESCE(sum(retry_operations),0)::UBIGINT, \
                  COALESCE(sum(observed_attempts),0)::UBIGINT, \
-                 COALESCE(sum(interval_sum_ms) FILTER (WHERE kind = 'wait'),0)::UBIGINT, \
                  COALESCE(sum(COALESCE(linked_operations,rework_operations)),0)::UBIGINT \
                  FROM ({})",
                     query.operation_statistics,
                 ),
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(query_error)?;
         let waits = query_rows::<Value>(
@@ -59,7 +57,6 @@ impl RetryEvidence {
             retries,
             attempts,
             waits,
-            wait_ms,
             links,
             linked_operations,
         })

@@ -394,6 +394,18 @@ async fn local_usage_sparse_switches_survive_restart_and_do_not_scale_with_opera
     );
     assert_eq!(response.report["workBindings"]["boundOperations"], 306);
     assert_eq!(response.report["workBindings"]["unknownOperations"], 4);
+    let elapsed = json!({"measured":1_000,"exact":1_000,"unknown":0});
+    let active = json!({"measured":2_000,"exact":2_000,"unknown":0});
+    assert_eq!(
+        json!({"totals":[outcomes["totals"]["elapsedExecutionMs"],outcomes["totals"]["activeAgentMs"]],
+            "attributed":[outcomes["attributed"]["elapsedExecutionMs"],outcomes["attributed"]["activeAgentMs"]],
+            "unattributed":[outcomes["unattributed"]["elapsedExecutionMs"],outcomes["unattributed"]["activeAgentMs"]],
+            "rows":outcomes["rows"].as_array().unwrap().iter().map(|row|
+                (row["outcomeId"].as_str().unwrap(),row["effort"]["elapsedExecutionMs"].clone()))
+                .collect::<std::collections::BTreeMap<_,_>>()}),
+        json!({"totals":[elapsed,active],"attributed":[elapsed,elapsed],"unattributed":[elapsed,active],
+            "rows":{"job-a":elapsed,"job-b":elapsed,"exception-job":elapsed}})
+    );
     assert_eq!(
         response.operation_bindings.len(),
         1,
