@@ -1,9 +1,10 @@
 # Local usage-v2 API
 
 The app-server exposes a read-only JSON-RPC method named exactly
-`localUsage/summary`. It reads the dedicated `usage-v2` journal and immutable
-snapshot through `codex_usage::UsageReader`. It never opens or migrates a retired
-SQLite usage database, starts a rebuild, or requests an account credential.
+`localUsage/summary`. Token headlines read a compact immutable publication;
+rich reviews use the dedicated `usage-v2` journal and pinned operation snapshot.
+A foreground request never opens a retired SQLite database, starts a rebuild,
+or requests an account credential.
 
 `initialize.result.localUsageAccounting` advertises:
 
@@ -11,10 +12,11 @@ SQLite usage database, starts a rebuild, or requests an account credential.
 {
   "version": 1,
   "supportedVersions": [1],
-  "methods": ["localUsage/summary", "localUsage/repositoryIdentity"],
+  "methods": ["localUsage/summary", "localUsage/repositoryIdentity", "localUsage/bindingTransition", "localUsage/bindingStatus"],
   "storage": "usage-v2",
   "supportsWorkContextBindings": true,
   "supportsWorkstreamOutcomes": true,
+  "supportsTokenHeadlines": true,
   "snapshotRetentionMs": 5000
 }
 ```
@@ -44,14 +46,19 @@ capability does not claim every recorded operation is bound.
 `accountId`, `repositoryId`, and `threadId` restrict recorded identities; combined
 filters intersect. With no identity filter, the summary is global. Times are UTC
 milliseconds, start inclusive and end exclusive. Supply both time bounds or
-neither. Unbounded summaries use precomputed metadata only: provider totals and
-performance dimensions are unavailable there, with empty `providerTokens` and
-explicit coverage. They never trigger a full-history performance query. Reviews
-and detail pages require finite `fromAtMs` and `toAtMs` bounds.
-Combined identity filters also require a finite range. If unpublished token
-corrections make the metadata fast path unsafe, an unbounded request returns a
-source-unavailable error (`-32603`, data reason `metadata_corrections_pending`,
-coverage `unavailable`); it does not infer a caller error or invent totals.
+neither. When `supportsTokenHeadlines` is advertised, `includeReview: false`
+with no requested detail pages selects `report.projection: "token_headline"`.
+It returns provider token components and totals at the declared published
+prefix for finite or unbounded windows. It skips operation joins and rich
+review calculations. Counts, activity, attribution, cost, context and timing
+are explicitly deferred: `report.counts` and `summary.counts` are null,
+`review` is null, and the corresponding coverage dimensions say `deferred`.
+Token coverage is independent of those deferred dimensions. A publication
+backlog appears in snapshot freshness and pending entries; it does not make
+measurements at the published prefix inexact. A boundary bisecting a retired
+aggregate returns unavailable rather than an invented exact total.
+Reviews and detail pages require finite `fromAtMs` and `toAtMs` bounds.
+Combined identity filters also require a finite range.
 `schemaVersion`, `repositoryKey`, `fromAt`, and `toAt` are accepted aliases for
 `contractVersion`, `repositoryId`, `fromAtMs`, and `toAtMs` respectively. Non-null
 `worktreeKeys` is rejected because this producer has no worktree-selection
@@ -79,7 +86,7 @@ The result keeps the existing `generatedAt`, `report`, and `snapshot` envelope:
     scope, timeRange, coverage, counts, providerTokens, providerTokensByActivity,
     workBindings, filters
   },
-  summary: <native UsageReader.summary>,
+  summary: <native rich summary or token headline>,
   review: null | { coverage, totals, activities, time, tools, semantics, outcomes },
   observations: null | [<content-free UsageRecord>],
   nextRecordsCursor: null | { observedAtMs, id },
@@ -91,22 +98,36 @@ The result keeps the existing `generatedAt`, `report`, and `snapshot` envelope:
 ```
 
 `databaseSchemaVersion` is the usage-v2 manifest format version, retained under
-the older field name for compatibility. Native summary/review data, token
-categories, coverage, and unknown measurements come from the same pinned reader.
+the older field name for compatibility. Data within a response comes from one
+pinned publication. Headline and rich views have distinct opaque snapshot
+identities; clients must not interchange them.
 Global `providerTokens` use the bucket `all`; repository-scoped results use the
 requested repository ID. A global response does not enumerate repositories or
 allocate its aggregate to them. Consumers needing one repository use its
 explicit producer ID. This method does not resolve raw filesystem paths.
 
-The reader includes a complete bounded journal tail or leaves it out as a whole
-and reports stale data with pending entries. Retention and missing facts remain
-visible in coverage. Provider total tokens are never inferred from token
-components. Cached input and reasoning output are subsets. Execution interval
-sums appear only as `report.measuredExecutionIntervalSumMs` and must not be
-interpreted as elapsed wall time. Review/outcome `elapsedExecutionMs` remains
-unknown (`measured: 0`, `exact: null`, with missing interval counts), rather than
-claiming an interval sum is a wall-clock union. Delivery and active-agent time
-also remain unknown.
+Rich readers include a complete bounded journal tail or leave it out as a whole
+and report pending entries. Headlines are published-only and disclose the
+unapplied backlog. Retention and missing facts remain visible in coverage.
+Provider total tokens are never inferred from components. Cached input and
+reasoning output are subsets. Corrected input, cached input, output and reasoning
+components are signed integers, including their `measuredTokens`/`exactTokens`
+values; provider total and cache-write tokens remain unsigned.
+
+Execution interval sums appear only as diagnostics and are not elapsed wall
+time. Rich `elapsedExecutionMs` measures the clipped union of captured execution
+intervals. `activeAgentMs` unions intervals per agent/thread before summing
+across agents. Total, attributed, unattributed, workstream and outcome groups
+each use their own operation set: overlapping group unions are never added or
+subtracted. Retired detail and missing endpoints contribute explicit unknowns.
+Observed zeros remain exact zero; empty observations remain unobserved.
+Request-to-delivery duration remains unknown without delivery lifecycle facts.
+
+Cost estimates retain pricing provenance; absent trusted rates remain unknown.
+Cost observation counts are distinct from unique request counts. Unknown
+request counts are null, not copied from observation counts. Optional actual
+billing is separate from API-equivalent estimates; retained pooled billing
+does not claim exactness when individual availability is no longer known.
 The API omits prompts, command arguments, tool output,
 credentials, raw repository paths/remotes, and operating-system process IDs.
 Storage errors return a fixed message without private paths.
@@ -114,18 +135,25 @@ Storage errors return a fixed message without private paths.
 Detail pages are opt-in, with zero as the default and at most 50 rows per page;
 the complete encoded response is limited to 2 MiB. A continuation supplies its
 cursor and `expectedSnapshot` equal to the prior `snapshot.sourceWatermark`.
-The producer retains at most four actual immutable readers for up to five
-seconds, including captured tail records and compatibility declarations. Global,
+The producer retains at most four rich views and sixteen headline views,
+including active reads and reservations. A successful response renews its view
+for five seconds; active reads cannot expire while producing a response. Global,
 account, repository, and thread queries can reuse the same `expectedSnapshot`
 while publication/capture continues. The journal watermark is preserved. An
-expired or evicted view fails explicitly and the caller starts a new query.
-Omitting `expectedSnapshot` opens a fresh view. Each view also caches up to eight
+expired view fails explicitly and the caller starts a new query. Full capacity
+returns retryable `snapshot_capacity_busy` rather than evicting a valid view.
+Omitting `expectedSnapshot` opens a fresh view. Each rich view caches up to eight
 identical scoped responses within an 8 MiB byte bound for warm IPC retries.
 An idle cache-owned expiry timer releases the file pins; it does not perform
 capture, reviews, or work scheduling. Continuations repeat scope/time filters.
+Headline and rich requests have independent bounded admission pools, so an
+expensive rich query cannot consume the headline slots. Identical in-flight
+requests share one source read.
 
 `workContextBindings` is an optional request array, bounded to 256 declarations
-and 256 distinct contexts. Every entry has this strict versioned shape:
+and 256 distinct contexts. Headlines validate declaration shape but defer
+identity resolution and return no binding evidence. Rich requests resolve the
+declarations below. Every entry has this strict versioned shape:
 
 ```json
 {"schemaVersion":1,"operationId":"recorded-operation-id","capturedAtMs":2000,"workContext":{"schemaVersion":1,"id":"C1","repositoryId":"coordinator-repo","nativeProjectId":"project-one","workstreamId":"stream-one","outcomeId":"outcome-one","threadId":"recorded-thread","turnId":"recorded-turn","experimentRef":"experiment-one@1"}}
