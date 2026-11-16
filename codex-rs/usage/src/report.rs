@@ -229,7 +229,7 @@ impl UsageReader {
         };
         let effort = json!({"operations": total_operations, "retryOperations": retry_operations, "reworkOperations": rework_operations,
             "providerTotalTokens": measurement, "activeAgentMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
-            "elapsedExecutionMs": {"measured":operation_counts["interval_sum_ms"],"exact":Value::Null,"unknown":unknown_intervals},
+            "elapsedExecutionMs": {"measured":0,"exact":Value::Null,"unknown":total_operations},
             "recordedWaitMs": {"measured":retries.wait_ms,"exact":Value::Null,"unknown":Value::Null}});
         let mut report = json!({
             "schemaVersion":1,"kind":"performanceReview", "window":{"fromAtMs":(start != i64::MIN).then_some(start),"toAtMs":(end != i64::MAX).then_some(end)},

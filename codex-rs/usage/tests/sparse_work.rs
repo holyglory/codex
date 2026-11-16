@@ -479,7 +479,7 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
     assert_eq!(
         totals(&report),
         json!({"bound":3,"unknown":2,"tokens":105,"attributed":35,"unattributed":70,
-        "intervals":{"measured":1002,"exact":null,"unknown":0}})
+        "intervals":{"measured":0,"exact":null,"unknown":3}})
     );
     let rows = report["outcomes"]["rows"]
         .as_array()
@@ -668,7 +668,7 @@ fn cross_partition_retry_keeps_the_original_assignment() -> codex_usage::Result<
             "effort":{"operations":2,"retryOperations":1,"reworkOperations":0,
                 "providerTotalTokens":{"measured":30,"exact":null,"unknown":0},
                 "activeAgentMs":{"measured":0,"exact":null,"unknown":2},
-                "elapsedExecutionMs":{"measured":2,"exact":null,"unknown":0},
+                "elapsedExecutionMs":{"measured":0,"exact":null,"unknown":2},
                 "recordedWaitMs":{"measured":0,"exact":null,"unknown":0}}}]})
     );
     Ok(())

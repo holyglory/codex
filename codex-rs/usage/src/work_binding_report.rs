@@ -188,8 +188,10 @@ pub(crate) fn apply_sparse_report(report: &mut Value, sparse: &[BoundWorkEffort]
         effort["providerTotalTokens"]["measured"] = json!(row.effort.provider_total_tokens);
         effort["providerTotalTokens"]["unknown"] = json!(row.effort.unknown_token_observations);
         effort["activeAgentMs"]["unknown"] = json!(row.effort.operations);
-        effort["elapsedExecutionMs"]["measured"] = json!(row.effort.execution_interval_sum_ms);
-        effort["elapsedExecutionMs"]["unknown"] = json!(row.effort.unknown_execution_intervals);
+        // Per-outcome interval sums can overlap one another and are not wall
+        // time. Keep elapsed outcome time unknown; report-level timing exposes
+        // the union of measured lifecycle intervals.
+        effort["elapsedExecutionMs"]["unknown"] = json!(row.effort.operations);
         effort["recordedWaitMs"]["measured"] = json!(row.effort.recorded_wait_ms);
         combine(&mut attributed, &effort, /*subtract*/ false)?;
         let group = groups
