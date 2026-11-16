@@ -65,8 +65,10 @@ impl UsageReader {
         if operation_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let connection =
-            crate::duckdb_connection::open_in_memory().map_err(crate::reader_query::query_error)?;
+        let connection = crate::duckdb_connection::open_read_in_memory(
+            crate::duckdb_connection::ReadBudget::Report,
+        )
+        .map_err(crate::reader_query::query_error)?;
         let descriptor =
             crate::review_projection::load_review_projection_shared(&self.root, &self.manifest)?;
         let mut operations = descriptor

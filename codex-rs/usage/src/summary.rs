@@ -10,6 +10,7 @@ use crate::ReviewCounts;
 use crate::TimeRange;
 use crate::UsageFilter;
 use crate::UsageReader;
+use crate::duckdb_connection::ReadBudget;
 use crate::reader_query::query_error;
 use crate::reader_query::quoted;
 use crate::report_query::ReportQuery;
@@ -174,7 +175,8 @@ impl UsageReader {
         }) {
             return Ok(counts);
         }
-        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_read_in_memory(ReadBudget::Report)
+            .map_err(query_error)?;
         let tail = canonical_tail(self, &connection)?;
         let ids = tail
             .iter()

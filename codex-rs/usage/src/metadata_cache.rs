@@ -69,12 +69,27 @@ struct Entry<T> {
 
 pub(crate) struct JsonCache<T> {
     entries: Mutex<VecDeque<Entry<T>>>,
+    max_entries: usize,
+    max_encoded_bytes: usize,
 }
 
 impl<T: DeserializeOwned> JsonCache<T> {
     pub const fn new() -> Self {
         Self {
             entries: Mutex::new(VecDeque::new()),
+            max_entries: MAX_ENTRIES,
+            max_encoded_bytes: MAX_ENCODED_BYTES,
+        }
+    }
+
+    /// Used only for the canonical manifest and review descriptor: one entry
+    /// each, at most 128 MiB encoded across those two caches. Caller-owned pins
+    /// have their separate lifetime and admission bounds.
+    pub const fn for_snapshot_metadata() -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            max_entries: 1,
+            max_encoded_bytes: 64 * 1024 * 1024,
         }
     }
 
@@ -107,7 +122,7 @@ impl<T: DeserializeOwned> JsonCache<T> {
                 "usage metadata changed while decoding".into(),
             ));
         }
-        if identity.bytes <= MAX_ENCODED_BYTES as u64
+        if identity.bytes <= self.max_encoded_bytes as u64
             && let Ok(mut entries) = self.entries.lock()
         {
             entries.retain(|entry| entry.path != path);
@@ -117,12 +132,12 @@ impl<T: DeserializeOwned> JsonCache<T> {
                 identity,
                 parsed: parsed.clone(),
             });
-            while entries.len() > MAX_ENTRIES
+            while entries.len() > self.max_entries
                 || entries
                     .iter()
                     .map(|entry| entry.encoded_bytes)
                     .sum::<usize>()
-                    > MAX_ENCODED_BYTES
+                    > self.max_encoded_bytes
             {
                 entries.pop_front();
             }
@@ -130,3 +145,7 @@ impl<T: DeserializeOwned> JsonCache<T> {
         Ok(parsed)
     }
 }
+
+#[cfg(test)]
+#[path = "metadata_cache_tests.rs"]
+mod tests;

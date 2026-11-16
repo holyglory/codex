@@ -13,6 +13,7 @@ use crate::UsageFilter;
 use crate::UsageReader;
 use crate::UsageRecord;
 use crate::UsageTotals;
+use crate::duckdb_connection::ReadBudget;
 
 pub(crate) const RECORD_COLUMNS: &[(&str, &str)] = &[
     ("id", "VARCHAR"),
@@ -81,7 +82,8 @@ impl SnapshotQuery {
         range: TimeRange,
         filter: &UsageFilter,
     ) -> Result<Self> {
-        let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+        let connection = crate::duckdb_connection::open_read_in_memory(ReadBudget::Report)
+            .map_err(query_error)?;
         let files = matching_files(&connection, reader, range, filter)?;
         Self::from_files(connection, reader, range, filter, &files)
     }

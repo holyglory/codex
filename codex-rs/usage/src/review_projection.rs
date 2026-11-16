@@ -635,7 +635,8 @@ struct OperationAddress {
     first_sequence: u64,
 }
 
-fn find_addresses(
+/// Resolve exact current addresses without decoding operation state or provenance.
+pub(crate) fn find_addresses(
     root: &Path,
     partitions: &BTreeMap<u64, ReviewPartition>,
     ids: Vec<String>,
@@ -779,7 +780,7 @@ pub(crate) fn load_review_operations(
 
 fn load_descriptor(root: &Path, file: &str) -> Result<std::sync::Arc<ReviewProjectionDescriptor>> {
     static CACHE: crate::metadata_cache::JsonCache<ReviewProjectionDescriptor> =
-        crate::metadata_cache::JsonCache::new();
+        crate::metadata_cache::JsonCache::for_snapshot_metadata();
     let path = segment_path(root, file)?;
     let descriptor = CACHE.load(&path)?.value;
     if descriptor.version != 1 || descriptor.complete_from_sequence == 0 {

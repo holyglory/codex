@@ -381,8 +381,10 @@ impl UsageReader {
             };
             if let Some(mut totals) = totals {
                 if !self.records.is_empty() {
-                    let connection = crate::duckdb_connection::open_in_memory()
-                        .map_err(crate::reader_query::query_error)?;
+                    let connection = crate::duckdb_connection::open_read_in_memory(
+                        crate::duckdb_connection::ReadBudget::Report,
+                    )
+                    .map_err(crate::reader_query::query_error)?;
                     for record in crate::report_query::canonical_tail(self, &connection)? {
                         if filter.matches(record) {
                             totals.add_assign(&record.totals());

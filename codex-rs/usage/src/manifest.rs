@@ -256,7 +256,7 @@ impl ManifestStore {
     /// Share parsed metadata with the long-lived reader/publisher process.
     pub(crate) fn load_shared(&self) -> Result<crate::metadata_cache::Parsed<UsageManifest>> {
         static CACHE: crate::metadata_cache::JsonCache<UsageManifest> =
-            crate::metadata_cache::JsonCache::new();
+            crate::metadata_cache::JsonCache::for_snapshot_metadata();
         match CACHE.load(&self.path) {
             Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(crate::metadata_cache::Parsed {

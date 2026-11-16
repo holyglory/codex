@@ -116,7 +116,9 @@ fn load_graph(root: &Path, file: Option<&str>) -> Result<BTreeMap<String, String
     };
     let path = lineage_path(root, file)?;
     storage_file::protect_existing(&path)?;
-    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+    let connection =
+        crate::duckdb_connection::open_read_in_memory(crate::duckdb_connection::ReadBudget::Report)
+            .map_err(query_error)?;
     let mut statement = connection.prepare(&format!("SELECT child_thread_id, parent_thread_id FROM read_parquet({}) ORDER BY child_thread_id, parent_thread_id", quoted(&path.to_string_lossy()))).map_err(query_error)?;
     let mut rows = statement.query([]).map_err(query_error)?;
     while let Some(row) = rows.next().map_err(query_error)? {
@@ -179,7 +181,9 @@ fn published_ids(
         .map(quoted)
         .collect::<Vec<_>>()
         .join(", ");
-    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+    let connection =
+        crate::duckdb_connection::open_read_in_memory(crate::duckdb_connection::ReadBudget::Report)
+            .map_err(query_error)?;
     let mut statement = connection
         .prepare(&format!(
             "SELECT DISTINCT id FROM read_parquet([{paths}]) WHERE id IN ({candidates})"

@@ -129,7 +129,9 @@ pub fn read_review_counts(
         ReviewCountScope::Repository(id) => ("repository", id.as_str()),
         ReviewCountScope::Thread(id) => ("thread", id.as_str()),
     };
-    let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
+    let connection =
+        crate::duckdb_connection::open_read_in_memory(crate::duckdb_connection::ReadBudget::Report)
+            .map_err(query_error)?;
     let source = parquet_source(root, std::slice::from_ref(file))?;
     let rows = query_rows::<CountsRow>(
         &connection,
