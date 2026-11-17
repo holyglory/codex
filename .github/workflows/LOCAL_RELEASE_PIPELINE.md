@@ -236,6 +236,9 @@ from the public registry.
   Do not hold a local compiler slot for hours merely to poll a remote build.
 - Preserve active jobs and completed target checkpoints. A failed platform does
   not require rebuilding successful platforms with unchanged inputs.
+- Native compiler output is streamed to Coordinator and retained in its stage
+  log. Stage records include elapsed time, exit code, and log byte count, so
+  Cargo lock messages and compilation progress remain observable during a run.
 - No guest bridge, broker installation, reboot, unrelated service restart, or
   foreign request acknowledgement is part of release compilation.
 
