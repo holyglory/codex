@@ -1,0 +1,42 @@
+schema = 2
+
+[test.multi12-rate-card]
+timeout_seconds = 7200
+[test.multi12-rate-card.env]
+PATH = "/home/holyglory/.cargo/bin:/home/holyglory/.local/bin:/usr/local/bin:/usr/bin:/bin"
+RUSTUP_TOOLCHAIN = "1.95.0"
+PYTHONDONTWRITEBYTECODE = "1"
+INSTA_UPDATE = "no"
+
+[[test.multi12-rate-card.check]]
+name = "usage-rate-card"
+tier = "release"
+timeout_seconds = 1800
+command = ["just", "--justfile", "justfile", "test", "-p", "codex-usage"]
+
+[[test.multi12-rate-card.check]]
+name = "responses-metadata-preservation"
+tier = "release"
+timeout_seconds = 1200
+command = ["just", "--justfile", "justfile", "test", "-p", "codex-api"]
+
+[[test.multi12-rate-card.check]]
+name = "core-cost-capture"
+tier = "release"
+timeout_seconds = 2400
+command = ["just", "--justfile", "justfile", "test", "-p", "codex-core", "-E", "test(usage_metadata_preserves_exact_billing_and_rate_card_provenance)"]
+
+[test.multi12-local-package]
+timeout_seconds = 9000
+[test.multi12-local-package.env]
+PATH = "/home/holyglory/.cargo/bin:/home/holyglory/.local/bin:/usr/local/bin:/usr/bin:/bin"
+RUSTUP_TOOLCHAIN = "1.95.0"
+CARGO_TARGET_DIR = "/mnt/build-storage/codex/multi12-release-target"
+MULTI12_SOURCE_COMMIT = "5979708fe4b86d4d1d8d63816c70b4dc9487e897"
+PYTHONDONTWRITEBYTECODE = "1"
+[[test.multi12-local-package.check]]
+name = "build-exact-local-package"
+tier = "release"
+timeout_seconds = 8400
+command = ["python3", "scripts/build_multi12_local_package.py"]
+retained_artifacts = [{name = "multi12-package-proof", path = "codex-rs/target/multi12-local", max_bytes = 1073741824}]
