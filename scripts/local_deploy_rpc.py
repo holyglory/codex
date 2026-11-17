@@ -15,6 +15,296 @@ import time
 from local_deploy_owner import save
 
 
+HEADLINE_READY_TIMEOUT = 15
+
+
+class RpcError(RuntimeError):
+    def __init__(self, method, error):
+        self.code = error.get("code")
+        self.data = error.get("data")
+        super().__init__(f"rpc-{method}-error-{self.code}")
+
+
+def integer(value, signed=False):
+    minimum, maximum = (-(2**63), 2**63 - 1) if signed else (0, 2**64 - 1)
+    return type(value) is int and minimum <= value <= maximum
+
+
+def measurement(value):
+    return (
+        isinstance(value, dict)
+        and integer(value.get("measured"))
+        and integer(value.get("unknown"))
+        and "exact" in value
+        and (
+            value["exact"] is None
+            or integer(value["exact"])
+            and value["exact"] == value["measured"]
+            and value["unknown"] == 0
+        )
+    )
+
+
+def headline_ready(rpc):
+    deadline = time.monotonic() + HEADLINE_READY_TIMEOUT
+    while True:
+        try:
+            return rpc.call("localUsage/summary", {"contractVersion": 1})
+        except RpcError as error:
+            if (
+                error.code != -32603
+                or not isinstance(error.data, dict)
+                or error.data.get("source") != "usage-v2"
+                or error.data.get("reason") != "token_headline_pending"
+                or error.data.get("retryable") is not True
+            ):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("usage-v2-token-headline-not-ready") from None
+            time.sleep(min(0.1, remaining))
+
+
+def valid_headline(summary):
+    if not isinstance(summary, dict):
+        return False
+    report = summary.get("report", {})
+    snapshot = summary.get("snapshot", {})
+    native = summary.get("summary", {})
+    if not all(isinstance(value, dict) for value in (report, snapshot, native)):
+        return False
+    coverage = report.get("coverage", {})
+    details = coverage.get("details", {}) if isinstance(coverage, dict) else {}
+    if (
+        not isinstance(coverage, dict)
+        or not isinstance(details, dict)
+        or summary.get("contractVersion") != 1
+        or type(summary["contractVersion"]) is not int
+        or summary.get("source") != "usage-v2"
+        or report.get("schemaVersion") != 1
+        or type(report["schemaVersion"]) is not int
+        or report.get("kind") != "usageSummary"
+        or report.get("databaseSchemaVersion") != 3
+        or type(report["databaseSchemaVersion"]) is not int
+        or report.get("projection") != "token_headline"
+        or native.get("projection") != "token_headline"
+        or report.get("scope") != {"type": "all", "id": None}
+        or "timeRange" not in report
+        or report["timeRange"] is not None
+        or "counts" not in report
+        or report["counts"] is not None
+        or "counts" not in native
+        or native["counts"] is not None
+        or any(
+            coverage.get(key) != "deferred"
+            for key in (
+                "counts",
+                "cost",
+                "timing",
+                "lifecycle",
+                "contextSize",
+                "workBindings",
+                "activity",
+            )
+        )
+        or details.get("basis") != "published_snapshot"
+        or details.get("exactAtPublishedWatermark") is not True
+        or any(
+            not integer(details.get(key))
+            for key in (
+                "tokenObservations",
+                "providerTotalUnknowns",
+                "cacheWriteUnknowns",
+                "missingTokenObservations",
+                "latestJournalWatermark",
+                "retiredObservations",
+                "unappliedRetentionRecords",
+                "unappliedRetentionCorrections",
+            )
+        )
+        or details.get("sourceFreshness") not in {"unknown", "fresh", "stale"}
+        or not isinstance(details.get("sourceSnapshotId"), str)
+        or not 1 <= len(details["sourceSnapshotId"]) <= 128
+        or re.fullmatch(r"[A-Za-z0-9_.:-]+", details["sourceSnapshotId"]) is None
+        or not integer(native.get("tokenObservations"))
+        or native["tokenObservations"] != details["tokenObservations"]
+        or any(
+            key not in summary or summary[key] is not None
+            for key in (
+                "review",
+                "observations",
+                "operations",
+                "nextRecordsCursor",
+                "nextOperationsCursor",
+                "contextSize",
+                "costProvenance",
+                "lifecycle",
+                "timing",
+            )
+        )
+        or summary.get("workContexts") != []
+        or summary.get("operationBindings") != []
+        or any(
+            key not in report or report[key] is not None
+            for key in (
+                "cost",
+                "timing",
+                "lifecycle",
+                "contextSize",
+                "workBindings",
+                "providerTokensByActivity",
+            )
+        )
+        or any(
+            not integer(snapshot.get(key))
+            for key in (
+                "generation",
+                "watermark",
+                "journalWatermark",
+                "generatedAt",
+                "watermarkAtMs",
+                "updatedAtMs",
+                "pendingEntries",
+                "pendingCorrections",
+            )
+        )
+        or not integer(summary.get("generatedAt"))
+        or snapshot["generatedAt"] > summary["generatedAt"]
+        or snapshot["watermark"] != snapshot["journalWatermark"]
+        or details["latestJournalWatermark"]
+        != snapshot["watermark"] + snapshot["pendingEntries"]
+        or snapshot.get("freshness") not in {"unknown", "fresh", "stale"}
+        or not isinstance(snapshot.get("sourceWatermark"), str)
+        or not 1 <= len(snapshot["sourceWatermark"]) <= 256
+        or re.fullmatch(
+            r"usage-v2:headline:[A-Za-z0-9_.:-]+:g\d+:w\d+", snapshot["sourceWatermark"]
+        )
+        is None
+        or not snapshot["sourceWatermark"].endswith(
+            f":g{snapshot['generation']}:w{snapshot['watermark']}"
+        )
+        or not snapshot["sourceWatermark"].startswith(
+            f"usage-v2:headline:{details['sourceSnapshotId']}-"
+        )
+    ):
+        return False
+    observations = native["tokenObservations"]
+    state = (
+        "partial"
+        if details["providerTotalUnknowns"] or details["missingTokenObservations"]
+        else "complete"
+        if observations
+        else "unobserved"
+    )
+    if (
+        coverage.get("state") != state
+        or coverage.get("hasGaps") is not (state != "complete")
+        or coverage.get("providerTotals")
+        != ("partial" if details["providerTotalUnknowns"] else "recorded")
+    ):
+        return False
+    categories = [
+        (
+            "total_tokens",
+            "providerTotalTokens",
+            False,
+            details["providerTotalUnknowns"],
+        ),
+        ("input_tokens", "inputTokens", True, 0),
+        ("input_tokens_details.cached_tokens", "cachedInputTokens", True, 0),
+        ("output_tokens", "outputTokens", True, 0),
+        ("output_tokens_details.reasoning_tokens", "reasoningOutputTokens", True, 0),
+        (
+            "cache_write_input_tokens",
+            "cacheWriteInputTokens",
+            False,
+            details["cacheWriteUnknowns"],
+        ),
+    ]
+    rows = report.get("providerTokens")
+    if not isinstance(rows, list) or len(rows) != len(categories):
+        return False
+    for row, (category, key, signed, unknown) in zip(rows, categories):
+        if (
+            not isinstance(row, dict)
+            or row.get("category") != category
+            or row.get("measurementProvenance") != "provider_reported"
+            or row.get("repositoryBucket") != "all"
+            or not integer(row.get("measuredTokens"), signed=signed)
+            or not integer(row.get("observationCount"))
+            or row["observationCount"] != observations
+            or not integer(row.get("unknownObservations"))
+            or row["unknownObservations"] != unknown
+            or unknown > observations
+            or "exactTokens" not in row
+            or row["exactTokens"] is not None
+            and not integer(row["exactTokens"], signed=signed)
+            or row["exactTokens"]
+            != (row["measuredTokens"] if observations and unknown == 0 else None)
+            or key not in native
+            or native[key] is not None
+            and not integer(native[key], signed=signed)
+            or native[key]
+            != (
+                row["measuredTokens"]
+                if signed or observations and unknown == 0
+                else None
+            )
+        ):
+            return False
+    return True
+
+
+def valid_cost(cost, model_requests=None, source=False):
+    if (
+        not isinstance(cost, dict)
+        or cost.get("status") not in {"complete", "partial", "unavailable"}
+        or cost.get("basis") != "api_equivalent"
+        or cost.get("currency") != "USD"
+        or any(
+            key not in cost or cost[key] is not None and not integer(cost[key])
+            for key in (
+                "model_requests",
+                "priced_requests",
+                "unknown_requests",
+                "priced_observations",
+                "unknown_observations",
+            )
+        )
+        or source
+        and (
+            cost["model_requests"] != model_requests
+            or any(
+                not integer(cost[key])
+                for key in ("priced_observations", "unknown_observations")
+            )
+        )
+        or "estimated_usd_micros" not in cost
+        or cost["estimated_usd_micros"] is not None
+        and not integer(cost["estimated_usd_micros"])
+        or any(
+            cost.get(key) is not None and not integer(cost[key], signed=True)
+            for key in (
+                "input_tokens",
+                "cached_input_tokens",
+                "uncached_input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+            )
+        )
+        or not isinstance(cost.get("unavailable_reasons"), dict)
+        or any(not integer(count) for count in cost["unavailable_reasons"].values())
+    ):
+        return False
+    if source and bool(cost["priced_observations"]) != (
+        cost["estimated_usd_micros"] is not None
+    ):
+        return False
+    return cost["estimated_usd_micros"] is None or cost.get(
+        "priced_observations", 0
+    ) not in (None, 0)
+
+
 def report_results(output):
     """Inspect bounded tool output in memory; retain only report-shape evidence."""
     found = set()
