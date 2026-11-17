@@ -11,6 +11,10 @@ use crate::tui::test_support::make_test_tui;
 use codex_state::SqliteConfig;
 use pretty_assertions::assert_eq;
 
+#[path = "permission_profile_confirmation_tests.rs"]
+mod permission_profile_confirmation;
+use permission_profile_confirmation::next_read_only_profile_settings;
+
 async fn confirm_permission_selection(
     app: &mut App,
     server: &mut AppServerSession,
@@ -762,17 +766,15 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
     }
     // Omitted custom-profile fields must preserve the preceding accepted choice,
     // even before either settings notification reaches the TUI.
-    app.select_permission_profile(
-        &mut server,
-        PermissionProfileSelection {
-            profile_id: ":read-only".into(),
-            ..selection.clone()
-        },
-    )
-    .await;
+    let read_only_selection = PermissionProfileSelection {
+        profile_id: ":read-only".into(),
+        ..selection.clone()
+    };
+    app.select_permission_profile(&mut server, read_only_selection.clone())
+        .await;
     // Drain without applying it: confirmation is still pending in the TUI, but
     // the server cannot coalesce both updates into one latest snapshot.
-    let _ = next_thread_settings_updated(&mut server, thread_id).await;
+    let _ = next_read_only_profile_settings(&mut server, thread_id, &read_only_selection).await;
     app.select_permission_profile(
         &mut server,
         PermissionProfileSelection {
@@ -808,7 +810,7 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
         ),
         (AskForApproval::OnRequest.to_core(), ApprovalsReviewer::User)
     );
-    let settings = next_thread_settings_updated(&mut server, thread_id).await;
+    let settings = next_read_only_profile_settings(&mut server, thread_id, &selection).await;
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::ThreadSettingsUpdated(settings),
