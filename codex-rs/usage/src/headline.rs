@@ -30,6 +30,7 @@ pub(crate) const METRICS: &[&str] = &[
     "cache_write_unknowns",
     "missing_observations",
 ];
+pub(crate) const DESCRIPTOR_VERSION: u32 = 2;
 
 /// Exact source prefix of an immutable, published-only token projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,7 +93,7 @@ pub(crate) fn descriptor(root: &Path) -> Result<Option<Descriptor>> {
         ));
     }
     let descriptor: Descriptor = serde_json::from_slice(&bytes)?;
-    if descriptor.version != 1 || !descriptor.data_file.starts_with("headline-") {
+    if descriptor.version != DESCRIPTOR_VERSION || !descriptor.data_file.starts_with("headline-") {
         return Err(StorageError::InvalidData(
             "invalid token headline descriptor".into(),
         ));

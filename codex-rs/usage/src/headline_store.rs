@@ -15,6 +15,7 @@ use duckdb::Connection;
 
 use crate::JournalCheckpoint;
 use crate::Result;
+use crate::StorageError;
 use crate::UsageHeadlineSnapshot;
 use crate::UsageManifest;
 use crate::headline::Descriptor;
@@ -80,7 +81,7 @@ impl UsageHeadlinePublisher {
         };
         let source_manifest_identity =
             crate::metadata_cache::Identity::from_metadata(&source.metadata()?);
-        if crate::headline::descriptor(&root)?
+        if previous_descriptor(&root)?
             .is_some_and(|d| d.source_manifest_identity == format!("{source_manifest_identity:?}"))
         {
             return Ok(None);
@@ -350,7 +351,15 @@ impl UsageHeadlinePublisher {
                 (SELECT * FROM exact UNION ALL SELECT * EXCLUDE(source_file) FROM rollups WHERE {meaningful}) \
              ORDER BY repository_id,first_at_ms"
         );
-        let id = stamp();
+        let manifest = &self.manifest;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let id = format!(
+            "g{}-w{}-{nonce}",
+            manifest.snapshot_generation, manifest.watermark
+        );
         let file = format!("headline-{id}.parquet");
         let target = crate::headline::data_path(&self.root, &file)?;
         connection
@@ -365,7 +374,6 @@ impl UsageHeadlinePublisher {
         connection
             .execute_batch("CHECKPOINT")
             .map_err(query_error)?;
-        let manifest = &self.manifest;
         let snapshot = UsageHeadlineSnapshot {
             snapshot_id: id.clone(),
             source_snapshot_generation: manifest.snapshot_generation,
@@ -392,7 +400,7 @@ impl UsageHeadlinePublisher {
         let temporary = self.root.join(format!("headline-{id}.tmp"));
         let mut output = storage_file::create_new(&temporary)?;
         output.write_all(&serde_json::to_vec(&Descriptor {
-            version: 1,
+            version: crate::headline::DESCRIPTOR_VERSION,
             data_file: file,
             source_manifest_identity: format!("{:?}", self.source_manifest_identity),
             snapshot,
@@ -417,7 +425,10 @@ fn reclaim_outputs(root: &Path) -> Result<()> {
         Err(TryLockError::WouldBlock) => return Ok(()),
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
-    let current = crate::headline::descriptor(root)?.map(|descriptor| descriptor.data_file);
+    // A malformed pointer admits no new readers. Existing cached readers still
+    // own individual pins, so collecting only unpinned outputs also permits
+    // repair when the bounded directory already contains sixteen outputs.
+    let current = previous_descriptor(root)?.map(|descriptor| descriptor.data_file);
     for entry in std::fs::read_dir(root.join("headline-segments"))? {
         let entry = entry?;
         let name = entry.file_name();
@@ -438,6 +449,22 @@ fn reclaim_outputs(root: &Path) -> Result<()> {
         std::fs::remove_file(pin_path)?;
     }
     Ok(())
+}
+
+fn previous_descriptor(root: &Path) -> Result<Option<Descriptor>> {
+    match crate::headline::descriptor(root) {
+        Ok(value) => Ok(value),
+        Err(
+            StorageError::Json(_)
+            | StorageError::InvalidData(_)
+            | StorageError::UnsupportedFormat(_),
+        ) => Ok(None),
+        Err(
+            error @ (StorageError::Io(_)
+            | StorageError::Columnar(_)
+            | StorageError::OperationIndexAtCapacity),
+        ) => Err(error),
+    }
 }
 
 fn stamp() -> String {

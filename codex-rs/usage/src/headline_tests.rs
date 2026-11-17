@@ -222,6 +222,18 @@ fn incremental_reconciliation_survives_interruption_and_preserves_pinned_publica
         .expect("reader")
         .expect("new publication");
     assert_ne!(current.snapshot().snapshot_id, old_id);
+    for snapshot in [old.snapshot(), current.snapshot()] {
+        let parts = snapshot.snapshot_id.split('-').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts[..2],
+            [
+                format!("g{}", snapshot.source_snapshot_generation),
+                format!("w{}", snapshot.source_watermark.sequence)
+            ]
+        );
+        assert!(parts[2].parse::<u128>().is_ok());
+    }
     let filter = UsageFilter::default().for_thread("parent");
     assert_eq!(
         old.totals(TimeRange::all(), &filter)
@@ -531,5 +543,64 @@ fn relocated_seed_reuses_indexed_facts_and_only_imports_new_canonical_files() {
             .expect("exact")
             .provider_total_tokens,
         Some(198)
+    );
+}
+
+#[test]
+fn headline_malformed_derived_descriptor_rebuilds_without_reimporting_or_changing_source() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    UsageJournal::new(root.join("events.jsonl"))
+        .append_record(observation("first", /*at_ms*/ 1_000, Some(97)))
+        .expect("capture");
+    publish(&root);
+    assert_eq!(index(&root), 1);
+    let pinned = UsageHeadlineReader::open_at(&root)
+        .expect("reader")
+        .expect("completed index");
+    let expected = pinned
+        .totals(TimeRange::all(), &UsageFilter::default())
+        .expect("known tokens");
+    let manifest = std::fs::read(root.join("manifest.json")).expect("canonical source");
+    std::fs::write(root.join("headline.json"), b"{malformed").expect("damaged derived descriptor");
+    assert!(UsageHeadlineReader::open_at(&root).is_err());
+    assert_eq!(index(&root), 0);
+    assert_eq!(
+        UsageHeadlineReader::open_at(&root)
+            .expect("repaired reader")
+            .expect("rebuilt index")
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("repaired tokens"),
+        expected
+    );
+    assert_eq!(
+        pinned
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("old pinned tokens"),
+        expected
+    );
+    assert_eq!(
+        std::fs::read(root.join("manifest.json")).expect("canonical source unchanged"),
+        manifest
+    );
+    let mut retired: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("headline.json")).expect("current descriptor"),
+    )
+    .expect("descriptor");
+    retired["version"] = serde_json::json!(1);
+    std::fs::write(
+        root.join("headline.json"),
+        serde_json::to_vec(&retired).expect("retired derived format"),
+    )
+    .expect("retired derived descriptor");
+    assert!(UsageHeadlineReader::open_at(&root).is_err());
+    assert_eq!(index(&root), 0);
+    assert_eq!(
+        UsageHeadlineReader::open_at(&root)
+            .expect("current-format reader")
+            .expect("republished")
+            .totals(TimeRange::all(), &UsageFilter::default())
+            .expect("same facts"),
+        expected
     );
 }

@@ -92,6 +92,27 @@ fn compacted_runs_preserve_public_reports_pinned_prefixes_and_retired_source_sel
         16
     );
     assert!(compact_one(&root)?);
+    let new_outputs = retained_files(&root)?;
+    assert!(!new_outputs.is_empty());
+    for file in &new_outputs {
+        // The serving previous collector does not read the optional index; it
+        // would remove every unreferenced output in one of these namespaces.
+        if [
+            "segment-",
+            "correction-",
+            "membership-",
+            "lineage-",
+            "record-id-",
+            "review-",
+            "rollup-",
+        ]
+        .iter()
+        .any(|prefix| file.starts_with(prefix))
+        {
+            std::fs::remove_file(segment_path(&root, file)?)?;
+        }
+        assert!(segment_path(&root, file)?.is_file());
+    }
     assert_eq!(
         std::fs::read(root.join("manifest.json"))?,
         canonical_manifest
@@ -179,7 +200,12 @@ fn compacted_runs_preserve_public_reports_pinned_prefixes_and_retired_source_sel
     );
     drop(restarted);
     drop(pinned);
+    let orphan = root
+        .join("segments")
+        .join("analytics-review-orphan.parquet");
+    std::fs::write(&orphan, b"unpublished derived candidate")?;
     crate::reclamation::reclaim(&root)?;
+    assert!(!orphan.exists());
     for file in old_outputs {
         assert!(!segment_path(&root, &file)?.exists());
     }
@@ -188,6 +214,25 @@ fn compacted_runs_preserve_public_reports_pinned_prefixes_and_retired_source_sel
     }
     // Unusable optional metadata and changed output files fall back to originals.
     let saved_index = std::fs::read(root.join(INDEX))?;
+    let mut retired: serde_json::Value = serde_json::from_slice(&saved_index)?;
+    retired["version"] = json!(1);
+    std::fs::write(root.join(INDEX), serde_json::to_vec(&retired)?)?;
+    assert!(load(&root).is_err());
+    assert!(!has_index(&root));
+    assert!(selection(&root, &descriptor, TimeRange::all()).is_none());
+    assert_eq!(
+        UsageReader::open_at(&root)?.performance_review(TimeRange::all(), &filter)?,
+        before
+    );
+    assert!(compact_one(&root)?);
+    assert_eq!(
+        load(&root)?.expect("normal current-format rebuild").version,
+        INDEX_VERSION
+    );
+    assert_eq!(
+        UsageReader::open_at(&root)?.performance_review(TimeRange::all(), &filter)?,
+        before
+    );
     std::fs::write(root.join(INDEX), b"invalid derived index")?;
     assert!(selection(&root, &descriptor, TimeRange::all()).is_none());
     assert_eq!(
@@ -337,7 +382,7 @@ fn oversized_prefix_admission_advances_after_restart_with_bounded_footer_reads()
             }
         };
         let mut index = Index {
-            version: 1,
+            version: INDEX_VERSION,
             runs: Vec::new(),
             unmergeable_sources: BTreeSet::new(),
         };

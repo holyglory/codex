@@ -29,6 +29,9 @@ use crate::review_storage::segment_path;
 use crate::storage_file;
 
 const INDEX: &str = "review-compaction.json";
+const INDEX_VERSION: u32 = 2;
+const DATA_PREFIX: &str = "analytics-review-compacted-";
+const MEMBERSHIP_PREFIX: &str = "analytics-review-compacted-membership-";
 const MAX_INPUT_FILES: usize = 128;
 const INGEST_BATCH_FILES: usize = 32;
 const MIN_FRAGMENTS: usize = 16;
@@ -72,11 +75,9 @@ impl Run {
         if self.sources.is_empty()
             || self.sources.len() > MAX_SOURCES
             || self.sources.windows(2).any(|pair| pair[0] >= pair[1])
-            || !self.data_file.starts_with("review-compacted-")
-            || self.data_file.starts_with("review-compacted-membership-")
-            || !self
-                .membership_file
-                .starts_with("review-compacted-membership-")
+            || !self.data_file.starts_with(DATA_PREFIX)
+            || self.data_file.starts_with(MEMBERSHIP_PREFIX)
+            || !self.membership_file.starts_with(MEMBERSHIP_PREFIX)
             || self.rows == 0
             || self.rows > MAX_ROWS
             || self.data_bytes > MAX_BYTES
@@ -138,7 +139,7 @@ fn load(root: &Path) -> Result<Option<Arc<Index>>> {
         Err(error) => return Err(error.into()),
     }
     let index = CACHE.load(&path)?.value;
-    if index.version != 1 {
+    if index.version != INDEX_VERSION {
         return Err(invalid("invalid review compaction index"));
     }
     Ok(Some(index))
@@ -361,7 +362,7 @@ pub fn compact_one(root: &Path) -> Result<bool> {
         .collect::<Canonical<'_>>();
     let mut index = load(root).ok().flatten().map_or(
         Index {
-            version: 1,
+            version: INDEX_VERSION,
             runs: Vec::new(),
             unmergeable_sources: BTreeSet::new(),
         },
@@ -453,8 +454,10 @@ pub fn compact_one(root: &Path) -> Result<bool> {
         return Ok(true);
     }
     let stamp = stamp()?;
-    let data_file = format!("review-compacted-{stamp}.parquet");
-    let membership_file = format!("review-compacted-membership-{stamp}.parquet");
+    // The serving older collector owns `review-*` files but cannot know this
+    // optional index. Keep new derived outputs outside its reclamation families.
+    let data_file = format!("{DATA_PREFIX}{stamp}.parquet");
+    let membership_file = format!("{MEMBERSHIP_PREFIX}{stamp}.parquet");
     let connection = crate::duckdb_connection::open_in_memory().map_err(query_error)?;
     connection
         .execute_batch("SET threads=1; SET memory_limit='128MB'; SET max_temp_directory_size='0B'")

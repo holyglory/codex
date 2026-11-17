@@ -107,6 +107,7 @@ impl ReclamationPlan {
                     "record-id-",
                     "review-",
                     "rollup-",
+                    "analytics-review-",
                 ]
                 .iter()
                 .any(|prefix| name.starts_with(prefix))
