@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 import local_native_release as driver
@@ -12,8 +13,6 @@ from local_native_artifacts import inventory, rust_version
 
 def compile_target(args):
     from prepare_local_musl import prepare
-    from codex_package.symbols import strip_binary
-    from codex_package.targets import TARGET_SPECS
 
     root, output = (args.source_root.resolve(), args.output.resolve())
     source = driver.source_identity(root, args.commit)
@@ -41,6 +40,7 @@ def compile_target(args):
         "RUSTUP_TOOLCHAIN": rust_version(root),
         "CARGO_TARGET_DIR": str(args.cargo_target_dir),
         "INSTA_UPDATE": "no",
+        "CODEX_REPO_ROOT": str(root),
     }
     driver.require(
         subprocess.check_output(
@@ -83,7 +83,23 @@ def compile_target(args):
         ],
     )
     release = args.cargo_target_dir / args.target / "release"
-    strip_binary(release / "bwrap", TARGET_SPECS[args.target], tool=args.strip_tool)
+    # The upstream helper requires CODEX_REPO_ROOT at import time. Execute it
+    # with the product checkout's package metadata and an isolated environment.
+    runner.run(
+        "strip-bwrap",
+        [
+            sys.executable,
+            "-c",
+            "import os,sys; from pathlib import Path; "
+            "sys.path.insert(0, os.path.join(os.environ['CODEX_REPO_ROOT'], 'scripts')); "
+            "from codex_package.symbols import strip_binary; "
+            "from codex_package.targets import TARGET_SPECS; "
+            "strip_binary(Path(sys.argv[1]), TARGET_SPECS[sys.argv[2]], tool=sys.argv[3] or None)",
+            str(release / "bwrap"),
+            args.target,
+            args.strip_tool or "",
+        ],
+    )
     bwrap = driver.file_info(release / "bwrap")
     environment["CODEX_BWRAP_SHA256"] = bwrap["sha256"]
     runner.run(
