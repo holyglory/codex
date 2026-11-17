@@ -20,7 +20,6 @@ use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
-use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -114,26 +113,7 @@ async fn critical_path_follows_runtime_admission(
     extensions.tool_contributor(Arc::new(gate.clone()));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
-        // Handler overlap alone does not prove tools outlast the response stream.
-        // Defer dispatch until sampling ends so the held interval is on the tool path.
-        .with_pre_build_hook(|home| {
-            std::fs::write(
-                home.join("hooks.json"),
-                serde_json::json!({
-                    "hooks": {
-                        "PostModelRequest": [{"hooks": [{
-                            "type": "command",
-                            "command": "exit 0",
-                            "async": false,
-                        }]}],
-                    },
-                })
-                .to_string(),
-            )
-            .expect("write synchronous post-request hook");
-        })
         .with_config(move |config| {
-            trust_discovered_hooks(config);
             if critical_path_timing {
                 config
                     .features
@@ -173,6 +153,23 @@ async fn critical_path_follows_runtime_admission(
         ]),
     )
     .await;
+    if critical_path_timing && !matches!(admission, Admission::Unsupported) {
+        // An unresolved batch has an unknown tail only after sampling ends.
+        // Keep the handlers gated until then so a tool is the last dependency.
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+            loop {
+                let probe_start = Instant::now();
+                tokio::task::yield_now().await;
+                let probe_end = Instant::now();
+                if observe(probe_start, probe_end)
+                    .is_some_and(|[_, _, _, _, unknown]| unknown > Duration::ZERO)
+                {
+                    break;
+                }
+            }
+        })
+        .await?;
+    }
     let (second_start, held_start, held_end) = if matches!(admission, Admission::Parallel) {
         let (second_id, second_start) = entries.recv().await.expect("second overlapping tool");
         assert_ne!(first_id, second_id);
