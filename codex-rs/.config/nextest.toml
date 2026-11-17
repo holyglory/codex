@@ -6,6 +6,26 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 retries = 1
 
 [[profile.default.overrides]]
+# These fixtures share OAuth callback ports 1455/1457. nextest runs each case
+# in a separate process, so #[serial(login_port)] cannot serialize them.
+# Keep this exact family before broader app-server group overrides.
+filter = '''
+    (package(codex-app-server) & binary(=all) & (
+        test(=suite::v2::account::login_account_chatgpt_start_can_be_cancelled) |
+        test(=suite::v2::account::login_account_chatgpt_uses_oauth_overrides) |
+        test(=suite::v2::account::login_account_chatgpt_redirects_to_hosted_success_page) |
+        test(=suite::v2::account::set_auth_token_cancels_active_chatgpt_login) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_query_param) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_allowlist_query_param) |
+        test(=suite::v2::account_profiles::account_profile_chatgpt_login_can_be_cancelled) |
+        test(=suite::v2::account_system_proxy::browser_login_bootstraps_through_system_proxy)
+    )) |
+    (package(codex-login) & binary(=all) &
+        test(=suite::login_server_e2e::falls_back_to_registered_fallback_port_when_default_port_is_in_use))
+'''
+test-group = 'browser_login_callback_ports'
+
+[[profile.default.overrides]]
 # These cases cold-start a daemon before confirming a second launch with new settings.
 filter = 'package(codex-cli) & binary(daemon_startup) & test(requires_confirmation_to_disable_)'
 slow-timeout = { period = "1m", terminate-after = 2 }
@@ -29,6 +49,26 @@ path = "junit.xml"
 inherits = "default"
 
 [[profile.local.overrides]]
+# These fixtures share OAuth callback ports 1455/1457. nextest runs each case
+# in a separate process, so #[serial(login_port)] cannot serialize them.
+# Keep this exact family before broader app-server group overrides.
+filter = '''
+    (package(codex-app-server) & binary(=all) & (
+        test(=suite::v2::account::login_account_chatgpt_start_can_be_cancelled) |
+        test(=suite::v2::account::login_account_chatgpt_uses_oauth_overrides) |
+        test(=suite::v2::account::login_account_chatgpt_redirects_to_hosted_success_page) |
+        test(=suite::v2::account::set_auth_token_cancels_active_chatgpt_login) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_query_param) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_allowlist_query_param) |
+        test(=suite::v2::account_profiles::account_profile_chatgpt_login_can_be_cancelled) |
+        test(=suite::v2::account_system_proxy::browser_login_bootstraps_through_system_proxy)
+    )) |
+    (package(codex-login) & binary(=all) &
+        test(=suite::login_server_e2e::falls_back_to_registered_fallback_port_when_default_port_is_in_use))
+'''
+test-group = 'browser_login_callback_ports'
+
+[[profile.local.overrides]]
 # Large local payload/image cases and MCP matrices compete in full-workspace runs.
 # The parallel-tool case measures a 300ms handler pair within a 1600ms turn.
 # Reserve this runner before launch; retain fixture sizes, assertions and deadlines.
@@ -45,6 +85,9 @@ filter = '''
     )
 '''
 threads-required = "num-test-threads"
+
+[test-groups.browser_login_callback_ports]
+max-threads = 1
 
 [test-groups.app_server_protocol_codegen]
 max-threads = 1
