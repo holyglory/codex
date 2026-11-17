@@ -30,6 +30,18 @@ PACKAGING_PATHS = frozenset(
         "scripts/test_npm_release.py",
         "scripts/hosted_native_handoff.py",
         "scripts/test_hosted_native_handoff.py",
+        "scripts/local_native_release.py",
+        "scripts/local_native_artifacts.py",
+        "scripts/local_native_compile.py",
+        "scripts/local_native_transport.py",
+        "scripts/local_release_tar.py",
+        "scripts/test_local_native_release.py",
+        "scripts/prepare_local_musl.py",
+        "scripts/test_prepare_local_musl.py",
+        "scripts/local_npm_release.py",
+        "scripts/local_npm_transport.py",
+        "scripts/test_local_npm_release.py",
+        "scripts/test_local_npm_transport.py",
         "scripts/package_native_release.py",
         "scripts/account_cli_compat/captured_credits.py",
         "scripts/local_deploy_owner.py",
@@ -46,6 +58,10 @@ PACKAGING_PATHS = frozenset(
         ".github/workflows/downstream-candidate.yml",
         ".github/workflows/downstream-unix-native-target.yml",
         ".github/workflows/downstream-npm-publish.yml",
+        ".github/workflows/downstream-prebuilt-native.yml",
+        ".github/workflows/downstream-local-npm.yml",
+        ".github/workflows/LOCAL_RELEASE_PIPELINE.md",
+        ".github/workflows/README.md",
         ".github/workflows/trusted-windows-native.yml",
         ".github/scripts/downstream-windows-native.ps1",
         ".github/scripts/test_run_bazel_with_buildbuddy.py",
@@ -213,6 +229,17 @@ def _extract_yaml_job(workflow: str, name: str) -> str:
     return match.group(0)
 
 
+def _hosted_workflow_recipe(workflow: str) -> str:
+    # The new default routes work to local inputs. Its explicit hosted fallback
+    # changes admission only; the selected native recipe must still match.
+    return re.sub(
+        r"^(    if: )inputs\.pipeline_mode == 'hosted-build' && ",
+        r"\1",
+        workflow,
+        flags=re.MULTILINE,
+    )
+
+
 def _verify_v8_recipe(producer: str, packaging: str) -> None:
     scripts = [
         git("show", f"{commit}:.github/scripts/downstream-unix-native.sh")
@@ -245,7 +272,9 @@ def _verify_v8_recipe(producer: str, packaging: str) -> None:
         )
 
     candidate_workflows = [
-        git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        _hosted_workflow_recipe(
+            git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        )
         for commit in (producer, packaging)
     ]
     native_jobs = []
@@ -402,9 +431,9 @@ def verify_hosted_native_source(
                 f"Hosted native recipe changed after its producer run: {path}"
             )
     workflows = [
-        git("show", f"{commit}:.github/workflows/downstream-candidate.yml").replace(
-            " && inputs.hosted_native_runs == ''", ""
-        )
+        _hosted_workflow_recipe(
+            git("show", f"{commit}:.github/workflows/downstream-candidate.yml")
+        ).replace(" && inputs.hosted_native_runs == ''", "")
         for commit in (producer, packaging)
     ]
     if target is not None:
