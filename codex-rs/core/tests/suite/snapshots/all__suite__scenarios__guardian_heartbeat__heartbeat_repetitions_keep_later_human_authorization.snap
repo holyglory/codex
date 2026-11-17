@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_heartbeat.rs
+assertion_line: 147
 expression: snapshot
 ---
 Scenario: Three scheduled runs share one instruction body, a human overrides its restriction between runs, and the last scheduled run steers the active human turn. Guardian reviews the later action with the override intact. The assessment is mocked.
@@ -10,8 +11,9 @@ Scenario: Three scheduled runs share one instruction body, a human overrides its
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     <heartbeat>
       <automation_id>monitor</automation_id>
@@ -175,8 +177,9 @@ Scenario: Three scheduled runs share one instruction body, a human overrides its
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     <heartbeat>
       <automation_id>monitor</automation_id>

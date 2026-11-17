@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
+assertion_line: 138
 expression: "context_snapshot::format_request_history_snapshot(\"Request 1 starts the parent thread. Request 2 is the prediction child's only turn. Request 3 continues the original parent and verifies that it still has its MCP tools.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Request 1 starts the parent thread. Request 2 is the prediction child's only turn. Request 3 continues the original parent and verifies that it still has its MCP tools.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=977001f0c185d61e):
-        - namespace/functions; hash=8ca4129e68aee972
+00:additional_tools/developer (1; hash=d4927bfc209869fb):
+        - namespace/functions; hash=5edc92bd82c638c1
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -25,8 +26,9 @@ Settings:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Start with the echo service.
 -- request 2 (turn) --
@@ -40,8 +42,8 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 05)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (1; hash=977001f0c185d61e):
-        - namespace/functions; hash=8ca4129e68aee972
+00:additional_tools/developer (1; hash=d4927bfc209869fb):
+        - namespace/functions; hash=5edc92bd82c638c1
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -49,8 +51,9 @@ Settings: same as window 1
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Start with the echo service.
 05:message/user:

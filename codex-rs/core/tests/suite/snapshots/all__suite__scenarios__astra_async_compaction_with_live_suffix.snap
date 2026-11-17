@@ -1,13 +1,14 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 3541
 expression: "context_snapshot::format_context_snapshot(\"Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -30,8 +31,9 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
     <MULTI_AGENT_ROLE>
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Draft the launch notes.
 07:configuration_update:reasoning={"effort":"low"}
@@ -42,8 +44,8 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 2 (after request 2: input diverged at item 09)
 -- request 3 (request) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -66,8 +68,9 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
     <MULTI_AGENT_ROLE>
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Draft the launch notes.
 07:configuration_update:reasoning={"effort":"low"}
@@ -80,8 +83,8 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 3 (after request 3: input diverged at item 02)
 -- request 4 (request) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input

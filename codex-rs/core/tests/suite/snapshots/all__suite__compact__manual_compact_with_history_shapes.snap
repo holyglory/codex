@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/compact.rs
+assertion_line: 4711
 expression: "format_history_snapshot(\"Manual /compact with prior user history compacts existing history and the follow-up turn includes the compact summary plus new user message.\",\n&requests)"
 ---
 Scenario: Manual /compact with prior user history compacts existing history and the follow-up turn includes the compact summary plus new user message.
@@ -10,8 +11,9 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     first manual turn
 
@@ -21,8 +23,9 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     first manual turn
 04:message/assistant:
@@ -30,7 +33,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
 05:message/user:
     <SUMMARIZATION_PROMPT>
 
-## Window 3 (after request 2: input diverged at item 04, settings changed (parallel_tool_calls, tools))
+## Window 3 (after request 2: input diverged at item 02, settings changed (parallel_tool_calls, tools))
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_mxc.rs
+assertion_line: 57
 expression: "context_snapshot::format_request_history_snapshot(\"Resolved local MXC selection preserves workspace-write permissions in a real agent turn.\",\n&mock.requests(), &ContextSnapshotOptions::default(),)"
 ---
 Scenario: Resolved local MXC selection preserves workspace-write permissions in a real agent turn.
@@ -42,13 +43,17 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
     - ["cargo", "test"]
      The writable root is `<WORKSPACE_ROOT 1>`.
     </permissions instructions>
-02:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><WORKSPACE_ROOT 1></root></workspace_roots><permission_profile type...ntry></file_system></permission_profile></filesystem> [hash=e9b73aecc0d54647]
-    </environment_context>
+02:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><WORKSPACE_ROOT 1></root></workspace_roots><permission_profile type...ntry></file_system></permission_profile></filesystem> [hash=e9b73aecc0d54647]
+        </environment_context>
 03:message/user:
     Inspect the sandbox.

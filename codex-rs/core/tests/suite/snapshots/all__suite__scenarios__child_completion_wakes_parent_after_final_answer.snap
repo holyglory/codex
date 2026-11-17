@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 1728
 expression: "format!(\"{history}\\n\\nWoken parent mailbox:\\n{}\",\nserde_json::to_string_pretty(&mailbox)?,)"
 ---
 Scenario: The parent finishes at medium reasoning without persistent mode. A real child then completes its release check and wakes a new parent turn. Complete model streams are grouped as parent, then worker.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=e15df4fb2e1443d0):
-        - namespace/functions; hash=e8fe99fe67646b2e
+00:additional_tools/developer (3; hash=8d07c7c3beea4029):
+        - namespace/functions; hash=3047cd811445b7ff
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -41,21 +42,23 @@ Settings:
 04:message/developer:
     <MULTI_AGENT_MODE>
 05:message/user:
+    <USAGE_WORK_BOUNDARY>
+06:message/user:
     Ask a worker to check the release, then finish your turn.
-06:configuration_update:reasoning={"effort":"medium"}
+07:configuration_update:reasoning={"effort":"medium"}
 -- request 2 (turn) --
-07:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Check whether the release is ready.","task_name":"worker"}
-08:function_call_output:{"task_name":"/root/worker"}
+08:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Check whether the release is ready.","task_name":"worker"}
+09:function_call_output:{"task_name":"/root/worker"}
 -- request 3 (turn) --
-09:message/assistant:
+10:message/assistant:
     I have delegated the release check.
-10:agent_message
+11:agent_message
 
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=2e495402d4e717bb):
-        - namespace/functions; hash=d846d786d91c4335
+00:additional_tools/developer (3; hash=0093f71b68e398ae):
+        - namespace/functions; hash=bc0f27aee0c6aae0
           - custom/exec
           - function/wait
           - function/request_user_input

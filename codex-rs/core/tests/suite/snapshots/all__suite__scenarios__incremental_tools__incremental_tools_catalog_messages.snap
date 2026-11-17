@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
+assertion_line: 602
 expression: "context_snapshot::format_request_history_snapshot(scenario, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Catalog overrides supply the update hint, both removal headers, and namespace instructions notices. MCP refreshes remove and restore tools, then change and clear only the namespace instructions. Runtime instructions remain verbatim, and unchanged turns do not repeat notices.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=8cdef36e46a2f4c1):
-        - namespace/functions; hash=db9f19fc7e13866a
+00:additional_tools/developer (3; hash=d250b10864726a9b):
+        - namespace/functions; hash=b9fe7fafe3df81fc
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
@@ -27,6 +28,7 @@ Settings:
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - custom/apply_patch
           - function/view_image
@@ -43,8 +45,9 @@ Settings:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Begin with the echo service.
 -- request 2 (turn) --

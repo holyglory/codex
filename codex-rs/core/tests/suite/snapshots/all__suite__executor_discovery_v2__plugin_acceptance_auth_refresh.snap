@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/executor_discovery_v2.rs
+assertion_line: 1210
 expression: "context_snapshot::format_context_snapshot(\"Mid-turn auth refresh preserves skill context and executor access. Revoking the plugin removes cloud skill instructions and denies executor reads.\",\n&bodies.iter().map(context_snapshot::SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Mid-turn auth refresh preserves skill context and executor access. Revoking the plugin removes cloud skill instructions and denies executor reads.
@@ -13,8 +14,9 @@ Scenario: Mid-turn auth refresh preserves skill context and executor access. Rev
     [02] <APPS_INSTRUCTIONS>
     [03] <PLUGINS_INSTRUCTIONS>
     [04] <SKILLS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Inspect the accepted plugin skill.
 -- request 2 (request) --

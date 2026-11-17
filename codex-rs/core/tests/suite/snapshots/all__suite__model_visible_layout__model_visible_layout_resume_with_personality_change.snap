@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/model_visible_layout.rs
+assertion_line: 601
 expression: "format_labeled_requests_snapshot(\"First post-resume turn where resumed config model differs from rollout and personality changes.\",\n&[(\"Last Request Before Resume\", &initial_request),\n(\"First Request After Resume\", &resumed_request),])"
 ---
 Scenario: First post-resume turn where resumed config model differs from rollout and personality changes.
@@ -11,8 +12,9 @@ Scenario: First post-resume turn where resumed config model differs from rollout
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     seed resume history
 
@@ -23,8 +25,9 @@ Scenario: First post-resume turn where resumed config model differs from rollout
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     seed resume history
 04:message/assistant:
@@ -36,4 +39,6 @@ Scenario: First post-resume turn where resumed config model differs from rollout
 07:message/user:
     <ENVIRONMENT_CONTEXT>
 08:message/user:
+    <USAGE_WORK_BOUNDARY>
+09:message/user:
     resume and change personality

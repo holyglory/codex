@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_orchestrator_connector.rs
-assertion_line: 171
+assertion_line: 179
 expression: "context_snapshot::normalize_json_lines(&snapshot)"
 ---
 Scenario: Guardian reviews a host-owned orchestrator connector, then the parent uses its calendar tool and continues.
@@ -12,8 +12,9 @@ Scenario: Guardian reviews a host-owned orchestrator connector, then the parent 
 01:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <APPS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     List today's calendar events.
 
@@ -157,8 +158,9 @@ Scenario: Guardian reviews a host-owned orchestrator connector, then the parent 
 01:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <APPS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     List today's calendar events.
 04:function_call/mcp__codex_apps__calendar._list_events:{"query":"today"}

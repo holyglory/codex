@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/compact.rs
+assertion_line: 5710
 expression: "format_history_snapshot(\"Pre-turn auto-compaction uses the prior context without the incoming user message; the follow-up carries the cwd override, image, and text.\",\n&requests)"
 ---
 Scenario: Pre-turn auto-compaction uses the prior context without the incoming user message; the follow-up carries the cwd override, image, and text.
@@ -10,8 +11,9 @@ Scenario: Pre-turn auto-compaction uses the prior context without the incoming u
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     USER_ONE
 -- request 2 (turn) --
@@ -26,8 +28,9 @@ Scenario: Pre-turn auto-compaction uses the prior context without the incoming u
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     USER_ONE
 04:message/assistant:

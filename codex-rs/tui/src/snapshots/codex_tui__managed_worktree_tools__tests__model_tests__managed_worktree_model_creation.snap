@@ -1,5 +1,6 @@
 ---
 source: tui/src/managed_worktree_model_tests.rs
+assertion_line: 249
 expression: "context_snapshot::format_context_snapshot(\"Model request history for creating, polling and listing a task-attached checkout through MCP, without a separate creation confirmation. Separate assertions verify retained cwd/environment roots, not sandbox enforcement.\",\n&entries,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Model request history for creating, polling and listing a task-attached checkout through MCP, without a separate creation confirmation. Separate assertions verify retained cwd/environment roots, not sandbox enforcement.
@@ -41,8 +42,9 @@ Settings:
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Run create_worktree.
 -- request 2 (request) --

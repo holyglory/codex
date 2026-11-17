@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_skill_catalog_dedup.rs
+assertion_line: 465
 expression: "context_snapshot::format_request_history_snapshot(\"Skill additions and edits share the remaining metadata budget across turns and resume. Removals stay silent and do not refund budget. Compaction rebuilds the current catalog and resets the allowance.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Skill additions and edits share the remaining metadata budget across turns and resume. Removals stay silent and do not refund budget. Compaction rebuilds the current catalog and resets the allowance.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -107,14 +108,18 @@ Settings:
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d... so, set `fork_turns` to `"none"`.</multi_agent_role> [hash=d5928243dc643bcc]
 04:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
-05:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
-    </environment_context>
+05:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
+        </environment_context>
 06:message/user:
     Inspect the available skills.
 07:configuration_update:reasoning={"effort":"low"}
@@ -152,16 +157,21 @@ Settings:
       <filesystem><workspace_roots><root><CWD 2></root></workspace_roots><permission_profile type="disabled"...e="unrestricted" /></permission_profile></filesystem> [hash=46e2a5c52f0891de]
     </environment_context>
 15:message/user:
+    <usage_work_boundary>
+    A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+    Options: continue, select, new, clear, unknown.
+    </usage_work_boundary>
+16:message/user:
     Resume with the same skills.
-16:configuration_update:reasoning={"effort":"low"}
+17:configuration_update:reasoning={"effort":"low"}
 -- request 7 (compaction) --
-17:compaction_trigger
+18:compaction_trigger
 
 ## Window 2 (after request 7: input diverged at item 02)
 Settings: same as window 1
 -- request 8 (turn) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -284,19 +294,24 @@ Settings: same as window 1
       <filesystem><workspace_roots><root><CWD 3></root></workspace_roots><permission_profile type="disabled"...e="unrestricted" /></permission_profile></filesystem> [hash=84b040355e543755]
     </environment_context>
 15:message/user:
+    <usage_work_boundary>
+    A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+    Options: continue, select, new, clear, unknown.
+    </usage_work_boundary>
+16:message/user:
     Continue with a smaller skills list budget.
-16:configuration_update:reasoning={"effort":"low"}
+17:configuration_update:reasoning={"effort":"low"}
 -- request 10 (turn) --
-17:message/user:
+18:message/user:
     Check the translation skill.
 -- request 11 (compaction) --
-18:compaction_trigger
+19:compaction_trigger
 
 ## Window 3 (after request 11: input diverged at item 07)
 Settings: same as window 1
 -- request 12 (turn) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -436,8 +451,8 @@ Settings: same as window 1
 ## Window 4 (after request 18: input diverged at item 10)
 Settings: same as window 1
 -- request 19 (turn) --
-00:additional_tools/developer (3; hash=796de269839242ec):
-        - namespace/functions; hash=f9395677ea925eda
+00:additional_tools/developer (3; hash=2d69223c7140f74d):
+        - namespace/functions; hash=3f63719726965d33
           - custom/exec
           - function/wait
           - function/request_user_input

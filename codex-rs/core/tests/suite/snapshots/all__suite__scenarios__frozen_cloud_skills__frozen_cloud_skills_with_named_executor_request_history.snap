@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_frozen_cloud_skills.rs
+assertion_line: 142
 expression: "context_snapshot::format_context_snapshot(\"A cloud parent lists and reads a frozen skill alongside a named executor after the snapshot file has been removed.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A cloud parent lists and reads a frozen skill alongside a named executor after the snapshot file has been removed.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=11305e3a6d4cd50f):
-        - namespace/functions; hash=0e1a20b7d56ccb9f
+00:additional_tools/developer (3; hash=82649b7da245d62c):
+        - namespace/functions; hash=15f280f94c3ce6b0
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -100,14 +101,18 @@ Settings:
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d... so, set `fork_turns` to `"none"`.</multi_agent_role> [hash=d5928243dc643bcc]
 04:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
-05:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
-    </environment_context>
+05:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
+        </environment_context>
 06:message/user:
     List the cloud skills, then read the work skill.
 07:configuration_update:reasoning={"effort":"low"}

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 3067
 expression: "context_snapshot::format_request_history_snapshot(\"Catalog refreshes append the updated listing once while preserving tools and prior input.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Catalog refreshes append the updated listing once while preserving tools and prior input.
@@ -14,13 +15,14 @@ Settings:
   store: false
   stream: true
   tool_choice: "auto"
-  tools (10; hash=0842ed7dccbafaca):
+  tools (11; hash=9e0d0badbe40ec7c):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
-    - function/usage_stats: Read the private, content-free local usage collector. Summaries retain totals and paginate detail...; args=[account, action, agent_id, cursor_id, cursor_sort_value, detail, from_at_ms, include_descendants, limit, outcome_cursor, outcome_limit, repository, root_thread_id, scope, thread_id, to_at_ms]; hash=3898fa7bfd64d957
+    - function/usage_stats: Read the private, content-free local usage collector. Summaries retain totals and paginate detail...; args=[account, action, agent_id, cursor_id, cursor_sort_value, detail, from_at_ms, include_descendants, limit, outcome_cursor, outcome_limit, repository, root_thread_id, scope, thread_id, to_at_ms]; hash=5a35645119b0063a
     - function/usage_activity: Declare the category for upcoming work or append an enum-only correction to stored usage. Use set...; args=[action, activity, phase, relation, target_id]; hash=e07840f96593a0c5
-    - function/usage_work: Declare the project, workstream and outcome for this thread only when its job changes. Use status...; args=[action, expected_revision, native_project_id, outcome_id, workstream_id]; hash=912e936e06653d6e
+    - function/usage_work: Declare the project, workstream and outcome for this thread only when its job changes. The runtim...; args=[action, expected_revision, native_project_id, outcome_id, workstream_id]; hash=80538f3a814715d1
+    - function/usage_work_boundary: Resolve the current turn or job attribution boundary exactly once when the runtime supplies a mis...; args=[state]; hash=b4fe9206cdfc3429
     - function/account_management: Manage existing local account profiles and inspect current service limits. Use list before mutati...; args=[account, action, expected_generation, limit, mode, new_alias, offset, priority, refresh_service_usage]; hash=f51496ac6a2b4646
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[path]; hash=1908de9c0be7118a
     - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=94c598b3c6ca141b
@@ -42,14 +44,19 @@ Settings:
         - `visible-model`: Fast and capable Reasoning efforts: low, medium (default), high. Service tiers: priority.
         </model_catalog>
 02:message/user:
+    <usage_work_boundary>
+    A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+    Options: continue, select, new, clear, unknown.
+    </usage_work_boundary>
+03:message/user:
     hello
 -- request 2 (turn) --
-03:message/developer:
+04:message/developer:
     <model_catalog>
     - `visible-model`: Updated picker copy Reasoning efforts: low, medium (default), high. Service tiers: priority.
     </model_catalog>
-04:message/user:
+05:message/user:
     after catalog refresh
 -- request 3 (turn) --
-05:message/user:
+06:message/user:
     without another catalog change

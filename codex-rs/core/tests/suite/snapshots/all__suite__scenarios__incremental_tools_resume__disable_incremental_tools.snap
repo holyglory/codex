@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools_resume.rs
+assertion_line: 206
 expression: "context_snapshot::format_request_history_snapshot(\"Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.
@@ -16,14 +17,15 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=1535f304e35939d5):
-        - namespace/functions; hash=35890f04017381d5
+00:additional_tools/developer (2; hash=891363510f3a1e5f):
+        - namespace/functions; hash=9a752b06e53e68af
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - custom/apply_patch
           - function/view_image
@@ -32,8 +34,9 @@ Settings:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Begin with all tools.
 -- request 2 (turn) --
@@ -49,20 +52,23 @@ Settings:
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     Disable incremental tools, enable planning, and remove shell tools in the existing window.
 -- request 3 (compaction) --
-10:compaction_trigger
+11:compaction_trigger
 
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=d7e23e3ab51fe48e):
-        - namespace/functions; hash=6de49428a1043de4
+00:additional_tools/developer (2; hash=f4ee51d727ff8d78):
+        - namespace/functions; hash=000f3b04dbd73e16
           - function/update_plan
           - function/request_user_input
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - custom/apply_patch
           - function/view_image
@@ -84,4 +90,6 @@ Settings: same as window 1
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     Resume with the same tools.

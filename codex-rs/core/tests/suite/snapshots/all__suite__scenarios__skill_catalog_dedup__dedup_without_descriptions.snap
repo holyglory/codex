@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_skill_catalog_dedup.rs
+assertion_line: 165
 expression: "context_snapshot::format_request_history_snapshot(if omit_descriptions\n{\n    \"Cloud and executor skill catalogs retain names and aliases across turns with descriptions omitted.\"\n} else\n{\n    \"Cloud skills replace duplicate executor listings before budgeting; unique executor skills retain their descriptions and e1 aliases across turns.\"\n}, &requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Cloud and executor skill catalogs retain names and aliases across turns with descriptions omitted.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=9e40b2b0b5f2aac5):
-        - namespace/functions; hash=87b5cd7289cdb911
+00:additional_tools/developer (3; hash=b4f748f56636f94e):
+        - namespace/functions; hash=271b66ddba515e86
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -110,11 +111,15 @@ Settings:
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d... so, set `fork_turns` to `"none"`.</multi_agent_role> [hash=d5928243dc643bcc]
 04:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
-05:message/user:
-    <environment_context>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-    </environment_context>
+05:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+        </environment_context>
 06:message/user:
     Which skills are available?
 07:configuration_update:reasoning={"effort":"low"}

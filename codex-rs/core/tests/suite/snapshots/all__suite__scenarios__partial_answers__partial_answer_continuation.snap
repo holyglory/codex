@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_partial_answers.rs
+assertion_line: 101
 expression: "context_snapshot::format_request_history_snapshot(\"A nonterminal answer continues sampling; its phase survives an ordinary follow-up.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A nonterminal answer continues sampling; its phase survives an ordinary follow-up.
@@ -10,8 +11,9 @@ Scenario: A nonterminal answer continues sampling; its phase survives an ordinar
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Give me both results.
 -- request 2 (turn) --

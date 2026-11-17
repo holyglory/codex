@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_agent_messages_tests.rs
+assertion_line: 265
 expression: snapshot
 ---
 Scenario: An encrypted parent reply is delivered as a native agent message. Both Guardian reviews contain it exactly once, in order, as agent evidence. Ciphertext and decisions are mocked; this scenario verifies transport, not backend decryption or authorization outcomes.
@@ -30,8 +31,9 @@ Scenario: An encrypted parent reply is delivered as a native agent message. Both
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 -- request 2 (turn) --
@@ -137,8 +139,9 @@ Scenario: An encrypted parent reply is delivered as a native agent message. Both
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 06:message/assistant:
@@ -273,8 +276,9 @@ Scenario: An encrypted parent reply is delivered as a native agent message. Both
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 06:message/assistant:

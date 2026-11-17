@@ -16,8 +16,8 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=21870ae2b82e2e2d):
-        - namespace/functions; hash=64fd0b0ca9bdfa33
+00:additional_tools/developer (2; hash=58feacac30362547):
+        - namespace/functions; hash=4bdf4aa39d1da6c5
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -25,6 +25,7 @@ Settings:
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
@@ -53,14 +54,18 @@ Settings:
 
     `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
     </permissions instructions>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
+        </environment_context>
 04:message/user:
     Inspect the workspace permissions.
 
@@ -68,8 +73,8 @@ Settings:
 Settings: relative to window 1
   model: "catalog-approval-headings-b"
 -- request 2 (turn) --
-00:additional_tools/developer (2; hash=21870ae2b82e2e2d):
-        - namespace/functions; hash=64fd0b0ca9bdfa33
+00:additional_tools/developer (2; hash=58feacac30362547):
+        - namespace/functions; hash=4bdf4aa39d1da6c5
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -77,6 +82,7 @@ Settings: relative to window 1
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
@@ -105,14 +111,18 @@ Settings: relative to window 1
 
     `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
     </permissions instructions>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
+        </environment_context>
 04:message/user:
     Inspect the workspace permissions.
 05:message/assistant:

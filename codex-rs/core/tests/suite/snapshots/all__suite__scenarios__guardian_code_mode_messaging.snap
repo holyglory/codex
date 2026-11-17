@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2847
 expression: snapshot
 ---
 Scenario: A root uses Code Mode to send a confirmation and receives a real user reply; a worker then requests an action that Guardian reviews with the confirmed question as assistant context. Independent model streams are grouped as root, worker, then Guardian.
@@ -31,8 +32,9 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Spawn a worker to inspect the deployment. Do not delete production data.
 -- request 2 (turn) --
@@ -75,8 +77,9 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Spawn a worker to inspect the deployment. Do not delete production data.
 06:function_call/collaboration.spawn_agent:{"message":"Inspect the reviewed production deployment.","task_name":"worker"}

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 695
 expression: "context_snapshot::format_request_history_snapshot(\"Code Mode exposes explicit MCP schema limits in its prompt and runtime tool catalog.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Code Mode exposes explicit MCP schema limits in its prompt and runtime tool catalog.
@@ -15,8 +16,8 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (4; hash=89b6b86533ae7bce):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=bf7ff2a81ee4f085
+  tools (4; hash=f156daacbb0836ab):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=a4c9f91e0b7976a2
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - web_search; hash=e214d4db1bc49e89
@@ -25,8 +26,9 @@ Settings:
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     inspect the search tool declarations
 -- request 2 (turn) --

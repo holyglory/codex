@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2910
 expression: snapshot
 ---
 Scenario: A parent spawns a child before the selected environment is configured. The child sees it starting, waits, and receives the ready result after an ordinary parent turn-settings update.
@@ -32,17 +33,21 @@ Scenario: A parent spawns a child before the selected environment is configured.
     <STANDARD_MULTI_AGENT_INSTRUCTIONS>
 03:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
-04:message/user:
-    <environment_context>
-      <environments>
-        <environment id="<ENVIRONMENT>">
-          <cwd><CWD></cwd>
-          <status>starting</status>
-        </environment>
-      </environments>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-    </environment_context>
+04:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <environments>
+            <environment id="<ENVIRONMENT>">
+              <cwd><CWD></cwd>
+              <status>starting</status>
+            </environment>
+          </environments>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+        </environment_context>
 05:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
 -- request 2 (request; parent waits for the worker) --
@@ -129,17 +134,21 @@ Scenario: A parent spawns a child before the selected environment is configured.
     <STANDARD_MULTI_AGENT_INSTRUCTIONS>
 03:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
-04:message/user:
-    <environment_context>
-      <environments>
-        <environment id="<ENVIRONMENT>">
-          <cwd><CWD></cwd>
-          <status>starting</status>
-        </environment>
-      </environments>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-    </environment_context>
+04:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <environments>
+            <environment id="<ENVIRONMENT>">
+              <cwd><CWD></cwd>
+              <status>starting</status>
+            </environment>
+          </environments>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+        </environment_context>
 05:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
 06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}

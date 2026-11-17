@@ -7,8 +7,8 @@ Scenario: A parent with no configured environment delegates an API migration, qu
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=9c3af9f1dd7bead5):
-        - namespace/functions; hash=ec0f9a8970f7660f
+00:additional_tools/developer (2; hash=c61ce4ba36bc5f3a):
+        - namespace/functions; hash=918502d6de3571d0
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -43,8 +43,9 @@ Scenario: A parent with no configured environment delegates an API migration, qu
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Run spawn_agent for the API migration.
 -- request 2 (turn) --
@@ -66,8 +67,8 @@ Scenario: A parent with no configured environment delegates an API migration, qu
 
 ## Window 2 (after request 6: input diverged at item 03)
 -- request 7 (turn) --
-00:additional_tools/developer (2; hash=9c3af9f1dd7bead5):
-        - namespace/functions; hash=ec0f9a8970f7660f
+00:additional_tools/developer (2; hash=c61ce4ba36bc5f3a):
+        - namespace/functions; hash=918502d6de3571d0
           - custom/exec
           - function/wait
           - function/request_user_input

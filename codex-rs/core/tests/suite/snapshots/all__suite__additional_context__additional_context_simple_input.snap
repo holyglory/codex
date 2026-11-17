@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/additional_context.rs
+assertion_line: 112
 expression: "context_snapshot::format_labeled_requests_snapshot(\"additional context is inserted before the user turn input.\",\n&[(\"Request\", &request)],\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: additional context is inserted before the user turn input.
@@ -10,9 +11,11 @@ Scenario: additional context is inserted before the user turn input.
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/developer:
+02:message/user:
+    <USAGE_WORK_BOUNDARY>
+03:message/developer:
     <automation_info>run one</automation_info>
-03:message/user:
-    <external_browser_info>tab one</external_browser_info>
 04:message/user:
+    <external_browser_info>tab one</external_browser_info>
+05:message/user:
     inspect the active tab

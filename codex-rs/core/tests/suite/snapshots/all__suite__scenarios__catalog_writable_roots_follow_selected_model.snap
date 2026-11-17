@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 3126
 expression: "context_snapshot::format_context_snapshot(description, &entries,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Catalog root and omitted-path wording follows the selected model, appending changed permissions once while preserving prior input and the mandatory omission warning.
@@ -15,14 +16,15 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (request) --
-00:additional_tools/developer (2; hash=43cc052b8558247e):
-        - namespace/functions; hash=be6f90cf9cd37b08
+00:additional_tools/developer (2; hash=09a2656a6eded5f8):
+        - namespace/functions; hash=ac6a1831adcd5aca
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
@@ -41,14 +43,18 @@ Settings:
     Model A omitted paths:
     Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
     </permissions instructions>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><LARGE_PERMISSION_PATH_FIXTURE/></filesystem>
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><LARGE_PERMISSION_PATH_FIXTURE/></filesystem>
+        </environment_context>
 04:message/user:
     Inspect the writable workspace.
 
@@ -56,14 +62,15 @@ Settings:
 Settings: relative to window 1
   model: "catalog-writable-roots-b"
 -- request 2 (request) --
-00:additional_tools/developer (2; hash=43cc052b8558247e):
-        - namespace/functions; hash=be6f90cf9cd37b08
+00:additional_tools/developer (2; hash=09a2656a6eded5f8):
+        - namespace/functions; hash=ac6a1831adcd5aca
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/usage_stats
           - function/usage_activity
           - function/usage_work
+          - function/usage_work_boundary
           - function/account_management
           - function/view_image
         - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
@@ -82,14 +89,18 @@ Settings: relative to window 1
     Model A omitted paths:
     Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
     </permissions instructions>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><LARGE_PERMISSION_PATH_FIXTURE/></filesystem>
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><LARGE_PERMISSION_PATH_FIXTURE/></filesystem>
+        </environment_context>
 04:message/user:
     Inspect the writable workspace.
 05:message/developer:

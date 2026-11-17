@@ -1,13 +1,14 @@
 ---
 source: core/tests/suite/scenarios_reserved_spawn.rs
+assertion_line: 515
 expression: history
 ---
 Scenario: A prepares a child. After A and its manager shut down, a second manager creates the idle child and then starts its first turn.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=0277532f626dd961):
-        - namespace/functions; hash=ea033920ebf36a0f
+00:additional_tools/developer (2; hash=c1c82172e5198732):
+        - namespace/functions; hash=a72b5c116d47da06
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -23,8 +24,9 @@ Scenario: A prepares a child. After A and its manager shut down, a second manage
     <MULTI_AGENT_ROLE>
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Remember PRIOR_CONTEXT_5241.
 07:configuration_update:reasoning={"effort":"low"}
