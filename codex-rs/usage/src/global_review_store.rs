@@ -402,3 +402,6 @@ pub(crate) fn run(
     }
 }
 
+#[cfg(test)]
+#[path = "global_review_tests.rs"]
+mod tests;

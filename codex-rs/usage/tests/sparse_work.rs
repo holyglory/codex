@@ -74,6 +74,10 @@ fn prepared_window_matches_raw_summary_across_corrections_and_scopes() -> codex_
     let home = tempfile::tempdir()?;
     let root = home.path().join("usage-v2");
     let early = start("early", /*at*/ 100).with_repository("repo-a");
+    let completed_before_window =
+        start("completed-before-window", /*at*/ 100).with_repository("repo-a");
+    let mut unknown_interval = completed_before_window.clone();
+    unknown_interval.started_at_ms = None;
     let left = UsageRecord::new_millis(
         "left", /*observed_at_ms*/ 1_000, /*input_tokens*/ 10, /*output_tokens*/ 4,
     )
@@ -104,6 +108,7 @@ fn prepared_window_matches_raw_summary_across_corrections_and_scopes() -> codex_
             missing,
             other,
             right,
+            unknown_interval,
         ],
     )?;
     UsagePublisher::open_at(&root)?.publish_batch(JournalReadLimits {
@@ -118,7 +123,14 @@ fn prepared_window_matches_raw_summary_across_corrections_and_scopes() -> codex_
     .with_thread("thread")
     .with_repository("repo-a");
     late.operation_id = Some("early".into());
-    capture_records(home.path(), vec![duplicate, late])?;
+    capture_records(
+        home.path(),
+        vec![
+            duplicate,
+            late,
+            finish(completed_before_window, /*at*/ 200, /*tokens*/ 0),
+        ],
+    )?;
     let mut store = codex_usage::UsageStore::open(home.path())?;
     store.append_correction(codex_usage::UsageCorrection::new(
         "fix-left",
@@ -168,6 +180,16 @@ fn prepared_window_matches_raw_summary_across_corrections_and_scopes() -> codex_
         assert_eq!(
             json!({"input":expected["inputTokens"],"output":expected["outputTokens"],"records":expected["records"]}),
             json!({"input":22,"output":12,"records":3})
+        );
+        let prepared = reader.prepare_window(range, &filter)?;
+        let operations = prepared.operation_page(
+            codex_usage::OperationSelection::All,
+            /*after*/ None,
+            /*limit*/ 50,
+        )?;
+        assert!(
+            operations.data.is_empty(),
+            "the tail completion must replace the older unknown interval before time filtering"
         );
         if published {
             let pinned = reader.prepare_window(range, &filter)?;
@@ -600,6 +622,28 @@ fn captured_starts_pin_assignments_across_switches_publication_and_late_retries(
         json!({"total":[exact(1_200),exact(1_700),exact(800)],
             "attributed":[exact(1_200),exact(1_700),exact(600)],
             "unattributed":[exact(400),exact(400),exact(400)],"row":[exact(1_200),exact(1_700),exact(600)]})
+    );
+    let mut default = report["outcomes"].clone();
+    window
+        .outcome_timings(&BTreeMap::new(), /*workstream*/ None)?
+        .apply(&mut default);
+    assert_eq!(default, report["outcomes"]);
+    let mut late = start("late-concurrent", /*at*/ 1_200).with_thread("late-thread");
+    late.agent_id = Some("late-agent".into());
+    capture_record(&concurrent, finish(late, /*at*/ 2_200, /*tokens*/ 1))?;
+    UsagePublisher::open_at(concurrent.join("usage-v2"))?.publish_batch(JournalReadLimits {
+        max_bytes: 1024 * 1024,
+        max_entries: 64,
+    })?;
+    let fresh = UsageReader::open(&concurrent)?
+        .performance_review(TimeRange::from_millis(1_100, 2_300)?, &filter)?;
+    assert_eq!(fresh["outcomes"]["totals"]["activeAgentMs"], exact(2_700));
+    window
+        .outcome_timings(&BTreeMap::new(), /*workstream*/ None)?
+        .apply(&mut default);
+    assert_eq!(
+        default, report["outcomes"],
+        "the old query keeps its pinned prefix"
     );
     Ok(())
 }

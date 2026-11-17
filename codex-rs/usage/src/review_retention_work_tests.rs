@@ -608,3 +608,45 @@ fn late_token_uses_exact_operation_identity_outside_the_time_slice() {
         ]
     );
 }
+
+#[test]
+fn scoped_review_pushes_filled_identity_before_latest_without_dropping_state() {
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    let journal = UsageJournal::new(root.join("events.jsonl"));
+    let mut start = started("filled-identity", DAY, "active");
+    let mut finish = finished(&start);
+    // A lifecycle may learn identity and timing on a later terminal fact.
+    start.account_id = None;
+    start.repository_id = None;
+    start.thread_id = None;
+    start.started_at_ms = None;
+    finish.account_id = Some("target-account".into());
+    finish.repository_id = Some("target-repository".into());
+    finish.thread_id = Some("target-thread".into());
+    finish.started_at_ms = Some(DAY);
+    finish.ended_at_ms = Some(DAY + 1_000);
+    journal
+        .append_batch(vec![
+            JournalPayload::Record(start),
+            JournalPayload::Record(finish),
+        ])
+        .expect("valid identity completion");
+    publish(&root);
+    let reader = UsageReader::open_at(&root).expect("published reader");
+    let query = ReportQuery::new(
+        &reader,
+        TimeRange::from_millis(DAY + 500, DAY + 2_000).expect("finite scope"),
+        &UsageFilter::default().for_repository("target-repository"),
+    )
+    .expect("scoped report query");
+    let count: u64 = query
+        .connection
+        .query_row(
+            &format!("SELECT count(*) FROM ({})", query.operations),
+            [],
+            |row| row.get(0),
+        )
+        .expect("selected completed operation");
+    assert_eq!(count, 1);
+}
