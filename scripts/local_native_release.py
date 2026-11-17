@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 from local_native_artifacts import (
     TARGETS,
@@ -71,16 +72,38 @@ class Commands:
 
     def run(self, name, command, *, timeout=36000):
         log = self.directory / "logs" / f"{name}.log"
-        with log.open("xb") as stream:
-            result = subprocess.run(
-                command,
-                cwd=self.root,
-                env=self.environment,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-                check=False,
-            )
+        log.touch(exist_ok=False)
+        started = time.monotonic()
+        print(json.dumps({"stage": name, "status": "started"}), flush=True)
+        # Match the existing Unix producer's pipefail/tee path. Output reaches
+        # Coordinator while the compiler runs and is retained without a pipe
+        # that Python waits to drain only after process exit.
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -o pipefail; "$@" 2>&1 | tee -a "$CODEX_LOCAL_BUILD_LOG"',
+                "codex-native-stage",
+                *map(str, command),
+            ],
+            cwd=self.root,
+            env={**self.environment, "CODEX_LOCAL_BUILD_LOG": str(log.resolve())},
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+        print(
+            json.dumps(
+                {
+                    "stage": name,
+                    "status": "finished",
+                    "exitCode": result.returncode,
+                    "elapsedSeconds": time.monotonic() - started,
+                    "logBytes": log.stat().st_size,
+                }
+            ),
+            flush=True,
+        )
         self.checks.append(
             {
                 "name": name,

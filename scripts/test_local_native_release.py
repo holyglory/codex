@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -222,6 +223,50 @@ class NativeReleaseTest(unittest.TestCase):
         self.assertEqual(
             artifacts.file_info(self.incoming / f"codex-package-{self.target}.tar.gz"),
             artifacts.file_info(args.output / f"codex-package-{self.target}.tar.gz"),
+        )
+
+    @unittest.skipUnless(os.name == "posix", "Unix producer command streaming")
+    def test_command_streams_large_output_and_preserves_failed_exit(self):
+        payload = "x" * (1024 * 1024) + "\n"
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; print('x' * (1024 * 1024)); sys.exit(7)",
+        ]
+        output = self.base / "streamed"
+        code = (
+            "import json,os,sys; from pathlib import Path; "
+            "sys.path.insert(0,sys.argv[1]); from local_native_release import Commands; "
+            "runner=Commands(Path.cwd(),Path(sys.argv[2]),dict(os.environ))\n"
+            "try:\n runner.run('fixture',json.loads(sys.argv[3]),timeout=10)\n"
+            "except ValueError:\n print(json.dumps(runner.checks))\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(Path(release.__file__).parent),
+                str(output),
+                json.dumps(command),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=True,
+        )
+        self.assertIn(payload, result.stdout)
+        self.assertEqual((output / "logs/fixture.log").read_text(), payload)
+        self.assertEqual(
+            json.loads(result.stdout.splitlines()[-1]),
+            [
+                {
+                    "name": "fixture",
+                    "exit_code": 7,
+                    "command": command,
+                    "log_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+                }
+            ],
         )
 
     def test_tamper_source_and_wrong_native_host_are_refused_before_execution(self):
