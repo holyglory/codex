@@ -24,6 +24,7 @@ pub struct OutcomeTimingContext {
 }
 
 /// Independently measured operation sets; their unions cannot be added or subtracted.
+#[derive(Clone)]
 pub struct OutcomeTimings {
     groups: BTreeMap<String, IntervalMetrics>,
 }
@@ -73,6 +74,10 @@ pub(crate) fn from_query(
     overrides: &BTreeMap<String, OutcomeTimingContext>,
     workstream: Option<&str>,
 ) -> Result<OutcomeTimings> {
+    let default_scope = overrides.is_empty() && workstream.is_none();
+    if default_scope && let Some(timings) = query.default_outcome_timings.get() {
+        return Ok(timings.clone());
+    }
     if overrides.len() > 256 {
         return Err(crate::review_state::invalid(
             "too many explicit operation timing bindings",
@@ -120,7 +125,7 @@ pub(crate) fn from_query(
         TimeRange::all(),
         filter,
     )?;
-    let source = format!(
+    let operations = format!(
         "WITH declarations AS ({declarations}), operation_sets AS (
             SELECT o.kind,o.started_at_ms,o.ended_at_ms,o.agent_id,o.thread_id,
                 1::UBIGINT observation_weight,false retired_interval,
@@ -132,19 +137,45 @@ pub(crate) fn from_query(
             SELECT kind,NULL::BIGINT,NULL::BIGINT,NULL::VARCHAR,thread_id,
                 operation_count::UBIGINT,true,work_native_project_id,workstream_id,work_outcome_id
             FROM ({retired}) WHERE operation_count>0
-        ), scoped AS (SELECT * FROM operation_sets WHERE {scope})
+        ) SELECT * FROM operation_sets WHERE {scope}", operations=query.operations,
+    );
+    let background = matches!(
+        query.materialization,
+        crate::report_query::Materialization::Background
+    );
+    let source = if background {
+        format!(
+            "SELECT unnest(CASE WHEN {attributed} THEN \
+            ['totals','attributed','group:' || to_json([native_project_id,workstream_id,outcome_id])::VARCHAR] \
+            ELSE ['totals','unattributed'] END) timing_group,* FROM ({operations})"
+        )
+    } else {
+        format!(
+        "WITH scoped AS ({operations})
         SELECT 'totals' timing_group,* FROM scoped
         UNION ALL SELECT 'attributed',* FROM scoped WHERE {attributed}
         UNION ALL SELECT 'unattributed',* FROM scoped WHERE NOT ({attributed})
         UNION ALL SELECT 'group:' || to_json([native_project_id,workstream_id,outcome_id])::VARCHAR,*
-            FROM scoped WHERE {attributed}", operations=query.operations,
-    );
-    Ok(OutcomeTimings {
-        groups: grouped_interval_metrics(
-            &query.connection,
-            &source,
-            range.start_ms(),
-            range.end_ms(),
-        )?,
-    })
+            FROM scoped WHERE {attributed}"
+    )
+    };
+    let timings = OutcomeTimings {
+        groups: if background {
+            crate::report_metrics::background_grouped_interval_metrics(
+                &query.connection,
+                &source,
+                range.start_ms(),
+                range.end_ms(),
+                query.background_cancellation.as_deref(),
+            )?
+        } else {
+            grouped_interval_metrics(&query.connection, &source, range.start_ms(), range.end_ms())?
+        },
+    };
+    // Keep one small successful result. Scoped or exceptional requests never
+    // read or replace it, and a new prepared query always starts empty.
+    if default_scope && timings.groups.len() <= 64 {
+        let _ = query.default_outcome_timings.set(timings.clone());
+    }
+    Ok(timings)
 }

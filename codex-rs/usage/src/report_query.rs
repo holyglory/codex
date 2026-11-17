@@ -1,6 +1,7 @@
 //! Bounded-tail review queries over a pinned operation projection.
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use arrow_schema::DataType;
 use duckdb::Connection;
@@ -34,8 +35,26 @@ use crate::review_storage::OPERATION_COLUMNS;
 #[path = "report_work_lookup.rs"]
 mod work_lookup;
 
+#[derive(Clone, Copy)]
+pub(crate) enum Materialization {
+    Foreground,
+    Background,
+}
+
+impl Materialization {
+    pub(crate) fn table(self) -> &'static str {
+        match self {
+            Self::Foreground => "TEMP TABLE",
+            Self::Background => "TABLE",
+        }
+    }
+}
+
 pub(crate) struct ReportQuery {
     pub(crate) connection: Connection,
+    pub(crate) materialization: Materialization,
+    pub(crate) background_cancellation:
+        Option<std::sync::Arc<crate::global_review_cancel::GlobalReviewCancellation>>,
     pub(crate) operations: String,
     pub(crate) operation_statistics: String,
     pub(crate) retained_operation_statistics: String,
@@ -44,6 +63,8 @@ pub(crate) struct ReportQuery {
     pub(crate) complete_from_sequence: u64,
     pub(crate) work_assignment_coverage: crate::WorkAssignmentCoverage,
     pub(crate) complete_observations: bool,
+    /// Only the default outcome timing of this immutable prepared selection.
+    pub(crate) default_outcome_timings: OnceLock<crate::OutcomeTimings>,
 }
 
 impl ReportQuery {
@@ -54,6 +75,41 @@ impl ReportQuery {
     ) -> Result<Self> {
         let connection = crate::duckdb_connection::open_read_in_memory(ReadBudget::Report)
             .map_err(query_error)?;
+        Self::with_connection(
+            reader,
+            range,
+            filter,
+            connection,
+            Materialization::Foreground,
+            /*background_cancellation*/ None,
+        )
+    }
+
+    pub(crate) fn with_connection(
+        reader: &UsageReader,
+        range: TimeRange,
+        filter: &UsageFilter,
+        connection: Connection,
+        materialization: Materialization,
+        background_cancellation: Option<
+            std::sync::Arc<crate::global_review_cancel::GlobalReviewCancellation>,
+        >,
+    ) -> Result<Self> {
+        let check = || {
+            background_cancellation.as_deref().map_or(
+                Ok(()),
+                crate::global_review_cancel::GlobalReviewCancellation::check,
+            )
+        };
+        let execute = |sql: &str| {
+            let stage = || connection.execute_batch(sql).map_err(query_error);
+            match background_cancellation.as_deref() {
+                Some(cancellation) => cancellation.run_stage(stage),
+                None => stage(),
+            }
+        };
+        check()?;
+        let table = materialization.table();
         let descriptor = load_review_projection(&reader.root, &reader.manifest)?;
         let directory = reader.root.join("segments");
         let operation_columns = sql_columns(OPERATION_COLUMNS);
@@ -67,6 +123,7 @@ impl ReportQuery {
             && reader.manifest.review_retention_cutoff_at_ms.is_none()
             && !crate::review_compaction::has_index(&reader.root)
         {
+            check()?;
             hourly_contribution_source(&connection, reader, range, filter)?
         } else {
             None
@@ -74,14 +131,30 @@ impl ReportQuery {
         let mut complete_from_sequence = reader.manifest.watermark.saturating_add(1);
         if let Some(descriptor) = &descriptor {
             complete_from_sequence = descriptor.complete_from_sequence;
+            check()?;
             operation_files = select_review_files(&reader.root, descriptor, range, filter)?;
             if hourly_contribution_source.is_none() {
+                check()?;
                 contribution_files =
                     select_review_contribution_files(&reader.root, descriptor, range, filter)?;
                 contribution_files.extend(descriptor.contribution_rollup_files.iter().cloned());
             }
             classification_files.clone_from(&descriptor.classification_files);
         }
+        // Current complete publications contain one row per operation and one
+        // first-write record per contribution. Retained and partial families
+        // keep the conservative deduplication path.
+        let canonical = reader.manifest.retired_observations == 0
+            && reader.manifest.retired_review_operations == 0
+            && reader.manifest.retired_review_contributions == 0
+            && descriptor.as_ref().is_some_and(|value| {
+                value.complete_from_sequence == 1
+                    && value.retired_operation_rows == 0
+                    && value.retired_contribution_rows == 0
+                    && value.operation_rollup_files.is_empty()
+                    && value.contribution_rollup_files.is_empty()
+            });
+        check()?;
         let tail = canonical_tail(reader, &connection)?;
         let operation_ids = tail
             .iter()
@@ -89,6 +162,7 @@ impl ReportQuery {
             .filter_map(|row| row.operation_id.clone())
             .collect::<BTreeSet<_>>();
         let mut states = if let Some(descriptor) = &descriptor {
+            check()?;
             load_review_operations(&reader.root, descriptor, &operation_ids, &connection)?
                 .into_iter()
                 .map(|row| (row.operation_id.clone(), row))
@@ -153,6 +227,7 @@ impl ReportQuery {
                     .as_ref()
                     .is_none_or(|ids| state.thread_id.as_ref().is_some_and(|id| ids.contains(id)))
         });
+        check()?;
         let work_assignment_coverage =
             crate::assign_work_dimensions(&reader.root, &mut states, &[]);
         states.extend(unrelated);
@@ -168,9 +243,32 @@ impl ReportQuery {
              QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC) = 1"
         );
         let predicate = dimension_predicate(filter);
+        // Identity fields are first-write immutable after a lifecycle accepts
+        // them. Push only those fields before latest-state selection; interval
+        // predicates stay after latest so an older open state cannot reappear.
+        let operation_source = format!("SELECT * FROM ({operation_source}) AS r WHERE {predicate}");
+        let operation_tail = format!("SELECT * FROM ({operation_tail}) AS r WHERE {predicate}");
+        let latest = if canonical {
+            if states.is_empty() {
+                operation_source
+            } else {
+                // Tail states were merged once per explicit operation in Rust.
+                // Replace the immutable state before applying interval bounds.
+                format!(
+                    "WITH tail_states AS MATERIALIZED ({operation_tail}) \
+                     SELECT r.* FROM ({operation_source}) r \
+                     ANTI JOIN tail_states t USING(operation_id) \
+                     UNION ALL SELECT * FROM tail_states"
+                )
+            }
+        } else {
+            format!(
+                "SELECT * FROM ({operation_source} UNION ALL {operation_tail}) \
+                 QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC) = 1"
+            )
+        };
         let operations = format!(
-            "WITH latest AS (SELECT * FROM ({operation_source} UNION ALL {operation_tail}) \
-             QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC) = 1), \
+            "WITH latest AS ({latest}), \
              classifications AS ({classifications}) \
              SELECT r.* EXCLUDE (phase, activity, classification), \
                     COALESCE(c.phase,r.phase) phase, COALESCE(c.activity,r.activity) activity, \
@@ -190,6 +288,23 @@ impl ReportQuery {
                 parquet_source(&directory, &contribution_files, &contribution_columns)?
             });
         let contribution_tail = values_source(&contributions, &contribution_columns)?;
+        // Contribution dimensions and observation times are immutable after
+        // first-write publication. Push the finite scope before record-id
+        // deduplication so a repository read does not materialize unrelated
+        // token rows from otherwise shared compacted runs.
+        let contribution_predicate = dimension_predicate(filter);
+        let contribution_source = format!(
+            "SELECT * FROM ({contribution_source}) AS r WHERE {contribution_predicate} \
+             AND observed_at_ms >= {} AND observed_at_ms < {}",
+            range.start_ms(),
+            range.end_ms()
+        );
+        let contribution_tail = format!(
+            "SELECT * FROM ({contribution_tail}) AS r WHERE {contribution_predicate} \
+             AND observed_at_ms >= {} AND observed_at_ms < {}",
+            range.start_ms(),
+            range.end_ms()
+        );
         let correction_source = if reader.manifest.correction_files.is_empty() {
             empty_source(CORRECTION_COLUMNS)
         } else {
@@ -201,9 +316,18 @@ impl ReportQuery {
         };
         let correction_tail = values_source(&reader.corrections, CORRECTION_COLUMNS)?;
         let eligible = crate::reader_query::eligible_corrections(&reader.manifest);
+        let facts = if canonical {
+            // UsageReader has already removed published IDs from its bounded
+            // tail, or withheld that entire overlay when proof is unavailable.
+            format!("{contribution_source} UNION ALL {contribution_tail}")
+        } else {
+            format!(
+                "SELECT * FROM ({contribution_source} UNION ALL {contribution_tail}) \
+                 QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY source_sequence) = 1"
+            )
+        };
         let contributions = format!(
-            "WITH facts AS (SELECT * FROM ({contribution_source} UNION ALL {contribution_tail}) \
-             QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY source_sequence) = 1), \
+            "WITH facts AS ({facts}), \
              corrections AS (SELECT * FROM ({correction_source} UNION ALL {correction_tail}) \
              WHERE {eligible} \
              QUALIFY row_number() OVER (PARTITION BY id ORDER BY observed_at) = 1), \
@@ -214,10 +338,7 @@ impl ReportQuery {
                     r.cached_input_tokens::HUGEINT + COALESCE(d.c,0) cached_input_tokens, \
                     r.output_tokens::HUGEINT + COALESCE(d.o,0) output_tokens, \
                     r.reasoning_output_tokens::HUGEINT + COALESCE(d.r,0) reasoning_output_tokens \
-             FROM facts r LEFT JOIN deltas d USING(record_id) WHERE {predicate} \
-             AND observed_at_ms >= {} AND observed_at_ms < {}",
-            range.start_ms(),
-            range.end_ms()
+             FROM facts r LEFT JOIN deltas d USING(record_id) WHERE {predicate}"
         );
         let operation_statistics = crate::review_aggregate::statistics_source(
             &reader.root,
@@ -234,26 +355,36 @@ impl ReportQuery {
         )?;
         // Materializing only the selected indexed slice avoids repeating Parquet
         // reads for the small aggregate and detail queries that form one report.
-        connection
-            .execute_batch(&format!(
-                "CREATE TEMP TABLE selected_operations AS {operations}; \
-             CREATE TEMP TABLE selected_operation_statistics AS {operation_statistics}; \
-             CREATE TEMP TABLE selected_contributions AS {contributions}; \
-             CREATE TEMP TABLE selected_classifications AS {classifications};"
-            ))
-            .map_err(query_error)?;
+        execute(&format!(
+            "CREATE {table} selected_operations AS {operations}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_operation_statistics AS {operation_statistics}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_contributions AS {contributions}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_classifications AS {classifications}"
+        ))?;
         // Late tokens can name an operation outside the operation-time slice.
         // Resolve only those explicit IDs through the immutable exact index;
         // provider-only response IDs never trigger a canonical history scan.
-        connection
-            .execute_batch(&format!(
-                "CREATE TEMP TABLE work_operation_lookup AS {}",
-                empty_source(&operation_columns)
-            ))
-            .map_err(query_error)?;
+        execute(&format!(
+            "CREATE {table} work_operation_lookup AS {}",
+            empty_source(&operation_columns)
+        ))?;
         if let Some(descriptor) = &descriptor {
-            work_lookup::populate(&reader.root, descriptor, &connection)?;
+            check()?;
+            work_lookup::populate(
+                &reader.root,
+                descriptor,
+                &connection,
+                materialization,
+                background_cancellation.as_deref(),
+            )?;
         }
+        check()?;
         let names = operation_columns
             .iter()
             .map(|(name, _)| *name)
@@ -266,6 +397,8 @@ impl ReportQuery {
         );
         Ok(Self {
             connection,
+            materialization,
+            background_cancellation,
             operations: "SELECT * FROM selected_operations".into(),
             operation_statistics: "SELECT * FROM selected_operation_statistics".into(),
             retained_operation_statistics,
@@ -273,6 +406,7 @@ impl ReportQuery {
             work_operations,
             complete_from_sequence,
             work_assignment_coverage,
+            default_outcome_timings: OnceLock::new(),
             complete_observations: complete_from_sequence == 1
                 && reader.manifest.retired_observations == 0
                 && reader.manifest.retired_review_contributions == 0

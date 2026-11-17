@@ -12,6 +12,10 @@ use crate::review_storage::query_rows;
 #[path = "report_metrics_sql.rs"]
 mod sql;
 
+#[path = "report_intervals.rs"]
+mod intervals;
+pub(crate) use intervals::background_grouped_interval_metrics;
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct IntervalMetrics {
     pub active_ms: u64,

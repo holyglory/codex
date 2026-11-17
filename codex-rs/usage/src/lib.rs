@@ -15,6 +15,7 @@ mod duckdb_connection;
 mod duckdb_snapshot;
 mod entities;
 mod error;
+mod global_review_cancel;
 mod headline;
 mod headline_store;
 mod id_index;

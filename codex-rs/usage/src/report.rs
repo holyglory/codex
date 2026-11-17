@@ -13,6 +13,36 @@ use crate::report_query::ReportQuery;
 use crate::review_storage::query_rows;
 
 impl UsageReader {
+    /// Build a completed all-history report only on the publisher's private,
+    /// disk-backed connection. Foreground callers read the published envelope.
+    pub(crate) fn background_performance_review(
+        &self,
+        connection: duckdb::Connection,
+        cancellation: &std::sync::Arc<crate::global_review_cancel::GlobalReviewCancellation>,
+    ) -> Result<Value> {
+        cancellation.check()?;
+        let range = TimeRange::all();
+        let filter = UsageFilter::default();
+        let profile = ReportProfile {
+            enabled: std::env::var_os("CODEX_USAGE_PROFILE_REPORT").is_some(),
+            cancellation: Some(cancellation.as_ref()),
+        };
+        let query = profile.stage("materialize", || {
+            ReportQuery::with_connection(
+                self,
+                range,
+                &filter,
+                connection,
+                crate::report_query::Materialization::Background,
+                Some(std::sync::Arc::clone(cancellation)),
+            )
+        })?;
+        cancellation.check()?;
+        let report = self.review_from_query(range, &filter, &query)?;
+        cancellation.check()?;
+        Ok(report)
+    }
+
     /// Query one exact interval from its indexed operation partitions and token
     /// observation fragments. Timing sums describe overlap, never active time.
     pub fn performance_review(&self, range: TimeRange, filter: &UsageFilter) -> Result<Value> {
@@ -28,21 +58,28 @@ impl UsageReader {
     ) -> Result<Value> {
         let start = range.start_ms();
         let end = range.end_ms();
-        let outcome_timings = crate::outcome_timing::from_query(
-            self,
-            query,
-            range,
-            filter,
-            &Default::default(),
-            /*workstream*/ None,
-        )?;
+        let profile = ReportProfile {
+            enabled: std::env::var_os("CODEX_USAGE_PROFILE_REPORT").is_some(),
+            cancellation: query.background_cancellation.as_deref(),
+        };
+        let outcome_timings = profile.stage("outcome_timing", || {
+            crate::outcome_timing::from_query(
+                self,
+                query,
+                range,
+                filter,
+                &Default::default(),
+                /*workstream*/ None,
+            )
+        })?;
         let intervals = outcome_timings.total();
-        let (context_size, cost) =
-            context_and_cost_metrics(&query.connection, &query.contributions)?;
+        let (context_size, cost) = profile.stage("context_cost", || {
+            context_and_cost_metrics(&query.connection, &query.contributions)
+        })?;
         let exact_token_window = self.manifest.unapplied_retention_corrections == 0
             && self.manifest.unapplied_retention_records == 0
             && (range == TimeRange::all() || self.manifest.retired_review_contributions == 0);
-        let operation_counts = query_rows::<Value>(&query.connection, &format!(
+        let operation_counts = profile.stage("operation_counts", || query_rows::<Value>(&query.connection, &format!(
             "SELECT COALESCE(sum(operation_count),0)::UBIGINT operations, \
              COALESCE(sum(operation_count) FILTER (WHERE kind = 'model_request'),0)::UBIGINT model_requests, \
              COALESCE(sum(operation_count) FILTER (WHERE kind = 'tool'),0)::UBIGINT tools, \
@@ -52,8 +89,8 @@ impl UsageReader {
              COALESCE(sum(operation_count) FILTER (WHERE phase IS NULL OR activity IS NULL),0)::UBIGINT unclassified, \
              COALESCE(sum(operation_count) FILTER (WHERE repository_id IS NULL),0)::UBIGINT without_repository, \
              COALESCE(sum(interval_sum_ms),0)::UBIGINT interval_sum_ms FROM ({}) WHERE kind <> 'wait'", query.operation_statistics
-        ), 1)?.remove(0);
-        let operations = query_rows::<Value>(
+        ), 1))?.remove(0);
+        let operations = profile.stage("operation_facets", || query_rows::<Value>(
             &query.connection,
             &format!(
                 "SELECT kind category, \
@@ -63,8 +100,8 @@ impl UsageReader {
                 query.operation_statistics
             ),
             128,
-        )?;
-        let by_operation_activity = operation_facet(
+        ))?;
+        let by_operation_activity = profile.stage("operation_activity", || operation_facet(
             &query.connection,
             &format!(
                 "SELECT COALESCE(phase,'unknown') phase, COALESCE(activity,'unknown') activity, \
@@ -75,8 +112,8 @@ impl UsageReader {
                 query.operation_statistics
             ),
             &["phase", "activity", "provenance"],
-        )?;
-        let tools = operation_facet(
+        ))?;
+        let tools = profile.stage("tool_facets", || operation_facet(
             &query.connection,
             &format!(
                 "SELECT COALESCE(tool,'unknown') tool, COALESCE(outcome,'unknown') outcome, \
@@ -86,9 +123,9 @@ impl UsageReader {
                 query.operation_statistics
             ),
             &["tool", "outcome"],
-        )?;
+        ))?;
         let token_predicate = crate::review_aggregate::TOKEN_PREDICATE;
-        let token_counts = query_rows::<Value>(
+        let token_counts = profile.stage("token_counts", || query_rows::<Value>(
             &query.connection,
             &format!(
                 "SELECT COALESCE(sum(COALESCE(observation_count, 1)),0)::UBIGINT observations, \
@@ -100,7 +137,7 @@ impl UsageReader {
                 query.contributions
             ),
             1,
-        )?
+        ))?
         .remove(0);
         let mut tokens = Vec::new();
         for (category, column, unknown_column) in [
@@ -119,17 +156,17 @@ impl UsageReader {
                 "cache_write_unknowns",
             ),
         ] {
-            let (measured, observations, unknown): (i64, u64, u64) = query.connection.query_row(&format!(
+            let (measured, observations, unknown): (i64, u64, u64) = profile.stage(category, || query.connection.query_row(&format!(
                 "SELECT COALESCE(sum({column}),0)::BIGINT, \
                  COALESCE(sum(COALESCE(observation_count,1)),0)::UBIGINT, \
                  COALESCE(sum(COALESCE({unknown_column}, CASE WHEN {column} IS NULL THEN COALESCE(observation_count,1) ELSE 0 END)),0)::UBIGINT \
                  FROM ({}) WHERE {token_predicate}", query.contributions
-            ), [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(query_error)?;
+            ), [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(query_error))?;
             tokens.push(json!({"category": category, "provenance": "provider_reported",
                 "measuredTokens": measured, "exactTokens": (exact_token_window && unknown == 0 && observations > 0).then_some(measured),
                 "observations": observations, "unknownObservations": unknown}));
         }
-        let by_activity = query_rows::<Value>(
+        let by_activity = profile.stage("token_activity", || query_rows::<Value>(
             &query.connection,
             &format!(
                 "WITH response_links AS (SELECT response_id, min(operation_id) operation_id \
@@ -151,8 +188,8 @@ impl UsageReader {
                 facts = query.contributions
             ),
             128,
-        )?;
-        let gaps = query_rows::<Value>(
+        ))?;
+        let gaps = profile.stage("coverage", || query_rows::<Value>(
             &query.connection,
             &format!(
                 "SELECT COALESCE(coverage,'unknown') state, \
@@ -162,40 +199,48 @@ impl UsageReader {
                 query.contributions
             ),
             32,
-        )?;
-        let retries = crate::report_retries::RetryEvidence::read(query)?;
+        ))?;
+        let retries = profile.stage("retry_evidence", || {
+            crate::report_retries::RetryEvidence::read(query)
+        })?;
         let links = &retries.links;
-        let rework_operations: u64 = query
-            .connection
-            .query_row(
-                &format!(
-                    "SELECT COALESCE(sum(rework_operations),0)::UBIGINT FROM ({})",
-                    query.operation_statistics
-                ),
-                [],
-                |row| row.get(0),
-            )
-            .map_err(query_error)?;
-        let model_without_total: u64 = query
-            .connection
-            .query_row(
-                &model_total_coverage_query(&query.operations, &query.contributions),
-                [],
-                |row| row.get(0),
-            )
-            .map_err(query_error)?;
+        let rework_operations: u64 = profile.stage("rework_counts", || {
+            query
+                .connection
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(sum(rework_operations),0)::UBIGINT FROM ({})",
+                        query.operation_statistics
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(query_error)
+        })?;
+        let model_without_total: u64 = profile.stage("model_total_coverage", || {
+            query
+                .connection
+                .query_row(
+                    &model_total_coverage_query(&query.operations, &query.contributions),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(query_error)
+        })?;
         let total_operations = operation_counts["operations"].as_u64().unwrap_or_default();
-        let detail_operations: u64 = query
-            .connection
-            .query_row(
-                &format!(
-                    "SELECT count(*)::UBIGINT FROM ({}) WHERE kind <> 'wait'",
-                    query.operations
-                ),
-                [],
-                |row| row.get(0),
-            )
-            .map_err(query_error)?;
+        let detail_operations: u64 = profile.stage("detail_counts", || {
+            query
+                .connection
+                .query_row(
+                    &format!(
+                        "SELECT count(*)::UBIGINT FROM ({}) WHERE kind <> 'wait'",
+                        query.operations
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(query_error)
+        })?;
         let retained_operations = total_operations.saturating_sub(detail_operations);
         let omitted_link_operations = retries
             .linked_operations
@@ -268,11 +313,13 @@ impl UsageReader {
                 "thread_id":filter.thread_id,"from_at_ms":(start != i64::MIN).then_some(start),"to_at_ms":(end != i64::MAX).then_some(end),"limit":20},
             "interpretation":"Retained statistics preserve all-time counts and interval sums; finite windows can be partial after timing detail is retired. Retained hourly operations use their completion hour; inactive chats retain lifetime totals. Available execution intervals are clipped to the requested UTC window and summed; overlapping work is not elapsed or active time. Retry waits are measured separately and excluded from execution counts and sums. Token observations use their observation time. Cached input and reasoning output are subsets. Unknown coverage is never a zero measurement."
         });
-        let sparse = crate::work_binding_report::bound_work_effort_from_query(
-            query,
-            range,
-            &Default::default(),
-        )?;
+        let sparse = profile.stage("work_attribution", || {
+            crate::work_binding_report::bound_work_effort_from_query(
+                query,
+                range,
+                &Default::default(),
+            )
+        })?;
         if !sparse.is_empty() {
             crate::work_binding_report::apply_sparse_report(&mut report, &sparse)?;
         } else if query.work_assignment_coverage == crate::WorkAssignmentCoverage::Unavailable
@@ -296,6 +343,45 @@ impl UsageReader {
         report["outcomes"]["contextSize"] = report["contextSize"].clone();
         report["outcomes"]["cost"] = report["cost"].clone();
         Ok(report)
+    }
+}
+
+/// Optional content-free diagnostics for the unchanged report query groups.
+struct ReportProfile<'a> {
+    enabled: bool,
+    cancellation: Option<&'a crate::global_review_cancel::GlobalReviewCancellation>,
+}
+
+impl ReportProfile<'_> {
+    fn stage<T>(&self, stage: &'static str, build: impl FnOnce() -> Result<T>) -> Result<T> {
+        let started = std::time::Instant::now();
+        if self.enabled {
+            eprintln!(
+                "usage-report-stage {}",
+                json!({"stage":stage,"state":"started"})
+            );
+        }
+        let result = match self.cancellation {
+            Some(cancellation) => cancellation.run_stage(build),
+            None => build(),
+        };
+        if self.enabled {
+            eprintln!(
+                "usage-report-stage {}",
+                json!({"stage":stage,
+                "state":if result.is_ok() {"completed"} else {"failed"},
+                "elapsedMs":started.elapsed().as_secs_f64()*1_000.0})
+            );
+        }
+        result.map_err(|error| match error {
+            crate::StorageError::Columnar(message) => crate::StorageError::Columnar(format!(
+                "performance report stage {stage}: {message}"
+            )),
+            crate::StorageError::InvalidData(message) => crate::StorageError::InvalidData(format!(
+                "performance report stage {stage}: {message}"
+            )),
+            error => error,
+        })
     }
 }
 

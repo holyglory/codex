@@ -10,6 +10,7 @@ use crate::Result;
 use crate::operation_id_index;
 use crate::reader_query::parquet_source;
 use crate::reader_query::query_error;
+use crate::report_query::Materialization;
 use crate::report_query::sql_columns;
 use crate::review_projection::ReviewProjectionDescriptor;
 use crate::review_projection::find_addresses;
@@ -21,18 +22,33 @@ pub(super) fn populate(
     root: &Path,
     descriptor: &ReviewProjectionDescriptor,
     connection: &Connection,
+    materialization: Materialization,
+    cancellation: Option<&crate::global_review_cancel::GlobalReviewCancellation>,
 ) -> Result<()> {
+    let check = || {
+        cancellation.map_or(
+            Ok(()),
+            crate::global_review_cancel::GlobalReviewCancellation::check,
+        )
+    };
+    let table = materialization.table();
+    check()?;
     connection
         .execute_batch(&format!(
-            "CREATE TEMP TABLE work_operation_references AS \
+            "CREATE {table} work_operation_references AS \
          SELECT operation_id, row_number() OVER ()::UBIGINT reference_position \
          FROM (SELECT DISTINCT c.operation_id FROM selected_contributions c \
          WHERE c.operation_id IS NOT NULL AND c.work_native_project_id IS NULL \
          AND ({}) AND NOT EXISTS \
-         (SELECT 1 FROM selected_operations o WHERE o.operation_id=c.operation_id)); \
-         CREATE TEMP TABLE work_operation_addresses \
-         (operation_id VARCHAR PRIMARY KEY, first_sequence UBIGINT NOT NULL);",
+         (SELECT 1 FROM selected_operations o WHERE o.operation_id=c.operation_id));",
             crate::review_aggregate::TOKEN_PREDICATE,
+        ))
+        .map_err(query_error)?;
+    check()?;
+    connection
+        .execute_batch(&format!(
+            "CREATE {table} work_operation_addresses \
+        (operation_id VARCHAR PRIMARY KEY, first_sequence UBIGINT NOT NULL)"
         ))
         .map_err(query_error)?;
     let partitions = descriptor
@@ -45,6 +61,7 @@ pub(super) fn populate(
     let mut files = BTreeSet::new();
     let mut after = 0_u64;
     loop {
+        check()?;
         let end = after
             .checked_add(256)
             .ok_or_else(|| invalid("operation reference range overflow"))?;
@@ -63,8 +80,10 @@ pub(super) fn populate(
             break;
         }
         let last_batch = ids.len() < 256;
+        check()?;
         let addresses = find_addresses(root, &partitions, ids, index.as_ref(), connection)?;
         if !addresses.is_empty() {
+            check()?;
             let mut appender = connection
                 .appender("work_operation_addresses")
                 .map_err(query_error)?;
@@ -93,12 +112,14 @@ pub(super) fn populate(
         &files.into_iter().collect::<Vec<_>>(),
         &sql_columns(OPERATION_COLUMNS),
     )?;
+    check()?;
     connection
         .execute_batch(&format!(
             "INSERT INTO work_operation_lookup SELECT o.* FROM ({source}) o \
          JOIN work_operation_addresses a USING (operation_id)"
         ))
         .map_err(query_error)?;
+    check()?;
     let (rows, unique, mismatch, expected): (u64, u64, bool, u64) = connection
         .query_row(
             "SELECT count(*), count(DISTINCT o.operation_id), \

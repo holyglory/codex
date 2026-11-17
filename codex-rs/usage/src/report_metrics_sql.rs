@@ -2,10 +2,9 @@
 
 const MAX_DETAIL_ROWS: usize = 32;
 
-pub(super) fn grouped_interval_query(operations: &str, start_ms: i64, end_ms: i64) -> String {
+pub(super) fn interval_rows_query(operations: &str, start_ms: i64, end_ms: i64) -> String {
     format!(
-        "WITH intervals AS MATERIALIZED (
-            SELECT timing_group, observation_weight, COALESCE(kind, 'unknown') kind, started_at_ms, ended_at_ms,
+        "SELECT timing_group, observation_weight, COALESCE(kind, 'unknown') kind, started_at_ms, ended_at_ms,
                 COALESCE(agent_id, thread_id) AS interval_owner,
                 greatest(started_at_ms::HUGEINT, {start_ms}) clipped_start,
                 least(ended_at_ms::HUGEINT, {end_ms}) clipped_end,
@@ -13,8 +12,14 @@ pub(super) fn grouped_interval_query(operations: &str, start_ms: i64, end_ms: i6
                      WHEN started_at_ms IS NULL THEN 'missing_start'
                      WHEN ended_at_ms IS NULL THEN 'missing_end'
                      WHEN ended_at_ms < started_at_ms THEN 'invalid_interval' END reason
-            FROM ({operations})
-        ), valid_intervals AS (
+            FROM ({operations})"
+    )
+}
+
+pub(super) fn grouped_interval_query(operations: &str, start_ms: i64, end_ms: i64) -> String {
+    let intervals = interval_rows_query(operations, start_ms, end_ms);
+    format!(
+        "WITH intervals AS MATERIALIZED ({intervals}), valid_intervals AS (
             SELECT * FROM intervals WHERE reason IS NULL AND clipped_start < clipped_end
         ), spans AS (
             SELECT timing_group, 'wait' metric, '' AS interval_owner, clipped_start, clipped_end
@@ -31,8 +36,8 @@ pub(super) fn grouped_interval_query(operations: &str, start_ms: i64, end_ms: i6
             ) covered_end FROM spans
         ), measured AS (
             SELECT timing_group, metric,
-                least(sum(greatest(clipped_end - greatest(clipped_start,
-                    COALESCE(covered_end, clipped_start)), 0)), 18446744073709551615)::UBIGINT ms
+                sum(greatest(clipped_end - greatest(clipped_start,
+                    COALESCE(covered_end, clipped_start)), 0))::UBIGINT ms
             FROM covered GROUP BY timing_group, metric
         ), unknowns AS (
             SELECT timing_group, kind || ':' || reason AS reason_key, sum(observation_weight)::UBIGINT observations FROM (
