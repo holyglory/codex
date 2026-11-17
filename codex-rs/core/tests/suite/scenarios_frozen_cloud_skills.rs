@@ -28,10 +28,7 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
         SkillProviders::new()
             .with_cloud_provider(Arc::new(provider))
             .with_executor_provider(Arc::new(
-                ExecutorSkillProvider::new_with_restriction_product(
-                    Arc::new(EnvironmentManager::default_for_tests()),
-                    /*restriction_product*/ None,
-                ),
+                executor_skill_fixture::FixtureExecutorSkills::new(&[]),
             )),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: true,

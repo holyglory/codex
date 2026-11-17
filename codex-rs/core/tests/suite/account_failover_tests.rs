@@ -250,12 +250,15 @@ fn assert_failover_work_usage(
             report["outcomes"]["unattributed"]["providerTotalTokens"]["measured"],
             0
         );
-        // Provider-reported tokens do not fill missing rejected-response usage
-        // or establish exact active time or a delivered outcome.
+        // Rejected-response usage remains unknown. Captured lifecycle intervals
+        // independently establish this single attributed outcome's time unions.
         assert_eq!(report["outcomes"]["coverage"], "partial");
         assert!(row["effort"]["providerTotalTokens"]["exact"].is_null());
-        assert!(row["effort"]["activeAgentMs"]["exact"].is_null());
-        assert!(row["effort"]["elapsedExecutionMs"]["exact"].is_null());
+        assert_eq!(row["effort"]["activeAgentMs"], report["timing"]["activeMs"]);
+        assert_eq!(
+            row["effort"]["elapsedExecutionMs"],
+            report["timing"]["elapsedMs"]
+        );
     }
     Ok(())
 }

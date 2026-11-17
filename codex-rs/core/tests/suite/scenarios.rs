@@ -209,6 +209,8 @@ mod tools_namespace_budget;
 #[path = "scenarios_skill_catalog_dedup.rs"]
 mod skill_catalog_dedup;
 
+#[path = "scenarios_executor_skill_fixture.rs"]
+mod executor_skill_fixture;
 #[path = "scenarios_frozen_cloud_skills.rs"]
 mod frozen_cloud_skills;
 
@@ -471,6 +473,23 @@ async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
     }
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
+    for request in &requests {
+        let users = request.message_input_texts("user");
+        let boundary = users
+            .first()
+            .expect("runtime boundary precedes context entries");
+        assert!(
+            boundary.starts_with("<usage_work_boundary>")
+                && boundary.ends_with("</usage_work_boundary>")
+        );
+        assert_eq!(
+            users
+                .iter()
+                .filter(|text| text.starts_with("<usage_work_boundary>"))
+                .count(),
+            1
+        );
+    }
     if tool_outputs {
         assert_eq!(
             requests
@@ -479,7 +498,7 @@ async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
                 .collect::<Vec<_>>(),
             vec![1, 2, 2, 3]
         );
-        assert_eq!(requests[3].message_input_texts("user").len(), 4);
+        assert_eq!(requests[3].message_input_texts("user").len(), 5);
         let input = requests[0].input();
         let context_index = input
             .iter()
@@ -487,7 +506,7 @@ async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
             .expect("context output");
         let user_index = input
             .iter()
-            .position(|item| item["role"] == "user")
+            .rposition(|item| item["role"] == "user")
             .expect("user message");
         assert!(context_index < user_index);
     } else {
@@ -501,7 +520,7 @@ async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
                 .iter()
                 .map(|request| request.message_input_texts("user").len())
                 .collect::<Vec<_>>(),
-            vec![2, 3, 4, 6]
+            vec![3, 4, 5, 7]
         );
     }
     insta::assert_snapshot!(
@@ -1845,10 +1864,7 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
         SkillProviders::new()
             .with_cloud_provider(Arc::new(InstallationSkills(catalog)))
             .with_executor_provider(Arc::new(
-                ExecutorSkillProvider::new_with_restriction_product(
-                    Arc::new(EnvironmentManager::default_for_tests()),
-                    /*restriction_product*/ None,
-                ),
+                executor_skill_fixture::FixtureExecutorSkills::new(&["skill://executor-04/deploy"]),
             )),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,

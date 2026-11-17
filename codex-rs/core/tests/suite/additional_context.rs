@@ -10,6 +10,7 @@ use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
+use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -21,6 +22,25 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
+
+// Context-entry assertions still verify the real runtime boundary first. The
+// captured request and readable snapshots retain every item unchanged.
+fn context_user_texts(request: &ResponsesRequest) -> Vec<String> {
+    let users = request.message_input_texts("user");
+    let (boundary, context) = users
+        .split_first()
+        .expect("runtime boundary before context entries");
+    let boundary = boundary.trim();
+    assert!(
+        boundary.starts_with("<usage_work_boundary>")
+            && boundary.ends_with("</usage_work_boundary>")
+    );
+    assert_eq!(boundary.matches("<usage_work_boundary>").count(), 1);
+    assert_eq!(boundary.matches("</usage_work_boundary>").count(), 1);
+    // Remove only that verified first item for this assertion. A later user
+    // string resembling runtime guidance remains ordinary compared payload.
+    context.to_vec()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn additional_context_is_model_visible_but_not_a_user_message_item() -> Result<()> {
@@ -107,7 +127,7 @@ async fn additional_context_is_model_visible_but_not_a_user_message_item() -> Re
         vec!["<automation_info>run one</automation_info>"]
     );
     assert_eq!(
-        request.message_input_texts("user"),
+        context_user_texts(&request),
         vec![
             "<external_browser_info>tab one</external_browser_info>",
             "inspect the active tab",
@@ -155,7 +175,7 @@ async fn external_context_like_user_text_remains_a_user_message_item() -> Result
     .await;
 
     let request = request.single_request();
-    assert_eq!(request.message_input_texts("user"), vec!["<external_api>"]);
+    assert_eq!(context_user_texts(&request), vec!["<external_api>"]);
 
     Ok(())
 }
@@ -223,7 +243,7 @@ async fn additional_context_trust_controls_message_role(tool_outputs: bool) -> R
         vec!["<automation_info>run one</automation_info>"]
     );
     if tool_outputs {
-        assert_eq!(request.message_input_texts("user"), vec!["inspect context"]);
+        assert_eq!(context_user_texts(&request), vec!["inspect context"]);
         let outputs = request.inputs_of_type("function_call_output");
         assert_eq!(
             outputs
@@ -245,7 +265,7 @@ async fn additional_context_trust_controls_message_role(tool_outputs: bool) -> R
         assert!(request.inputs_of_type("function_call").is_empty());
     } else {
         assert_eq!(
-            request.message_input_texts("user"),
+            context_user_texts(&request),
             vec![
                 "<external_browser_info>tab one</external_browser_info>",
                 "inspect context"
@@ -323,14 +343,14 @@ async fn additional_context_is_deduplicated_between_turns_while_retained(
     .await;
 
     assert_eq!(
-        first_request.single_request().message_input_texts("user"),
+        context_user_texts(&first_request.single_request()),
         vec![
             "<external_browser_info>same tab</external_browser_info>",
             "first turn",
         ]
     );
     assert_eq!(
-        second_request.single_request().message_input_texts("user"),
+        context_user_texts(&second_request.single_request()),
         vec![
             "<external_browser_info>same tab</external_browser_info>",
             "first turn",
@@ -496,13 +516,13 @@ async fn additional_context_removes_one_value_while_adding_another(
                     .collect::<Vec<_>>(),
                 expected_outputs,
             );
-            assert_eq!(request.message_input_texts("user"), expected_users);
+            assert_eq!(context_user_texts(&request), expected_users);
         }
         return Ok(());
     }
 
     assert_eq!(
-        first_request.single_request().message_input_texts("user"),
+        context_user_texts(&first_request.single_request()),
         vec![
             "<external_automation_info>run one</external_automation_info>",
             "<external_browser_info>tab one</external_browser_info>",
@@ -510,7 +530,7 @@ async fn additional_context_removes_one_value_while_adding_another(
         ]
     );
     assert_eq!(
-        second_request.single_request().message_input_texts("user"),
+        context_user_texts(&second_request.single_request()),
         vec![
             "<external_automation_info>run one</external_automation_info>",
             "<external_browser_info>tab one</external_browser_info>",
@@ -520,7 +540,7 @@ async fn additional_context_removes_one_value_while_adding_another(
         ]
     );
     assert_eq!(
-        third_request.single_request().message_input_texts("user"),
+        context_user_texts(&third_request.single_request()),
         vec![
             "<external_automation_info>run one</external_automation_info>",
             "<external_browser_info>tab one</external_browser_info>",
@@ -620,10 +640,7 @@ async fn additional_context_values_are_truncated_before_model_input(
     );
 
     if tool_outputs {
-        assert_eq!(
-            request.message_input_texts("user"),
-            vec!["summarize context"]
-        );
+        assert_eq!(context_user_texts(&request), vec!["summarize context"]);
         let outputs = request.inputs_of_type("function_call_output");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["name"], "browser_info");
@@ -684,7 +701,7 @@ async fn additional_context_values_are_truncated_before_model_input(
         return Ok(());
     }
 
-    let user_texts = request.message_input_texts("user");
+    let user_texts = context_user_texts(&request);
     let [external_text, user_text] = user_texts.as_slice() else {
         panic!("expected external context plus user input, got {user_texts:?}");
     };
@@ -749,7 +766,7 @@ async fn additional_context_rejects_invalid_names_before_admitting_input() -> Re
     assert!(request.requests().is_empty());
     test.submit_text_turn("valid input").await?;
     assert_eq!(
-        request.single_request().message_input_texts("user"),
+        context_user_texts(&request.single_request()),
         vec!["valid input"]
     );
     Ok(())

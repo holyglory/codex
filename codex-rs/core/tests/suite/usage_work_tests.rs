@@ -159,7 +159,7 @@ async fn sparse_switches_follow_model_tools_without_per_operation_metadata() -> 
                 responses::ev_function_call(
                     "review",
                     "usage_stats",
-                    &json!({"action":"performance_review"}).to_string(),
+                    &json!({"action":"performance_review", "scope":"current_chat"}).to_string(),
                 ),
                 responses::ev_completed("review-response"),
             ]),

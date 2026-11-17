@@ -33,8 +33,6 @@ impl ContextualUserFragment for UsageWorkBoundaryPrompt {
     }
 
     fn body(&self) -> ContentItem {
-        input_text(format!(
-            "\nA usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authoritative project, workstream, or outcome IDs are already available, declare them with `usage_work`; do not ask the user. If the attribution decision or IDs are genuinely unresolved, ask the user only for that decision, then call `usage_work_boundary` with the answer. Keep attribution sparse: declare only when the job or outcome changes, never per operation, retry, or context step.\nOptions: continue, select, new, clear, unknown.\n",
-        ))
+        input_text("\nA usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authoritative project, workstream, or outcome IDs are already available, declare them with `usage_work`; do not ask the user. If the attribution decision or IDs are genuinely unresolved, ask the user only for that decision, then call `usage_work_boundary` with the answer. Keep attribution sparse: declare only when the job or outcome changes, never per operation, retry, or context step.\nOptions: continue, select, new, clear, unknown.\n".to_string())
     }
 }

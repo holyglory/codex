@@ -434,6 +434,29 @@ fn rewritten_model_and_personality_use_plain_tags() {
 }
 
 #[test]
+fn rewritten_usage_boundary_keeps_its_position_and_default_text() {
+    let boundary =
+        "<usage_work_boundary>Resolve the missing attribution once.</usage_work_boundary>";
+    let items = [
+        message("user", "before"),
+        message("user", boundary),
+        message("user", "after"),
+    ];
+    assert_eq!(
+        rewritten(&items),
+        "00:message/user:\n    before\n01:message/user:\n    <USAGE_WORK_BOUNDARY>\n02:message/user:\n    after"
+    );
+    assert!(detailed(&items).contains(boundary));
+    assert!(rewritten(&[message("developer", boundary)]).contains(boundary));
+    for ordinary in [
+        "<usage_work_boundary>incomplete",
+        &format!("{boundary} user text"),
+    ] {
+        assert!(rewritten(&[message("user", ordinary)]).contains(ordinary));
+    }
+}
+
+#[test]
 fn base_instructions_use_the_same_mode_in_settings_and_annotated_developer_content() {
     let prompt = "My model instructions\nA rule below the prefix";
     let developer = |metadata: Value| {

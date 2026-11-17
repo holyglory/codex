@@ -251,6 +251,11 @@ async fn boundary_requests_are_one_shot_and_explicit_states_are_preserved() {
         .expect("explicit boundary state");
     assert_eq!(explicit.state, UsageWorkBoundaryState::Clear);
     assert!(explicit.request.is_none());
+    assert_eq!(
+        explicit.revision, 0,
+        "clearing an unbound scope is not a switch"
+    );
+    assert!(explicit.transition.is_none());
 
     sink.submit_work(
         "thread".into(),
@@ -258,7 +263,7 @@ async fn boundary_requests_are_one_shot_and_explicit_states_are_preserved() {
             native_project_id: "project".into(),
             workstream_id: None,
             outcome_id: None,
-            expected_revision: 1,
+            expected_revision: explicit.revision,
         },
     )
     .await

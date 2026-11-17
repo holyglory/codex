@@ -280,30 +280,29 @@ pub(super) fn boundary_status(
     // boundary. Keep the explicit `select`/`clear` receipt states produced by the matching tool
     // call, but discard stale answers that no longer describe the binding on disk.
     if !explicit_state_supplied && let Some(transition) = &transition {
-        let stale = match (
-            transition.update.native_project_id.is_some(),
-            entry.explicit_state,
-        ) {
+        let stale = matches!(
+            (
+                transition.update.native_project_id.is_some(),
+                entry.explicit_state,
+            ),
             (
                 true,
                 Some(
                     UsageWorkBoundaryState::Unknown
-                    | UsageWorkBoundaryState::New
-                    | UsageWorkBoundaryState::Clear
-                    | UsageWorkBoundaryState::Select,
+                        | UsageWorkBoundaryState::New
+                        | UsageWorkBoundaryState::Clear
+                        | UsageWorkBoundaryState::Select,
                 ),
-            )
-            | (
+            ) | (
                 false,
                 Some(
                     UsageWorkBoundaryState::Continue
-                    | UsageWorkBoundaryState::Select
-                    | UsageWorkBoundaryState::New
-                    | UsageWorkBoundaryState::Unknown,
+                        | UsageWorkBoundaryState::Select
+                        | UsageWorkBoundaryState::New
+                        | UsageWorkBoundaryState::Unknown,
                 ),
-            ) => true,
-            _ => false,
-        };
+            )
+        );
         if stale {
             entry.explicit_state = None;
         }

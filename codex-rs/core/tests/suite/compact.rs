@@ -50,7 +50,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
-use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use std::path::PathBuf;
@@ -94,7 +93,6 @@ const DUMMY_FUNCTION_NAME: &str = "test_tool";
 const DUMMY_CALL_ID: &str = "call-multi-auto";
 const FUNCTION_CALL_LIMIT_MSG: &str = "function call limit push";
 const POST_AUTO_USER_MSG: &str = "post auto follow-up";
-const PRETURN_CONTEXT_DIFF_CWD: &str = "/tmp/PRETURN_CONTEXT_DIFF_CWD";
 const GLOBAL_AGENTS_FILENAME: &str = "AGENTS.md";
 const GLOBAL_AGENTS_OVERRIDE_FILENAME: &str = "AGENTS.override.md";
 const NEW_GLOBAL_INSTRUCTIONS: &str = "new global instructions";
@@ -1800,7 +1798,17 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     }
 
     let initial_input = normalize_inputs(input);
-    let environment_message = initial_input[0]["content"][0]["text"].as_str().unwrap();
+    let first_parts = initial_input[0]["content"]
+        .as_array()
+        .expect("cached context");
+    assert_eq!(first_parts.len(), 2);
+    let boundary = first_parts[0]["text"].as_str().unwrap();
+    assert!(
+        boundary.starts_with("<usage_work_boundary>")
+            && boundary.ends_with("</usage_work_boundary>")
+    );
+    let environment_message = first_parts[1]["text"].as_str().unwrap();
+    assert!(environment_message.starts_with("<environment_context>"));
 
     // test 1: after compaction, we should have one environment message, one user message, and one user message with summary prefix
     let compaction_indices = [2, 4, 6];
@@ -1814,10 +1822,10 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         let input = body.get("input").and_then(|v| v.as_array()).unwrap();
         let input = normalize_inputs(input);
         assert_eq!(input.len(), 3);
-        let environment_message = input[0]["content"][0]["text"].as_str().unwrap();
+        let actual_environment_message = input[0]["content"][0]["text"].as_str().unwrap();
         let user_message_received = input[1]["content"][0]["text"].as_str().unwrap();
         let summary_message = input[2]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(environment_message, environment_message);
+        assert_eq!(actual_environment_message, environment_message);
         assert_eq!(user_message_received, user_message);
         assert_eq!(
             summary_message, expected_summary,
@@ -1826,7 +1834,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     }
 
     // test 2: the expected requests inputs should be as follows:
-    let expected_requests_inputs = json!([
+    let mut expected_requests_inputs = json!([
     [
         // 0: first request of the user message.
       {
@@ -2142,6 +2150,14 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     ]
     ]);
 
+    // The initial request and its first compaction retain the one attribution
+    // reminder. Compacted summaries thereafter restore environment context only.
+    for index in [0, 1] {
+        expected_requests_inputs[index][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type":"input_text","text":boundary}));
+    }
     for (i, request) in requests_payloads.iter().enumerate() {
         let body = request.body_json();
         let input = body.get("input").and_then(|v| v.as_array()).unwrap();
@@ -4732,7 +4748,14 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         first_request_user_texts[first_turn_user_index], first_user_message,
         "first turn request should end with the submitted user message"
     );
-    let initial_seeded_user_prefix = &first_request_user_texts[..first_turn_user_index];
+    let (boundary, initial_seeded_user_prefix) = first_request_user_texts[..first_turn_user_index]
+        .split_first()
+        .expect("initial attribution reminder before environment context");
+    assert!(
+        boundary.starts_with("<usage_work_boundary>")
+            && boundary.ends_with("</usage_work_boundary>")
+    );
+    assert_eq!(boundary.matches("<usage_work_boundary>").count(), 1);
 
     let final_request_user_texts = requests
         .last()
@@ -5597,6 +5620,14 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     skip_if_no_network!();
 
     let server = start_mock_server().await;
+    let override_workspace = tempfile::tempdir().expect("isolated override workspace");
+    // Instruction discovery stops at this fixture-owned project boundary.
+    std::fs::write(override_workspace.path().join(".git"), "").expect("project root marker");
+    let override_cwd = override_workspace
+        .path()
+        .canonicalize()
+        .expect("existing override cwd")
+        .abs();
 
     let sse1 = sse(vec![
         ev_assistant_message("m1", FIRST_REPLY),
@@ -5642,9 +5673,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     core_test_support::submit_thread_settings(
         &codex,
         ThreadSettingsOverrides {
-            environments: Some(local_requests(
-                test_path_buf(PRETURN_CONTEXT_DIFF_CWD).abs(),
-            )),
+            environments: Some(local_requests(override_cwd.clone())),
             ..Default::default()
         },
     )
@@ -5672,12 +5701,18 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     let requests = request_log.requests();
     assert_eq!(requests.len(), 4, "expected user, user, compact, follow-up");
 
-    assert!(requests[3].message_input_texts("user").iter().any(|text| {
-        text.contains(&format!(
-            "<cwd>{}</cwd>",
-            test_path_buf(PRETURN_CONTEXT_DIFF_CWD).display()
-        ))
-    }));
+    assert!(
+        requests[3]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| { text.contains(&format!("<cwd>{}</cwd>", override_cwd.display())) })
+    );
+    assert!(
+        requests[3]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.starts_with("# AGENTS.md instructions"))
+    );
     insta::assert_snapshot!(
         "pre_turn_compaction_including_incoming_shapes",
         format_history_snapshot(

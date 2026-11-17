@@ -550,9 +550,27 @@ async fn reasoning_effort_override_recovery_sends_latest_tail_update(
     let request = mock.single_request();
     assert_eq!(
         effort_updates(&request),
-        vec![effort_update(effort.clone())]
+        expected_history_efforts
+            .into_iter()
+            .map(effort_update)
+            .collect::<Vec<_>>()
     );
-    assert_eq!(request.input().last(), Some(&effort_update(effort.clone())));
+    let input = request.input();
+    let latest = input
+        .iter()
+        .rposition(|item| item["type"] == "configuration_update")
+        .expect("latest effort update");
+    assert_eq!(input[latest], effort_update(effort.clone()));
+    for fragment in &input[latest + 1..] {
+        assert_eq!(fragment["role"], "user");
+        let content = fragment["content"].as_array().expect("runtime guidance");
+        assert_eq!(content.len(), 1);
+        let boundary = content[0]["text"].as_str().expect("boundary text");
+        assert!(
+            boundary.starts_with("<usage_work_boundary>")
+                && boundary.ends_with("</usage_work_boundary>")
+        );
+    }
     assert_eq!(
         request.body_json()["reasoning"]["effort"],
         serde_json::to_value(effort)?
