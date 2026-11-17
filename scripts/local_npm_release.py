@@ -21,10 +21,12 @@ from local_npm_transport import (
     REPOSITORY,
     checked_members,
     create_descriptor,
+    create_multipart_descriptor,
     download_bundle,
     extract_bundle,
     file_record,
     read_json,
+    split_candidate,
     validate_descriptor,
     write_json,
 )
@@ -376,9 +378,15 @@ def main() -> None:
     verify.add_argument("--descriptor", type=Path, required=True)
     verify.add_argument("--tag", required=True)
     verify.add_argument("--repository", default=REPOSITORY)
+    split = commands.add_parser("split")
+    split.add_argument("--candidate", type=Path, required=True)
+    split.add_argument("--output-dir", type=Path, required=True)
     descriptor = commands.add_parser("descriptor")
-    descriptor.add_argument("--candidate", type=Path, required=True)
-    descriptor.add_argument("--asset-url", required=True)
+    original = descriptor.add_mutually_exclusive_group(required=True)
+    original.add_argument("--candidate", type=Path)
+    original.add_argument("--parts-manifest", type=Path)
+    descriptor.add_argument("--asset-url")
+    descriptor.add_argument("--assets-json", type=Path)
     descriptor.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "assemble":
@@ -391,10 +399,23 @@ def main() -> None:
             args.delivery_receipt,
             args.output_dir.resolve(),
         )
+    elif args.command == "split":
+        value = split_candidate(args.candidate.resolve(), args.output_dir.resolve())
     elif args.command == "descriptor":
-        value = create_descriptor(
-            args.candidate.resolve(), args.asset_url, args.output.resolve()
-        )
+        if args.parts_manifest and args.assets_json and not args.asset_url:
+            value = create_multipart_descriptor(
+                args.parts_manifest.resolve(),
+                args.assets_json.resolve(),
+                args.output.resolve(),
+            )
+        elif args.candidate and args.asset_url and not args.assets_json:
+            value = create_descriptor(
+                args.candidate.resolve(), args.asset_url, args.output.resolve()
+            )
+        else:
+            parser.error(
+                "Use --candidate with --asset-url, or --parts-manifest with --assets-json"
+            )
     else:
         value = read_json(args.descriptor, 65536)
         archive = download_bundle(value, args.output_dir.resolve(), args.repository)

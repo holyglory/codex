@@ -234,6 +234,51 @@ class LocalNpmCandidateTest(unittest.TestCase):
             manifest["files"],
         )
 
+    def test_two_part_transport_retains_original_archive_and_seven_tarballs(self):
+        archive = self.bundle / "candidate.tar.gz"
+        parts_dir = self.output / "parts"
+        with patch.object(transport, "PART_SIZE", (archive.stat().st_size + 1) // 2):
+            parts = transport.split_candidate(
+                self.bundle / "local-candidate.json", parts_dir
+            )
+            self.assertEqual(len(parts["parts"]), 2)
+            urls = {
+                part[
+                    "name"
+                ]: f"https://api.github.com/repos/holyglory/codex/releases/assets/{number}"
+                for number, part in enumerate(parts["parts"], start=1)
+            }
+            transport.write_json(self.output / "assets.json", urls)
+            descriptor = transport.create_multipart_descriptor(
+                parts_dir / "parts-manifest.json",
+                self.output / "assets.json",
+                self.output / "transport.json",
+            )
+            files = {
+                urls[part["name"]]: parts_dir / part["name"] for part in parts["parts"]
+            }
+            with (
+                patch.dict(os.environ, {"GH_TOKEN": "fixture"}),
+                patch.object(
+                    transport,
+                    "download_artifact",
+                    side_effect=lambda part, path: shutil.copyfile(
+                        files[part["url"]], path
+                    ),
+                ),
+            ):
+                downloaded = transport.download_bundle(
+                    descriptor, self.output / "download", transport.REPOSITORY
+                )
+            self.assertEqual(
+                transport.file_record(downloaded), transport.file_record(archive)
+            )
+            verified = self.verify(downloaded, descriptor)
+        self.assertEqual(
+            verified,
+            transport.read_json(self.bundle / "candidate" / candidate.MANIFEST),
+        )
+
     def test_archive_or_manifest_digest_change_is_rejected(self):
         for key in ("sha256", "manifest_sha256"):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "SHA-256"):

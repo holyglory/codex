@@ -74,6 +74,8 @@ jobs:
   prebuilt-native:
     name: Verify locally compiled native target
     if: inputs.pipeline_mode == 'verify-native'
+    permissions:
+      contents: write # Draft release inputs require the existing handoff authority.
     uses: ./.github/workflows/downstream-prebuilt-native.yml
     with:
       source_sha: ${{ inputs.native_source_commit }}
@@ -88,7 +90,7 @@ jobs:
     name: Verify locally assembled npm candidate
     if: inputs.pipeline_mode == 'local-npm'
     permissions:
-      contents: read
+      contents: write # Read owned draft release inputs; npm staging is a separate job.
       id-token: write
       attestations: write
     uses: ./.github/workflows/downstream-local-npm.yml

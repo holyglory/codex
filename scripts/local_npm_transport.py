@@ -12,6 +12,9 @@ from runner_handoff import download_artifact
 from local_release_tar import BoundedTarInfo
 
 MAX_ARCHIVE = 8 * 1024**3
+MAX_ASSET = 2 * 1024**3  # GitHub requires each release asset to be strictly smaller.
+PART_SIZE = 1024**3
+MAX_PARTS = 8
 MAX_EXPANDED = 16 * 1024**3
 MAX_JSON = 1024**2
 REPOSITORY = "holyglory/codex"
@@ -93,19 +96,73 @@ def validate_descriptor(value: dict, repository: str) -> dict:
     if (
         value.get("schema") != 1
         or value.get("kind") != "codex-local-npm-transport"
-        or not re.fullmatch(
-            rf"https://api\.github\.com/repos/{re.escape(repository)}/releases/assets/[1-9][0-9]*",
-            str(value.get("url", "")),
-        )
-        or type(value.get("size_bytes")) is not int
-        or not 0 < value["size_bytes"] <= MAX_ARCHIVE
-        or any(
-            not re.fullmatch(r"[0-9a-f]{64}", str(value.get(key, "")))
-            for key in ("sha256", "manifest_sha256")
-        )
+        or not valid_record(value, MAX_ARCHIVE)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("manifest_sha256", "")))
     ):
         raise ValueError("Invalid owned GitHub release-asset transport descriptor")
+    if "parts" in value:
+        if "url" in value:
+            raise ValueError("Multipart transport cannot also name a single asset")
+        validate_parts(value["parts"], value["size_bytes"])
+        if any(not owned_asset_url(part.get("url")) for part in value["parts"]):
+            raise ValueError("Every part needs an owned GitHub release-asset URL")
+    elif not owned_asset_url(value.get("url")) or value["size_bytes"] >= MAX_ASSET:
+        raise ValueError("A single owned GitHub release asset must be below 2 GiB")
     return value
+
+
+def owned_asset_url(value) -> bool:
+    return isinstance(value, str) and bool(
+        re.fullmatch(
+            rf"https://api\.github\.com/repos/{re.escape(REPOSITORY)}/releases/assets/[1-9][0-9]*",
+            value,
+        )
+    )
+
+
+def valid_record(value, limit: int) -> bool:
+    return (
+        isinstance(value, dict)
+        and type(value.get("size_bytes")) is int
+        and 0 < value["size_bytes"] <= limit
+        and bool(re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256", ""))))
+    )
+
+
+def validate_parts(parts, archive_size: int) -> None:
+    if not isinstance(parts, list) or not 1 <= len(parts) <= MAX_PARTS:
+        raise ValueError("Multipart candidate requires one to eight ordered parts")
+    if len(parts) != (archive_size + PART_SIZE - 1) // PART_SIZE:
+        raise ValueError("Multipart candidate has missing or extra parts")
+    for index, part in enumerate(parts, start=1):
+        expected_size = min(PART_SIZE, archive_size - (index - 1) * PART_SIZE)
+        if (
+            not valid_record(part, PART_SIZE)
+            or part.get("name") != f"candidate.tar.gz.part-{index:04d}"
+            or part["size_bytes"] != expected_size
+        ):
+            raise ValueError("Invalid, oversized, missing, or reordered candidate part")
+
+
+def append_part(path: Path, part: dict, digest, output=None) -> int:
+    """Check a part while streaming its original bytes into the aggregate digest."""
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("Candidate part must be an original regular file")
+    observed, size = hashlib.sha256(), 0
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024**2), b""):
+            size += len(chunk)
+            if size > part["size_bytes"]:
+                raise ValueError("Candidate part is larger than its receipt")
+            observed.update(chunk)
+            digest.update(chunk)
+            if output is not None:
+                output.write(chunk)
+    if {"sha256": observed.hexdigest(), "size_bytes": size} != {
+        key: part[key] for key in ("sha256", "size_bytes")
+    }:
+        raise ValueError("Candidate part SHA-256 or size differs")
+    return size
 
 
 def download_bundle(value: dict, destination: Path, repository: str) -> Path:
@@ -114,11 +171,30 @@ def download_bundle(value: dict, destination: Path, repository: str) -> Path:
         raise ValueError("Authenticated GitHub download requires GH_TOKEN")
     destination.mkdir(parents=True, exist_ok=False)
     archive = destination / "candidate.tar.gz"
-    download_artifact(value, archive)
+    if "parts" not in value:
+        download_artifact(value, archive)
+        return archive
+    digest, total = hashlib.sha256(), 0
+    try:
+        with archive.open("xb") as output:
+            for part in value["parts"]:
+                path = destination / part["name"]
+                try:
+                    download_artifact(part, path)
+                    total += append_part(path, part, digest, output)
+                finally:
+                    path.unlink(missing_ok=True)
+        if {"sha256": digest.hexdigest(), "size_bytes": total} != {
+            key: value[key] for key in ("sha256", "size_bytes")
+        }:
+            raise ValueError("Reassembled candidate archive SHA-256 or size differs")
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
     return archive
 
 
-def create_descriptor(candidate: Path, url: str, output: Path) -> dict:
+def local_candidate(candidate: Path) -> tuple[dict, Path]:
     local = read_json(candidate)
     archive = candidate.parent / "candidate.tar.gz"
     manifest = candidate.parent / "candidate/npm-build-manifest.json"
@@ -126,10 +202,16 @@ def create_descriptor(candidate: Path, url: str, output: Path) -> dict:
         local.get("schema") != 1
         or local.get("kind") != "codex-local-npm-bundle"
         or local.get("npm_published") is not False
+        or not valid_record(local.get("archive"), MAX_ARCHIVE)
         or file_record(archive) != local.get("archive")
         or file_record(manifest)["sha256"] != local.get("manifest_sha256")
     ):
         raise ValueError("Local candidate changed before transport registration")
+    return local, archive
+
+
+def create_descriptor(candidate: Path, url: str, output: Path) -> dict:
+    local, _archive = local_candidate(candidate)
     value = {
         "schema": 1,
         "kind": "codex-local-npm-transport",
@@ -138,5 +220,76 @@ def create_descriptor(candidate: Path, url: str, output: Path) -> dict:
         "manifest_sha256": local["manifest_sha256"],
     }
     validate_descriptor(value, REPOSITORY)
+    write_json(output, value)
+    return value
+
+
+def split_candidate(candidate: Path, output: Path) -> dict:
+    local, archive = local_candidate(candidate)
+    output.mkdir(parents=True, exist_ok=False)
+    parts, digest, total = [], hashlib.sha256(), 0
+    count = (local["archive"]["size_bytes"] + PART_SIZE - 1) // PART_SIZE
+    with archive.open("rb") as source:
+        for index in range(1, count + 1):
+            name = f"candidate.tar.gz.part-{index:04d}"
+            part_digest, size = hashlib.sha256(), 0
+            with (output / name).open("xb") as destination:
+                while size < PART_SIZE and (
+                    chunk := source.read(min(1024**2, PART_SIZE - size))
+                ):
+                    size += len(chunk)
+                    part_digest.update(chunk)
+                    digest.update(chunk)
+                    destination.write(chunk)
+            total += size
+            parts.append(
+                {"name": name, "sha256": part_digest.hexdigest(), "size_bytes": size}
+            )
+        if source.read(1):
+            raise ValueError("Candidate archive grew during splitting")
+    if {"sha256": digest.hexdigest(), "size_bytes": total} != local["archive"]:
+        raise ValueError("Candidate archive changed during splitting")
+    validate_parts(parts, total)
+    value = {
+        "schema": 1,
+        "kind": "codex-local-npm-parts",
+        "archive": local["archive"],
+        "manifest_sha256": local["manifest_sha256"],
+        "parts": parts,
+        "npm_published": False,
+        **{key: local[key] for key in ("source_commit", "packaging_commit", "version")},
+    }
+    write_json(output / "parts-manifest.json", value)
+    return value
+
+
+def create_multipart_descriptor(manifest: Path, assets: Path, output: Path) -> dict:
+    local, urls = read_json(manifest, 65536), read_json(assets, 65536)
+    if (
+        not isinstance(local, dict)
+        or local.get("schema") != 1
+        or local.get("kind") != "codex-local-npm-parts"
+        or local.get("npm_published") is not False
+        or not valid_record(local.get("archive"), MAX_ARCHIVE)
+    ):
+        raise ValueError("Invalid original candidate parts manifest")
+    validate_parts(local.get("parts"), local["archive"]["size_bytes"])
+    if not isinstance(urls, dict) or set(urls) != {
+        part["name"] for part in local["parts"]
+    }:
+        raise ValueError("Asset URLs must map every original part name exactly once")
+    value = {
+        "schema": 1,
+        "kind": "codex-local-npm-transport",
+        **local["archive"],
+        "manifest_sha256": local.get("manifest_sha256"),
+        "parts": [{**part, "url": urls[part["name"]]} for part in local["parts"]],
+    }
+    validate_descriptor(value, REPOSITORY)
+    digest, total = hashlib.sha256(), 0
+    for part in value["parts"]:
+        total += append_part(manifest.parent / part["name"], part, digest)
+    if {"sha256": digest.hexdigest(), "size_bytes": total} != local["archive"]:
+        raise ValueError("Original archive differs from its ordered parts")
     write_json(output, value)
     return value

@@ -48,7 +48,7 @@ jobs:
     if: github.repository == 'holyglory/codex'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write # Owned draft release inputs, as in the existing handoff job.
       id-token: write
       attestations: write
     outputs:

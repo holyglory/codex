@@ -192,8 +192,30 @@ python3 scripts/local_npm_release.py assemble \
 
 The output contains the seven tarballs, `npm-build-manifest.json`, native
 provenance, local acceptance evidence, and an immutable candidate archive.
-The local descriptor is explicitly unpublished. Upload the archive to an owned
-draft release or artifact location, then bind the actual returned asset URL:
+The local descriptor is explicitly unpublished. GitHub release assets must be
+[smaller than 2 GiB](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).
+Use ordered parts for the npm bundle so all six native archives can remain in
+the independent verification input:
+
+```sh
+python3 scripts/local_npm_release.py split \
+  --candidate "$NEW_CANDIDATE_DIRECTORY/local-candidate.json" \
+  --output-dir "$NEW_PARTS_DIRECTORY"
+```
+
+Upload the immutable parts (each at most 1 GiB) to the owned draft release.
+Record the actual returned API URLs in a JSON object mapping each exact part
+filename to its asset URL. Then bind that map to the original archive:
+
+```sh
+python3 scripts/local_npm_release.py descriptor \
+  --parts-manifest "$NEW_PARTS_DIRECTORY/parts-manifest.json" \
+  --assets-json "$UPLOADED_PART_URLS_JSON" --output "$TRANSPORT_DESCRIPTOR"
+```
+
+The receiver verifies each ordered part and the reassembled original archive
+before extraction. The aggregate 8 GiB and extraction bounds remain enforced.
+For a bundle smaller than 2 GiB, a single owned asset is also supported:
 
 ```sh
 python3 scripts/local_npm_release.py descriptor \
@@ -209,6 +231,12 @@ repack the candidate. Its publication artifact contains the seven original
 tarballs and receipts; the input asset retains the larger native archives, so
 they are not uploaded a second time. The bytes attested and staged must be the
 verified bytes.
+
+Only the trusted manually dispatched native/npm verification jobs receive the
+repository permission used by the existing draft-release handoff. Their
+`GITHUB_TOKEN` is scoped to the repository; the separate protected npm workflow
+retains publication authority. Do not add personal or long-lived npm tokens to
+these download paths.
 
 The root package pins all six platform versions. Verify OS/CPU constraints,
 required executables, `LICENSE`/`NOTICE`, launcher ownership, version/help output,

@@ -65,6 +65,8 @@ permissions:
 jobs:
   verify:
     name: Verify prebuilt Linux target
+    permissions:
+      contents: write # Match the existing trusted draft-release handoff job.
     if: >-
       github.repository == 'holyglory/codex' &&
       github.event_name != 'pull_request'
