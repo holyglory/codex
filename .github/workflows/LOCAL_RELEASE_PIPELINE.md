@@ -151,10 +151,11 @@ branch or immutable packaging reference. Its default mode is `local-npm`.
 | `hosted-build` | Existing handoff/producer and acceptance inputs | Explicit fallback to the previous hosted compilation pipeline |
 
 Every mode also takes `native_source_commit`. A native descriptor contains
-`target`, `url`, `size_bytes`, `sha256`, and `manifest_sha256`; the asset URL must
-be the owned GitHub release-asset API URL. The helper revision is the workflow
-revision and must match the local compiler's recorded helper commit and bytes.
-Do not dispatch a native archive made by a different helper revision.
+`target`, `helper_sha`, `url`, `size_bytes`, `sha256`, and `manifest_sha256`; the
+asset URL must be the owned GitHub release-asset API URL. The runner checks out
+the compiler's exact helper commit and bytes. That helper must be an ancestor
+of the selected workflow revision, so a workflow repair can verify retained
+inputs without recompiling or relabeling their producer.
 
 Use `macos-build` for the current Mac fallback while Linux compiles locally and
 the existing private Windows controller builds its two targets. It does not

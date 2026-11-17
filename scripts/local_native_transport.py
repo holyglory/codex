@@ -196,6 +196,7 @@ def descriptor(args):
     verify_archive(args.bundle, value)
     result = {
         "target": value["target"],
+        "helper_sha": value["producer"]["helper_commit"],
         "url": args.asset_url,
         **value["bundle"],
         "manifest_sha256": value["manifest_sha256"],

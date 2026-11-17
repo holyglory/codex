@@ -597,6 +597,7 @@ class NativeReleaseTest(unittest.TestCase):
             value,
             {
                 "target": self.target,
+                "helper_sha": self.producer["helper_commit"],
                 "url": descriptor_args.asset_url,
                 **artifacts.file_info(args.output),
                 "manifest_sha256": self.manifest_digest,

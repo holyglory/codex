@@ -67,8 +67,7 @@ jobs:
     name: Verify prebuilt Linux target
     if: >-
       github.repository == 'holyglory/codex' &&
-      github.event_name != 'pull_request' &&
-      contains(fromJSON('["x86_64-unknown-linux-musl","aarch64-unknown-linux-musl"]'), inputs.target)
+      github.event_name != 'pull_request'
     runs-on: ${{ inputs.target == 'aarch64-unknown-linux-musl' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 360
     env:
@@ -87,6 +86,7 @@ jobs:
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$HELPER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$ASSET_SHA256" =~ ^[0-9a-f]{64}$ && "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$TARGET" == x86_64-unknown-linux-musl || "$TARGET" == aarch64-unknown-linux-musl ]]
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.source_sha }}
@@ -108,6 +108,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          git -C helpers merge-base --is-ancestor "$HELPER_SHA" "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json, os, re
+          from urllib.error import HTTPError
+          from urllib.parse import urlparse
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+          url = os.environ['ASSET_URL']
+          if re.fullmatch(r'https://api\.github\.com/repos/holyglory/codex/releases/assets/[1-9][0-9]*', url) is None:
+              raise SystemExit('Unexpected artifact API boundary')
+          class MetadataOnly(HTTPRedirectHandler):
+              def redirect_request(self, *args):
+                  return None
+          for accept in ['application/vnd.github+json', 'application/octet-stream']:
+              request = Request(url, headers={'Accept': accept, 'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'User-Agent': 'codex-native-input-probe/1'})
+              try:
+                  response = build_opener(MetadataOnly()).open(request, timeout=30)
+              except HTTPError as error:
+                  response = error
+              with response:
+                  result = {'stage': 'artifact-api', 'accept': accept, 'status': response.code}
+                  permissions = response.headers.get('X-Accepted-GitHub-Permissions', '')
+                  if re.fullmatch(r'[a-z_]+=(read|write)(;[a-z_]+=(read|write))*', permissions):
+                      result['acceptedPermissions'] = permissions
+                  remaining = response.headers.get('X-RateLimit-Remaining', '')
+                  if remaining.isdigit():
+                      result['rateRemaining'] = int(remaining)
+                  if response.code >= 400 and 'application/json' in response.headers.get('Content-Type', ''):
+                      try:
+                          message = json.loads(response.read(2048)).get('message', '')
+                      except (ValueError, UnicodeError):
+                          message = ''
+                      result['category'] = {'Resource not accessible by integration': 'integration_denied', 'Bad credentials': 'invalid_credentials', 'Not Found': 'not_found', 'Requires authentication': 'authentication_required'}.get(message, 'http_error')
+                      if message.startswith('API rate limit exceeded'):
+                          result['category'] = 'rate_limited'
+                  location = response.headers.get('Location')
+                  if location:
+                      result['redirectHost'] = urlparse(location).hostname
+                  print(json.dumps(result))
+          PY
           result=$(python3 helpers/scripts/local_native_release.py fetch \
             --source-root "$GITHUB_WORKSPACE/source" --commit "$SOURCE_SHA" --target "$TARGET" \
             --asset-url "$ASSET_URL" --asset-sha256 "$ASSET_SHA256" --asset-size "$ASSET_SIZE" \

@@ -77,7 +77,7 @@ jobs:
     uses: ./.github/workflows/downstream-prebuilt-native.yml
     with:
       source_sha: ${{ inputs.native_source_commit }}
-      helper_sha: ${{ github.sha }}
+      helper_sha: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').helper_sha }}
       target: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').target }}
       asset_url: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').url }}
       asset_sha256: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').sha256 }}
