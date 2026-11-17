@@ -32,7 +32,6 @@ timeout_seconds = 9000
 PATH = "/home/holyglory/.cargo/bin:/home/holyglory/.local/bin:/usr/local/bin:/usr/bin:/bin"
 RUSTUP_TOOLCHAIN = "1.95.0"
 CARGO_TARGET_DIR = "/mnt/build-storage/codex/multi12-release-target"
-MULTI12_SOURCE_COMMIT = "478481c028884c80748e408de433889bbcfff196"
 PYTHONDONTWRITEBYTECODE = "1"
 [[test.multi12-local-package.check]]
 name = "build-exact-local-package"

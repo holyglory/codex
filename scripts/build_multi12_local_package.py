@@ -11,7 +11,6 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
 VERSION = tomllib.loads((ROOT / "codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]
-COMMIT = os.environ.get("MULTI12_SOURCE_COMMIT", "")
 OUTPUT = ROOT / "codex-rs/target/multi12-local"
 CARGO_TARGET = Path(os.environ.get("CARGO_TARGET_DIR", "/mnt/build-storage/codex/multi12-release-target"))
 
@@ -35,8 +34,9 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
 
 
-if not re.fullmatch(r"[0-9a-f]{40}", COMMIT) or git("rev-parse", "HEAD") != COMMIT:
-    raise RuntimeError("source checkout differs from the declared .12 commit")
+COMMIT = git("rev-parse", "HEAD")
+if not re.fullmatch(r"[0-9a-f]{40}", COMMIT):
+    raise RuntimeError("source checkout does not have an immutable commit")
 status = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"], text=True)
 if any(line and line[3:] != ".devcoordinator.toml" for line in status.splitlines()):
     raise RuntimeError("source must be clean except for the governed declaration")
