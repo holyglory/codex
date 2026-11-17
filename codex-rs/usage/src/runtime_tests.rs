@@ -76,6 +76,38 @@ fn global_analytics_owner_drop_interrupts_duckdb_and_releases_private_candidate(
             /*output_tokens*/ 0,
         ))
         .expect("later capture");
+    #[cfg(windows)]
+    {
+        for (label, query) in [("no-query", None), ("completed-query", Some("SELECT 42"))] {
+            let database = root.join(format!("cleanup-control-{label}.duckdb"));
+            let spill = root.join(format!("cleanup-control-{label}-spill"));
+            drop(
+                crate::storage_file::open_read_write(&spill.join(".private"))
+                    .expect("private close control spill"),
+            );
+            let connection = crate::duckdb_connection::open_background_report(&database, &spill)
+                .expect("bounded close control engine");
+            if let Some(query) = query {
+                let value = connection
+                    .query_row(query, [], |row| row.get::<_, i64>(0))
+                    .expect("close control query completed");
+                assert_eq!(value, 42);
+            }
+            let closed = connection.close().map_err(|(_, error)| error);
+            eprintln!("global review close control: label={label} close_result={closed:?}");
+            closed.expect("close control database closed");
+            let removal = std::fs::remove_file(&database);
+            eprintln!(
+                "global review close control: label={label} remove_succeeded={} error_kind={:?} raw_os_error={:?}",
+                removal.is_ok(),
+                removal.as_ref().err().map(std::io::Error::kind),
+                removal
+                    .as_ref()
+                    .err()
+                    .and_then(std::io::Error::raw_os_error)
+            );
+        }
+    }
     let cancellation = Arc::new(crate::global_review_cancel::GlobalReviewCancellation::default());
     let (started, ready) = mpsc::channel();
     let (completed, result) = mpsc::channel();
@@ -136,9 +168,16 @@ fn global_analytics_owner_drop_interrupts_duckdb_and_releases_private_candidate(
             .is_err();
         #[cfg(windows)]
         probe_database("after-query-error");
+        #[cfg(windows)]
+        {
+            let closed = connection.close().map_err(|(_, error)| error);
+            eprintln!("global review interrupted database close_result={closed:?}");
+            closed.expect("interrupted database closed");
+        }
+        #[cfg(not(windows))]
         drop(connection);
         #[cfg(windows)]
-        probe_database("after-connection-drop");
+        probe_database("after-connection-close");
         drop(registration);
         #[cfg(windows)]
         probe_database("after-registration-drop");
