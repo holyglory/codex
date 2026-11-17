@@ -105,6 +105,21 @@ fn global_analytics_owner_drop_interrupts_duckdb_and_releases_private_candidate(
         let registration = worker_cancel
             .register(&connection)
             .expect("active connection registration");
+        #[cfg(windows)]
+        let probe_database = |stage: &str| {
+            use std::os::windows::fs::OpenOptionsExt;
+            let result = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(work.join("report.duckdb"));
+            eprintln!(
+                "global review database probe: stage={stage} exclusive_open={} error_kind={:?} raw_os_error={:?}",
+                result.is_ok(),
+                result.as_ref().err().map(std::io::Error::kind),
+                result.as_ref().err().and_then(std::io::Error::raw_os_error)
+            );
+            drop(result);
+        };
         started.send(()).expect("query starting");
         let interrupted = worker_cancel
             .check()
@@ -119,8 +134,14 @@ fn global_analytics_owner_drop_interrupts_duckdb_and_releases_private_candidate(
                     .map_err(crate::reader_query::query_error)
             })
             .is_err();
+        #[cfg(windows)]
+        probe_database("after-query-error");
         drop(connection);
+        #[cfg(windows)]
+        probe_database("after-connection-drop");
         drop(registration);
+        #[cfg(windows)]
+        probe_database("after-registration-drop");
         drop(builder);
         completed.send(interrupted).expect("cancellation result");
     });
