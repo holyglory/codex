@@ -150,6 +150,21 @@ Headline and rich requests have independent bounded admission pools, so an
 expensive rich query cannot consume the headline slots. Identical in-flight
 requests share one source read.
 
+The built-in `usage_stats` tool also supports an all-history global
+`performance_review`. That request reads a completed background publication;
+it does not open the current operation history in the foreground. Its source
+generation, manifest watermark and included journal watermark identify the
+facts in the report. New capture is disclosed as pending entries. Pagination
+keeps that completed report and its source metadata fixed. Before the first
+publication exists, the tool returns an explicit retryable pending result.
+Finite and identity-filtered reviews retain their requested scope.
+
+The global analytics publisher is separate from Coordinator review policy.
+It uses bounded private database resources, publishes only complete results,
+keeps the previous completed report on failure, and is interruptible during
+shutdown. Invalid derived caches are rebuilt from canonical observations;
+retired usage formats are not imported or migrated.
+
 `workContextBindings` is an optional request array, bounded to 256 declarations
 and 256 distinct contexts. Headlines validate declaration shape but defer
 identity resolution and return no binding evidence. Rich requests resolve the
