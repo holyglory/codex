@@ -43,15 +43,40 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def bindings(directory: Path) -> dict:
+def bindings(directory: Path, *, archive_scope: str = "all") -> dict:
+    require(
+        archive_scope in {"all", "npm-runtime"}, "unknown archive verification scope"
+    )
     receipt = json.loads((directory / "native-manifest.json").read_bytes())
     archives = receipt["archives"]
-    require(bool(archives), "missing native archives")
+    require(isinstance(archives, dict) and bool(archives), "missing native archives")
+    runtime_archive = f"codex-package-{receipt['target']}.tar.gz"
+    require(runtime_archive in archives, "missing canonical runtime archive")
     observed = {}
-    for name in archives:
-        require(Path(name).name == name, "invalid archive name")
-        path = directory / name
-        observed[name] = {"sha256": digest(path), "size_bytes": path.stat().st_size}
+    for name, recorded in archives.items():
+        require(
+            isinstance(name, str)
+            and Path(name).name == name
+            and name not in {".", ".."}
+            and "\\" not in name
+            and ":" not in name,
+            "invalid archive name",
+        )
+        require(
+            isinstance(recorded, dict)
+            and set(recorded) == {"sha256", "size_bytes"}
+            and re.fullmatch(r"[0-9a-f]{64}", str(recorded["sha256"]))
+            and type(recorded["size_bytes"]) is int
+            and recorded["size_bytes"] > 0,
+            "invalid archive binding",
+        )
+        if archive_scope == "all" or name == runtime_archive:
+            path = directory / name
+            observed[name] = {"sha256": digest(path), "size_bytes": path.stat().st_size}
+        else:
+            # Keep the complete original map/hash binding. npm does not consume
+            # these symbol/alternate-format bodies; full producer intake does.
+            observed[name] = recorded
     require(observed == archives, "native archive bytes changed")
     return {
         "native_manifest_sha256": digest(directory / "native-manifest.json"),
@@ -77,7 +102,11 @@ def original(record: dict) -> bytes:
 
 
 def verify(
-    directory: Path, packaging: str, *, proof: dict | None = None
+    directory: Path,
+    packaging: str,
+    *,
+    proof: dict | None = None,
+    archive_scope: str = "all",
 ) -> dict | None:
     path = directory / SIDECAR
     if proof is None:
@@ -86,7 +115,8 @@ def verify(
         require(path.stat().st_size <= 256 * 1024, "sidecar exceeds 256 KiB")
         proof = json.loads(path.read_bytes())
     require(
-        proof.get("schema") == 1 and proof.get("bindings") == bindings(directory),
+        proof.get("schema") == 1
+        and proof.get("bindings") == bindings(directory, archive_scope=archive_scope),
         "original native manifest or archives changed",
     )
     receipt = json.loads((directory / "native-manifest.json").read_bytes())

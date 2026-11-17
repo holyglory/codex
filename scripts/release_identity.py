@@ -626,8 +626,14 @@ def verify_acceptance(
 
 
 def verify_artifacts(
-    directory: Path, packaging: str, *, targets: tuple[str, ...] | None = None
+    directory: Path,
+    packaging: str,
+    *,
+    targets: tuple[str, ...] | None = None,
+    archive_scope: str = "all",
 ) -> list[dict]:
+    if archive_scope not in {"all", "npm-runtime"}:
+        raise ValueError("Unsupported native archive verification scope")
     try:
         from verify_npm_release import PLATFORMS
         from release_producer_inputs import verify as verify_producer_inputs
@@ -701,7 +707,7 @@ def verify_artifacts(
         for field in ("source_tree", "native_tree", "v8_tree"):
             if field in pair and pair[field] != pair_source[field]:
                 raise ValueError(f"V8 pair {field} differs from its source: {target}")
-        proof = verify_producer_inputs(folder, packaging)
+        proof = verify_producer_inputs(folder, packaging, archive_scope=archive_scope)
         expected_v8_inputs = (
             proof["v8_inputs"] if proof else v8_input_manifest(pair_source_commit)
         )

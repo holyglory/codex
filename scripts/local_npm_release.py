@@ -84,14 +84,20 @@ def verify_acceptance_files(directory: Path, source: str) -> None:
 def native_evidence_files(directory: Path) -> set[Path]:
     paths = set()
     for config in PLATFORMS.values():
-        folder = directory / config["target_triple"]
+        target = config["target_triple"]
+        folder = directory / target
         receipt_path = folder / "native-manifest.json"
         receipt = read_json(receipt_path)
         paths.add(receipt_path)
         for name in receipt["archives"]:
             if not isinstance(name, str) or Path(name).name != name or "\\" in name:
                 raise ValueError("Invalid native receipt archive name")
-            paths.add(folder / name)
+        runtime = f"codex-package-{target}.tar.gz"
+        if runtime not in receipt["archives"]:
+            raise ValueError("Native receipt omitted its canonical runtime archive")
+        # Keep the original receipt and its references. Symbols and alternate
+        # archive bodies remain retained by the native producer, outside npm.
+        paths.add(folder / runtime)
         sidecar = folder / "producer-inputs.json"
         if sidecar.exists():
             read_json(sidecar, 256 * 1024)
@@ -153,7 +159,9 @@ def verify_payload_bytes(directory: Path, version: str) -> None:
 
 def check_candidate(directory: Path, source: str, packaging: str, version: str) -> list:
     verify_acceptance_files(directory, source)
-    receipts = release.verify_artifacts(directory / "native-artifacts", packaging)
+    receipts = release.verify_artifacts(
+        directory / "native-artifacts", packaging, archive_scope="npm-runtime"
+    )
     if len(receipts) != len(PLATFORMS) or any(
         item["source_commit"] != source for item in receipts
     ):

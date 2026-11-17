@@ -192,9 +192,14 @@ python3 scripts/local_npm_release.py assemble \
 
 The output contains the seven tarballs, `npm-build-manifest.json`, native
 provenance, local acceptance evidence, and an immutable candidate archive.
+Native input verification checks the complete producer evidence first. The npm
+transport retains each byte-exact producer receipt and sidecar plus its canonical
+runtime `.tar.gz`; symbol bundles and alternate archive formats remain in the
+original producer artifacts. The receiving check preserves the full sidecar
+binding and verifies the runtime bytes without transferring those unused bodies.
 The local descriptor is explicitly unpublished. GitHub release assets must be
 [smaller than 2 GiB](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).
-Use ordered parts for the npm bundle so all six native archives can remain in
+Use ordered parts for the npm bundle so all six canonical native archives remain in
 the independent verification input:
 
 ```sh

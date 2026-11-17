@@ -130,6 +130,17 @@ class LocalNpmCandidateTest(unittest.TestCase):
                     },
                 },
             }
+            if config["os"] == "win32":
+                for name, content in (
+                    (
+                        f"codex-package-{target}.symbols.tar.gz",
+                        b"producer debug symbols",
+                    ),
+                    (f"codex-package-{target}.tar.zst", b"producer alternate archive"),
+                ):
+                    extra = folder / name
+                    extra.write_bytes(content)
+                    receipt["archives"][name] = transport.file_record(extra)
             transport.write_json(folder / "native-manifest.json", receipt)
         acceptance = {
             "schema": 1,
@@ -233,6 +244,25 @@ class LocalNpmCandidateTest(unittest.TestCase):
             },
             manifest["files"],
         )
+        for tag in ("win32-x64", "win32-arm64"):
+            target = PLATFORMS[tag]["target_triple"]
+            producer = self.root / "native" / target
+            receipt = transport.read_json(producer / "native-manifest.json")
+            self.assertEqual(len(receipt["archives"]), 3)
+            runtime = f"codex-package-{target}.tar.gz"
+            for directory in (self.bundle / "candidate", self.output / "verified"):
+                retained = directory / "native-artifacts" / target
+                self.assertEqual(
+                    (retained / "native-manifest.json").read_bytes(),
+                    (producer / "native-manifest.json").read_bytes(),
+                )
+                self.assertEqual(
+                    (retained / runtime).read_bytes(), (producer / runtime).read_bytes()
+                )
+                for name, record in receipt["archives"].items():
+                    self.assertEqual(transport.file_record(producer / name), record)
+                    if name != runtime:
+                        self.assertFalse((retained / name).exists())
 
     def test_two_part_transport_retains_original_archive_and_seven_tarballs(self):
         archive = self.bundle / "candidate.tar.gz"
@@ -321,7 +351,8 @@ class LocalNpmCandidateTest(unittest.TestCase):
         for mutation in ("missing", "changed"):
             artifacts = self.output / mutation
             shutil.copytree(self.root / "native", artifacts)
-            archive = next(artifacts.glob("*/codex-package-*.tar.gz"))
+            target = next(iter(PLATFORMS.values()))["target_triple"]
+            archive = artifacts / target / f"codex-package-{target}.tar.gz"
             archive.unlink() if mutation == "missing" else archive.write_bytes(
                 b"changed native bytes"
             )
