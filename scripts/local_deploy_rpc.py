@@ -14,7 +14,6 @@ import time
 
 from local_deploy_owner import save
 
-
 HEADLINE_READY_TIMEOUT = 15
 
 
@@ -472,7 +471,7 @@ class Rpc:
             value = self.receive()
             if value.get("id") == request_id:
                 if "error" in value:
-                    raise RuntimeError(f"rpc-{method}-error-{value['error']['code']}")
+                    raise RpcError(method, value["error"])
                 return value["result"]
 
 
@@ -525,6 +524,7 @@ def verify_connection(rpc, plan):
         or sorted(usage["methods"]) not in (read_methods, sparse_methods)
         or usage.get("supportsWorkContextBindings") is not True
         or usage.get("supportsWorkstreamOutcomes") is not True
+        or usage.get("supportsTokenHeadlines") is not True
         or type(usage.get("snapshotRetentionMs")) is not int
         or usage["snapshotRetentionMs"] <= 0
     ):
@@ -580,61 +580,10 @@ def verify_connection(rpc, plan):
         )
     ):
         raise RuntimeError("usage-v2-repository-identity-invalid")
-    summary = rpc.call("localUsage/summary", {"contractVersion": 1})
-    report = summary.get("report", {})
-    snapshot = summary.get("snapshot", {})
-    native = summary.get("summary", {})
-    if (
-        type(summary.get("contractVersion")) is not int
-        or summary["contractVersion"] != 1
-        or summary.get("source") != "usage-v2"
-        or type(report.get("schemaVersion")) is not int
-        or report["schemaVersion"] != 1
-        or report.get("kind") != "usageSummary"
-        or report.get("databaseSchemaVersion") != 3
-        or report.get("scope") != {"type": "all", "id": None}
-        or report.get("coverage", {}).get("state")
-        not in {"complete", "partial", "unobserved"}
-        or type(native.get("schemaVersion")) is not int
-        or native["schemaVersion"] != 1
-        or native.get("kind") != "usageSummary"
-        or any(
-            type(native.get(key)) is not int or native[key] < 0
-            for key in (
-                "records",
-                "inputTokens",
-                "cachedInputTokens",
-                "outputTokens",
-                "reasoningOutputTokens",
-            )
-        )
-        or any(
-            type(report.get("counts", {}).get(key)) is not int
-            or report["counts"][key] < 0
-            for key in ("operations", "modelRequests", "tools")
-        )
-        or any(
-            type(snapshot.get(key)) is not int or snapshot[key] < 0
-            for key in (
-                "generation",
-                "watermark",
-                "journalWatermark",
-                "generatedAt",
-                "watermarkAtMs",
-                "updatedAtMs",
-                "pendingEntries",
-                "pendingCorrections",
-            )
-        )
-        or type(summary.get("generatedAt")) is not int
-        or snapshot.get("generatedAt", 0) > summary.get("generatedAt", 0)
-        or snapshot.get("watermark", 0) > snapshot.get("journalWatermark", 0)
-        or snapshot.get("freshness") not in {"unknown", "fresh", "stale"}
-        or not isinstance(snapshot.get("sourceWatermark"), str)
-        or not snapshot["sourceWatermark"]
-        or len(snapshot["sourceWatermark"]) > 256
-    ):
+    summary = headline_ready(rpc)
+    if not valid_headline(summary):
         raise RuntimeError("usage-v2-summary-invalid")
+    snapshot = summary["snapshot"]
     # An unmatched, content-free declaration proves request acceptance without
     # manufacturing live operation or outcome evidence. Real binding joins are
     # covered by the isolated app-server fixture journey.
@@ -706,23 +655,37 @@ def verify_connection(rpc, plan):
         or any(not isinstance(row, dict) for row in outcomes["rows"])
     ):
         raise RuntimeError("usage-v2-outcome-contract-invalid")
+    review_totals = scoped["review"].get("totals", {})
+    source_cost = scoped["report"].get("cost", {})
+    if (
+        not isinstance(review_totals, dict)
+        or not integer(review_totals.get("model_requests"))
+        or not valid_cost(
+            review_totals.get("cost"), review_totals["model_requests"], source=True
+        )
+        or not isinstance(source_cost, dict)
+        or not measurement(source_cost.get("estimatedApiEquivalentCostMicros"))
+        or not measurement(source_cost.get("actualBillingMicros"))
+    ):
+        raise RuntimeError("usage-v2-cost-contract-invalid")
     efforts = [outcomes.get(key) for key in ("totals", "attributed", "unattributed")]
     efforts.extend(row.get("effort") for row in outcomes["rows"])
     for effort in efforts:
         if not isinstance(effort, dict):
             raise RuntimeError("usage-v2-outcome-effort-invalid")
-        for key in ("activeAgentMs", "elapsedExecutionMs"):
-            measurement = effort.get(key)
-            if (
-                not isinstance(measurement, dict)
-                or type(measurement.get("measured")) is not int
-                or measurement["measured"] != 0
-                or "exact" not in measurement
-                or measurement["exact"] is not None
-                or type(measurement.get("unknown")) is not int
-                or measurement["unknown"] < 0
-            ):
+        for key in ("activeAgentMs", "elapsedExecutionMs", "recordedWaitMs"):
+            if not measurement(effort.get(key)):
                 raise RuntimeError("usage-v2-outcome-timing-invalid")
+        # Elapsed union is contained in this requested window. Active effort can
+        # overlap across agents, and duration sums are diagnostic, so neither
+        # supplies a general upper bound for the other measurement.
+        if (
+            effort["elapsedExecutionMs"]["measured"]
+            > review_params["toAtMs"] - review_params["fromAtMs"]
+        ):
+            raise RuntimeError("usage-v2-outcome-timing-invalid")
+        if not valid_cost(effort.get("cost")):
+            raise RuntimeError("usage-v2-cost-contract-invalid")
     models = rpc.call("model/list", {"limit": 1})
     rpc.call("skills/list", {"cwds": [plan["verificationCwd"]]})
     profiles = rpc.call("accountProfile/list", {"limit": 25})
@@ -750,6 +713,8 @@ def verify_connection(rpc, plan):
         "creditCapability": True,
         "creditProfileFields": True,
         "localUsageCapability": True,
+        "usageTokenHeadlineCapability": True,
+        "usageTokenHeadlineProjection": True,
         "usageSparseControlCapability": sparse_controls,
         "localUsageRepositoryIdentity": True,
         "localUsageSummary": True,

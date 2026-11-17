@@ -22,14 +22,41 @@ from local_deploy_rpc import verify
 import prepare_local_usage_package as usage_package
 
 
+def cost_fixture(model_requests=None, priced=None, unknown=None):
+    return {
+        "status": "partial" if priced else "unavailable",
+        "basis": "api_equivalent",
+        "currency": "USD",
+        "model_requests": model_requests,
+        "priced_requests": None,
+        "unknown_requests": None,
+        "priced_observations": priced,
+        "unknown_observations": unknown,
+        "estimated_usd_micros": 0 if priced else None,
+        "input_tokens": None,
+        "cached_input_tokens": None,
+        "uncached_input_tokens": None,
+        "output_tokens": None,
+        "reasoning_tokens": None,
+        "unavailable_reasons": {
+            "component_cost_breakdown_unavailable"
+            if priced
+            else "outcome_cost_unobserved": 1
+        },
+    }
+
+
 class Peer:
-    def __init__(self, home, mutate=None, model_tools=False, code_mode=False):
+    def __init__(
+        self, home, mutate=None, model_tools=False, code_mode=False, pending_headlines=0
+    ):
         self.home = home
         self.mutate = mutate or (lambda method, value: value)
         self.model_tools = model_tools
         self.code_mode = code_mode
         self.turn_count = 0
         self.binding_revision = 0
+        self.pending_headlines = pending_headlines
         endpoint = home / "app-server-control/app-server-control.sock"
         endpoint.parent.mkdir()
         self.listener = socket.socket(socket.AF_UNIX)
@@ -75,6 +102,7 @@ class Peer:
                     "storage": "usage-v2",
                     "supportsWorkContextBindings": True,
                     "supportsWorkstreamOutcomes": True,
+                    "supportsTokenHeadlines": True,
                     "snapshotRetentionMs": 5000,
                 },
             }
@@ -156,10 +184,119 @@ class Peer:
                 "workContexts": [],
                 "operationBindings": [],
             }
+            if not params.get("includeReview"):
+                result["snapshot"].update(
+                    sourceWatermark="usage-v2:headline:fixture-1:g3:w2",
+                    journalWatermark=2,
+                )
+                rows = [
+                    ("total_tokens", 999, 999, 0),
+                    ("input_tokens", 100, 100, 0),
+                    ("input_tokens_details.cached_tokens", 50, 50, 0),
+                    ("output_tokens", 20, 20, 0),
+                    ("output_tokens_details.reasoning_tokens", 5, 5, 0),
+                    ("cache_write_input_tokens", 0, None, 2),
+                ]
+                result["report"].update(
+                    projection="token_headline",
+                    counts=None,
+                    providerTokens=[
+                        {
+                            "category": category,
+                            "repositoryBucket": "all",
+                            "measurementProvenance": "provider_reported",
+                            "measuredTokens": measured,
+                            "exactTokens": exact,
+                            "unknownObservations": unknown,
+                            "observationCount": 2,
+                        }
+                        for category, measured, exact, unknown in rows
+                    ],
+                    providerTokensByActivity=None,
+                    timing=None,
+                    lifecycle=None,
+                    contextSize=None,
+                    cost=None,
+                    workBindings=None,
+                    coverage={
+                        "state": "complete",
+                        "hasGaps": False,
+                        "providerTotals": "recorded",
+                        **{
+                            key: "deferred"
+                            for key in (
+                                "counts",
+                                "cost",
+                                "timing",
+                                "lifecycle",
+                                "contextSize",
+                                "workBindings",
+                                "activity",
+                            )
+                        },
+                        "details": {
+                            "basis": "published_snapshot",
+                            "exactAtPublishedWatermark": True,
+                            "tokenObservations": 2,
+                            "providerTotalUnknowns": 0,
+                            "cacheWriteUnknowns": 2,
+                            "missingTokenObservations": 0,
+                            "sourceSnapshotId": "fixture",
+                            "sourceFreshness": "fresh",
+                            "latestJournalWatermark": 2,
+                            "retiredObservations": 0,
+                            "rawAdmissionCutoffAtMs": None,
+                            "unappliedRetentionRecords": 0,
+                            "unappliedRetentionCorrections": 0,
+                        },
+                    },
+                )
+                result["summary"] = {
+                    "projection": "token_headline",
+                    "counts": None,
+                    "inputTokens": 100,
+                    "cachedInputTokens": 50,
+                    "cacheWriteInputTokens": None,
+                    "outputTokens": 20,
+                    "reasoningOutputTokens": 5,
+                    "providerTotalTokens": 999,
+                    "tokenObservations": 2,
+                }
+                result.update(
+                    {
+                        key: None
+                        for key in (
+                            "review",
+                            "observations",
+                            "operations",
+                            "nextRecordsCursor",
+                            "nextOperationsCursor",
+                            "contextSize",
+                            "costProvenance",
+                            "lifecycle",
+                            "timing",
+                        )
+                    }
+                )
+                return result
             if params.get("includeReview"):
                 effort = {
-                    "activeAgentMs": {"measured": 0, "exact": None, "unknown": 1},
-                    "elapsedExecutionMs": {"measured": 0, "exact": None, "unknown": 1},
+                    "activeAgentMs": {"measured": 1500, "exact": 1500, "unknown": 0},
+                    "elapsedExecutionMs": {"measured": 900, "exact": 900, "unknown": 0},
+                    "recordedWaitMs": {"measured": 0, "exact": None, "unknown": 0},
+                    "cost": cost_fixture(),
+                }
+                result["report"]["cost"] = {
+                    "estimatedApiEquivalentCostMicros": {
+                        "measured": 0,
+                        "exact": None,
+                        "unknown": 1,
+                    },
+                    "actualBillingMicros": {
+                        "measured": 11,
+                        "exact": None,
+                        "unknown": 1,
+                    },
                 }
                 result["report"]["scope"] = {
                     "type": "repository",
@@ -175,6 +312,10 @@ class Peer:
                     "declaredOperations": 1,
                 }
                 result["review"] = {
+                    "totals": {
+                        "model_requests": 1,
+                        "cost": cost_fixture(model_requests=1, priced=1, unknown=1),
+                    },
                     "outcomes": {
                         "schemaVersion": 1,
                         "coverage": "unattributed",
@@ -182,7 +323,7 @@ class Peer:
                         "totals": effort,
                         "attributed": effort,
                         "unattributed": effort,
-                    }
+                    },
                 }
             if self.model_tools and params.get("threadId") == "fixture-thread":
 
@@ -207,6 +348,7 @@ class Peer:
                         "recordedWaitMs": {"measured": 0, "unknown": 0, "exact": None},
                         "retryOperations": 0,
                         "reworkOperations": 0,
+                        "cost": cost_fixture(),
                     }
 
                 result["report"]["scope"] = {"type": "thread", "id": "fixture-thread"}
@@ -316,6 +458,27 @@ class Peer:
                     method = request["method"]
                     self.methods.append(method)
                     self.requests.append(request)
+                    if (
+                        method == "localUsage/summary"
+                        and not request["params"].get("includeReview")
+                        and self.pending_headlines
+                    ):
+                        self.pending_headlines -= 1
+                        send_json(
+                            {
+                                "id": request["id"],
+                                "error": {
+                                    "code": -32603,
+                                    "message": "headline pending",
+                                    "data": {
+                                        "source": "usage-v2",
+                                        "reason": "token_headline_pending",
+                                        "retryable": True,
+                                    },
+                                },
+                            }
+                        )
+                        continue
                     response = self.mutate(
                         method, copy.deepcopy(self.result(method, request["params"]))
                     )
@@ -554,6 +717,8 @@ class LocalDeployRpcTests(unittest.TestCase):
                 verify(self.plan(home))
             proof = json.loads((home / "proof/rpc.json").read_text())
             self.assertTrue(proof["localUsageSummary"])
+            self.assertTrue(proof["usageTokenHeadlineCapability"])
+            self.assertTrue(proof["usageTokenHeadlineProjection"])
             self.assertFalse(proof["usageSparseControlCapability"])
             self.assertEqual(proof["usageStorageFormatVersion"], 3)
             self.assertTrue(proof["localUsageRepositoryIdentity"])
@@ -580,6 +745,133 @@ class LocalDeployRpcTests(unittest.TestCase):
             )
             self.assertNotIn("local-deploy-unobserved-operation", json.dumps(proof))
             self.assertNotIn("legacyUsageCapabilityNull", proof)
+
+    def test_waits_only_for_normal_headline_publication(self):
+        with tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary:
+            home = Path(temporary)
+            with Peer(home, pending_headlines=2) as peer:
+                verify(self.plan(home))
+            self.assertEqual(peer.methods.count("localUsage/summary"), 4)
+            self.assertTrue((home / "proof/rpc.json").exists())
+        with tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary:
+            home = Path(temporary)
+            with (
+                Peer(home, pending_headlines=1),
+                patch("local_deploy_rpc.HEADLINE_READY_TIMEOUT", 0),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "token-headline-not-ready"):
+                    verify(self.plan(home))
+            self.assertFalse((home / "proof/rpc.json").exists())
+
+    def test_accepts_known_zero_unknown_empty_and_signed_token_headlines(self):
+        for state in ("zero", "unknown", "empty", "signed"):
+            with (
+                self.subTest(state=state),
+                tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary,
+            ):
+                home = Path(temporary)
+
+                def change(method, value):
+                    if (
+                        method != "localUsage/summary"
+                        or value["report"].get("projection") != "token_headline"
+                    ):
+                        return value
+                    report, native = value["report"], value["summary"]
+                    rows, coverage = report["providerTokens"], report["coverage"]
+                    details = coverage["details"]
+                    if state == "unknown":
+                        rows[0].update(exactTokens=None, unknownObservations=1)
+                        native["providerTotalTokens"] = None
+                        details["providerTotalUnknowns"] = 1
+                        coverage.update(
+                            state="partial", hasGaps=True, providerTotals="partial"
+                        )
+                    elif state == "signed":
+                        for index, key, amount in [
+                            (1, "inputTokens", -4),
+                            (2, "cachedInputTokens", -2),
+                            (3, "outputTokens", -2),
+                            (4, "reasoningOutputTokens", -1),
+                        ]:
+                            rows[index].update(
+                                measuredTokens=amount, exactTokens=amount
+                            )
+                            native[key] = amount
+                    else:
+                        observations = 0 if state == "empty" else 2
+                        for row in rows:
+                            row.update(
+                                measuredTokens=0,
+                                exactTokens=0 if observations else None,
+                                unknownObservations=0,
+                                observationCount=observations,
+                            )
+                        for key in (
+                            "inputTokens",
+                            "cachedInputTokens",
+                            "outputTokens",
+                            "reasoningOutputTokens",
+                        ):
+                            native[key] = 0
+                        native.update(
+                            providerTotalTokens=0 if observations else None,
+                            cacheWriteInputTokens=0 if observations else None,
+                            tokenObservations=observations,
+                        )
+                        details.update(
+                            tokenObservations=observations, cacheWriteUnknowns=0
+                        )
+                        coverage.update(
+                            state="complete" if observations else "unobserved",
+                            hasGaps=not observations,
+                        )
+                    return value
+
+                with Peer(home, change):
+                    verify(self.plan(home))
+
+    def test_accepts_positive_zero_and_unknown_outcome_unions_and_nullable_cost_counters(
+        self,
+    ):
+        for measured, exact, unknown in (
+            (123, 123, 0),
+            (0, 0, 0),
+            (45, None, 2),
+            (0, None, 1),
+        ):
+            with (
+                self.subTest(measured=measured, exact=exact, unknown=unknown),
+                tempfile.TemporaryDirectory(prefix="ld-rpc-", dir="/tmp") as temporary,
+            ):
+                home = Path(temporary)
+
+                def change(method, value):
+                    if method == "localUsage/summary" and isinstance(
+                        value.get("review"), dict
+                    ):
+                        for effort in (
+                            value["review"]["outcomes"][key]
+                            for key in ("totals", "attributed", "unattributed")
+                        ):
+                            for key in ("activeAgentMs", "elapsedExecutionMs"):
+                                effort[key] = {
+                                    "measured": measured,
+                                    "exact": exact,
+                                    "unknown": unknown,
+                                }
+                        cost = value["review"]["totals"]["cost"]
+                        cost.update(
+                            input_tokens=-4,
+                            cached_input_tokens=-2,
+                            uncached_input_tokens=-2,
+                            output_tokens=-2,
+                            reasoning_tokens=-1,
+                        )
+                    return value
+
+                with Peer(home, change):
+                    verify(self.plan(home))
 
     def test_accepts_sparse_control_capability_without_mutating_the_binding(self):
         for required in (False, True):
@@ -777,6 +1069,12 @@ class LocalDeployRpcTests(unittest.TestCase):
             (
                 "initialize",
                 lambda value: value["localUsageAccounting"].update(
+                    supportsTokenHeadlines=False
+                ),
+            ),
+            (
+                "initialize",
+                lambda value: value["localUsageAccounting"].update(
                     snapshotRetentionMs=0
                 ),
             ),
@@ -798,7 +1096,7 @@ class LocalDeployRpcTests(unittest.TestCase):
             ),
             (
                 "localUsage/summary",
-                lambda value: value["summary"].update(schemaVersion=True),
+                lambda value: value["summary"].update(projection="legacy_metadata"),
             ),
             (
                 "localUsage/summary",
@@ -818,6 +1116,82 @@ class LocalDeployRpcTests(unittest.TestCase):
             ),
             (
                 "localUsage/summary",
+                lambda value: (
+                    value["report"]["coverage"].update(counts="recorded")
+                    if value["report"].get("projection") == "token_headline"
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["report"]["providerTokens"][0].update(exactTokens=121)
+                    if value["report"].get("projection") == "token_headline"
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["report"].update(counts={"operations": 0})
+                    if value["report"].get("projection") == "token_headline"
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["review"]["totals"]["cost"].update(priced_requests=True)
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["review"]["totals"]["cost"].update(model_requests=0)
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["review"]["totals"]["cost"].update(estimated_usd_micros=None)
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["review"]["totals"]["cost"].update(
+                        unknown_observations="private-payload"
+                    )
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["report"]["cost"]["actualBillingMicros"].update(exact=12)
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
+                lambda value: (
+                    value["review"]["outcomes"]["totals"]["activeAgentMs"].update(
+                        measured=-1
+                    )
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
+            ),
+            (
+                "localUsage/summary",
                 lambda value: value["report"].update(workBindings={}),
             ),
             (
@@ -832,19 +1206,23 @@ class LocalDeployRpcTests(unittest.TestCase):
                 "localUsage/summary",
                 lambda value: (
                     value["review"]["outcomes"].update(schemaVersion=True)
-                    if "review" in value
+                    if isinstance(value.get("review"), dict)
                     else None
                 ),
             ),
             (
                 "localUsage/summary",
-                lambda value: value.update(review=None) if "review" in value else None,
+                lambda value: (
+                    value.update(review=None)
+                    if isinstance(value.get("review"), dict)
+                    else None
+                ),
             ),
             (
                 "localUsage/summary",
                 lambda value: (
                     value["review"]["outcomes"].update(rows="private-payload")
-                    if "review" in value
+                    if isinstance(value.get("review"), dict)
                     else None
                 ),
             ),
@@ -854,7 +1232,7 @@ class LocalDeployRpcTests(unittest.TestCase):
                     value["review"]["outcomes"]["totals"]["elapsedExecutionMs"].update(
                         exact=100
                     )
-                    if "review" in value
+                    if isinstance(value.get("review"), dict)
                     else None
                 ),
             ),
@@ -886,6 +1264,10 @@ class LocalDeployRpcTests(unittest.TestCase):
             def pending(method, value):
                 if method == "localUsage/summary":
                     value["snapshot"].update(freshness="unknown", pendingEntries=1)
+                    if value["report"].get("projection") == "token_headline":
+                        value["report"]["coverage"]["details"][
+                            "latestJournalWatermark"
+                        ] = 3
                 return value
 
             with Peer(home, pending):
