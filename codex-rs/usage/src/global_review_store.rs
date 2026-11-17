@@ -44,7 +44,56 @@ pub enum GlobalReviewPublication {
 struct WorkDirectory(PathBuf);
 impl Drop for WorkDirectory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _removal = std::fs::remove_dir_all(&self.0);
+        #[cfg(test)]
+        if let Err(error) = _removal {
+            eprintln!(
+                "global review cleanup failed: kind={:?} raw_os_error={:?}",
+                error.kind(),
+                error.raw_os_error()
+            );
+            match std::fs::read_dir(&self.0) {
+                Ok(entries) => {
+                    for entry in entries.take(/*n*/ 16) {
+                        match entry {
+                            Ok(entry) => {
+                                let metadata = entry.path().symlink_metadata();
+                                let readonly = metadata
+                                    .as_ref()
+                                    .ok()
+                                    .map(|metadata| metadata.permissions().readonly());
+                                #[cfg(windows)]
+                                let attributes = metadata
+                                    .as_ref()
+                                    .ok()
+                                    .map(std::os::windows::fs::MetadataExt::file_attributes);
+                                #[cfg(not(windows))]
+                                let attributes: Option<u32> = None;
+                                eprintln!(
+                                    "global review cleanup entry: name={:?} readonly={readonly:?} attributes={attributes:?} metadata_error_kind={:?} metadata_raw_os_error={:?}",
+                                    entry.file_name(),
+                                    metadata.as_ref().err().map(std::io::Error::kind),
+                                    metadata
+                                        .as_ref()
+                                        .err()
+                                        .and_then(std::io::Error::raw_os_error)
+                                );
+                            }
+                            Err(error) => eprintln!(
+                                "global review cleanup entry failed: kind={:?} raw_os_error={:?}",
+                                error.kind(),
+                                error.raw_os_error()
+                            ),
+                        }
+                    }
+                }
+                Err(error) => eprintln!(
+                    "global review cleanup listing failed: kind={:?} raw_os_error={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ),
+            }
+        }
     }
 }
 
