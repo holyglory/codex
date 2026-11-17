@@ -375,6 +375,38 @@ fn report_measurements(
     json!({"currentChatMs":milliseconds(current_elapsed),"warmGlobalMs":milliseconds(global_elapsed),"finiteReviewMs":milliseconds(review_elapsed),"finiteEvidencePageMs":milliseconds(page_elapsed),"finiteTotalsMs":milliseconds(totals_elapsed),"currentChatSummary":current,"warmGlobalSummary":global,"currentChatOutputBytes":current_output.len(),"warmGlobalOutputBytes":global_output.len(),"finiteTotals":repository_totals,"review":review,"reviewRows":page.data.len(),"reviewPage":page.data,"reviewOutputBytes":output.len(),"warmSnapshotGeneration":warm.manifest().snapshot_generation,"attribution":attribution})
 }
 
+/// Explicit background bootstrap, excluded from every foreground query timer.
+fn prepare_global_review(root: &Path) -> serde_json::Value {
+    let start = Instant::now();
+    let mut published = false;
+    if let Some(mut publisher) =
+        GlobalReviewPublisher::open_at(root).expect("global review publisher")
+    {
+        assert!(
+            matches!(
+                publisher
+                    .publish()
+                    .expect("complete background global review"),
+                GlobalReviewPublication::Published
+            ),
+            "volume fixture must publish a completed report; awaiting compaction is not readiness"
+        );
+        published = true;
+    }
+    let reader = GlobalReviewReader::open_at(root)
+        .expect("global review envelope")
+        .expect("a completed background report must exist");
+    let result = json!({"backgroundPreparationMs":milliseconds(start.elapsed()),"published":published,
+        "sourceWatermark":reader.snapshot().source_watermark,
+        "includedJournalWatermark":reader.snapshot().included_journal_watermark,
+        "basis":"explicit background preparation; excluded from foreground query limits"});
+    eprintln!(
+        "usage-scale {}",
+        json!({"stage":"global-review-prepared","preparation":result})
+    );
+    result
+}
+
 #[test]
 #[ignore = "15M-fact acceptance benchmark; requires governed artifact storage"]
 fn synthetic_scale_acceptance() {
@@ -409,6 +441,7 @@ fn synthetic_scale_acceptance() {
     let initial_target = journal.checkpoint().expect("captured target");
     let publication = publish_through(&root, initial_target);
     let warm = UsageReader::open_at(&root).expect("pin fully published warm snapshot");
+    let global_review_preparation = prepare_global_review(&root);
 
     let (stop_capture, capture_stop) = mpsc::channel();
     let (stop_publication, publication_stop) = mpsc::channel();
@@ -425,7 +458,8 @@ fn synthetic_scale_acceptance() {
     readiness.recv().expect("concurrent capture started");
     let capture_before_reports = capture_progress.load(Ordering::Acquire);
     let mut failures = Vec::new();
-    let queries = report_measurements(&root, &warm, &expected, &mut failures);
+    let mut queries = report_measurements(&root, &warm, &expected, &mut failures);
+    queries["globalReviewPreparation"] = global_review_preparation;
     let captured_during_reports = capture_progress.load(Ordering::Acquire) - capture_before_reports;
     if captured_during_reports == 0 {
         failures.push("capture made no durable progress during the report sequence".into());
@@ -771,8 +805,10 @@ fn retained_scale_snapshot_queries() {
     );
     expected.global.records = head.sequence;
     expected.global_counts = recovery_counts(&expected.global_counts, head.sequence);
+    let global_review_preparation = prepare_global_review(&root);
     let mut failures = Vec::new();
-    let queries = report_measurements(&root, &warm, &expected, &mut failures);
+    let mut queries = report_measurements(&root, &warm, &expected, &mut failures);
+    queries["globalReviewPreparation"] = global_review_preparation;
     let filter = UsageFilter::default().for_repository(fixture::review_repository());
     let start = Instant::now();
     let prepared = crate::report_query::ReportQuery::new(&warm, fixture::review_range(), &filter)

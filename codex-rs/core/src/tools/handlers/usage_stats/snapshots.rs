@@ -19,7 +19,7 @@ struct Pinned {
     context: (PathBuf, String, PathBuf),
     query: Value,
     filter: UsageFilter,
-    reader: Arc<UsageReader>,
+    reader: Option<Arc<UsageReader>>,
     review: Option<Arc<Value>>,
 }
 
@@ -132,23 +132,40 @@ impl SnapshotCache {
             }
             args.cursor_id = row;
             (
-                Arc::clone(&entry.reader),
+                entry.reader.clone(),
                 entry.filter.clone(),
                 entry.review.clone(),
                 Some((id, entry.created)),
             )
         } else {
-            (
-                Arc::new(UsageReader::open(&context.codex_home).map_err(|_| storage_error())?),
-                query_filters::resolve(context, &args)?,
-                None,
-                None,
-            )
+            let filter = query_filters::resolve(context, &args)?;
+            if global_review::selects(&args, &filter) {
+                (
+                    None,
+                    filter,
+                    Some(Arc::new(global_review::read(context, &args)?)),
+                    None,
+                )
+            } else {
+                (
+                    Some(Arc::new(
+                        UsageReader::open(&context.codex_home).map_err(|_| storage_error())?,
+                    )),
+                    filter,
+                    None,
+                    None,
+                )
+            }
         };
         let mut value = if let Some(report) = retained_review.as_deref() {
             report.clone()
         } else {
-            execute(&reader, context, args, filter.clone())?
+            execute(
+                reader.as_deref().ok_or_else(storage_error)?,
+                context,
+                args,
+                filter.clone(),
+            )?
         };
         let (id, created) =
             snapshot.unwrap_or_else(|| (uuid::Uuid::new_v4().simple().to_string(), Instant::now()));

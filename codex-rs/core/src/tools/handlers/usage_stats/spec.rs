@@ -15,7 +15,7 @@ pub(super) fn usage_stats_spec() -> ToolSpec {
                     json!("events"),
                     json!("details"),
                 ],
-                Some("Report or paged detail to read.".to_string()),
+                Some("Report or paged detail to read. All-time global performance_review reads the latest completed background snapshot; its as-of frontier and pending entries disclose newer capture.".to_string()),
             ),
         ),
         (
@@ -27,7 +27,7 @@ pub(super) fn usage_stats_spec() -> ToolSpec {
                     json!("current_repository"),
                     json!("repository"),
                 ],
-                Some("For summary only; defaults to current_chat.".to_string()),
+                Some("Defaults to current_chat for summary and all for other actions. Finite or filtered performance_review preserves the requested scope.".to_string()),
             ),
         ),
         (

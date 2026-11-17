@@ -23,6 +23,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod global_review;
 mod outcomes;
 mod presentation;
 mod query_filters;

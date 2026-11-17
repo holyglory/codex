@@ -312,6 +312,11 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
                     &json!({"action":"performance_review", "thread_id":"current", "outcome_limit":1})
                         .to_string(),
                 ),
+                ev_function_call(
+                    "usage-global-review-call",
+                    "usage_stats",
+                    &json!({"action":"performance_review", "outcome_limit":1}).to_string(),
+                ),
                 json!({"type": "response.completed", "response": {"id": "usage-report"}}),
             ]),
             sse(vec![
@@ -407,6 +412,27 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
         totals_through(published.journal_watermark())?.0
     );
 
+    // Prepare the real global artifact as the runtime worker does; the tool
+    // itself must only read a completed publication, never build it inline.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(mut publisher) = codex_usage::GlobalReviewPublisher::open_at(&root)? {
+                assert_eq!(
+                    publisher.publish()?,
+                    codex_usage::GlobalReviewPublication::Published
+                );
+            }
+            if codex_usage::GlobalReviewReader::open_at(&root)?
+                .is_some_and(|reader| reader.snapshot().included_journal_watermark >= captured)
+            {
+                return Ok::<_, codex_usage::StorageError>(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("completed global review publication")??;
+
     test.submit_turn("Report this chat's usage.").await?;
     let requests = mock.requests();
     assert_eq!(requests.len(), 3);
@@ -419,6 +445,25 @@ async fn usage_stats_reports_automatically_published_response_usage_without_cata
         .expect("performance review JSON output");
     let review: Value = serde_json::from_str(&content)
         .context("performance review must be report JSON, not a tool error")?;
+    let content = requests[2]
+        .function_call_output_text("usage-global-review-call")
+        .expect("global completed report JSON");
+    let global: Value = serde_json::from_str(&content)
+        .context("global review must use completed publication through model dispatch")?;
+    assert_eq!(global["projection"], "global_review_snapshot");
+    assert_eq!(global["kind"], "performanceReview");
+    let global_watermark = global["journalWatermark"]
+        .as_u64()
+        .expect("cached included frontier");
+    assert!(global_watermark >= captured && global_watermark <= journal.checkpoint()?.sequence);
+    let expected_global = totals_through(global_watermark)?.0;
+    let input = global["tokens"]
+        .as_array()
+        .expect("global measured categories")
+        .iter()
+        .find(|row| row["category"] == "input_tokens")
+        .expect("input component");
+    assert_eq!(input["measuredTokens"], expected_global.input_tokens);
     assert_eq!(
         (&review["schemaVersion"], &review["kind"]),
         (&json!(1), &json!("performanceReview"))

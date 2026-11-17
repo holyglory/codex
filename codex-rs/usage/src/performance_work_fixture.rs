@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -135,7 +136,8 @@ pub(super) fn check(
         let value = json!({"operations":row["effort"]["operations"],
             "providerTokens":row["effort"]["providerTotalTokens"]["measured"],
             "unknownTokens":row["effort"]["providerTotalTokens"]["unknown"],
-            "intervalMs":row["effort"]["elapsedExecutionMs"]["measured"]});
+            "elapsedMs":row["effort"]["elapsedExecutionMs"]["measured"],
+            "unknownElapsedIntervals":row["effort"]["elapsedExecutionMs"]["unknown"]});
         if observed.insert(key, value).is_some() {
             failures.push(format!("{scope} repeats a job aggregate"));
         }
@@ -144,6 +146,15 @@ pub(super) fn check(
     let mut operations = 0;
     let mut tokens = 0;
     for (outcome, totals) in wanted {
+        // Every bound fixture round has four operations: tools [0,50],
+        // [30,80], [60,110], and model [10,140]. Their union is 140 ms;
+        // the independent duration-sum oracle remains 280 ms per round.
+        let rounds = totals.operations / 4;
+        if totals.operations % 4 != 0 || totals.interval_ms != rounds * 280 {
+            failures.push(format!(
+                "{scope} work oracle does not contain complete fixture rounds"
+            ));
+        }
         let job = outcome
             .strip_prefix("benchmark-outcome-")
             .expect("oracle outcome");
@@ -153,19 +164,33 @@ pub(super) fn check(
         expected.insert(
             key,
             json!({"operations":totals.operations,"providerTokens":totals.provider_tokens,
-            "unknownTokens":0,"intervalMs":totals.interval_ms}),
+            "unknownTokens":0,"elapsedMs":rounds * 140,"unknownElapsedIntervals":0}),
         );
         operations += totals.operations;
         tokens += totals.provider_tokens;
     }
+    let baseline_operations = if scope == "global" {
+        fixture::ROUNDS * 4
+    } else {
+        total_operations
+    };
+    let extra_operations = total_operations.saturating_sub(baseline_operations);
+    if baseline_operations % 4 != 0 || total_operations < baseline_operations {
+        failures.push(format!(
+            "{scope} operation count is inconsistent with fixture rounds"
+        ));
+    }
+    let diagnostic_interval_sum = baseline_operations / 4 * 280 + extra_operations * 20;
     let actual = json!({"rows":observed,"boundOperations":report["workBindings"]["boundOperations"],
         "unknownOperations":report["workBindings"]["unknownOperations"],
         "attributedOperations":report["outcomes"]["attributed"]["operations"],
         "unattributedOperations":report["outcomes"]["unattributed"]["operations"],
-        "attributedTokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"]});
+        "attributedTokens":report["outcomes"]["attributed"]["providerTotalTokens"]["measured"],
+        "diagnosticIntervalSumMs":report["counts"]["interval_sum_ms"]});
     let expected = json!({"rows":expected,"boundOperations":operations,
         "unknownOperations":total_operations-operations,"attributedOperations":operations,
-        "unattributedOperations":total_operations-operations,"attributedTokens":tokens});
+        "unattributedOperations":total_operations-operations,"attributedTokens":tokens,
+        "diagnosticIntervalSumMs":diagnostic_interval_sum});
     if actual != expected {
         failures.push(format!("{scope} exact sparse job totals differ"));
     }
@@ -209,12 +234,23 @@ pub(super) fn measure(
         failures,
     );
     let start = Instant::now();
-    let global = warm
-        .performance_review(TimeRange::all(), &UsageFilter::default())
-        .expect("native global attribution");
+    let completed = GlobalReviewReader::open_at(root)
+        .expect("completed global review reader")
+        .expect("background global review was prepared before foreground timing");
+    assert_eq!(
+        completed.snapshot().source_watermark,
+        warm.manifest().watermark,
+        "global attribution must use the pinned fixture source prefix"
+    );
+    assert_eq!(
+        completed.snapshot().included_journal_watermark,
+        warm.journal_watermark(),
+        "the completed report must not mix a newer capture prefix"
+    );
+    let global = completed.report();
     let global_ms = start.elapsed().as_secs_f64() * 1_000.0;
     let global = check(
-        &global,
+        global,
         &work.global,
         expected.global_counts.operations,
         "global",

@@ -9,6 +9,9 @@ use std::fs::File;
 use std::fs::TryLockError;
 use tempfile::tempdir;
 
+#[path = "global_review_tests.rs"]
+mod global_review;
+
 #[test]
 fn abandoned_cursor_expiry_releases_real_pin_without_another_request() {
     let directory = tempdir().expect("directory");
@@ -47,7 +50,15 @@ fn abandoned_cursor_expiry_releases_real_pin_without_another_request() {
     assert!(first["nextCursor"].is_object());
     let active_query = {
         let entries = cache.state.entries.lock().expect("cache");
-        Arc::clone(&entries.snapshots.front().expect("cached snapshot").reader)
+        Arc::clone(
+            entries
+                .snapshots
+                .front()
+                .expect("cached snapshot")
+                .reader
+                .as_ref()
+                .expect("live reader"),
+        )
     };
     let weak = Arc::downgrade(&active_query);
     let readers = File::options()
@@ -170,7 +181,7 @@ fn outcome_continuation_freezes_report_filters_and_original_lease() {
             ),
             query,
             filter,
-            reader,
+            reader: Some(reader),
             review: Some(Arc::new(report.clone())),
         });
     store
@@ -465,6 +476,8 @@ fn continuation_keeps_resolved_account_and_repository_after_alias_changes() {
         assert_eq!(
             pinned
                 .reader
+                .as_ref()
+                .expect("scoped query retains its live reader")
                 .totals(TimeRange::all(), &pinned.filter)
                 .expect("frozen totals"),
             codex_usage::UsageTotals {

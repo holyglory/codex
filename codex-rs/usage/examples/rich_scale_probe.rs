@@ -10,7 +10,11 @@ use serde_json::Value;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let query_only = args.first().is_some_and(|value| value == "--query-only");
+    if query_only {
+        args.remove(0);
+    }
     let [root, scope, oracle, output] = args.as_slice() else {
         return Err("expected ROOT SCOPE_FILE ORACLE OUTPUT".into());
     };
@@ -20,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = fs::read(Path::new(root).join("manifest.json"))?;
     let started = Instant::now();
     let mut steps = 0;
-    while codex_usage::compact_review_contributions(Path::new(root))? {
+    while !query_only && codex_usage::compact_review_contributions(Path::new(root))? {
         steps += 1;
         if steps % 32 == 0 {
             println!(
@@ -49,10 +53,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut measurements = Vec::new();
     for attempt in 0..2 {
         let started = Instant::now();
+        println!(
+            "{}",
+            json!({"stage":"reader_open_started","attempt":attempt})
+        );
         let reader = UsageReader::open_at(root)?;
         let opened = Instant::now();
+        println!(
+            "{}",
+            json!({"stage":"prepare_window_started","attempt":attempt,"openMs":opened.duration_since(started).as_secs_f64()*1000.0})
+        );
         let window = reader.prepare_window(TimeRange::from_millis(from, to)?, &filter)?;
         let prepared = Instant::now();
+        println!(
+            "{}",
+            json!({"stage":"review_started","attempt":attempt,"prepareMs":prepared.duration_since(opened).as_secs_f64()*1000.0})
+        );
         let review = window.performance_review()?;
         let ended = Instant::now();
         let total = review["tokens"]
