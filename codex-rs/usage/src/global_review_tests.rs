@@ -820,3 +820,129 @@ fn global_analytics_cancelled_candidate_never_replaces_completed_publication() {
     );
     assert!(commit_first.check().is_err());
 }
+
+#[test]
+fn global_analytics_manifest_replacement_during_admission_publishes_pinned_source_then_catches_up()
+{
+    let home = tempdir().expect("home");
+    let root = home.path().join(crate::USAGE_DIRECTORY_NAME);
+    capture(&root, "first", /*at*/ 1_000, /*total*/ 57);
+    canonical(&root);
+    let mut builder = GlobalReviewPublisher::open_at(&root)
+        .expect("builder")
+        .expect("unpublished source");
+    let store = crate::ManifestStore::new(root.join("manifest.json"));
+    let parsed = store.load_shared().expect("original parsed manifest");
+    let original_identity = parsed.identity.clone();
+    let original_manifest = (*parsed.value).clone();
+    let original_references = Arc::strong_count(&parsed.value);
+    // These normal locks are test barriers only. A busy compactor bypasses its
+    // source scan, and the journal lock pauses the refreshed reader after its
+    // manifest Arc was retained, before the reader admission has completed.
+    let compaction = storage_file::open_read_write(&root.join(".review-compaction.lock"))
+        .expect("compaction barrier");
+    compaction.lock().expect("exclude fixture compaction");
+    let journal = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("events.jsonl"))
+        .expect("journal barrier");
+    journal.lock().expect("pause reader journal admission");
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    let (admitted, publication) = std::thread::scope(|scope| {
+        let worker = scope.spawn(move || builder.publish());
+        while Arc::strong_count(&parsed.value) <= original_references && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let admitted = Arc::strong_count(&parsed.value) > original_references;
+        let mut replacement = original_manifest.clone();
+        replacement.unapplied_retention_records = 1;
+        replacement.unapplied_retention_corrections = 2;
+        let replaced = store.save(&replacement);
+        // Release before assertions so a failed fixture cannot leave a joined
+        // worker waiting on the test's journal lock indefinitely.
+        drop(journal);
+        replaced.expect("canonical atomic replacement during admission");
+        (
+            admitted,
+            worker.join().expect("background publication worker"),
+        )
+    });
+    drop(compaction);
+    assert!(
+        admitted,
+        "fixture must replace the source during reader admission"
+    );
+    assert_eq!(
+        publication.expect("valid older source publication"),
+        GlobalReviewPublication::Published
+    );
+    let previous = crate::global_review::load(&root)
+        .expect("completed older source")
+        .expect("publication");
+    assert_eq!(
+        previous.source_manifest_identity,
+        format!("{original_identity:?}")
+    );
+    assert_eq!(
+        (
+            previous.snapshot.source_snapshot_generation,
+            previous.snapshot.source_watermark,
+            previous.snapshot.included_journal_watermark
+        ),
+        (
+            original_manifest.snapshot_generation,
+            original_manifest.watermark,
+            original_manifest.watermark
+        )
+    );
+    assert_eq!(
+        (
+            previous.snapshot.unapplied_retention_records,
+            previous.snapshot.unapplied_retention_corrections
+        ),
+        (0, 0)
+    );
+    assert_eq!(
+        previous.report["outcomes"]["totals"]["providerTotalTokens"]["exact"],
+        57
+    );
+    let current = store.load_shared().expect("replacement parsed manifest");
+    assert_ne!(current.identity, original_identity);
+    publish(&root);
+    let caught_up = crate::global_review::load(&root)
+        .expect("replacement publication")
+        .expect("completed source");
+    assert_eq!(
+        caught_up.source_manifest_identity,
+        format!("{:?}", current.identity)
+    );
+    assert_eq!(
+        (
+            caught_up.snapshot.source_snapshot_generation,
+            caught_up.snapshot.source_watermark,
+            caught_up.snapshot.included_journal_watermark
+        ),
+        (
+            previous.snapshot.source_snapshot_generation,
+            previous.snapshot.source_watermark,
+            previous.snapshot.included_journal_watermark
+        )
+    );
+    assert_eq!(
+        (
+            caught_up.snapshot.unapplied_retention_records,
+            caught_up.snapshot.unapplied_retention_corrections
+        ),
+        (1, 2)
+    );
+    assert_eq!(
+        caught_up.report["outcomes"]["totals"]["providerTotalTokens"]["exact"],
+        serde_json::Value::Null
+    );
+    assert!(
+        GlobalReviewPublisher::open_at(&root)
+            .expect("unchanged parsed source identity")
+            .is_none()
+    );
+}

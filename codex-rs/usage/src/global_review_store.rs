@@ -224,38 +224,13 @@ impl GlobalReviewPublisher {
     }
 }
 
-/// Match the reader to one exact manifest inode, including replacements with
-/// identical generations, lengths and modification times. A concurrent source
-/// replacement defers this candidate rather than labelling older facts as new.
+/// Carry the identity of the manifest actually parsed by this pinned reader.
+/// Publication may replace the path during admission; the older complete reader
+/// remains valid and the next candidate observes the replacement's identity.
 fn source_reader(root: &Path) -> Result<(UsageReader, String)> {
-    let path = root.join("manifest.json");
-    let opened = match File::open(&path) {
-        Ok(file) => Some(file),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    let identity = opened
-        .as_ref()
-        .map(|file| {
-            file.metadata()
-                .map(|metadata| crate::metadata_cache::Identity::from_metadata(&metadata))
-        })
-        .transpose()?;
     let reader = UsageReader::open_at(root)?;
-    let current = match std::fs::metadata(path) {
-        Ok(metadata) => Some(crate::metadata_cache::Identity::from_metadata(&metadata)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    if current != identity {
-        return Err(StorageError::InvalidData(
-            "global analytics source changed during admission".into(),
-        ));
-    }
-    // Keep the opened inode alive until admission has finished. It cannot be
-    // reused by an unrelated file during the before/after identity comparison.
-    drop(opened);
-    Ok((reader, format!("{identity:?}")))
+    let identity = format!("{:?}", reader.metadata_identity);
+    Ok((reader, identity))
 }
 
 /// A malformed disposable result can be replaced from canonical facts. Read

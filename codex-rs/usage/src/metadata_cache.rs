@@ -24,6 +24,9 @@ static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct Parsed<T> {
     pub value: Arc<T>,
     pub revision: u64,
+    /// Identity of the same opened file used to decode this value. None is
+    /// reserved for an absent manifest's synthetic empty snapshot.
+    pub identity: Option<Identity>,
 }
 
 impl<T> Clone for Parsed<T> {
@@ -31,6 +34,7 @@ impl<T> Clone for Parsed<T> {
         Self {
             value: Arc::clone(&self.value),
             revision: self.revision,
+            identity: self.identity.clone(),
         }
     }
 }
@@ -116,6 +120,7 @@ impl<T: DeserializeOwned> JsonCache<T> {
         let parsed = Parsed {
             value: Arc::new(value),
             revision: NEXT_REVISION.fetch_add(1, Ordering::Relaxed),
+            identity: Some(identity.clone()),
         };
         if identity != Identity::from_metadata(&file.metadata()?) {
             return Err(crate::StorageError::InvalidData(

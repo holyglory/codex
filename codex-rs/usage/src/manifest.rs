@@ -262,6 +262,7 @@ impl ManifestStore {
                 Ok(crate::metadata_cache::Parsed {
                     value: std::sync::Arc::default(),
                     revision: 0,
+                    identity: None,
                 })
             }
             result => result,
