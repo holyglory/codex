@@ -30,6 +30,85 @@ SPEC.loader.exec_module(MODULE)
 
 
 class WindowsNativeHelperTest(unittest.TestCase):
+    def test_x64_acceptance_and_package_preserve_flags_and_enable_cpp_unwinding(
+        self,
+    ) -> None:
+        target = "x86_64-pc-windows-msvc"
+        for prior_flags, expected_flags in (
+            (None, "/EHsc"),
+            ("/DPRIOR_FLAG=1 /O2", "/DPRIOR_FLAG=1 /O2 /EHsc"),
+        ):
+            with (
+                self.subTest(prior_flags=prior_flags),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                producer = MODULE.Producer.__new__(MODULE.Producer)
+                producer.evidence = root / "evidence"
+                producer.handoff = root / "handoff"
+                pair = producer.evidence / "v8" / target
+                record = {
+                    "files": {"native-v8.a.gz": "fixture-digest"},
+                    "archive": {"name": "native-v8.a.gz"},
+                    "binding": {"name": "native-binding.rs"},
+                    "compiler_directory": str(root / "compiler"),
+                }
+                MODULE.write_json(producer.handoff / f"v8-{target}.json", record)
+                environment = {
+                    "PATH": "existing-tools",
+                    "CXXFLAGS": "/DGLOBAL_FLAG=1",
+                    "CODEX_WINDOWS_NEXTEST_CONFIG_FILE": "nextest.toml",
+                }
+                if prior_flags is not None:
+                    environment["CXXFLAGS_x86_64_pc_windows_msvc"] = prior_flags
+                original_environment = dict(environment)
+                expected_environment = {
+                    **environment,
+                    "CXXFLAGS_x86_64_pc_windows_msvc": expected_flags,
+                    "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
+                    "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
+                    "LIBCLANG_PATH": record["compiler_directory"],
+                    "PATH": record["compiler_directory"]
+                    + os.pathsep
+                    + environment["PATH"],
+                }
+                with (
+                    patch.object(
+                        MODULE,
+                        "os",
+                        SimpleNamespace(environ=environment, pathsep=os.pathsep),
+                    ),
+                    patch.object(
+                        producer, "pair_receipt", return_value=record
+                    ) as pair_receipt,
+                    patch.object(producer, "run") as run,
+                ):
+                    producer.acceptance()
+                    self.assertEqual(
+                        [
+                            (item.args[0], item.kwargs["environment"])
+                            for item in run.call_args_list
+                        ],
+                        [
+                            ("v8-x64-poc-cppgc", expected_environment),
+                            ("windows-product-regressions", expected_environment),
+                        ],
+                    )
+                    run.reset_mock()
+                    run.side_effect = RuntimeError("build intercepted")
+                    with self.assertRaisesRegex(RuntimeError, "build intercepted"):
+                        producer.package(target)
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.args[0], f"{target}-build")
+                    self.assertEqual(
+                        run.call_args.kwargs["environment"], expected_environment
+                    )
+                    self.assertEqual(
+                        pair_receipt.call_args_list,
+                        [call(target, pair, "source-native-windows")] * 2,
+                    )
+                self.assertEqual(environment, original_environment)
+
     def test_successive_target_builds_retain_distinct_cargo_timing_reports(
         self,
     ) -> None:
