@@ -82,11 +82,19 @@ class NativeReleaseTest(unittest.TestCase):
                 "codex-resources/bwrap",
                 "codex-path/rg",
             ]:
-                data = bytearray(68)
+                interpreter = (
+                    b"/lib/ld-linux-aarch64.so.1\0" if name == "codex-path/rg" else b""
+                )
+                data = bytearray(120 + len(interpreter))
                 data[:6] = b"\x7fELF\x02\x01"
                 struct.pack_into("<H", data, 18, 183)
                 struct.pack_into("<Q", data, 32, 64)
-                struct.pack_into("<HH", data, 54, 4, 1)
+                struct.pack_into("<HH", data, 54, 56, 1)
+                struct.pack_into("<I", data, 64, 3 if interpreter else 1)
+                if interpreter:
+                    struct.pack_into("<Q", data, 72, 120)
+                    struct.pack_into("<Q", data, 96, len(interpreter))
+                    data[120:] = interpreter
                 info = tarfile.TarInfo(name)
                 info.mode, info.size = 0o755, len(data)
                 archive.addfile(info, io.BytesIO(data))
@@ -174,13 +182,21 @@ class NativeReleaseTest(unittest.TestCase):
 
     def test_verify_and_seal_same_release_artifact_without_compilation(self):
         result, run = self.verify()
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 5)
         poc, regressions = [item.args[2] for item in run.call_args_list[:2]]
         self.assertEqual(
             poc[-4:],
             ["-E", "platform(target) & package(codex-v8-poc)", "--run-ignored", "all"],
         )
         self.assertNotIn("--run-ignored", regressions)
+        rg = next(
+            item for item in run.call_args_list if item.args[1] == "native-rg-version"
+        )
+        self.assertEqual(
+            rg.args[2],
+            [str(self.args.output / "package/codex-path/rg"), "--version"],
+        )
+        self.assertEqual(rg.kwargs, {"timeout": 60})
         receipt = artifacts.load_json(self.args.output / "verification.json")
         self.assertEqual(
             {
@@ -324,7 +340,7 @@ class NativeReleaseTest(unittest.TestCase):
         self.assertTrue((self.args.output / "logs/v8-poc.log").exists())
 
     def test_changed_bwrap_binding_is_refused_before_native_tests(self):
-        self.manifest["bwrap"] = {"sha256": "e" * 64, "size_bytes": 68}
+        self.manifest["bwrap"] = {**self.bwrap, "sha256": "e" * 64}
         manifest = self.incoming / "build-manifest.json"
         manifest.write_text(json.dumps(self.manifest))
         self.args.manifest_sha256 = artifacts.file_info(manifest)["sha256"]
@@ -338,6 +354,77 @@ class NativeReleaseTest(unittest.TestCase):
         ):
             release.verify_target(self.args)
         execute.assert_not_called()
+
+    def test_dynamic_first_party_and_wrong_architecture_are_refused_before_execution(
+        self,
+    ):
+        package = self.incoming / f"codex-package-{self.target}.tar.gz"
+        original = package.read_bytes()
+        for index, (name, machine, program_type, message) in enumerate(
+            [
+                ("bin/codex", 183, 3, "static musl"),
+                ("bin/codex-code-mode-host", 183, 3, "static musl"),
+                ("bin/codex-exec-server", 183, 3, "static musl"),
+                ("codex-resources/bwrap", 183, 3, "static musl"),
+                ("bin/codex", 62, 1, "architecture"),
+                ("codex-path/rg", 62, 3, "architecture"),
+            ]
+        ):
+            with self.subTest(name=name, machine=machine, program_type=program_type):
+                with tarfile.open(fileobj=io.BytesIO(original), mode="r:gz") as source:
+                    members = [
+                        (item, source.extractfile(item).read()) for item in source
+                    ]
+                with tarfile.open(package, "w:gz") as output:
+                    for member, content in members:
+                        if member.name == name:
+                            content = bytearray(content)
+                            struct.pack_into("<H", content, 18, machine)
+                            struct.pack_into("<I", content, 64, program_type)
+                        output.addfile(member, io.BytesIO(content))
+                self.manifest["files"] = artifacts.inventory(self.incoming)
+                manifest_path = self.incoming / "build-manifest.json"
+                manifest_path.write_text(json.dumps(self.manifest))
+                args = argparse.Namespace(
+                    **{
+                        **vars(self.args),
+                        "manifest_sha256": artifacts.file_info(manifest_path)["sha256"],
+                        "output": self.base / f"rejected-elf-{index}",
+                    }
+                )
+                with (
+                    self.native_environment(),
+                    patch.object(
+                        release, "helper_identity", return_value=self.producer
+                    ),
+                    patch.object(release, "nextest_version", return_value="0.9.151"),
+                    patch.dict(os.environ, {}, clear=True),
+                    patch.object(release.Commands, "run") as execute,
+                    self.assertRaisesRegex(ValueError, message),
+                ):
+                    release.verify_target(args)
+                execute.assert_not_called()
+
+    def test_failed_ripgrep_smoke_never_emits_native_verification(self):
+        def run_check(runner, name, command, **kwargs):
+            if name == "native-rg-version":
+                (runner.directory / "logs" / f"{name}.log").write_text(
+                    "dynamic loader unavailable\n"
+                )
+                raise ValueError(f"{name} failed")
+            return self.fake_native_check(runner, name, command, **kwargs)
+
+        with (
+            self.native_environment(),
+            patch.object(release, "helper_identity", return_value=self.producer),
+            patch.object(release, "nextest_version", return_value="0.9.151"),
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(release.Commands, "run", autospec=True, side_effect=run_check),
+            self.assertRaisesRegex(ValueError, "native-rg-version failed"),
+        ):
+            release.verify_target(self.args)
+        self.assertFalse((self.args.output / "verification.json").exists())
+        self.assertTrue((self.args.output / "logs/native-rg-version.log").exists())
 
     @unittest.skipUnless(os.name == "posix", "Linux resource-limit preflight")
     def test_compile_preserves_musl_linker_flags_and_uses_source_rust_and_cargo(self):

@@ -16,6 +16,7 @@ import subprocess
 import time
 
 from local_native_artifacts import (
+    ElfPolicy,
     TARGETS,
     check_logs,
     elf_identity,
@@ -39,7 +40,13 @@ REGRESSIONS = [
     "codex-usage",
 ]
 BINARIES = ["codex", "codex-code-mode-host", "codex-exec-server"]
-REQUIRED_CHECKS = {"v8-poc", "product-regressions", "native-version", "native-help"}
+REQUIRED_CHECKS = {
+    "v8-poc",
+    "product-regressions",
+    "native-version",
+    "native-help",
+    "native-rg-version",
+}
 
 
 def helper_identity():
@@ -219,9 +226,12 @@ def verify_target(args):
     for relative in [
         *(f"bin/{name}" for name in BINARIES),
         "codex-resources/bwrap",
-        "codex-path/rg",
     ]:
         elf_identity(package / relative, args.target)
+    # The canonical ARM64 ripgrep pin uses GNU libc; its loader is checked natively below.
+    elf_identity(
+        package / "codex-path/rg", args.target, policy=ElfPolicy.SOURCE_PINNED_UTILITY
+    )
     require(
         file_info(package / "codex-resources/bwrap") == build["bwrap"],
         "Packaged bwrap differs from its embedded integrity hash",
@@ -264,6 +274,9 @@ def verify_target(args):
         "Release executable version differs",
     )
     runner.run("native-help", [str(package / "bin/codex"), "--help"], timeout=60)
+    runner.run(
+        "native-rg-version", [str(package / "codex-path/rg"), "--version"], timeout=60
+    )
     verify_build(incoming, args.manifest_sha256, root, args.commit, args.target)
     receipt = {
         "schema": 1,

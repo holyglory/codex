@@ -170,9 +170,13 @@ def compile_target(args):
         for relative in [
             *(f"bin/{name}" for name in driver.BINARIES),
             "codex-resources/bwrap",
-            "codex-path/rg",
         ]:
             driver.elf_identity(package / relative, args.target)
+        driver.elf_identity(
+            package / "codex-path/rg",
+            args.target,
+            policy=driver.ElfPolicy.SOURCE_PINNED_UTILITY,
+        )
     config = (root / "codex-rs/.config/nextest.toml").read_text()
     recipe = (root / ".github/scripts/downstream-unix-native.sh").read_text()
     overrides = re.findall(

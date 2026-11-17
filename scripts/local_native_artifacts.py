@@ -3,6 +3,7 @@
 import hashlib
 import json
 import platform
+from enum import Enum
 from pathlib import Path, PurePosixPath
 import re
 import struct
@@ -16,6 +17,13 @@ TARGETS = {"x86_64-unknown-linux-musl": 62, "aarch64-unknown-linux-musl": 183}
 MAX_BYTES = 32 * 1024**3
 MAX_FILES = 4096
 SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+class ElfPolicy(Enum):
+    """First-party musl binaries and source-pinned utilities have distinct linkage contracts."""
+
+    STATIC_MUSL = "static-musl"
+    SOURCE_PINNED_UTILITY = "source-pinned-utility"
 
 
 def require(condition, message):
@@ -111,7 +119,8 @@ def native_host(target):
     return {"os": "Linux", "architecture": machine}
 
 
-def elf_identity(path, target):
+def elf_identity(path, target, *, policy=ElfPolicy.STATIC_MUSL):
+    require(isinstance(policy, ElfPolicy), "Unknown ELF validation policy")
     with path.open("rb") as stream:
         header = stream.read(64)
         require(
@@ -130,10 +139,9 @@ def elf_identity(path, target):
         )
         for index in range(count):
             stream.seek(offset + index * size)
-            require(
-                struct.unpack("<I", stream.read(4))[0] != 3,
-                "Expected a static musl executable",
-            )
+            program_type = struct.unpack("<I", stream.read(4))[0]
+            if policy is ElfPolicy.STATIC_MUSL:
+                require(program_type != 3, "Expected a static musl executable")
 
 
 def safe_extract(archive, destination, *, max_files=MAX_FILES):
