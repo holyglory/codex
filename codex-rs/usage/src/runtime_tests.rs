@@ -153,17 +153,40 @@ fn global_analytics_owner_drop_interrupts_duckdb_and_releases_private_candidate(
             drop(result);
         };
         started.send(()).expect("query starting");
+        #[cfg(windows)]
+        eprintln!("global review interrupted query: phase=admission");
         let interrupted = worker_cancel
             .check()
             .and_then(|()| {
-                connection
-                    .query_row(
-                        "SELECT sum(i % 17)::BIGINT FROM range(1000000000000) r(i)",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map(|_| ())
-                    .map_err(crate::reader_query::query_error)
+                #[cfg(windows)]
+                eprintln!("global review interrupted query: phase=prepare-start");
+                let mut statement = match connection
+                    .prepare("SELECT sum(i % 17)::BIGINT FROM range(1000000000000) r(i)")
+                {
+                    Ok(statement) => {
+                        #[cfg(windows)]
+                        eprintln!("global review interrupted query: phase=prepare-complete");
+                        statement
+                    }
+                    Err(error) => {
+                        #[cfg(windows)]
+                        eprintln!(
+                            "global review interrupted query: phase=prepare-error error={error:?}"
+                        );
+                        return Err(crate::reader_query::query_error(error));
+                    }
+                };
+                #[cfg(windows)]
+                eprintln!("global review interrupted query: phase=execute-start");
+                let result = statement.query_row([], |row| row.get::<_, i64>(0));
+                #[cfg(windows)]
+                match &result {
+                    Ok(_) => eprintln!("global review interrupted query: phase=execute-complete"),
+                    Err(error) => eprintln!(
+                        "global review interrupted query: phase=execute-error error={error:?}"
+                    ),
+                }
+                result.map(|_| ()).map_err(crate::reader_query::query_error)
             })
             .is_err();
         #[cfg(windows)]
