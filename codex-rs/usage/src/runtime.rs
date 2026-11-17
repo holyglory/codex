@@ -56,11 +56,13 @@ impl PublisherSignal {
 #[derive(Debug)]
 struct PublisherOwner {
     signal: Arc<PublisherSignal>,
+    global_cancel: Arc<crate::global_review_cancel::GlobalReviewCancellation>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Drop for PublisherOwner {
     fn drop(&mut self) {
+        self.global_cancel.cancel();
         drop(
             self.signal
                 .wake
@@ -123,6 +125,7 @@ impl UsagePublisherRuntime {
         });
         let owner = Arc::new(PublisherOwner {
             signal: Arc::clone(&signal),
+            global_cancel: Arc::default(),
             workers: Mutex::default(),
         });
         let (warm, ready) = mpsc::channel();
@@ -138,6 +141,12 @@ impl UsagePublisherRuntime {
         let worker_root = root.clone();
         let (maintenance, maintain) = mpsc::sync_channel::<MaintenanceRequest>(/*bound*/ 1);
         let (headline, headlines) = mpsc::sync_channel(/*bound*/ 1);
+        let (global, globals) = mpsc::sync_channel(/*bound*/ 1);
+        let global_root = root.clone();
+        let global_cancel = Arc::clone(&owner.global_cancel);
+        let global_worker = std::thread::Builder::new()
+            .name("codex-usage-global-analytics".into())
+            .spawn(move || crate::global_review_store::run(global_root, globals, global_cancel))?;
         let headline_root = root.clone();
         let headline_worker = std::thread::Builder::new()
             .name("codex-usage-token-headline".into())
@@ -185,15 +194,17 @@ impl UsagePublisherRuntime {
             })?;
         let publisher_worker = std::thread::Builder::new()
             .name("codex-usage-publisher".into())
-            .spawn(move || publish_loop(worker_root, receiver, warm, maintenance, headline))?;
+            .spawn(move || {
+                publish_loop(worker_root, receiver, warm, maintenance, headline, global)
+            })?;
         *owner
             .workers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            // The publisher owns both wake senders. Join it first so the
+            // The publisher owns the worker wake senders. Join it first so the
             // maintenance and warmup receivers observe channel closure during
             // shutdown instead of waiting on a sender held by the publisher.
-            vec![publisher_worker, maintenance_worker, warm_worker, headline_worker];
+            vec![publisher_worker, maintenance_worker, warm_worker, headline_worker, global_worker];
         signal.notify();
         publishers.insert(
             root,
@@ -228,6 +239,7 @@ fn publish_loop(
     warm: mpsc::Sender<()>,
     maintenance: mpsc::SyncSender<MaintenanceRequest>,
     headline: mpsc::SyncSender<()>,
+    global: mpsc::SyncSender<()>,
 ) {
     let mut had_failure = false;
     let mut catch_up = false;
@@ -293,6 +305,7 @@ fn publish_loop(
         match result {
             Ok(manifest) => {
                 let _ = headline.try_send(());
+                let _ = global.try_send(());
                 catch_up = crate::UsageJournal::new(root.join("events.jsonl"))
                     .checkpoint()
                     .is_ok_and(|end| end.sequence > manifest.watermark);
