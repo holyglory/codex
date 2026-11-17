@@ -426,7 +426,7 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Show locally captured, agent-declared job assignments through usage_work and outcome reports, including provider tokens and cleared work. Live A/B/clear verification is pending; historical missing assignments remain unknown and operation completion does not prove delivery.",
             "evidence_refs": [
-                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/full-workspace",
                 f"run/{base_run}/usage-scale",
                 f"run/{base_run}/local-usage-package-rpc",
             ],
@@ -438,7 +438,7 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Continue a clean usage-limit rejection on an eligible managed account within the same chat, preserving completed tools, request ownership and the following user turn.",
             "evidence_refs": [
-                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/full-workspace",
                 f"run/{base_run}/full-workspace",
             ],
         },
@@ -449,7 +449,7 @@ def qualify(run_id, work):
             "state": "fixture_only",
             "expected_result": "Continue clean foreground automatic compaction rejections before, during and after a turn on another eligible account, keeping active goals and later tools on the correct owner.",
             "evidence_refs": [
-                f"run/{base_run}/focused-continuation",
+                f"run/{base_run}/full-workspace",
                 f"run/{base_run}/full-workspace",
             ],
         },
