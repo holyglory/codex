@@ -109,6 +109,11 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
         ("provider_total_tokens", "provider_total_tokens"),
         ("provenance.estimatedApiEquivalentCostMicros", "estimated"),
         ("actual_billing_micros", "actual"),
+        ("provenance.inputCostMicros", "input_cost"),
+        ("provenance.cachedInputCostMicros", "cached_input_cost"),
+        ("provenance.cacheWriteCostMicros", "cache_write_cost"),
+        ("provenance.outputCostMicros", "output_cost"),
+        ("provenance.reasoningCostMicros", "reasoning_cost"),
     ] {
         aggregates.push(sum(source, alias));
     }
@@ -134,6 +139,10 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
         "CASE WHEN provenance.estimatedApiEquivalentCostMicros IS NOT NULL THEN observations ELSE 0 END",
         "priced_observations",
     ));
+    aggregates.push(sum(
+        "CASE WHEN provenance.inputCostMicros IS NULL OR provenance.outputCostMicros IS NULL THEN observations ELSE 0 END",
+        "component_unknown",
+    ));
     let aggregates = aggregates.join(", ");
     let predicate = crate::review_aggregate::TOKEN_PREDICATE;
     // A retained row can carry one representative JSON object for many facts.
@@ -150,9 +159,11 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
                     )) END context,
                 CASE WHEN COALESCE(observation_count, 1) = 1 THEN
                     TRY_CAST(TRY_CAST(cost_provenance AS JSON) AS STRUCT(
-                        model VARCHAR, provider VARCHAR, serviceTier VARCHAR, contextClass VARCHAR,
+                        model VARCHAR, provider VARCHAR, serviceTier VARCHAR, contextClass VARCHAR, rateContextClass VARCHAR,
                         region VARCHAR, rateCard VARCHAR, rateCardVersion VARCHAR, pricingBasis VARCHAR,
-                        estimatedApiEquivalentCostMicros UBIGINT
+                        estimatedApiEquivalentCostMicros UBIGINT, inputCostMicros UBIGINT,
+                        cachedInputCostMicros UBIGINT, cacheWriteCostMicros UBIGINT,
+                        outputCostMicros UBIGINT, reasoningCostMicros UBIGINT
                     )) END provenance
             FROM ({contributions}) WHERE {predicate}
         ), totals AS (
@@ -183,9 +194,15 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
             COALESCE((SELECT to_json(list(struct_pack(
                 model := provenance.model, provider := provenance.provider,
                 serviceTier := provenance.serviceTier, contextClass := provenance.contextClass,
+                rateContextClass := provenance.rateContextClass,
                 region := provenance.region, rateCard := provenance.rateCard,
                 rateCardVersion := provenance.rateCardVersion, pricingBasis := provenance.pricingBasis,
                 estimatedApiEquivalentCostMicros := provenance.estimatedApiEquivalentCostMicros,
+                inputCostMicros := provenance.inputCostMicros,
+                cachedInputCostMicros := provenance.cachedInputCostMicros,
+                cacheWriteCostMicros := provenance.cacheWriteCostMicros,
+                outputCostMicros := provenance.outputCostMicros,
+                reasoningCostMicros := provenance.reasoningCostMicros,
                 observations := observations) ORDER BY sort_key)) FROM (
                     SELECT * FROM provenances ORDER BY sort_key LIMIT {MAX_DETAIL_ROWS})),
                 '[]'::JSON) provenance,

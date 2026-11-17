@@ -37,11 +37,17 @@ fn observation(id: &str, at: i64, total: u64) -> UsageRecord {
         provider: Some("provider".into()),
         service_tier: Some("standard".into()),
         context_class: Some("short".into()),
+        rate_context_class: None,
         region: None,
         rate_card: Some("trusted".into()),
         rate_card_version: Some("v1".into()),
         pricing_basis: Some("api_equivalent".into()),
         estimated_api_equivalent_cost_micros: Some(7),
+        input_cost_micros: None,
+        cached_input_cost_micros: None,
+        cache_write_cost_micros: None,
+        output_cost_micros: None,
+        reasoning_cost_micros: None,
     });
     record
 }

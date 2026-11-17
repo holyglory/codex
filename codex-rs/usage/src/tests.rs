@@ -149,11 +149,17 @@ fn optional_context_and_cost_provenance_round_trip_through_storage_codecs() {
         provider: Some("openai".into()),
         service_tier: Some("standard".into()),
         context_class: Some("short".into()),
+        rate_context_class: None,
         region: Some("us".into()),
         rate_card: Some("openai-standard".into()),
         rate_card_version: Some("2026-11-15".into()),
         pricing_basis: Some("api_equivalent".into()),
         estimated_api_equivalent_cost_micros: Some(7),
+        input_cost_micros: None,
+        cached_input_cost_micros: None,
+        cache_write_cost_micros: None,
+        output_cost_micros: None,
+        reasoning_cost_micros: None,
     });
     record.actual_billing_micros = Some(11);
     let segment = UsageSegment::from_records(vec![record.clone()]).expect("segment");

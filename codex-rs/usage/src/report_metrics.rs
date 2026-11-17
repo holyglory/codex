@@ -145,6 +145,7 @@ struct CostTotals {
     estimated: u64,
     actual: u64,
     estimated_unknown: u64,
+    component_unknown: u64,
     actual_unknown: u64,
     provenance: Vec<Value>,
     provenance_omitted: u64,
@@ -154,6 +155,11 @@ struct CostTotals {
     cache_write_tokens: u64,
     output_tokens: i64,
     reasoning_tokens: i64,
+    input_cost: u64,
+    cached_input_cost: u64,
+    cache_write_cost: u64,
+    output_cost: u64,
+    reasoning_cost: u64,
     provider_total_tokens: u64,
     priced_observations: u64,
     rate_card_refs: Vec<String>,
@@ -179,10 +185,10 @@ impl CostTotals {
         if self.estimated_unknown > 0 {
             unavailable_reasons.insert("rate_card_missing", self.estimated_unknown);
         }
-        if has_estimate {
+        if self.component_unknown > 0 {
             unavailable_reasons.insert(
                 "component_cost_breakdown_unavailable",
-                self.priced_observations,
+                self.component_unknown,
             );
         }
         let estimated_usd = has_estimate.then(|| {
@@ -199,10 +205,11 @@ impl CostTotals {
             "processingTier": "standard",
             "estimatedUsd": estimated_usd,
             "estimatedUsdMicros": has_estimate.then_some(self.estimated),
-            "inputUsdMicros": Value::Null,
-            "cachedInputUsdMicros": Value::Null,
-            "cacheWriteUsdMicros": Value::Null,
-            "outputUsdMicros": Value::Null,
+            "inputUsdMicros": measurement(self.input_cost, self.component_unknown, self.observations),
+            "cachedInputUsdMicros": measurement(self.cached_input_cost, self.component_unknown, self.observations),
+            "cacheWriteUsdMicros": measurement(self.cache_write_cost, self.component_unknown, self.observations),
+            "outputUsdMicros": measurement(self.output_cost, self.component_unknown, self.observations),
+            "reasoningUsdMicros": measurement(self.reasoning_cost, self.component_unknown, self.observations),
             "inputTokens": self.input_tokens,
             "cachedInputTokens": self.cached_input_tokens,
             "cacheWriteTokens": self.cache_write_tokens,

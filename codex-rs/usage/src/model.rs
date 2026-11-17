@@ -77,11 +77,19 @@ pub struct UsageCostProvenance {
     pub provider: Option<String>,
     pub service_tier: Option<String>,
     pub context_class: Option<String>,
+    /// Short/long context class selected by the rate card.
+    pub rate_context_class: Option<String>,
     pub region: Option<String>,
     pub rate_card: Option<String>,
     pub rate_card_version: Option<String>,
     pub pricing_basis: Option<String>,
     pub estimated_api_equivalent_cost_micros: Option<u64>,
+    /// Cost components in integer USD micros. Reasoning is a subset of output.
+    pub input_cost_micros: Option<u64>,
+    pub cached_input_cost_micros: Option<u64>,
+    pub cache_write_cost_micros: Option<u64>,
+    pub output_cost_micros: Option<u64>,
+    pub reasoning_cost_micros: Option<u64>,
 }
 
 impl UsageOutcome {

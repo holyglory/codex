@@ -895,11 +895,17 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
         provider: Some("openai".into()),
         service_tier: Some("standard".into()),
         context_class: Some("short".into()),
+        rate_context_class: None,
         region: Some("us".into()),
         rate_card: Some("openai-standard".into()),
         rate_card_version: Some("2026-11-15".into()),
         pricing_basis: Some("api_equivalent".into()),
         estimated_api_equivalent_cost_micros: Some(7),
+        input_cost_micros: None,
+        cached_input_cost_micros: None,
+        cache_write_cost_micros: None,
+        output_cost_micros: None,
+        reasoning_cost_micros: None,
     });
     first_finished.actual_billing_micros = Some(11);
     let mut second = start("second", 1_500);
@@ -1185,7 +1191,8 @@ fn report_preserves_context_cost_provenance_and_union_intervals() -> codex_usage
                 "unknownReasons":{},"coverage":"recorded"},
             "lifecycle":{"firstStartedAtMs":4_000,"lastEndedAtMs":4_000,
                 "wallTimeMs":{"measured":0,"exact":0,"unknown":0},
-                "unknownReasons":{},"coverage":"recorded"},"breakdown":null})
+                "unknownReasons":{},"coverage":"recorded"},
+            "breakdown":{"measured":0,"exact":null,"unknown":1}})
     );
     mark("zero_billing_review_started");
     let billed = restarted_reader.performance_review(

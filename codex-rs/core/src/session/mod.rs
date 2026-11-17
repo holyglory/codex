@@ -416,6 +416,7 @@ use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
 use codex_usage::UsageContextSize;
 use codex_usage::UsageCostProvenance;
+use codex_usage::resolve_rate_card;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -5358,11 +5359,17 @@ impl Session {
             provider: Some(turn_context.provider.info().name.clone()),
             service_tier: turn_context.initial_settings.service_tier.clone(),
             context_class: Some(Self::context_class(input_tokens, context_window_tokens)),
+            rate_context_class: None,
             region: turn_context.provider.info().location.clone(),
             rate_card: None,
             rate_card_version: None,
             pricing_basis: Some("provider_tokens_without_rate_card".to_string()),
             estimated_api_equivalent_cost_micros: None,
+            input_cost_micros: None,
+            cached_input_cost_micros: None,
+            cache_write_cost_micros: None,
+            output_cost_micros: None,
+            reasoning_cost_micros: None,
         };
         if let Some(metadata) = usage_metadata.and_then(|value| value.metadata.as_ref()) {
             cost_provenance.rate_card = metadata_string(metadata, "rateCard")
@@ -5375,6 +5382,42 @@ impl Session {
             cost_provenance.estimated_api_equivalent_cost_micros =
                 metadata_u64(metadata, "estimatedApiEquivalentCostMicros")
                     .or_else(|| metadata_u64(metadata, "estimated_api_equivalent_cost_micros"));
+            cost_provenance.rate_context_class = metadata_string(metadata, "rateContextClass")
+                .or_else(|| metadata_string(metadata, "rate_context_class"));
+            cost_provenance.input_cost_micros = metadata_u64(metadata, "inputCostMicros")
+                .or_else(|| metadata_u64(metadata, "input_cost_micros"));
+            cost_provenance.cached_input_cost_micros =
+                metadata_u64(metadata, "cachedInputCostMicros")
+                    .or_else(|| metadata_u64(metadata, "cached_input_cost_micros"));
+            cost_provenance.cache_write_cost_micros =
+                metadata_u64(metadata, "cacheWriteCostMicros")
+                    .or_else(|| metadata_u64(metadata, "cache_write_cost_micros"));
+            cost_provenance.output_cost_micros = metadata_u64(metadata, "outputCostMicros")
+                .or_else(|| metadata_u64(metadata, "output_cost_micros"));
+            cost_provenance.reasoning_cost_micros = metadata_u64(metadata, "reasoningCostMicros")
+                .or_else(|| metadata_u64(metadata, "reasoning_cost_micros"));
+        }
+        if cost_provenance
+            .estimated_api_equivalent_cost_micros
+            .is_none()
+            && cost_provenance.rate_card.is_none()
+            && let Some(rate_card) = resolve_rate_card(
+                &turn_context.model_info().slug,
+                &turn_context.provider.info().name,
+                turn_context.initial_settings.service_tier.as_deref(),
+                context_window_tokens,
+            )
+        {
+            cost_provenance = rate_card.estimate(
+                &turn_context.provider.info().name,
+                turn_context.provider.info().location.as_deref(),
+                input_tokens,
+                cached_input_tokens,
+                u64::try_from(usage.cache_write_input_tokens).unwrap_or_default(),
+                u64::try_from(usage.output_tokens.max(0)).unwrap_or_default(),
+                u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default(),
+                Self::context_class(input_tokens, context_window_tokens),
+            );
         }
         usage_record = usage_record
             .with_context_size(UsageContextSize {

@@ -172,6 +172,11 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
                 rate_card_version: Some("1".into()),
                 pricing_basis: Some("api_equivalent".into()),
                 estimated_api_equivalent_cost_micros: Some(7),
+                input_cost_micros: Some(1),
+                cached_input_cost_micros: Some(1),
+                cache_write_cost_micros: Some(1),
+                output_cost_micros: Some(4),
+                reasoning_cost_micros: Some(1),
                 ..Default::default()
             });
             fact.actual_billing_micros = Some(11);
@@ -229,6 +234,9 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         120
     );
     assert_eq!(native_review["cost"]["actualBillingMicros"]["measured"], 11);
+    assert_eq!(native_review["cost"]["inputUsdMicros"]["measured"], 1);
+    assert_eq!(native_review["cost"]["cachedInputUsdMicros"]["measured"], 1);
+    assert_eq!(native_review["cost"]["outputUsdMicros"]["measured"], 4);
     let info = json!({"fixtureKind":"codex-usage-v2-synthetic-v1","repositoryPath":repository_path,"repositoryId":repository,
         "windowStartMs":base,"windowEndMs":base+5_000,"capturedAtMs":base+500,
         "operationId":"fixture-model","threadId":"fixture-thread","turnId":"fixture-turn","nativeProjectId":"fixture-project",
@@ -352,6 +360,8 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     );
     assert_eq!(review["time"]["execution_wall"]["measured_ms"], 1_500);
     assert_eq!(scoped.report["cost"]["estimatedUsdMicros"], 7);
+    assert_eq!(scoped.report["cost"]["inputUsdMicros"]["measured"], 1);
+    assert_eq!(scoped.report["cost"]["outputUsdMicros"]["measured"], 4);
     let operation = &scoped.operations.as_ref().unwrap()[0];
     assert_eq!(operation["operation_id"], "fixture-model");
     assert_eq!(
@@ -361,6 +371,8 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     assert_eq!(operation["context_size"]["promptTokens"], 120);
     assert_eq!(operation["actual_billing_micros"], 11);
     assert_eq!(review["totals"]["cost"]["estimated_usd_micros"], 7);
+    assert_eq!(review["totals"]["cost"]["input_usd_micros"]["measured"], 1);
+    assert_eq!(review["totals"]["cost"]["output_usd_micros"]["measured"], 4);
     assert_eq!(
         json!({"requests":review["totals"]["cost"]["model_requests"],
             "pricedRequests":review["totals"]["cost"]["priced_requests"],

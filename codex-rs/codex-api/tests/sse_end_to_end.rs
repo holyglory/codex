@@ -118,7 +118,14 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
         "type": "response.completed",
         "response": {
             "id": "resp1",
-            "usage_metadata": { "amount": "0.12345678901234567890" },
+            "usage_metadata": {
+                "amount": "0.12345678901234567890",
+                "metadata": {
+                    "rateCard": "openai-api-standard-short",
+                    "rateCardVersion": "2026-11-18",
+                    "estimatedApiEquivalentCostMicros": 1234
+                }
+            },
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 5,
@@ -129,7 +136,7 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
         }
     });
 
-    let expected_metadata = completed["response"]["usage"].clone();
+    let expected_metadata = completed["response"]["usage_metadata"]["metadata"].clone();
     let body = build_responses_body(vec![item1, item2, completed]);
     let transport = FixtureSseTransport::new(body);
     let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth));
