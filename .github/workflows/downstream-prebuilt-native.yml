@@ -1,0 +1,158 @@
+name: downstream-prebuilt-native
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact product source commit compiled locally
+        required: true
+        type: string
+      helper_sha:
+        description: Exact reviewed helper commit recorded by the local producer
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      asset_url:
+        description: Authenticated holyglory/codex GitHub release asset API URL
+        required: true
+        type: string
+      asset_sha256:
+        required: true
+        type: string
+      asset_size:
+        required: true
+        type: string
+      manifest_sha256:
+        description: Build manifest digest passed outside the transport archive
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact product source commit compiled locally
+        required: true
+        type: string
+      helper_sha:
+        description: Exact reviewed helper commit recorded by the local producer
+        required: true
+        type: string
+      target:
+        description: Native Linux musl target
+        required: true
+        type: string
+      asset_url:
+        description: Authenticated holyglory/codex GitHub release asset API URL
+        required: true
+        type: string
+      asset_sha256:
+        description: Transport SHA256
+        required: true
+        type: string
+      asset_size:
+        description: Transport byte size as an integer
+        required: true
+        type: string
+      manifest_sha256:
+        description: Build manifest digest passed outside the transport archive
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify prebuilt Linux target
+    if: >-
+      github.repository == 'holyglory/codex' &&
+      github.event_name != 'pull_request' &&
+      contains(fromJSON('["x86_64-unknown-linux-musl","aarch64-unknown-linux-musl"]'), inputs.target)
+    runs-on: ${{ inputs.target == 'aarch64-unknown-linux-musl' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 360
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      HELPER_SHA: ${{ inputs.helper_sha }}
+      TARGET: ${{ inputs.target }}
+      ASSET_URL: ${{ inputs.asset_url }}
+      ASSET_SHA256: ${{ inputs.asset_sha256 }}
+      ASSET_SIZE: ${{ inputs.asset_size }}
+      MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      INSTA_UPDATE: "no"
+    steps:
+      - name: Require immutable source and helper references
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$HELPER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ASSET_SHA256" =~ ^[0-9a-f]{64}$ && "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.helper_sha }}
+          path: helpers
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Fetch and verify the complete prebuilt input before installing tools
+        id: input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result=$(python3 helpers/scripts/local_native_release.py fetch \
+            --source-root "$GITHUB_WORKSPACE/source" --commit "$SOURCE_SHA" --target "$TARGET" \
+            --asset-url "$ASSET_URL" --asset-sha256 "$ASSET_SHA256" --asset-size "$ASSET_SIZE" \
+            --manifest-sha256 "$MANIFEST_SHA256" --output "$RUNNER_TEMP/prebuilt")
+          python3 - "$result" "$GITHUB_OUTPUT" <<'PY'
+          import json, re, sys
+          version = json.loads(sys.argv[1])
+          if re.fullmatch(r'\d+\.\d+\.\d+', version) is None:
+              raise SystemExit('Invalid compiled Nextest version')
+          with open(sys.argv[2], 'a') as output:
+              output.write(f'nextest_version={version}\n')
+          PY
+      - name: Install matching prebuilt Nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest@${{ steps.input.outputs.nextest_version }}
+      - name: Install the prebuilt just command runner
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: just
+      - name: Execute archived tests and the same release package on native hardware
+        run: |
+          python3 helpers/scripts/local_native_release.py verify \
+            --source-root "$GITHUB_WORKSPACE/source" --commit "$SOURCE_SHA" --target "$TARGET" \
+            --input "$RUNNER_TEMP/prebuilt" --manifest-sha256 "$MANIFEST_SHA256" \
+            --output "$RUNNER_TEMP/native-verification"
+      - name: Seal the successful native handoff without compilation
+        run: |
+          verification_sha=$(sha256sum "$RUNNER_TEMP/native-verification/verification.json" | cut -d' ' -f1)
+          python3 helpers/scripts/local_native_release.py seal \
+            --source-root "$GITHUB_WORKSPACE/source" --commit "$SOURCE_SHA" --target "$TARGET" \
+            --input "$RUNNER_TEMP/prebuilt" --manifest-sha256 "$MANIFEST_SHA256" \
+            --verification "$RUNNER_TEMP/native-verification" --verification-sha256 "$verification_sha" \
+            --output "$RUNNER_TEMP/native-handoff"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ inputs.target }}
+          path: ${{ runner.temp }}/native-handoff
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve failed verification evidence
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prebuilt-diagnostic-${{ inputs.target }}
+          path: ${{ runner.temp }}/native-verification/logs
+          if-no-files-found: warn
+          retention-days: 14
