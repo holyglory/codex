@@ -39,3 +39,15 @@ tier = "release"
 timeout_seconds = 8400
 command = ["python3", "scripts/build_multi12_local_package.py"]
 retained_artifacts = [{name = "multi12-package-proof", path = "codex-rs/target/multi12-local", max_bytes = 1073741824}]
+
+[deployment.local-activation-v12]
+source = ["worktree"]
+components = ["owner"]
+public = false
+[deployment.local-activation-v12.component.owner]
+type = "process"
+allow_new_privileges = true
+command = ["python3", "scripts/local_deploy_owner.py", "codex-rs/target/multi12-local-plan.json"]
+port = false
+route = false
+persistent_paths = ["codex-rs/target/multi12-local-plan.json"]
