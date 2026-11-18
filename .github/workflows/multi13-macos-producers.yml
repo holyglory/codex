@@ -1,0 +1,35 @@
+name: CodexMulti .13 macOS native producers
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      source_version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  producers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos_amd64
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+            platform: macos_arm64
+    uses: ./.github/workflows/downstream-unix-native-target.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      platform: ${{ matrix.platform }}
+      bazel_config: ci-macos
+      source_version: ${{ inputs.source_version }}
