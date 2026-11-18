@@ -572,6 +572,8 @@ impl App {
             chat_widget.windows_sandbox_elevated_setup_complete =
                 self.chat_widget.windows_sandbox_elevated_setup_complete;
         }
+        chat_widget.set_command_center_enabled(self.app_server_target.supports_command_center());
+        chat_widget.set_account_profiles_capability(self.chat_widget.account_profiles_capability());
         if chat_widget.status_account_display() == self.chat_widget.status_account_display()
             && chat_widget.has_chatgpt_account() == self.chat_widget.has_chatgpt_account()
         {

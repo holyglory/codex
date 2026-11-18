@@ -940,6 +940,8 @@ impl App {
             &app_server_target,
             environment_manager.as_ref(),
         ));
+        chat_widget.set_command_center_enabled(app_server_target.supports_command_center());
+        chat_widget.set_account_profiles_capability(app_server.multi_account_capability());
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
         chat_widget.windows_sandbox_local_server = !app_server_target.uses_remote_workspace()
             && app_server.app_server_platform_os() == Some("windows");

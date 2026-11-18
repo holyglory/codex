@@ -240,6 +240,7 @@ async fn new_config(
         .clone();
 
     let mut config = Config {
+        process_account: None,
         application_network_policy: Default::default(),
         application_auth_route_config: Some(auth_config.auth_route_config.clone()),
         config_layer_stack,
@@ -347,6 +348,7 @@ async fn new_config(
         agent_max_depth: 1,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
+        usage: Default::default(),
         sqlite: SqliteConfig::from_sqlite_home_with_nfs_enforcement(
             codex_home.clone(),
             /*enforce_delete_on_nfs*/ false,

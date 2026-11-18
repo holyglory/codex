@@ -370,6 +370,13 @@ impl ShellSnapshotCache {
                 params.argv[2]
             )
         };
+        if shell_type == ShellType::Bash {
+            // Privileged mode suppresses BASH_ENV, but Bash's remote-shell
+            // startup detection can still read .bashrc before the script.
+            prepared
+                .command
+                .insert(shell_start + 1, "--norc".to_string());
+        }
 
         telemetry.shell_snapshot_command(wait, availability, "used");
         Ok(reader)

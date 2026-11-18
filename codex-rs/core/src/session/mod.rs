@@ -198,6 +198,8 @@ use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreResumePreparation;
+use codex_usage::UsageRecord;
+use codex_usage::capture_record;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_output_truncation::with_serialization_allowance;
@@ -249,12 +251,14 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+pub(crate) mod account_routing;
 pub(crate) mod async_compaction;
 pub(crate) mod file_audio;
 pub(crate) use file_audio::FileAudioDurations;
 
 mod approved_plan;
 mod code_mode_warning;
+mod compaction_account_routing;
 mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;
@@ -424,6 +428,10 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
+use codex_usage::PricingProvider;
+use codex_usage::PricingRequest;
+use codex_usage::UsageContextSize;
+use codex_usage::price_observation;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -5092,9 +5100,14 @@ impl Session {
             }
         }
 
-        crate::context_manager::updates::build_rendered_message(developer_sections)
+        let mut items = crate::context_manager::updates::build_rendered_message(developer_sections)
             .into_iter()
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(prompt) = crate::usage_capture::missing_work_boundary_prompt(turn_context).await
+        {
+            items.push(ContextualUserFragment::into(prompt));
+        }
+        items
     }
 
     /// Normally both inputs come from the same step. Async compaction uses the prefix's
@@ -5196,6 +5209,10 @@ impl Session {
             {
                 developer_sections.push(fragment.into());
             }
+        }
+        if let Some(prompt) = crate::usage_capture::missing_work_boundary_prompt(turn_context).await
+        {
+            contextual_user_sections.push(prompt.render_fragment());
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
@@ -5646,6 +5663,7 @@ impl Session {
                 turn_context,
                 response_id,
                 incomplete.token_usage.as_ref(),
+                None,
             )
             .await;
         }
@@ -5697,7 +5715,7 @@ impl Session {
             }),
         )
         .await;
-        self.record_response_token_usage(turn_context, response_id, usage)
+        self.record_response_token_usage(turn_context, response_id, usage, usage_metadata)
             .await;
     }
 
@@ -5706,6 +5724,7 @@ impl Session {
         turn_context: &TurnContext,
         response_id: &str,
         usage: Option<&TokenUsage>,
+        usage_metadata: Option<&ResponseUsageMetadata>,
     ) {
         let Some(usage) = usage else {
             return;
@@ -5723,6 +5742,122 @@ impl Session {
         );
         self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
             .await;
+
+        let codex_home = turn_context.config.codex_home.clone();
+        let account_id = turn_context
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.local_profile_id())
+            .map(ToString::to_string);
+        let mut usage_record = UsageRecord::new_millis(
+            format!("{}:{}", self.thread_id, response_id),
+            i64::try_from(codex_analytics::now_unix_millis()).unwrap_or(i64::MAX),
+            u64::try_from(usage.input_tokens.max(0)).unwrap_or_default(),
+            u64::try_from(usage.output_tokens.max(0)).unwrap_or_default(),
+        )
+        .with_operation(response_id)
+        .with_thread(self.thread_id.to_string())
+        .with_model(turn_context.model_info().slug.clone());
+        if let Some(account_id) = account_id {
+            usage_record = usage_record.with_account(account_id);
+        }
+        crate::usage_capture::annotate_record(turn_context, &mut usage_record);
+        usage_record.event = Some("token_observation".to_string());
+        usage_record.classification = Some("provider_reported".to_string());
+        usage_record.coverage = Some("recorded".to_string());
+        usage_record.turn_id = Some(turn_context.sub_id.clone());
+        usage_record.response_id = Some(response_id.to_string());
+        usage_record.provider_total_tokens = u64::try_from(usage.total_tokens).ok();
+        usage_record.cache_write_input_tokens = u64::try_from(usage.cache_write_input_tokens).ok();
+        usage_record.cached_input_tokens =
+            u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
+        usage_record.reasoning_output_tokens =
+            u64::try_from(usage.reasoning_output_tokens.max(0)).unwrap_or_default();
+        let cached_input_tokens =
+            u64::try_from(usage.cached_input_tokens.max(0)).unwrap_or_default();
+        let input_tokens = u64::try_from(usage.input_tokens.max(0)).unwrap_or_default();
+        let context_window_tokens = turn_context
+            .model_context_window()
+            .and_then(|value| u64::try_from(value).ok());
+        let provider = turn_context.provider.info();
+        let trusted_openai = turn_context.config.model_provider_id == "openai"
+            && provider.base_url.as_deref().is_none_or(|endpoint| {
+                url::Url::parse(endpoint).ok().is_some_and(|url| {
+                    url.scheme() == "https"
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && matches!(url.host_str(), Some("api.openai.com" | "chatgpt.com"))
+                })
+            });
+        let cost_provenance = price_observation(
+            PricingRequest {
+                model: &turn_context.model_info().slug,
+                provider_name: &provider.name,
+                provider: if trusted_openai {
+                    PricingProvider::OpenAiDirect
+                } else {
+                    PricingProvider::Other
+                },
+                service_tier: turn_context.initial_settings.service_tier.as_deref(),
+                region: provider.location.as_deref(),
+                input_tokens: usage.input_tokens,
+                cached_tokens: usage.cached_input_tokens,
+                write_tokens: usage.cache_write_input_tokens,
+                output_tokens: usage.output_tokens,
+                reasoning_tokens: usage.reasoning_output_tokens,
+                observed_at_ms: usage_record.effective_observed_at_ms(),
+            },
+            usage_metadata.and_then(|value| value.metadata.as_ref()),
+        );
+        usage_record = usage_record
+            .with_context_size(UsageContextSize {
+                prompt_tokens: Some(input_tokens.saturating_sub(cached_input_tokens)),
+                context_tokens: Some(input_tokens),
+                cache_tokens: Some(cached_input_tokens),
+                compaction_count: None,
+                context_window_tokens,
+                window_class: context_window_tokens.map(Self::context_window_class),
+            })
+            .with_cost_provenance(cost_provenance);
+        usage_record.actual_billing_micros = usage_metadata.and_then(Self::actual_billing_micros);
+        let usage_cwd = turn_context.config.cwd.clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || {
+                if let Some(repository) = crate::usage_identity::repository_id(usage_cwd.as_path())
+                {
+                    usage_record = usage_record.with_repository(repository);
+                }
+                capture_record(&codex_home, usage_record)
+            })
+            .await,
+            Ok(Ok(_))
+        ) {
+            tracing::warn!("local usage observation could not be persisted");
+        }
+    }
+
+    fn context_window_class(window_tokens: u64) -> String {
+        if window_tokens >= 1_000_000 {
+            let millions = window_tokens / 1_000_000;
+            format!("{millions}m")
+        } else if window_tokens >= 1_000 {
+            let thousands = window_tokens / 1_000;
+            format!("{thousands}k")
+        } else {
+            window_tokens.to_string()
+        }
+    }
+
+    fn actual_billing_micros(metadata: &ResponseUsageMetadata) -> Option<u64> {
+        metadata
+            .metadata
+            .as_ref()
+            .and_then(|value| {
+                metadata_u64(value, "actualBillingMicros")
+                    .or_else(|| metadata_u64(value, "actual_billing_micros"))
+                    .or_else(|| metadata_u64(value, "billingMicros"))
+            })
+            .or_else(|| metadata.amount.as_deref().and_then(parse_usd_micros))
     }
 
     pub(crate) async fn record_token_usage_info(
@@ -5855,7 +5990,8 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
-        self.record_rate_limits_info(new_rate_limits).await;
+        self.record_rate_limits_for_turn(turn_context, new_rate_limits)
+            .await;
         self.send_token_count_event(turn_context).await;
     }
 
@@ -6179,6 +6315,32 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
+}
+
+fn metadata_u64(metadata: &serde_json::Value, key: &str) -> Option<u64> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn parse_usd_micros(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('-') {
+        return None;
+    }
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty() || !whole.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if fraction.len() > 6 && fraction[6..].bytes().any(|byte| byte != b'0')
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let fraction = &fraction[..fraction.len().min(6)];
+    let whole = whole.parse::<u64>().ok()?.checked_mul(1_000_000)?;
+    let padded = format!("{fraction:0<6}");
+    whole.checked_add(padded.parse::<u64>().ok()?)
 }
 
 #[cfg(test)]

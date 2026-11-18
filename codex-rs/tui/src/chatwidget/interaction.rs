@@ -19,6 +19,10 @@ pub(crate) enum KeyEventAction {
 }
 
 impl ChatWidget {
+    pub(crate) fn set_command_center_enabled(&mut self, enabled: bool) {
+        self.bottom_pane.set_command_center_enabled(enabled);
+    }
+
     pub(crate) fn current_patch_approval(&self) -> Option<(ThreadId, &str)> {
         let patch = self.bottom_pane.current_patch_approval()?;
         Some((patch.thread_id, &patch.id))

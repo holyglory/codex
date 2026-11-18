@@ -347,6 +347,13 @@ pub(crate) enum AppServerTarget {
 }
 
 impl AppServerTarget {
+    fn supports_command_center(&self) -> bool {
+        match self {
+            Self::Embedded | Self::Cloud => false,
+            Self::LocalDaemon { .. } | Self::Remote { .. } => true,
+        }
+    }
+
     fn preserve_selected_backend(&mut self, selection: &resume_picker::SessionSelection) {
         if matches!(
             selection,

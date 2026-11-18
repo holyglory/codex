@@ -400,6 +400,16 @@ impl App {
                 }
                 return;
             }
+            ServerNotification::AccountLoginCompleted(notification) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_login(notification.success);
+                return;
+            }
+            ServerNotification::AccountProfileActiveChanged(_) => {
+                self.chat_widget
+                    .refresh_account_profiles_after_active_change();
+                return;
+            }
             ServerNotification::AccountUpdated(notification) => {
                 self.agents_overview
                     .invalidate_discovery(app_server_client.backend_id(), /*displayed*/ true);

@@ -51,6 +51,7 @@ use supports_color::Stream;
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod account_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod config_override_args;
@@ -80,6 +81,7 @@ mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
 
+use crate::account_cmd::AccountCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
@@ -164,6 +166,9 @@ enum Subcommand {
     /// Supply the existing Codex login to Git's credential-helper protocol.
     #[clap(hide = true)]
     GitCredential(codex_cli::GitCredentialArgs),
+
+    /// Manage local account profiles.
+    Account(AccountCommand),
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
@@ -581,6 +586,9 @@ struct LogoutCommand {
 
 #[derive(Debug, Parser)]
 struct AppServerCommand {
+    /// Pin this app-server process to a local account alias or ID.
+    #[arg(long, value_name = "ALIAS_OR_ID")]
+    account: Option<String>,
     #[command(flatten)]
     startup_config: codex_app_server::StartupConfigArgs,
 
@@ -1279,6 +1287,7 @@ async fn dispatch_cli(
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
+                account,
                 startup_config,
                 cloud_skills_snapshot,
                 subcommand,
@@ -1330,6 +1339,7 @@ async fn dispatch_cli(
                         let _ = codex_app_server_daemon::maintain_stderr_log();
                     }
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
+                        process_account: account.or_else(|| interactive.account.clone()),
                         cloud_skills_snapshot,
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
@@ -1752,6 +1762,22 @@ async fn dispatch_cli(
                 root_config_overrides.clone(),
             );
             run_logout(logout_cli.config_overrides).await;
+        }
+        Some(Subcommand::Account(mut account_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "account",
+            )?;
+            prepend_config_flags(
+                &mut account_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            let json = account_cli.json;
+            if let Err(error) = account_cmd::run(account_cli, root_strict_config).await {
+                account_cmd::print_error(&error, json);
+                std::process::exit(error.exit_code());
+            }
         }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -2421,6 +2447,7 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Delete(_))
         | Some(Subcommand::Unarchive(_))
         | Some(Subcommand::Fork(_))
+        | Some(Subcommand::Account(_))
         | Some(Subcommand::Doctor(_)) => None,
         Some(Subcommand::AppServer(app_server)) if app_server.subcommand.is_none() => None,
         Some(Subcommand::AppServer(app_server)) => {

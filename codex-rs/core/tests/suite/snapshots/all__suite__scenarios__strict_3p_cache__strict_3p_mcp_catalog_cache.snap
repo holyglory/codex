@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_strict_3p_cache.rs
+assertion_line: 194
 expression: snapshot
 ---
 Scenario: Strict Code Mode Only: MCP config changes between turns, with omit-all and namespace skips. Exec calls the live catalog. One window means the captured prefix stayed stable. The execution environment remains running.
@@ -40,8 +41,9 @@ Settings:
     <MULTI_AGENT_ROLE>
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     List and call the tools provided by the environment MCP server.
 07:configuration_update:reasoning={"effort":"low"}

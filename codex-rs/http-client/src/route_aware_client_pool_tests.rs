@@ -227,63 +227,59 @@ async fn direct_and_routed_clients_build_equivalent_requests() {
 
 #[tokio::test]
 async fn request_failures_classify_real_untrusted_certificate_handshakes() {
-    assert_untrusted_certificate_classified(HttpClientBuilder::new()).await;
-}
+    for (backend, builder) in [
+        ("transport-default", HttpClientBuilder::new()),
+        ("rustls", HttpClientBuilder::new().with_rustls_tls()),
+    ] {
+        codex_utils_rustls_provider::ensure_rustls_crypto_provider();
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("self-signed certificate should generate");
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
+        );
+        let configuration = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.cert.der().clone()], private_key)
+                .expect("TLS server should be configured"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS server should bind");
+        let address = listener
+            .local_addr()
+            .expect("TLS server should have an address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("TLS server should accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("TLS handshake timeout");
+            let mut connection = rustls::ServerConnection::new(configuration)
+                .expect("TLS server connection should be created");
+            let _ = connection.complete_io(&mut stream);
+        });
+        let pool = RouteAwareClientPool::with_builder(
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            ClientRouteClass::Api,
+            builder.without_request_logging(),
+        );
 
-#[tokio::test]
-async fn request_failures_classify_real_untrusted_rustls_certificate_handshakes() {
-    assert_untrusted_certificate_classified(HttpClientBuilder::new().with_rustls_tls()).await;
-}
+        let mut request = reqwest::Request::new(
+            Method::GET,
+            reqwest::Url::parse(&format!("https://localhost:{}/", address.port())).unwrap(),
+        );
+        *request.timeout_mut() = Some(Duration::from_secs(3));
+        let error = pool
+            .send_with_resolver(request, |_| async { Ok(OutboundProxyRoute::Direct) })
+            .await
+            .expect_err("self-signed server certificate must not be trusted");
+        drop(std::net::TcpStream::connect(address));
+        server.join().expect("TLS server should finish");
 
-async fn assert_untrusted_certificate_classified(client_builder: HttpClientBuilder) {
-    codex_utils_rustls_provider::ensure_rustls_crypto_provider();
-    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("self-signed certificate should generate");
-    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-        rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
-    );
-    let configuration = Arc::new(
-        rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate.cert.der().clone()], private_key)
-            .expect("TLS server should be configured"),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").expect("TLS server should bind");
-    let address = listener
-        .local_addr()
-        .expect("TLS server should have an address");
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("TLS server should accept");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .expect("TLS handshake timeout");
-        let mut connection = rustls::ServerConnection::new(configuration)
-            .expect("TLS server connection should be created");
-        let _ = connection.complete_io(&mut stream);
-    });
-    let pool = RouteAwareClientPool::with_builder(
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-        ClientRouteClass::Api,
-        client_builder.without_request_logging(),
-    );
-
-    let mut request = reqwest::Request::new(
-        Method::GET,
-        reqwest::Url::parse(&format!("https://localhost:{}/", address.port())).unwrap(),
-    );
-    *request.timeout_mut() = Some(Duration::from_secs(3));
-    let error = pool
-        .send_with_resolver(request, |_| async { Ok(OutboundProxyRoute::Direct) })
-        .await
-        .expect_err("self-signed server certificate must not be trusted");
-    drop(std::net::TcpStream::connect(address));
-    server.join().expect("TLS server should finish");
-
-    assert_eq!(
-        error.failure_class(),
-        Some(RouteFailureClass::TlsError),
-        "unexpected certificate error: {error:?}"
-    );
+        assert_eq!(
+            error.failure_class(),
+            Some(RouteFailureClass::TlsError),
+            "unexpected {backend} certificate error: {error:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -377,12 +373,7 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
             .expect("invalid CA fixture should be written");
 
         for ca_env in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
-            for policy_name in [
-                "reqwest-default",
-                "respect-system-proxy",
-                "strict-reqwest-default",
-                "strict-direct",
-            ] {
+            for policy_name in ["reqwest-default", "respect-system-proxy"] {
                 let output = std::process::Command::new(
                     std::env::current_exe().expect("test executable should be available"),
                 )
@@ -408,24 +399,18 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
     };
 
     let outbound_proxy_policy = match policy_name.as_str() {
-        "reqwest-default" | "strict-reqwest-default" | "strict-direct" => {
-            OutboundProxyPolicy::ReqwestDefault
-        }
+        "reqwest-default" => OutboundProxyPolicy::ReqwestDefault,
         "respect-system-proxy" => OutboundProxyPolicy::RespectSystemProxy,
         _ => panic!("unexpected test proxy policy: {policy_name}"),
     };
     let pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
         HttpClientFactory::new(outbound_proxy_policy),
         ClientRouteClass::Other,
-    );
-    let pool = match policy_name.as_str() {
-        "strict-reqwest-default" => pool,
-        "strict-direct" => pool.with_direct_proxy(),
-        _ => pool.with_legacy_custom_ca_fallback(),
-    };
+    )
+    .with_legacy_custom_ca_fallback();
 
-    match policy_name.as_str() {
-        "reqwest-default" => {
+    match outbound_proxy_policy {
+        OutboundProxyPolicy::ReqwestDefault => {
             let (address, server) = spawn_response_server(vec![
                 "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
             ]);
@@ -439,19 +424,13 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
             let requests = server.join().expect("response server should finish");
             assert_eq!(requests.len(), 1);
         }
-        _ => {
+        OutboundProxyPolicy::RespectSystemProxy => {
             let error = pool
                 .client_for_url_with_resolver("http://127.0.0.1/update", |_| async {
-                    if policy_name == "strict-direct" {
-                        Err(io::Error::other(
-                            "direct routing must not need proxy discovery",
-                        ))
-                    } else {
-                        Ok(OutboundProxyRoute::Direct)
-                    }
+                    Ok(OutboundProxyRoute::Direct)
                 })
                 .await
-                .expect_err("strict routes should reject invalid custom CAs");
+                .expect_err("system-proxy routes should reject invalid custom CAs");
 
             assert!(matches!(error, RouteAwareClientPoolError::Build(_)));
         }

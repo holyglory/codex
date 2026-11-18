@@ -494,6 +494,10 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_command_center_enabled(&mut self, enabled: bool) {
+        self.composer.command_center_enabled = enabled;
+    }
+
     pub(crate) fn enable_agents_navigation(&mut self) {
         self.composer.command_center_enabled = true;
     }
@@ -549,6 +553,11 @@ impl BottomPane {
 
     pub fn set_token_activity_command_enabled(&mut self, enabled: bool) {
         self.composer.set_token_activity_command_enabled(enabled);
+        self.request_redraw();
+    }
+
+    pub fn set_account_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_account_command_enabled(enabled);
         self.request_redraw();
     }
 

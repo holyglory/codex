@@ -2559,6 +2559,56 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
         codex_code_mode::PUBLIC_TOOL_NAME,
         codex_code_mode::WAIT_TOOL_NAME,
     ]);
+    // This opt-in diagnostic exports schemas only, before any model request.
+    if let Some(directory) = std::env::var_os("CODEX_TOOL_SCHEMA_EVIDENCE_DIR") {
+        use std::io::Write as _;
+        let directory = std::path::Path::new(&directory);
+        let tools = ["account_management", "usage_stats", "usage_activity"]
+            .map(|name| plain.visible_spec(name).clone());
+        let sections = tools
+            .iter()
+            .map(|tool| {
+                let definition = codex_tools::tool_spec_to_code_mode_tool_definition(tool)
+                    .expect("downstream code-mode declaration");
+                (
+                    definition.name.clone(),
+                    format!(
+                        "### `{}`\n{}",
+                        definition.name,
+                        definition.description.trim()
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let code_mode_tools = tools.clone().map(|tool| {
+            codex_tools::augment_tool_spec_for_code_mode(
+                tool, /*code_mode_input_schema_max_bytes*/ None,
+            )
+        });
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion":2,"tools":tools,"sections":sections,"codeModeTools":code_mode_tools,
+        }))
+        .expect("serialize schema contract");
+        assert!(
+            bytes.len() <= 2 * 1024 * 1024,
+            "schema contract exceeds evidence limit"
+        );
+        let path = directory.join("contract.json");
+        if path.exists() {
+            assert!(
+                std::fs::read(path).expect("read schema contract") == bytes,
+                "schema contract changed; use a fresh private evidence directory"
+            );
+        } else {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .expect("create private schema contract");
+            output.write_all(&bytes).expect("write schema contract");
+            output.sync_all().expect("sync schema contract");
+        }
+    }
     assert_eq!(
         (plain.tool_mode, plain.requires_code_mode_worker),
         (ToolMode::Direct, false)

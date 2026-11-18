@@ -1844,6 +1844,102 @@
             },
             "method": {
               "enum": [
+                "localUsage/summary"
+              ],
+              "title": "LocalUsage/summaryRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageSummaryParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/summaryRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "localUsage/bindingTransition"
+              ],
+              "title": "LocalUsage/bindingTransitionRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageBindingTransitionParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/bindingTransitionRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "localUsage/bindingStatus"
+              ],
+              "title": "LocalUsage/bindingStatusRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageBindingStatusParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/bindingStatusRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "localUsage/repositoryIdentity"
+              ],
+              "title": "LocalUsage/repositoryIdentityRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/LocalUsageRepositoryIdentityParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "LocalUsage/repositoryIdentityRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/gatewayOAuth/read"
               ],
               "title": "Account/gatewayOAuth/readRequestMethod",
@@ -3575,6 +3671,29 @@
           ],
           "description": "Absolute path to the server's $CODEX_HOME directory."
         },
+        "localUsageAccounting": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalUsageAccountingCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advertises the additive local usage-accounting extension."
+        },
+        "multiAccount": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MultiAccountCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "platformFamily": {
           "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",
           "type": "string"
@@ -3711,6 +3830,59 @@
         "result"
       ],
       "title": "JSONRPCResponse",
+      "type": "object"
+    },
+    "LocalUsageAccountingCapability": {
+      "properties": {
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "snapshotRetentionMs": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "storage": {
+          "default": "",
+          "type": "string"
+        },
+        "supportedVersions": {
+          "default": [],
+          "items": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "supportsTokenHeadlines": {
+          "default": false,
+          "description": "Omitting review and detail pages reads only the published token projection.",
+          "type": "boolean"
+        },
+        "supportsWorkContextBindings": {
+          "default": false,
+          "description": "Accepts explicit read-only workContextBindings supplied on each request.",
+          "type": "boolean"
+        },
+        "supportsWorkstreamOutcomes": {
+          "default": false,
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
       "type": "object"
     },
     "McpElicitationArrayType": {
@@ -4387,6 +4559,32 @@
         "action"
       ],
       "title": "McpServerElicitationRequestResponse",
+      "type": "object"
+    },
+    "MultiAccountCapability": {
+      "properties": {
+        "supportsAutoSelection": {
+          "type": "boolean"
+        },
+        "supportsCreditUsage": {
+          "default": false,
+          "description": "Whether profile updates accept the per-account automatic credit permission.",
+          "type": "boolean"
+        },
+        "supportsManagedLogin": {
+          "type": "boolean"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supportsAutoSelection",
+        "supportsManagedLogin",
+        "version"
+      ],
       "type": "object"
     },
     "NetworkApprovalContext": {
@@ -5736,6 +5934,26 @@
           "properties": {
             "method": {
               "enum": [
+                "accountProfile/activeChanged"
+              ],
+              "title": "AccountProfile/activeChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AccountProfileActiveChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "AccountProfile/activeChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "account/gatewayOAuth/changed"
               ],
               "title": "Account/gatewayOAuth/changedNotificationMethod",
@@ -6981,6 +7199,31 @@
           }
         ]
       },
+      "AccountAutoSelection": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "policy": {
+            "$ref": "#/definitions/v2/AccountAutoSelectionPolicy"
+          },
+          "priorityOrder": {
+            "$ref": "#/definitions/v2/AccountPriorityOrder"
+          }
+        },
+        "required": [
+          "enabled",
+          "policy",
+          "priorityOrder"
+        ],
+        "type": "object"
+      },
+      "AccountAutoSelectionPolicy": {
+        "enum": [
+          "priority"
+        ],
+        "type": "string"
+      },
       "AccountLoginCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -7015,6 +7258,308 @@
         ],
         "title": "AccountLoginCompletedNotification",
         "type": "object"
+      },
+      "AccountPriorityOrder": {
+        "enum": [
+          "higherFirst"
+        ],
+        "type": "string"
+      },
+      "AccountProfile": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "authMode": {
+            "$ref": "#/definitions/v2/AuthMode"
+          },
+          "authenticated": {
+            "description": "Whether this profile currently has locally managed credentials. Credential values are never returned.",
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "creditUsageEnabled": {
+            "default": false,
+            "description": "Permission for automatic credit fallback; manual sessions and pins are unaffected.",
+            "type": "boolean"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "lastUsedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PlanType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias",
+          "authMode",
+          "authenticated",
+          "createdAt",
+          "enabled",
+          "id",
+          "isActive",
+          "isDefault",
+          "priority"
+        ],
+        "type": "object"
+      },
+      "AccountProfileActiveChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "changedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "previousAccountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accountId",
+          "changedAt",
+          "generation"
+        ],
+        "title": "AccountProfileActiveChangedNotification",
+        "type": "object"
+      },
+      "AccountProfileLogin": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authUrl": {
+                "type": "string"
+              },
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "authUrl",
+              "loginId",
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "loginId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginType",
+                "type": "string"
+              },
+              "userCode": {
+                "type": "string"
+              },
+              "verificationUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "loginId",
+              "type",
+              "userCode",
+              "verificationUrl"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLogin",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLogin",
+            "type": "object"
+          }
+        ]
+      },
+      "AccountProfileLoginMethodParams": {
+        "oneOf": [
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "apiKey"
+                ],
+                "title": "ApiKeyAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "type"
+            ],
+            "title": "ApiKeyAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "appBrand": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/LoginAppBrand"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "codexStreamlinedLogin": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "chatgpt"
+                ],
+                "title": "ChatgptAccountProfileLoginMethodParamsType",
+                "type": "string"
+              },
+              "useHostedLoginSuccessPage": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "chatgptDeviceCode"
+                ],
+                "title": "ChatgptDeviceCodeAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ChatgptDeviceCodeAccountProfileLoginMethodParams",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "amazonBedrock"
+                ],
+                "title": "AmazonBedrockAccountProfileLoginMethodParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiKey",
+              "region",
+              "type"
+            ],
+            "title": "AmazonBedrockAccountProfileLoginMethodParams",
+            "type": "object"
+          }
+        ]
       },
       "AccountRateLimitsUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -15103,6 +15648,676 @@
           "incomplete"
         ],
         "type": "string"
+      },
+      "LocalUsageBindingSnapshot": {
+        "description": "The most recent explicit declaration, including a clear with a null project. Source and authority describe stored declaration provenance, not verified delivery.",
+        "properties": {
+          "authority": {
+            "type": "string"
+          },
+          "capturedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "effectiveCaptureSequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "nativeProjectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcomeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "workstreamId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "authority",
+          "capturedAtMs",
+          "effectiveCaptureSequence",
+          "source",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "LocalUsageBindingStatusParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "version": {
+            "description": "Omission selects version 1; unsupported versions are rejected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "LocalUsageBindingStatusParams",
+        "type": "object"
+      },
+      "LocalUsageBindingStatusResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "revision": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageBindingSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit null and revision zero mean no declaration has been captured."
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "version"
+        ],
+        "title": "LocalUsageBindingStatusResponse",
+        "type": "object"
+      },
+      "LocalUsageBindingTransitionParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+        "properties": {
+          "expectedRevision": {
+            "description": "Revision returned by status or the previous receipt. Zero before any declaration.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "nativeProjectId": {
+            "description": "Null or omission explicitly clears work; workstream and outcome must then be null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcomeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "workstreamId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "threadId",
+          "version"
+        ],
+        "title": "LocalUsageBindingTransitionParams",
+        "type": "object"
+      },
+      "LocalUsageBindingTransitionResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "capturedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "effectiveCaptureSequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "revision": {
+            "description": "Actual persisted revision, including an unchanged or idempotent declaration.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "capturedAtMs",
+          "effectiveCaptureSequence",
+          "revision",
+          "version"
+        ],
+        "title": "LocalUsageBindingTransitionResponse",
+        "type": "object"
+      },
+      "LocalUsageCursor": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "observedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "observedAtMs"
+        ],
+        "type": "object"
+      },
+      "LocalUsageOperationBinding": {
+        "properties": {
+          "capturedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operationId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "workContextId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "capturedAtMs",
+          "operationId",
+          "schemaVersion",
+          "workContextId"
+        ],
+        "type": "object"
+      },
+      "LocalUsageRepositoryIdentityParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "contractVersion": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Private local input; never echoed in the response or error.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "LocalUsageRepositoryIdentityParams",
+        "type": "object"
+      },
+      "LocalUsageRepositoryIdentityResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "contractVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "formatVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "repositoryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contractVersion",
+          "formatVersion",
+          "source"
+        ],
+        "title": "LocalUsageRepositoryIdentityResponse",
+        "type": "object"
+      },
+      "LocalUsageSnapshot": {
+        "properties": {
+          "freshness": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "journalWatermark": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingCorrections": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingEntries": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "refreshId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourceWatermark": {
+            "type": "string"
+          },
+          "updatedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "watermark": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "watermarkAtMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "freshness",
+          "generatedAt",
+          "generation",
+          "journalWatermark",
+          "pendingCorrections",
+          "pendingEntries",
+          "sourceWatermark",
+          "updatedAtMs",
+          "watermark",
+          "watermarkAtMs"
+        ],
+        "type": "object"
+      },
+      "LocalUsageSummaryParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Read one consistent usage-v2 snapshot. No legacy usage database is opened.",
+        "properties": {
+          "accountId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contractVersion": {
+            "default": null,
+            "description": "Omission selects version 1; unsupported versions are rejected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expectedSnapshot": {
+            "default": null,
+            "description": "Required with a continuation, so paging never silently mixes snapshots.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fromAtMs": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "includeReview": {
+            "default": false,
+            "description": "False with no detail pages selects exact published token headlines; counts, costs, timing, lifecycle, context, and work attribution are deferred.",
+            "type": "boolean"
+          },
+          "includeUnassigned": {
+            "default": false,
+            "description": "Compatibility flag, meaningful only alongside a worktree selector.",
+            "type": "boolean"
+          },
+          "operationLimit": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "operationsAfter": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "recordLimit": {
+            "default": 0,
+            "description": "Zero/omission excludes detail; a requested page is limited to 50 rows.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "recordsAfter": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "repositoryId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "toAtMs": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "workContextBindings": {
+            "description": "Explicit authority declarations; at most 256, never persisted by this RPC.",
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageWorkContextBinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "workstreamId": {
+            "default": null,
+            "description": "Select outcome accounting only. Repository report/totals retain scope.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktreeKeys": {
+            "description": "Reserved compatibility selector; non-null is rejected until captured.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "title": "LocalUsageSummaryParams",
+        "type": "object"
+      },
+      "LocalUsageSummaryResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Content-free summary with opt-in finite diagnostics. `report` preserves the existing localUsage/summary envelope; `summary` is the native usage-v2 view.",
+        "properties": {
+          "contextSize": {
+            "default": null,
+            "description": "Context-size measurements from the bounded report, when available."
+          },
+          "contractVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "costProvenance": {
+            "default": null,
+            "description": "Cost provenance and API-equivalent estimate, when available."
+          },
+          "generatedAt": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lifecycle": {
+            "default": null,
+            "description": "Lifecycle timestamps and coverage for the selected report."
+          },
+          "nextOperationsCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextRecordsCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LocalUsageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observations": {
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "operationBindings": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageOperationBinding"
+            },
+            "type": "array"
+          },
+          "operations": {
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "report": true,
+          "review": true,
+          "snapshot": {
+            "$ref": "#/definitions/v2/LocalUsageSnapshot"
+          },
+          "source": {
+            "type": "string"
+          },
+          "summary": true,
+          "timing": {
+            "default": null,
+            "description": "Union-safe elapsed, active, and wait measurements."
+          },
+          "workContexts": {
+            "items": {
+              "$ref": "#/definitions/v2/LocalUsageWorkContext"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "contractVersion",
+          "generatedAt",
+          "operationBindings",
+          "report",
+          "snapshot",
+          "source",
+          "summary",
+          "workContexts"
+        ],
+        "title": "LocalUsageSummaryResponse",
+        "type": "object"
+      },
+      "LocalUsageWorkContext": {
+        "additionalProperties": false,
+        "description": "Only explicitly captured bindings may populate this versioned extension. Repository/thread identity or operation completion never implies a binding.",
+        "properties": {
+          "experimentRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "nativeProjectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcomeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repositoryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workstreamId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "schemaVersion"
+        ],
+        "type": "object"
+      },
+      "LocalUsageWorkContextBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "capturedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operationId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "workContext": {
+            "$ref": "#/definitions/v2/LocalUsageWorkContext"
+          }
+        },
+        "required": [
+          "capturedAtMs",
+          "operationId",
+          "schemaVersion",
+          "workContext"
+        ],
+        "type": "object"
       },
       "LoginAccountParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",

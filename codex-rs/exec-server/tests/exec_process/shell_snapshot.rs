@@ -116,8 +116,27 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
         eprintln!("skipping sandbox test: {warning}");
         return Ok(());
     }
-    let context = if sandbox_mode == SnapshotSandbox::WorkspaceWrite {
+    let runtime_directory = TempDir::new()?;
+    let context = if sandbox_mode == SnapshotSandbox::WorkspaceWrite
+        || (deny_fd_path && cfg!(target_os = "linux"))
+    {
         let (exe, linux_sandbox) = current_test_binary_helper_paths()?;
+        let linux_sandbox = if deny_fd_path && cfg!(target_os = "linux") {
+            // Exercise the real no-proc fallback. A fresh procfs would otherwise
+            // replace the fixture's explicit /proc mask after filesystem setup.
+            std::os::unix::fs::symlink(
+                linux_sandbox.context("Linux sandbox helper")?,
+                runtime_directory.path().join("codex-linux-sandbox"),
+            )?;
+            let wrapper = runtime_directory.path().join("without-proc");
+            codex_utils_cargo_bin::write_executable(
+                &wrapper,
+                "#!/bin/sh\nexec \"${0%/*}/codex-linux-sandbox\" --no-proc \"$@\"\n",
+            )?;
+            Some(wrapper)
+        } else {
+            linux_sandbox
+        };
         let environment = Environment::create(
             /*exec_server_url*/ None,
             codex_exec_server::ExecServerRuntimeOptions::new(exe, linux_sandbox)?,
@@ -144,7 +163,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
         "${(%):-%x}"
     };
     let source_check = if deny_fd_path {
-        String::new()
+        "if (: </dev/fd/0) 2>/dev/null; then return 42; fi; ".to_string()
     } else {
         format!("case \"{source}\" in /dev/fd/*) ;; *) return 42 ;; esac; ")
     };
@@ -182,8 +201,15 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
             FileSystemAccessMode::Write,
         ));
         if deny_fd_path {
+            // Linux exposes /dev/fd as a symlink into procfs. Mask its backing
+            // filesystem so the fixture does not ask bwrap to mount on a symlink.
+            let denied_path = if cfg!(target_os = "linux") {
+                "/proc"
+            } else {
+                "/dev/fd"
+            };
             policy.entries.push(FileSystemSandboxEntry::new(
-                PathUri::from_host_native_path("/dev/fd")?.into(),
+                PathUri::from_host_native_path(denied_path)?.into(),
                 FileSystemAccessMode::Deny,
             ));
         } else {
@@ -252,7 +278,8 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 collect_process_output_from_events(started.process).await?;
             assert!(
                 output.ends_with(&format!("restored:input-{index}")),
-                "{output:?}"
+                "{output:?}; stderr(first 2048 chars)={:?}; status={status:?}; closed={closed}",
+                errors.chars().take(2048).collect::<String>()
             );
             if shell == "zsh" {
                 assert!(

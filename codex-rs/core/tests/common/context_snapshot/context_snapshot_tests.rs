@@ -434,6 +434,29 @@ fn rewritten_model_and_personality_use_plain_tags() {
 }
 
 #[test]
+fn rewritten_usage_boundary_keeps_its_position_and_default_text() {
+    let boundary =
+        "<usage_work_boundary>Resolve the missing attribution once.</usage_work_boundary>";
+    let items = [
+        message("user", "before"),
+        message("user", boundary),
+        message("user", "after"),
+    ];
+    assert_eq!(
+        rewritten(&items),
+        "00:message/user:\n    before\n01:message/user:\n    <USAGE_WORK_BOUNDARY>\n02:message/user:\n    after"
+    );
+    assert!(detailed(&items).contains(boundary));
+    assert!(rewritten(&[message("developer", boundary)]).contains(boundary));
+    for ordinary in [
+        "<usage_work_boundary>incomplete",
+        &format!("{boundary} user text"),
+    ] {
+        assert!(rewritten(&[message("user", ordinary)]).contains(ordinary));
+    }
+}
+
+#[test]
 fn base_instructions_use_the_same_mode_in_settings_and_annotated_developer_content() {
     let prompt = "My model instructions\nA rule below the prefix";
     let developer = |metadata: Value| {
@@ -919,5 +942,86 @@ fn long_content_parts_keep_both_ends_and_fingerprint_only_the_omitted_middle() {
             &ContextSnapshotOptions::default(),
         )
         .contains("<OMITTED")
+    );
+}
+
+#[test]
+fn schema_evidence_reconstruction_removes_only_exact_reviewed_definitions() {
+    let names = ["account_management", "usage_stats", "usage_activity"];
+    let tools = names.map(|name| json!({"type":"function","name":name,"description":"reviewed"}));
+    let sections = names
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                json!(format!("### `{name}`\nreviewed declaration")),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let contract = json!({"tools":tools,"sections":sections});
+    let baseline = json!([{"type":"namespace","name":"functions","tools":[
+        {"type":"custom","name":"exec","description":"preamble\n\n### `ordinary`\nunchanged"}
+    ]}]);
+    let mut current = baseline.clone();
+    current[0]["tools"][0]["description"] = json!(format!(
+        "preamble\n\n{}\n\n### `ordinary`\nunchanged\n\n{}\n\n{}",
+        contract["sections"][names[0]].as_str().expect("section"),
+        contract["sections"][names[1]].as_str().expect("section"),
+        contract["sections"][names[2]].as_str().expect("section"),
+    ));
+    current[0]["tools"]
+        .as_array_mut()
+        .expect("tools")
+        .extend(tools.clone());
+    assert_eq!(
+        schema_evidence::reconstruct(&current, &contract).expect("audit reconstruction"),
+        baseline
+    );
+    let mut changed_spec = current.clone();
+    changed_spec[0]["tools"][1]["description"] = json!("unreviewed");
+    assert!(schema_evidence::reconstruct(&changed_spec, &contract).is_err());
+    let mut changed_section = current.clone();
+    changed_section[0]["tools"][0]["description"] =
+        json!("### `usage_stats`\nunreviewed declaration");
+    assert!(schema_evidence::reconstruct(&changed_section, &contract).is_err());
+    let mut variant_contract = contract.clone();
+    variant_contract["schemaVersion"] = json!(2);
+    let variants = tools
+        .iter()
+        .map(|tool| {
+            let name = tool["name"].as_str().expect("reviewed name");
+            let description = format!(
+                "reviewed\n\nexec tool declaration:\n```ts\ndeclare const tools: {{ {name}(args: unknown): Promise<unknown>; }};\n```"
+            );
+            variant_contract["sections"][name] = json!(format!("### `{name}`\n{description}"));
+            let mut variant = tool.clone();
+            variant["description"] = json!(description);
+            variant
+        })
+        .collect::<Vec<_>>();
+    variant_contract["codeModeTools"] = json!(variants);
+    assert_eq!(
+        schema_evidence::reconstruct(&json!(tools), &variant_contract)
+            .expect("base schemas remain approved"),
+        json!([])
+    );
+    assert_eq!(
+        schema_evidence::reconstruct(&json!(variants), &variant_contract)
+            .expect("exact Code Mode description variants"),
+        json!([])
+    );
+    for field in ["strict", "parameters", "description"] {
+        let mut changed = json!(variants);
+        changed[0][field] = json!("unreviewed");
+        assert!(schema_evidence::reconstruct(&changed, &variant_contract).is_err());
+    }
+    let mut changed_variant_contract = variant_contract;
+    changed_variant_contract["codeModeTools"][0]["strict"] = json!(true);
+    assert!(schema_evidence::reconstruct(&json!(tools), &changed_variant_contract).is_err());
+    let mut unrelated = current;
+    unrelated[0]["description"] = json!("unrelated namespace change");
+    assert_ne!(
+        schema_evidence::reconstruct(&unrelated, &contract).expect("keep other fields"),
+        baseline
     );
 }

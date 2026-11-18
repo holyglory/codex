@@ -1,6 +1,7 @@
 mod shared;
 
 mod account;
+mod account_profile;
 mod application;
 mod apps;
 mod attestation;
@@ -19,6 +20,7 @@ mod fs;
 mod gcp;
 mod hook;
 mod item;
+mod local_usage;
 mod mcp;
 mod memory;
 mod model;
@@ -45,6 +47,7 @@ mod user_verification;
 mod windows_sandbox;
 
 pub use account::*;
+pub use account_profile::*;
 pub use application::*;
 pub use apps::*;
 pub use attestation::*;
@@ -63,6 +66,7 @@ pub use fs::*;
 pub use gcp::*;
 pub use hook::*;
 pub use item::*;
+pub use local_usage::*;
 pub use mcp::*;
 pub use memory::*;
 pub use model::*;

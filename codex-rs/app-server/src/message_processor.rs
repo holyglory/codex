@@ -25,6 +25,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::plugin_config_reload;
 use crate::plugin_config_reload::PluginStartupConfig;
+use crate::request_processors::AccountProfileRequestProcessor;
 use crate::request_processors::AccountRequestProcessor;
 use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
@@ -90,6 +91,7 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
+use codex_login::SharedProfileAuthRouter;
 use codex_models_manager::manager::ModelCatalogSettings;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
@@ -120,9 +122,20 @@ const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 
 fn deserialize_client_request(request: JSONRPCRequest) -> Result<ClientRequest, JSONRPCErrorError> {
     reject_obsolete_request_fields(&request)?;
-
-    ClientRequest::try_from(request)
-        .map_err(|err| invalid_request(format!("Invalid request: {err}")))
+    let local_usage = matches!(
+        request.method.as_str(),
+        "localUsage/summary"
+            | "localUsage/repositoryIdentity"
+            | "localUsage/bindingTransition"
+            | "localUsage/bindingStatus"
+    );
+    ClientRequest::try_from(request).map_err(|err| {
+        if local_usage {
+            invalid_params("invalid local usage request schema")
+        } else {
+            invalid_request(format!("Invalid request: {err}"))
+        }
+    })
 }
 
 fn reject_obsolete_request_fields(request: &JSONRPCRequest) -> Result<(), JSONRPCErrorError> {
@@ -158,6 +171,7 @@ pub(crate) struct MessageProcessor {
     turn_cost_worker: Option<TurnCostWorker>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: Arc<AccountRequestProcessor>,
+    account_profile_processor: AccountProfileRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
@@ -169,6 +183,8 @@ pub(crate) struct MessageProcessor {
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
+    local_usage_home: std::path::PathBuf,
+    local_usage_manager: Arc<ThreadManager>,
     marketplace_processor: MarketplaceRequestProcessor,
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
@@ -318,6 +334,19 @@ impl MessageProcessor {
         let gateway_login_control =
             codex_login::GatewayLoginControl::for_runtime(&auth_manager.runtime_config());
         gateway_login_control.require_explicit_login();
+        let profile_auth_router = match &config.process_account {
+            Some(account) => SharedProfileAuthRouter::new_pinned(
+                config.auth_config(),
+                account.clone(),
+                codex_core::router_external_auth_state(&config),
+                Arc::clone(&auth_manager),
+            ),
+            None => SharedProfileAuthRouter::new_with_external_auth(
+                config.auth_config(),
+                codex_core::router_external_auth_state(&config),
+                Arc::clone(&auth_manager),
+            ),
+        };
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
         // The thread store is intentionally process-scoped. Config reloads can
@@ -423,6 +452,7 @@ impl MessageProcessor {
                     Some(time_provider)
                 },
             );
+            let manager = manager.with_profile_auth_router(profile_auth_router.clone());
             match code_mode_session_provider {
                 Some(provider) => manager.with_code_mode_session_provider(provider),
                 None => manager,
@@ -482,6 +512,11 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
             Arc::clone(&model_catalog),
+        );
+        let account_profile_processor = AccountProfileRequestProcessor::new(
+            Arc::clone(&config),
+            profile_auth_router,
+            outgoing.clone(),
         );
         let apps_processor = AppsRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -643,6 +678,8 @@ impl MessageProcessor {
         );
 
         Self {
+            local_usage_home: config.codex_home.to_path_buf(),
+            local_usage_manager: Arc::clone(&thread_manager),
             turn_admission,
             user_verification,
             outgoing,
@@ -653,6 +690,7 @@ impl MessageProcessor {
             turn_cost_worker,
             skills_watcher,
             account_processor,
+            account_profile_processor,
             apps_processor,
             catalog_processor,
             command_exec_processor,
@@ -1208,6 +1246,35 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::LocalUsageSummary { params, .. } => {
+                crate::request_processors::local_usage_processor::summary(
+                    self.local_usage_home.clone(),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
+            ClientRequest::LocalUsageBindingTransition { params, .. } => {
+                crate::request_processors::local_usage_control::binding_transition(
+                    Arc::clone(&self.local_usage_manager),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
+            ClientRequest::LocalUsageBindingStatus { params, .. } => {
+                crate::request_processors::local_usage_control::binding_status(
+                    Arc::clone(&self.local_usage_manager),
+                    params,
+                )
+                .await
+                .map(|response| Some(response.into()))
+            }
+            ClientRequest::LocalUsageRepositoryIdentity { params, .. } => {
+                crate::request_processors::local_usage_processor::repository_identity(params)
+                    .await
+                    .map(|response| Some(response.into()))
+            }
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)
@@ -1874,6 +1941,36 @@ impl MessageProcessor {
                 self.windows_sandbox_processor
                     .windows_sandbox_setup_start(&request_id, params)
                     .await
+            }
+            ClientRequest::AccountProfileList { params, .. } => {
+                self.account_profile_processor.list(params).await
+            }
+            ClientRequest::AccountProfileRead { params, .. } => {
+                self.account_profile_processor.read(params).await
+            }
+            ClientRequest::AccountProfileActivate { params, .. } => {
+                self.account_profile_processor.activate(params).await
+            }
+            ClientRequest::AccountProfileUpdate { params, .. } => {
+                self.account_profile_processor.update(params).await
+            }
+            ClientRequest::AccountProfileRemove { params, .. } => {
+                self.account_profile_processor.remove(params).await
+            }
+            ClientRequest::AccountProfileLoginStart { params, .. } => {
+                self.account_profile_processor.login_start(params).await
+            }
+            ClientRequest::AccountProfileLoginCancel { params, .. } => {
+                self.account_profile_processor.login_cancel(params).await
+            }
+            ClientRequest::AccountProfileRateLimitRead { params, .. } => {
+                self.account_profile_processor.rate_limits(params).await
+            }
+            ClientRequest::AccountAutoSelectionRead { params, .. } => {
+                self.account_profile_processor.auto_read(params).await
+            }
+            ClientRequest::AccountAutoSelectionWrite { params, .. } => {
+                self.account_profile_processor.auto_write(params).await
             }
             ClientRequest::LoginAccount { params, .. } => {
                 self.account_processor

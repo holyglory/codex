@@ -166,6 +166,10 @@ pub fn environment_id_from_cwd(cwd: &Path) -> String {
         }
     }
 
+    fallback_environment_id_from_cwd(cwd)
+}
+
+fn fallback_environment_id_from_cwd(cwd: &Path) -> String {
     let canonical = cwd
         .canonicalize()
         .unwrap_or_else(|_| cwd.to_path_buf())
@@ -196,6 +200,9 @@ pub fn compute_keyring_account(codex_home: &Path, namespace: LocalSecretsNamespa
     // Separate keys also prevent concurrent first writes to the gateway and primary
     // stores from overwriting each other's newly generated encryption key.
     match namespace {
+        LocalSecretsNamespace::CodexProfileAuthV1 => {
+            format!("secrets|codex-profile-auth-v1|{short}")
+        }
         LocalSecretsNamespace::GatewayOAuth => format!("{home_account}|gateway-oauth"),
         LocalSecretsNamespace::ManagedSecrets
         | LocalSecretsNamespace::CodexAuth
@@ -218,7 +225,9 @@ mod tests {
     #[test]
     fn environment_id_fallback_has_cwd_prefix() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let env_id = environment_id_from_cwd(dir.path());
+        // Governed runners may place temporary directories inside a checkout.
+        // This test isolates the path-hash fallback from repository discovery.
+        let env_id = fallback_environment_id_from_cwd(dir.path());
         let canonical = dir
             .path()
             .canonicalize()

@@ -55,6 +55,9 @@ use std::path::Path;
 use tempfile::tempdir;
 use toml::Value as TomlValue;
 
+#[path = "usage_tests.rs"]
+mod usage_tests;
+
 fn config_error_from_io(err: &std::io::Error) -> &ConfigError {
     err.get_ref()
         .and_then(|err| err.downcast_ref::<ConfigLoadError>())
