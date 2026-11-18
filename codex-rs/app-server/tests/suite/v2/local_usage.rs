@@ -12,15 +12,17 @@ use codex_app_server_protocol::LocalUsageSummaryResponse;
 use codex_app_server_protocol::LocalUsageWorkContextBinding;
 use codex_app_server_protocol::RequestId;
 use codex_usage::JournalReadLimits;
+use codex_usage::PricingProvider;
+use codex_usage::PricingRequest;
 use codex_usage::UsageContextSize;
 use codex_usage::UsageCorrection;
-use codex_usage::UsageCostProvenance;
 use codex_usage::UsageJournal;
 use codex_usage::UsageOutcome;
 use codex_usage::UsagePublisher;
 use codex_usage::UsageReader;
 use codex_usage::UsageRecord;
 use codex_usage::UsageStore;
+use codex_usage::price_observation;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -165,20 +167,22 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
                 context_window_tokens: Some(4_096),
                 ..Default::default()
             });
-            fact.cost_provenance = Some(UsageCostProvenance {
-                model: Some("fixture-model".into()),
-                provider: Some("fixture-provider".into()),
-                rate_card: Some("fixture-rate-card".into()),
-                rate_card_version: Some("1".into()),
-                pricing_basis: Some("api_equivalent".into()),
-                estimated_api_equivalent_cost_micros: Some(7),
-                input_cost_micros: Some(1),
-                cached_input_cost_micros: Some(1),
-                cache_write_cost_micros: Some(1),
-                output_cost_micros: Some(4),
-                reasoning_cost_micros: Some(1),
-                ..Default::default()
-            });
+            fact.cost_provenance = Some(price_observation(
+                PricingRequest {
+                    model: "gpt-6.1-sol",
+                    provider_name: "OpenAI",
+                    provider: PricingProvider::OpenAiDirect,
+                    service_tier: Some("priority"),
+                    region: None,
+                    input_tokens: total as i64,
+                    cached_tokens: 0,
+                    write_tokens: 0,
+                    output_tokens: 0,
+                    reasoning_tokens: 0,
+                    observed_at_ms: base,
+                },
+                None,
+            ));
             fact.actual_billing_micros = Some(11);
         }
         store.append_record(fact)?;
@@ -228,15 +232,15 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
             },
         )
         .context("priced fixture must support the same finite native review as IPC")?;
-    assert_eq!(native_review["cost"]["estimatedUsdMicros"], 7);
+    assert_eq!(native_review["cost"]["estimatedUsdMicros"], 480);
     assert_eq!(
         native_review["contextSize"]["promptTokens"]["measured"],
         120
     );
     assert_eq!(native_review["cost"]["actualBillingMicros"]["measured"], 11);
-    assert_eq!(native_review["cost"]["inputUsdMicros"]["measured"], 1);
-    assert_eq!(native_review["cost"]["cachedInputUsdMicros"]["measured"], 1);
-    assert_eq!(native_review["cost"]["outputUsdMicros"]["measured"], 4);
+    assert_eq!(native_review["cost"]["inputUsdMicros"], 480);
+    assert_eq!(native_review["cost"]["cachedInputUsdMicros"], 0);
+    assert_eq!(native_review["cost"]["outputUsdMicros"], 0);
     let info = json!({"fixtureKind":"codex-usage-v2-synthetic-v1","repositoryPath":repository_path,"repositoryId":repository,
         "windowStartMs":base,"windowEndMs":base+5_000,"capturedAtMs":base+500,
         "operationId":"fixture-model","threadId":"fixture-thread","turnId":"fixture-turn","nativeProjectId":"fixture-project",
@@ -359,20 +363,20 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
         json!({"measured_ms":0,"unknown_intervals":1})
     );
     assert_eq!(review["time"]["execution_wall"]["measured_ms"], 1_500);
-    assert_eq!(scoped.report["cost"]["estimatedUsdMicros"], 7);
-    assert_eq!(scoped.report["cost"]["inputUsdMicros"]["measured"], 1);
-    assert_eq!(scoped.report["cost"]["outputUsdMicros"]["measured"], 4);
+    assert_eq!(scoped.report["cost"]["estimatedUsdMicros"], 480);
+    assert_eq!(scoped.report["cost"]["inputUsdMicros"], 480);
+    assert_eq!(scoped.report["cost"]["outputUsdMicros"], 0);
     let operation = &scoped.operations.as_ref().unwrap()[0];
     assert_eq!(operation["operation_id"], "fixture-model");
     assert_eq!(
         operation["cost_provenance"]["estimatedApiEquivalentCostMicros"],
-        7
+        480
     );
     assert_eq!(operation["context_size"]["promptTokens"], 120);
     assert_eq!(operation["actual_billing_micros"], 11);
-    assert_eq!(review["totals"]["cost"]["estimated_usd_micros"], 7);
-    assert_eq!(review["totals"]["cost"]["input_usd_micros"]["measured"], 1);
-    assert_eq!(review["totals"]["cost"]["output_usd_micros"]["measured"], 4);
+    assert_eq!(review["totals"]["cost"]["estimated_usd_micros"], 480);
+    assert_eq!(review["totals"]["cost"]["input_usd_micros"], 480);
+    assert_eq!(review["totals"]["cost"]["output_usd_micros"], 0);
     assert_eq!(
         json!({"requests":review["totals"]["cost"]["model_requests"],
             "pricedRequests":review["totals"]["cost"]["priced_requests"],
@@ -553,7 +557,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
     contract::assert_review(all.review.as_ref().unwrap())?;
     assert_eq!(
         all.review.as_ref().unwrap()["outcomes"]["totals"]["cost"]["estimated_usd_micros"],
-        7
+        480
     );
     assert_eq!(
         all.review.as_ref().unwrap()["outcomes"]["totals"]["providerTotalTokens"]["measured"],
@@ -753,7 +757,7 @@ async fn local_usage_request_bindings_pin_tail_across_scopes_and_measure_real_ip
             ..Default::default()
         },
     )?;
-    assert_eq!(reopened_review["cost"]["estimatedUsdMicros"], 7);
+    assert_eq!(reopened_review["cost"]["estimatedUsdMicros"], 480);
     assert_eq!(
         reopened_review["contextSize"]["promptTokens"]["measured"],
         120

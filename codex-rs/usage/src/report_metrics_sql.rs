@@ -117,38 +117,50 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
     ] {
         aggregates.push(sum(source, alias));
     }
-    for (field, alias) in [
-        ("context.windowClass", "window_unknown"),
+    aggregates.push(sum(
+        "CASE WHEN context.windowClass IS NULL THEN observations ELSE 0 END",
+        "window_unknown",
+    ));
+    let estimate_unknown =
+        crate::cost_rollup::unknown("estimatedApiEquivalentCostMicros", "estimated");
+    aggregates.push(sum(&estimate_unknown, "estimated_unknown"));
+    for (field, counter, alias) in [
+        ("inputCostMicros", "inputCost", "input_cost_unknown"),
         (
-            "provenance.estimatedApiEquivalentCostMicros",
-            "estimated_unknown",
+            "cachedInputCostMicros",
+            "cachedInputCost",
+            "cached_input_cost_unknown",
+        ),
+        (
+            "cacheWriteCostMicros",
+            "cacheWriteCost",
+            "cache_write_cost_unknown",
+        ),
+        ("outputCostMicros", "outputCost", "output_cost_unknown"),
+        (
+            "reasoningCostMicros",
+            "reasoningCost",
+            "reasoning_cost_unknown",
         ),
     ] {
-        aggregates.push(sum(
-            &format!("CASE WHEN {field} IS NULL THEN observations ELSE 0 END"),
-            alias,
-        ));
+        aggregates.push(sum(&crate::cost_rollup::unknown(field, counter), alias));
     }
-    // A weighted billing sum does not retain each receipt's availability.
-    // Preserve its measured amount without claiming exact individual coverage.
     aggregates.push(sum(
         "CASE WHEN observations <> 1 OR actual_billing_micros IS NULL THEN observations ELSE 0 END",
         "actual_unknown",
     ));
     aggregates.push(sum(
-        "CASE WHEN provenance.estimatedApiEquivalentCostMicros IS NOT NULL THEN observations ELSE 0 END",
+        &format!("observations - ({estimate_unknown})"),
         "priced_observations",
     ));
-    aggregates.push(sum(
-        "CASE WHEN provenance.inputCostMicros IS NULL OR provenance.outputCostMicros IS NULL THEN observations ELSE 0 END",
-        "component_unknown",
-    ));
+    aggregates.push(sum("COALESCE(provenance.costCoverage.componentUnknown, CASE WHEN provenance.inputCostMicros IS NULL OR provenance.cachedInputCostMicros IS NULL OR provenance.cacheWriteCostMicros IS NULL OR provenance.outputCostMicros IS NULL THEN observations ELSE 0 END)", "component_unknown"));
+    aggregates.push("CASE WHEN count(*)=0 OR count(provenance.serviceTier)=0 THEN 'unknown' WHEN count(*)!=count(provenance.serviceTier) OR count(DISTINCT provenance.serviceTier)>1 THEN 'mixed' ELSE any_value(provenance.serviceTier) END processing_tier".into());
     let aggregates = aggregates.join(", ");
     let predicate = crate::review_aggregate::TOKEN_PREDICATE;
-    // A retained row can carry one representative JSON object for many facts.
-    // Its additive token/billing columns remain useful; that JSON is unknown.
+    let provenance_type = crate::cost_rollup::provenance_type();
+    let trusted = crate::cost_rollup::trusted("raw_provenance");
     format!(
-        "WITH token_rows AS MATERIALIZED (
+        "WITH parsed_rows AS MATERIALIZED (
             SELECT COALESCE(observation_count, 1)::UBIGINT observations,
                 input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens,
                 reasoning_output_tokens, provider_total_tokens, actual_billing_micros,
@@ -157,15 +169,12 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
                         promptTokens UBIGINT, contextTokens UBIGINT, cacheTokens UBIGINT,
                         compactionCount UBIGINT, contextWindowTokens UBIGINT, windowClass VARCHAR
                     )) END context,
-                CASE WHEN COALESCE(observation_count, 1) = 1 THEN
-                    TRY_CAST(TRY_CAST(cost_provenance AS JSON) AS STRUCT(
-                        model VARCHAR, provider VARCHAR, serviceTier VARCHAR, contextClass VARCHAR, rateContextClass VARCHAR,
-                        region VARCHAR, rateCard VARCHAR, rateCardVersion VARCHAR, pricingBasis VARCHAR,
-                        estimatedApiEquivalentCostMicros UBIGINT, inputCostMicros UBIGINT,
-                        cachedInputCostMicros UBIGINT, cacheWriteCostMicros UBIGINT,
-                        outputCostMicros UBIGINT, reasoningCostMicros UBIGINT
-                    )) END provenance
+                TRY_CAST(TRY_CAST(cost_provenance AS JSON) AS {provenance_type}) raw_provenance
             FROM ({contributions}) WHERE {predicate}
+        ), token_rows AS MATERIALIZED (
+            SELECT * EXCLUDE(raw_provenance),
+            CASE WHEN observations=1 OR raw_provenance.costCoverage IS NOT NULL THEN {trusted} END provenance
+            FROM parsed_rows
         ), totals AS (
             SELECT {aggregates} FROM token_rows
         ), windows AS MATERIALIZED (
@@ -183,6 +192,11 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
                 FROM token_rows WHERE provenance.rateCard IS NOT NULL GROUP BY ALL
         )
         SELECT totals.*,
+            COALESCE((SELECT json_group_object(reason, count) FROM (
+                SELECT COALESCE(provenance.unavailableReason, 'rate_card_missing') reason,
+                    sum({estimate_unknown})::UBIGINT count
+                FROM token_rows WHERE ({estimate_unknown}) > 0 GROUP BY ALL
+            )), '{{}}'::JSON) cost_reasons,
             COALESCE((SELECT to_json(list(struct_pack(\"class\" := window_class, observations := observations)
                 ORDER BY window_class)) FROM (SELECT * FROM windows ORDER BY window_class LIMIT {MAX_DETAIL_ROWS})),
                 '[]'::JSON) window_classes,
@@ -195,6 +209,11 @@ pub(super) fn context_and_cost_query(contributions: &str) -> String {
                 model := provenance.model, provider := provenance.provider,
                 serviceTier := provenance.serviceTier, contextClass := provenance.contextClass,
                 rateContextClass := provenance.rateContextClass,
+                pricingCalculation := provenance.pricingCalculation,
+                pricedModel := provenance.pricedModel,
+                rateSourceUrl := provenance.rateSourceUrl,
+                rateSourceSha256 := provenance.rateSourceSha256,
+                unavailableReason := provenance.unavailableReason,
                 region := provenance.region, rateCard := provenance.rateCard,
                 rateCardVersion := provenance.rateCardVersion, pricingBasis := provenance.pricingBasis,
                 estimatedApiEquivalentCostMicros := provenance.estimatedApiEquivalentCostMicros,

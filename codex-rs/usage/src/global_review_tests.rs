@@ -48,6 +48,7 @@ fn observation(id: &str, at: i64, total: u64) -> UsageRecord {
         cache_write_cost_micros: None,
         output_cost_micros: None,
         reasoning_cost_micros: None,
+        ..Default::default()
     });
     record
 }

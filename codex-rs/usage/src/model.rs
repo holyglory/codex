@@ -90,6 +90,11 @@ pub struct UsageCostProvenance {
     pub cache_write_cost_micros: Option<u64>,
     pub output_cost_micros: Option<u64>,
     pub reasoning_cost_micros: Option<u64>,
+    pub priced_model: Option<String>,
+    pub pricing_calculation: Option<String>,
+    pub rate_source_url: Option<String>,
+    pub rate_source_sha256: Option<String>,
+    pub unavailable_reason: Option<String>,
 }
 
 impl UsageOutcome {

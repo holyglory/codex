@@ -2,5 +2,6 @@ load("//:defs.bzl", "codex_rust_crate")
 
 codex_rust_crate(
     name = "usage",
+    compile_data = ["src/pricing/openai-2026-11-18.json"],
     crate_name = "codex_usage",
 )

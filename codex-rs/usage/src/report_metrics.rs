@@ -146,6 +146,13 @@ struct CostTotals {
     actual: u64,
     estimated_unknown: u64,
     component_unknown: u64,
+    input_cost_unknown: u64,
+    cached_input_cost_unknown: u64,
+    cache_write_cost_unknown: u64,
+    output_cost_unknown: u64,
+    reasoning_cost_unknown: u64,
+    processing_tier: String,
+    cost_reasons: BTreeMap<String, u64>,
     actual_unknown: u64,
     provenance: Vec<Value>,
     provenance_omitted: u64,
@@ -173,21 +180,20 @@ impl CostTotals {
         // A provider total does not supply the component prices required by
         // consumers for complete cost coverage. Preserve the known estimate,
         // including zero, without inventing an input/output price breakdown.
-        let status = if has_estimate {
+        let status = if has_estimate && self.estimated_unknown == 0 && self.component_unknown == 0 {
+            "complete"
+        } else if has_estimate {
             "partial"
         } else {
             "unavailable"
         };
-        let mut unavailable_reasons = BTreeMap::new();
+        let mut unavailable_reasons = self.cost_reasons.clone();
         if self.observations == 0 {
-            unavailable_reasons.insert("no_token_observations", 1);
-        }
-        if self.estimated_unknown > 0 {
-            unavailable_reasons.insert("rate_card_missing", self.estimated_unknown);
+            unavailable_reasons.insert("no_token_observations".to_string(), 1);
         }
         if self.component_unknown > 0 {
             unavailable_reasons.insert(
-                "component_cost_breakdown_unavailable",
+                "component_cost_breakdown_unavailable".to_string(),
                 self.component_unknown,
             );
         }
@@ -202,14 +208,21 @@ impl CostTotals {
             "status": status,
             "basis": "api_equivalent",
             "currency": "USD",
-            "processingTier": "standard",
+            "processingTier": self.processing_tier,
             "estimatedUsd": estimated_usd,
             "estimatedUsdMicros": has_estimate.then_some(self.estimated),
-            "inputUsdMicros": measurement(self.input_cost, self.component_unknown, self.observations),
-            "cachedInputUsdMicros": measurement(self.cached_input_cost, self.component_unknown, self.observations),
-            "cacheWriteUsdMicros": measurement(self.cache_write_cost, self.component_unknown, self.observations),
-            "outputUsdMicros": measurement(self.output_cost, self.component_unknown, self.observations),
-            "reasoningUsdMicros": measurement(self.reasoning_cost, self.component_unknown, self.observations),
+            "inputUsdMicros": (self.input_cost_unknown < self.observations).then_some(self.input_cost),
+            "cachedInputUsdMicros": (self.cached_input_cost_unknown < self.observations).then_some(self.cached_input_cost),
+            "cacheWriteUsdMicros": (self.cache_write_cost_unknown < self.observations).then_some(self.cache_write_cost),
+            "outputUsdMicros": (self.output_cost_unknown < self.observations).then_some(self.output_cost),
+            "reasoningUsdMicros": (self.reasoning_cost_unknown < self.observations).then_some(self.reasoning_cost),
+            "componentCoverage": {
+                "input": measurement(self.input_cost,self.input_cost_unknown,self.observations),
+                "cachedInput": measurement(self.cached_input_cost,self.cached_input_cost_unknown,self.observations),
+                "cacheWrite": measurement(self.cache_write_cost,self.cache_write_cost_unknown,self.observations),
+                "output": measurement(self.output_cost,self.output_cost_unknown,self.observations),
+                "reasoning": measurement(self.reasoning_cost,self.reasoning_cost_unknown,self.observations)
+            },
             "inputTokens": self.input_tokens,
             "cachedInputTokens": self.cached_input_tokens,
             "cacheWriteTokens": self.cache_write_tokens,

@@ -191,6 +191,7 @@ struct UsageCost {
     cached_input_usd_micros: Option<u64>,
     cache_write_usd_micros: Option<u64>,
     output_usd_micros: Option<u64>,
+    reasoning_usd_micros: Option<u64>,
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
     cache_write_tokens: Option<u64>,

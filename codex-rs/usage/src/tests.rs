@@ -160,6 +160,7 @@ fn optional_context_and_cost_provenance_round_trip_through_storage_codecs() {
         cache_write_cost_micros: None,
         output_cost_micros: None,
         reasoning_cost_micros: None,
+        ..Default::default()
     });
     record.actual_billing_micros = Some(11);
     let segment = UsageSegment::from_records(vec![record.clone()]).expect("segment");

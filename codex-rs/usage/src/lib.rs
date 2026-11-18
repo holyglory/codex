@@ -10,6 +10,7 @@
 mod bound_evidence;
 mod capture;
 mod correction_retention;
+mod cost_rollup;
 mod detail_retention;
 mod duckdb_connection;
 mod duckdb_snapshot;
@@ -132,9 +133,11 @@ pub use publisher::UsagePublisher;
 pub use query::InMemoryUsageStore;
 pub use query::UsageSnapshot;
 pub use query::UsageTail;
+pub use rate_card::COST_CALCULATION;
+pub use rate_card::PricingProvider;
+pub use rate_card::PricingRequest;
 pub use rate_card::RATE_CARD_VERSION;
-pub use rate_card::RateCard;
-pub use rate_card::resolve as resolve_rate_card;
+pub use rate_card::price_observation;
 pub use reader::RecordCursor;
 pub use reader::RecordKind;
 pub use reader::RecordPage;
@@ -183,3 +186,7 @@ mod tests;
 #[cfg(test)]
 #[path = "performance_tests.rs"]
 mod performance_tests;
+
+#[cfg(test)]
+#[path = "cost_retention_tests.rs"]
+mod cost_retention_tests;

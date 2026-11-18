@@ -30,6 +30,7 @@ fn source_cost(source: &Value, model_requests: &Value) -> Value {
         "cached_input_usd_micros": source["cachedInputUsdMicros"],
         "cache_write_usd_micros": source["cacheWriteUsdMicros"],
         "output_usd_micros": source["outputUsdMicros"],
+        "reasoning_usd_micros": source["reasoningUsdMicros"],
         "input_tokens": source["inputTokens"], "cached_input_tokens": source["cachedInputTokens"],
         "cache_write_tokens": source["cacheWriteTokens"],
         "uncached_input_tokens": source["uncachedInputTokens"],
@@ -50,7 +51,7 @@ fn unavailable_cost(effort: &Value, reason: &str) -> Value {
     // observations belong to this group. Keep their missing cost explicit.
     json!({
         "status":"unavailable", "basis":"api_equivalent", "currency":"USD",
-        "processing_tier":"standard", "estimated_usd":null, "estimated_usd_micros":null,
+        "processing_tier":"unknown", "estimated_usd":null, "estimated_usd_micros":null,
         "input_usd_micros":null, "cached_input_usd_micros":null,
         "cache_write_usd_micros":null, "output_usd_micros":null,
         "input_tokens":null, "cached_input_tokens":null, "cache_write_tokens":null,

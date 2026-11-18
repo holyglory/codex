@@ -71,25 +71,6 @@ fn usage_metadata_preserves_exact_billing_and_rate_card_provenance() {
         super::Session::actual_billing_micros(&metadata),
         Some(123_456)
     );
-    let estimate =
-        codex_usage::resolve_rate_card("openai.gpt-6.1-sol", "openai", None, Some(128_000))
-            .expect("official model mapping");
-    let provenance = estimate.estimate(
-        "openai",
-        None,
-        10_000,
-        2_000,
-        0,
-        1_000,
-        400,
-        "within_window".into(),
-    );
-    assert_eq!(
-        provenance.estimated_api_equivalent_cost_micros,
-        Some(26_200)
-    );
-    assert_eq!(provenance.input_cost_micros, Some(16_000));
-    assert_eq!(provenance.cached_input_cost_micros, Some(200));
 }
 
 use codex_features::Feature;

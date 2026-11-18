@@ -581,6 +581,29 @@ fn hour_bucket() -> &'static str {
 /// a chat never recreates discarded detail. The observation time remains the
 /// first represented observation; finite reports declare partial retention.
 fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &str) -> String {
+    let normalized = crate::cost_rollup::rollup(source);
+    let source = format!("({normalized})");
+    let cost = crate::cost_rollup::aggregated_json();
+    let cost_dimensions = [
+        "model",
+        "provider",
+        "serviceTier",
+        "contextClass",
+        "rateContextClass",
+        "region",
+        "rateCard",
+        "rateCardVersion",
+        "pricingBasis",
+        "pricingCalculation",
+        "rateSourceUrl",
+        "rateSourceSha256",
+        "pricedModel",
+        "unavailableReason",
+    ]
+    .iter()
+    .map(|field| format!("provenance.{field}"))
+    .collect::<Vec<_>>()
+    .join(", ");
     let dimensions = [
         "account_id",
         "thread_id",
@@ -614,10 +637,10 @@ fn contribution_rollup_query(source: &str, stamp: &str, suffix: &str, bucket: &s
          sum(CASE WHEN cache_write_unknowns IS NOT NULL THEN cache_write_unknowns \
                   WHEN cache_write_input_tokens IS NULL THEN 1 ELSE 0 END)::UBIGINT AS cache_write_unknowns, \
          NULLIF(sum(COALESCE(missing_observations_sum, missing_observations, 0)), 0)::UBIGINT AS missing_observations_sum \
-         ,any_value(context_size) AS context_size, any_value(cost_provenance) AS cost_provenance, \
+         ,any_value(context_size) AS context_size, {cost} AS cost_provenance, \
          CASE WHEN count(*) FILTER (WHERE actual_billing_micros IS NULL) = count(*) THEN NULL \
               ELSE sum(actual_billing_micros::HUGEINT)::UBIGINT END AS actual_billing_micros \
-         FROM {source} GROUP BY ALL"
+         FROM {source} GROUP BY bucket_at_ms, {dimensions}, {cost_dimensions}"
     );
     format!(
         "SELECT concat(CASE WHEN bucket_at_ms IS NULL THEN 'review-lifetime:' ELSE 'review-rollup:' END, \

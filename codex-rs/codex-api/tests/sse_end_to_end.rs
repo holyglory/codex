@@ -136,7 +136,14 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
         }
     });
 
-    let expected_metadata = completed["response"]["usage_metadata"]["metadata"].clone();
+    let mut expected_metadata = completed["response"]["usage"].as_object().unwrap().clone();
+    expected_metadata.extend(
+        completed["response"]["usage_metadata"]["metadata"]
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let expected_metadata = serde_json::Value::Object(expected_metadata);
     let body = build_responses_body(vec![item1, item2, completed]);
     let transport = FixtureSseTransport::new(body);
     let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth));
@@ -472,5 +479,63 @@ async fn responses_stream_dispatches_mixed_metadata_independently() -> Result<()
         )
     );
     assert_eq!(response_id, "resp_1");
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_response_preserves_raw_usage_and_explicit_price_metadata() -> Result<()> {
+    for (explicit, expected_explicit) in [
+        (
+            json!({"rateCard":"provider","input_tokens":999}),
+            Some(json!("provider")),
+        ),
+        (Value::Null, None),
+    ] {
+        let usage = json!({"input_tokens":12000,"output_tokens":10,"total_tokens":12010,
+            "input_tokens_details":{"cached_tokens":4000,"cache_write_tokens":7000,
+                "cache_write_tokens_details":{"ttl_30m_tokens":3000,"ttl_12h_tokens":4000}}});
+        let event = json!({"type":"response.completed","response":{"id":"pricing","model":"gpt-6.1-sol",
+            "service_tier":"priority","usage":usage,"usage_metadata":{"amount":"0.50","metadata":explicit}}});
+        let client = ResponsesClient::new(
+            FixtureSseTransport::new(build_responses_body(vec![event])),
+            provider("openai"),
+            Arc::new(NoAuth),
+        );
+        let mut stream = client
+            .stream(
+                json!({}),
+                HeaderMap::new(),
+                Compression::None,
+                /*turn_state*/ None,
+            )
+            .await?;
+        let mut seen = false;
+        while let Some(event) = stream.next().await {
+            if let ResponseEvent::Completed {
+                usage_metadata,
+                token_usage,
+                ..
+            } = event?
+            {
+                let metadata = usage_metadata.expect("preserved metadata");
+                assert_eq!(metadata.amount.as_deref(), Some("0.50"));
+                let value = metadata.metadata.expect("combined usage metadata");
+                assert_eq!(value["input_tokens_details"], usage["input_tokens_details"]);
+                assert_eq!(
+                    value["codex_observed_response"],
+                    json!({"model":"gpt-6.1-sol","service_tier":"priority"})
+                );
+                assert_eq!(value.get("rateCard"), expected_explicit.as_ref());
+                assert_eq!(token_usage.expect("typed usage").input_tokens, 12000);
+                if expected_explicit.is_some() {
+                    assert_eq!(value["input_tokens"], 999);
+                } else {
+                    assert_eq!(value["input_tokens"], 12000);
+                }
+                seen = true;
+            }
+        }
+        assert!(seen);
+    }
     Ok(())
 }

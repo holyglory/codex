@@ -45,6 +45,11 @@ async fn observed_response_usage_accumulates_per_turn_and_thread() -> Result<()>
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
+    let mut first_usage = ev_completed_with_tokens("response-a", /*total_tokens*/ 120);
+    first_usage["response"]["usage"]["actual_billing_micros"] = json!(11);
+    first_usage["response"]["usage_metadata"] = json!({"metadata":{"origin":"fixture"}});
+    first_usage["response"]["model"] = json!("gpt-6.1-sol");
+    first_usage["response"]["service_tier"] = json!("priority");
     let plan_args = json!({
         "plan": [{
             "step": "keep sampling",
@@ -58,7 +63,7 @@ async fn observed_response_usage_accumulates_per_turn_and_thread() -> Result<()>
             sse(vec![
                 ev_response_created("response-a"),
                 ev_function_call("call-a", "update_plan", &plan_args),
-                ev_completed_with_tokens("response-a", /*total_tokens*/ 120),
+                first_usage,
             ]),
             sse(vec![
                 ev_response_created("response-b"),
@@ -147,6 +152,27 @@ async fn observed_response_usage_accumulates_per_turn_and_thread() -> Result<()>
         .filter(|fact| fact.event.as_deref() == Some("token_observation"))
         .collect::<Vec<_>>();
     assert_eq!(tokens.len(), 3);
+    // The explicit metadata must not hide raw billing/usage fields. A custom
+    // mock endpoint is not a trusted OpenAI pricing source, even if it reports
+    // an OpenAI model name. These facts survive a real capture and resume.
+    assert_eq!(
+        (
+            tokens[0].actual_billing_micros,
+            tokens[0]
+                .context_size
+                .as_ref()
+                .and_then(|context| context.context_tokens),
+            tokens[0]
+                .cost_provenance
+                .as_ref()
+                .and_then(|cost| cost.estimated_api_equivalent_cost_micros),
+            tokens[0]
+                .cost_provenance
+                .as_ref()
+                .and_then(|cost| cost.unavailable_reason.as_deref()),
+        ),
+        (Some(11), Some(120), None, Some("unsupported_provider"))
+    );
     for token in tokens {
         let request = requests
             .iter()

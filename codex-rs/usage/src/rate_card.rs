@@ -1,237 +1,301 @@
-//! Trusted API-equivalent rate-card resolution.
-//!
-//! Rates are an immutable source snapshot. Provider/model aliases are mapped
-//! only when the mapping is explicit; unknown providers, service tiers, and
-//! model variants remain unpriced.
+//! Versioned, local API-equivalent pricing; actual billing is never inferred.
+use std::sync::OnceLock;
 
-use crate::model::UsageCostProvenance;
+use serde::Deserialize;
+use serde_json::Value;
 
-/// Pricing snapshot used by the `.12` collector.
-pub const RATE_CARD_VERSION: &str = "openai-api-pricing-2026-11-18";
-const TOKENS_PER_MILLION: u128 = 1_000_000;
-const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
+use crate::UsageCostProvenance;
 
+pub const RATE_CARD_VERSION: &str = "openai-api-2026-11-18-v2";
+pub const COST_CALCULATION: &str = "token-components-v2";
+
+/// A verified provider boundary, not a user-editable display name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RateCard {
-    pub model: &'static str,
-    pub service_tier: &'static str,
-    pub context_class: &'static str,
-    pub input_micros_per_million: u64,
-    pub cached_input_micros_per_million: u64,
-    pub cache_write_micros_per_million: Option<u64>,
-    pub output_micros_per_million: u64,
+pub enum PricingProvider {
+    OpenAiDirect,
+    Other,
 }
 
-impl RateCard {
-    fn cost(self, tokens: u64, rate: u64) -> u64 {
-        ((u128::from(tokens) * u128::from(rate)) / TOKENS_PER_MILLION)
-            .try_into()
-            .unwrap_or(u64::MAX)
-    }
-
-    /// Build a provenance record with component costs. Reasoning cost is a
-    /// diagnostic subset of output cost and is deliberately not added twice.
-    pub fn estimate(
-        self,
-        provider: &str,
-        region: Option<&str>,
-        input_tokens: u64,
-        cached_input_tokens: u64,
-        cache_write_tokens: u64,
-        output_tokens: u64,
-        reasoning_tokens: u64,
-        context_class: String,
-    ) -> UsageCostProvenance {
-        let cached = cached_input_tokens.min(input_tokens);
-        let uncached = input_tokens.saturating_sub(cached);
-        let input_cost = self.cost(uncached, self.input_micros_per_million);
-        let cached_cost = self.cost(cached, self.cached_input_micros_per_million);
-        let cache_write_cost = self
-            .cache_write_micros_per_million
-            .map(|rate| self.cost(cache_write_tokens, rate));
-        let output_cost = self.cost(output_tokens, self.output_micros_per_million);
-        let reasoning_cost = self.cost(
-            reasoning_tokens.min(output_tokens),
-            self.output_micros_per_million,
-        );
-        let total = input_cost
-            .saturating_add(cached_cost)
-            .saturating_add(cache_write_cost.unwrap_or_default())
-            .saturating_add(output_cost);
-        UsageCostProvenance {
-            model: Some(self.model.to_string()),
-            provider: Some(provider.to_string()),
-            service_tier: Some(self.service_tier.to_string()),
-            context_class: Some(context_class),
-            rate_context_class: Some(self.context_class.to_string()),
-            region: region.map(str::to_owned),
-            rate_card: Some(format!(
-                "openai-api-{}-{}",
-                self.service_tier, self.context_class
-            )),
-            rate_card_version: Some(RATE_CARD_VERSION.to_string()),
-            pricing_basis: Some("api_equivalent_rate_card".to_string()),
-            estimated_api_equivalent_cost_micros: Some(total),
-            input_cost_micros: Some(input_cost),
-            cached_input_cost_micros: Some(cached_cost),
-            cache_write_cost_micros: cache_write_cost,
-            output_cost_micros: Some(output_cost),
-            reasoning_cost_micros: Some(reasoning_cost),
-        }
-    }
+/// Request-scoped observations. Invalid or missing measurements remain unknown.
+pub struct PricingRequest<'a> {
+    pub model: &'a str,
+    pub provider_name: &'a str,
+    pub provider: PricingProvider,
+    pub service_tier: Option<&'a str>,
+    pub region: Option<&'a str>,
+    pub input_tokens: i64,
+    pub cached_tokens: i64,
+    pub write_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub observed_at_ms: i64,
 }
 
-fn canonical_model(model: &str) -> Option<&'static str> {
-    let model = model
-        .strip_prefix("openai.")
-        .or_else(|| model.strip_prefix("global.openai."))
-        .or_else(|| model.strip_prefix("us.openai."))
-        .unwrap_or(model);
-    // Codex-specific variants are intentionally not silently priced as their
-    // nearest API model. They need an explicit future mapping or metadata rate.
-    match model {
-        "gpt-6.2-astra" => Some("gpt-6.2-astra"),
-        "gpt-6.2-sol" => Some("gpt-6.2-sol"),
-        "gpt-6-astra" => Some("gpt-6-astra"),
-        "gpt-6.1-sol" => Some("gpt-6.1-sol"),
-        "gpt-6.1-terra" => Some("gpt-6.1-terra"),
-        "gpt-6-luna" => Some("gpt-6-luna"),
-        "gpt-6-sol" => Some("gpt-6-sol"),
-        "gpt-5.6-sol" => Some("gpt-5.6-sol"),
-        "gpt-5.6-terra" => Some("gpt-5.6-terra"),
-        "gpt-5.6-luna" => Some("gpt-5.6-luna"),
-        "gpt-5.5" => Some("gpt-5.5"),
-        "gpt-5.4" => Some("gpt-5.4"),
-        "gpt-5.4-mini" => Some("gpt-5.4-mini"),
-        "gpt-5.4-nano" => Some("gpt-5.4-nano"),
-        "gpt-5.2" => Some("gpt-5.2"),
-        "gpt-5.1" => Some("gpt-5.1"),
-        "gpt-5" => Some("gpt-5"),
-        "gpt-5-mini" => Some("gpt-5-mini"),
-        "gpt-5-nano" => Some("gpt-5-nano"),
-        "gpt-4.1" => Some("gpt-4.1"),
-        "gpt-4.1-mini" => Some("gpt-4.1-mini"),
-        "gpt-4o" => Some("gpt-4o"),
-        "gpt-4o-mini" => Some("gpt-4o-mini"),
-        "o3" => Some("o3"),
-        _ => None,
-    }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Catalog {
+    version: String,
+    source_url: String,
+    source_sha256: String,
+    context_threshold_tokens: i64,
+    rows: Vec<Rate>,
 }
 
-fn service_tier(value: Option<&str>) -> Option<&'static str> {
-    match value.unwrap_or("standard") {
-        "standard" | "default" => Some("standard"),
-        // OpenAI renamed priority processing to Fast; preserve the alias.
-        "fast" | "priority" => Some("fast"),
-        "flex" => Some("flex"),
-        "batch" => Some("batch"),
-        _ => None,
-    }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Rate {
+    model: String,
+    tier: String,
+    context: String,
+    input: u64,
+    output: u64,
+    cached: Option<u64>,
+    #[serde(rename = "write30m")]
+    write_30m: Option<u64>,
+    #[serde(rename = "write12h")]
+    write_12h: Option<u64>,
+    valid_from_ms: i64,
+    valid_until_ms: Option<i64>,
 }
 
-/// Resolve a trusted current API-equivalent rate card for one observation.
-pub fn resolve(
-    model: &str,
-    provider: &str,
-    service_tier_value: Option<&str>,
-    context_tokens: Option<u64>,
-) -> Option<RateCard> {
-    let provider = provider.to_ascii_lowercase();
-    if !matches!(provider.as_str(), "openai" | "chatgpt" | "openai-codex") {
-        return None;
-    }
-    let model = canonical_model(model)?;
-    let tier = service_tier(service_tier_value)?;
-    // Keep this table intentionally explicit. The standard short-context rates
-    // are the primary supported path; long context is enabled where the source
-    // pricing page publishes a distinct long-context rate.
-    let long = context_tokens.is_some_and(|tokens| tokens > LONG_CONTEXT_THRESHOLD);
-    let values = match (model, tier, long) {
-        ("gpt-6.1-sol", "standard", false) => (2_000_000, 100_000, 2_500_000, 10_000_000),
-        ("gpt-6.1-sol", "standard", true) => (4_000_000, 200_000, 5_000_000, 15_000_000),
-        ("gpt-6.1-sol", "fast", false) => (4_000_000, 200_000, 5_000_000, 20_000_000),
-        ("gpt-6.1-sol", "fast", true) => (8_000_000, 400_000, 10_000_000, 30_000_000),
-        ("gpt-6.2-sol", "standard", false) => (2_000_000, 100_000, 2_500_000, 10_000_000),
-        ("gpt-6.2-sol", "standard", true) => (4_000_000, 200_000, 5_000_000, 15_000_000),
-        ("gpt-6.2-astra", "standard", false) => (8_000_000, 400_000, 10_000_000, 40_000_000),
-        ("gpt-6.2-astra", "standard", true) => (16_000_000, 800_000, 20_000_000, 60_000_000),
-        ("gpt-6-astra", "standard", false) => (10_000_000, 1_000_000, 12_500_000, 50_000_000),
-        ("gpt-6-astra", "standard", true) => (20_000_000, 2_000_000, 25_000_000, 75_000_000),
-        ("gpt-6.1-terra", "standard", false) => (1_000_000, 50_000, 1_250_000, 5_000_000),
-        ("gpt-6.1-terra", "standard", true) => (2_000_000, 100_000, 2_500_000, 7_500_000),
-        ("gpt-6-luna", "standard", false) => (100_000, 10_000, 125_000, 500_000),
-        ("gpt-6-luna", "standard", true) => (200_000, 20_000, 250_000, 750_000),
-        ("gpt-6-sol", "standard", false) => (2_000_000, 200_000, 2_500_000, 10_000_000),
-        ("gpt-6-sol", "standard", true) => (4_000_000, 400_000, 5_000_000, 15_000_000),
-        ("gpt-5.6-sol", "standard", false) => (4_000_000, 400_000, 5_000_000, 20_000_000),
-        ("gpt-5.6-sol", "standard", true) => (8_000_000, 800_000, 10_000_000, 30_000_000),
-        ("gpt-5.6-terra", "standard", false) => (2_000_000, 200_000, 2_500_000, 12_000_000),
-        ("gpt-5.6-terra", "standard", true) => (4_000_000, 400_000, 5_000_000, 18_000_000),
-        ("gpt-5.6-luna", "standard", false) => (200_000, 20_000, 250_000, 1_200_000),
-        ("gpt-5.6-luna", "standard", true) => (400_000, 40_000, 500_000, 1_800_000),
-        ("gpt-5.5", "standard", false) => (5_000_000, 500_000, 0, 30_000_000),
-        ("gpt-5.5", "standard", true) => (10_000_000, 1_000_000, 0, 45_000_000),
-        ("gpt-5.4", "standard", false) => (2_500_000, 250_000, 0, 15_000_000),
-        ("gpt-5.4", "standard", true) => (5_000_000, 500_000, 0, 22_500_000),
-        ("gpt-5.4-mini", "standard", false) => (750_000, 75_000, 0, 4_500_000),
-        ("gpt-5.4-nano", "standard", false) => (200_000, 20_000, 0, 1_250_000),
-        ("gpt-5.2", "standard", false) => (1_750_000, 175_000, 0, 14_000_000),
-        ("gpt-5.1", "standard", false) => (1_250_000, 125_000, 0, 10_000_000),
-        ("gpt-5", "standard", false) => (1_250_000, 125_000, 0, 10_000_000),
-        ("gpt-5-mini", "standard", false) => (250_000, 25_000, 0, 2_000_000),
-        ("gpt-5-nano", "standard", false) => (50_000, 5_000, 0, 400_000),
-        ("gpt-4.1", "standard", false) => (2_000_000, 500_000, 0, 8_000_000),
-        ("gpt-4.1-mini", "standard", false) => (400_000, 100_000, 0, 1_600_000),
-        ("gpt-4o", "standard", false) => (2_500_000, 1_250_000, 0, 10_000_000),
-        ("gpt-4o-mini", "standard", false) => (150_000, 75_000, 0, 600_000),
-        ("o3", "standard", false) => (2_000_000, 500_000, 0, 8_000_000),
-        _ => return None,
-    };
-    Some(RateCard {
-        model,
-        service_tier: tier,
-        context_class: if long { "long" } else { "short" },
-        input_micros_per_million: values.0,
-        cached_input_micros_per_million: values.1,
-        cache_write_micros_per_million: (values.2 != 0).then_some(values.2),
-        output_micros_per_million: values.3,
+fn catalog() -> &'static Catalog {
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("pricing/openai-2026-11-18.json"))
+            .expect("checked embedded pricing catalog")
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_provider_aliases_and_calculates_component_costs() {
-        let card = resolve("global.openai.gpt-6.1-sol", "openai", None, Some(120_000))
-            .expect("published standard card");
-        let estimate = card.estimate(
-            "openai",
-            None,
-            10_000,
-            2_000,
-            0,
-            1_000,
-            400,
-            "within_window".into(),
-        );
-        assert_eq!(
-            estimate.rate_card.as_deref(),
-            Some("openai-api-standard-short")
-        );
-        assert_eq!(estimate.input_cost_micros, Some(16_000));
-        assert_eq!(estimate.cached_input_cost_micros, Some(200));
-        assert_eq!(estimate.output_cost_micros, Some(10_000));
-        assert_eq!(estimate.reasoning_cost_micros, Some(4_000));
-        assert_eq!(estimate.estimated_api_equivalent_cost_micros, Some(26_200));
+/// Calculate once at response capture, with immutable rate and mapping provenance.
+pub fn price_observation(
+    request: PricingRequest<'_>,
+    metadata: Option<&Value>,
+) -> UsageCostProvenance {
+    let mut result = UsageCostProvenance {
+        model: Some(request.model.to_string()),
+        provider: Some(request.provider_name.to_string()),
+        service_tier: request.service_tier.map(str::to_owned),
+        region: request.region.map(str::to_owned),
+        pricing_calculation: Some(COST_CALCULATION.into()),
+        pricing_basis: Some("api_equivalent_rate_card".into()),
+        ..Default::default()
+    };
+    match calculate(&request, metadata, &mut result) {
+        Ok(()) => {}
+        Err(reason) => {
+            result.unavailable_reason = Some(reason.into());
+            result.estimated_api_equivalent_cost_micros = None;
+            result.input_cost_micros = None;
+            result.cached_input_cost_micros = None;
+            result.cache_write_cost_micros = None;
+            result.output_cost_micros = None;
+            result.reasoning_cost_micros = None;
+        }
     }
-
-    #[test]
-    fn leaves_external_and_unmapped_models_unknown() {
-        assert!(resolve("gpt-5.3-codex", "openai", None, Some(1_000)).is_none());
-        assert!(resolve("gpt-6.1-sol", "amazon-bedrock", None, Some(1_000)).is_none());
-        assert!(resolve("gpt-6.1-sol", "openai", Some("priority"), Some(1_000)).is_some());
-        assert!(resolve("gpt-5.4-mini", "openai", None, Some(300_000)).is_none());
-    }
+    result
 }
+
+fn calculate(
+    request: &PricingRequest<'_>,
+    metadata: Option<&Value>,
+    result: &mut UsageCostProvenance,
+) -> Result<(), &'static str> {
+    if request.provider != PricingProvider::OpenAiDirect {
+        return Err("unsupported_provider");
+    }
+    let observed = metadata.and_then(|v| v.get("codex_observed_response"));
+    let model = observed
+        .and_then(|v| v.get("model"))
+        .and_then(Value::as_str)
+        .unwrap_or(request.model);
+    let selected = observed
+        .and_then(|v| v.get("service_tier"))
+        .and_then(Value::as_str)
+        .or(request.service_tier);
+    // Exact provider namespace aliases only; no fuzzy family or date stripping.
+    let canonical = model.strip_prefix("openai.").unwrap_or(model);
+    result.model = Some(model.into());
+    result.priced_model = Some(canonical.into());
+    let tier = match selected.unwrap_or("default") {
+        "default" | "standard" => "standard",
+        "priority" | "fast" => "fast",
+        "flex" => "flex",
+        "batch" => "batch",
+        "ultrafast" => "ultrafast",
+        _ => return Err("unknown_service_tier"),
+    };
+    result.service_tier = Some(tier.into());
+    if request
+        .region
+        .is_some_and(|region| !matches!(region, "" | "global"))
+    {
+        return Err("unsupported_region");
+    }
+    let inputs = u64::try_from(request.input_tokens).map_err(|_| "invalid_token_components")?;
+    let cached = u64::try_from(request.cached_tokens).map_err(|_| "invalid_token_components")?;
+    let writes = u64::try_from(request.write_tokens).map_err(|_| "invalid_token_components")?;
+    let outputs = u64::try_from(request.output_tokens).map_err(|_| "invalid_token_components")?;
+    let reasoning =
+        u64::try_from(request.reasoning_tokens).map_err(|_| "invalid_token_components")?;
+    let ordinary = inputs
+        .checked_sub(cached)
+        .and_then(|v| v.checked_sub(writes))
+        .ok_or("invalid_token_components")?;
+    if reasoning > outputs {
+        return Err("invalid_token_components");
+    }
+    let card = catalog();
+    let context = if request.input_tokens > card.context_threshold_tokens {
+        "long"
+    } else {
+        "short"
+    };
+    result.context_class = Some(context.into());
+    result.rate_context_class = Some(context.into());
+    // Upstream explicit estimates are only usable with their source identity;
+    // missing component prices do not become zero or a fabricated breakdown.
+    if let Some(value) = metadata.filter(|v| v.is_object())
+        && let Some(total) = value
+            .get("estimatedApiEquivalentCostMicros")
+            .or_else(|| value.get("estimated_api_equivalent_cost_micros"))
+            .filter(|value| !value.is_null())
+        {
+            let total = total
+                .as_u64()
+                .or_else(|| total.as_str()?.parse().ok())
+                .ok_or("provider_cost_invalid_amount")?;
+            let id = string(value, "rateCard", "rate_card")
+                .ok_or("provider_cost_provenance_incomplete")?;
+            let version = string(value, "rateCardVersion", "rate_card_version")
+                .ok_or("provider_cost_provenance_incomplete")?;
+            let basis = string(value, "pricingBasis", "pricing_basis")
+                .ok_or("provider_cost_provenance_incomplete")?;
+            if basis != "api_equivalent" {
+                return Err("provider_cost_basis_unsupported");
+            }
+            result.rate_card = Some(id.into());
+            result.rate_card_version = Some(version.into());
+            result.pricing_basis = Some("provider_api_equivalent".into());
+            result.estimated_api_equivalent_cost_micros = Some(total);
+            let components = [
+                number(value, "inputCostMicros", "input_cost_micros"),
+                number(value, "cachedInputCostMicros", "cached_input_cost_micros"),
+                number(value, "cacheWriteCostMicros", "cache_write_cost_micros"),
+                number(value, "outputCostMicros", "output_cost_micros"),
+            ];
+            if let [Some(a), Some(b), Some(c), Some(d)] = components {
+                if a.checked_add(b)
+                    .and_then(|v| v.checked_add(c))
+                    .and_then(|v| v.checked_add(d))
+                    != Some(total)
+                {
+                    return Err("provider_cost_components_inconsistent");
+                }
+                result.input_cost_micros = Some(a);
+                result.cached_input_cost_micros = Some(b);
+                result.cache_write_cost_micros = Some(c);
+                result.output_cost_micros = Some(d);
+                result.reasoning_cost_micros =
+                    number(value, "reasoningCostMicros", "reasoning_cost_micros")
+                        .filter(|r| *r <= d);
+            }
+            return Ok(());
+        }
+    let rate = card
+        .rows
+        .iter()
+        .find(|row| {
+            row.model == canonical
+                && row.tier == tier
+                && (row.context == context || row.context == "any")
+        })
+        .ok_or("rate_card_missing")?;
+    if request.observed_at_ms < rate.valid_from_ms
+        || rate
+            .valid_until_ms
+            .is_some_and(|end| request.observed_at_ms >= end)
+    {
+        return Err("rate_card_outside_validity");
+    }
+    let (write30, write12) = if writes == 0 {
+        (0, 0)
+    } else {
+        let details = metadata
+            .and_then(|v| v.get("input_tokens_details"))
+            .and_then(|v| v.get("cache_write_tokens_details"))
+            .ok_or("cache_write_duration_missing")?;
+        let a = details
+            .get("ttl_30m_tokens")
+            .and_then(Value::as_u64)
+            .ok_or("cache_write_duration_missing")?;
+        let b = details
+            .get("ttl_12h_tokens")
+            .and_then(Value::as_u64)
+            .ok_or("cache_write_duration_missing")?;
+        if a.checked_add(b) != Some(writes) {
+            return Err("invalid_cache_write_components");
+        }
+        (a, b)
+    };
+    // Products retain exact rational numerators until rounding each additive
+    // component once (nearest micro, halves up); reasoning is a subset only.
+    let input = charge(ordinary, Some(rate.input))?;
+    let cache = charge(cached, rate.cached)?;
+    let write = round(
+        numerator(write30, rate.write_30m)?
+            .checked_add(numerator(write12, rate.write_12h)?)
+            .ok_or("cost_overflow")?,
+    )?;
+    let output = charge(outputs, Some(rate.output))?;
+    let reason = charge(reasoning, Some(rate.output))?;
+    let total = input
+        .checked_add(cache)
+        .and_then(|v| v.checked_add(write))
+        .and_then(|v| v.checked_add(output))
+        .ok_or("cost_overflow")?;
+    result.rate_card = Some(format!(
+        "{}:{canonical}:{tier}:{}",
+        card.version, rate.context
+    ));
+    result.rate_card_version = Some(card.version.clone());
+    result.rate_source_url = Some(card.source_url.clone());
+    result.rate_source_sha256 = Some(card.source_sha256.clone());
+    result.input_cost_micros = Some(input);
+    result.cached_input_cost_micros = Some(cache);
+    result.cache_write_cost_micros = Some(write);
+    result.output_cost_micros = Some(output);
+    result.reasoning_cost_micros = Some(reason);
+    result.estimated_api_equivalent_cost_micros = Some(total);
+    Ok(())
+}
+
+fn numerator(tokens: u64, rate: Option<u64>) -> Result<u128, &'static str> {
+    if tokens == 0 {
+        return Ok(0);
+    }
+    Ok(u128::from(tokens) * u128::from(rate.ok_or("token_category_unpriced")?))
+}
+fn round(value: u128) -> Result<u64, &'static str> {
+    u64::try_from(value.checked_add(500_000).ok_or("cost_overflow")? / 1_000_000)
+        .map_err(|_| "cost_overflow")
+}
+fn charge(tokens: u64, rate: Option<u64>) -> Result<u64, &'static str> {
+    round(numerator(tokens, rate)?)
+}
+fn number(value: &Value, camel: &str, snake: &str) -> Option<u64> {
+    value
+        .get(camel)
+        .or_else(|| value.get(snake))
+        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+}
+fn string<'a>(value: &'a Value, camel: &str, snake: &str) -> Option<&'a str> {
+    value
+        .get(camel)
+        .or_else(|| value.get(snake))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(test)]
+#[path = "rate_card_tests.rs"]
+mod tests;
