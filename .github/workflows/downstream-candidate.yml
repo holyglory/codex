@@ -3,6 +3,24 @@ name: downstream-candidate
 on:
   workflow_dispatch:
     inputs:
+      pipeline_mode:
+        description: Prefer locally assembled npm inputs; hosted compilation is an explicit fallback
+        type: choice
+        required: true
+        default: local-npm
+        options: [local-npm, verify-native, macos-build, hosted-build]
+      local_npm_descriptor:
+        description: Uploaded local npm bundle descriptor JSON
+        type: string
+        required: false
+      prebuilt_native_descriptor:
+        description: Uploaded native bundle descriptor JSON with target, URL, size and digests
+        type: string
+        required: false
+      release_tag:
+        description: Immutable annotated npm product tag for local npm verification
+        type: string
+        required: false
       native_source_commit:
         description: Native source commit whose product tree the packaging must preserve
         type: string
@@ -46,16 +64,56 @@ permissions:
   contents: read
 
 concurrency:
-  group: downstream-candidate-${{ github.sha }}-${{ inputs.native_only && 'native' || 'complete' }}
+  group: downstream-candidate-${{ github.sha }}-${{ inputs.pipeline_mode }}-${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').target || 'all' }}-${{ inputs.native_only && 'native' || 'complete' }}
   cancel-in-progress: false
 
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
+  prebuilt-native:
+    name: Verify locally compiled native target
+    if: inputs.pipeline_mode == 'verify-native'
+    permissions:
+      contents: write # Draft release inputs require the existing handoff authority.
+    uses: ./.github/workflows/downstream-prebuilt-native.yml
+    with:
+      source_sha: ${{ inputs.native_source_commit }}
+      helper_sha: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').helper_sha }}
+      target: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').target }}
+      asset_url: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').url }}
+      asset_sha256: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').sha256 }}
+      asset_size: ${{ format('{0}', fromJSON(inputs.prebuilt_native_descriptor || '{}').size_bytes) }}
+      manifest_sha256: ${{ fromJSON(inputs.prebuilt_native_descriptor || '{}').manifest_sha256 }}
+
+  local-npm:
+    name: Verify locally assembled npm candidate
+    if: inputs.pipeline_mode == 'local-npm'
+    permissions:
+      contents: write # Read owned draft release inputs; npm staging is a separate job.
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/downstream-local-npm.yml
+    with:
+      source_commit: ${{ inputs.native_source_commit }}
+      packaging_commit: ${{ github.sha }}
+      tag: ${{ inputs.release_tag }}
+      transport_descriptor: ${{ inputs.local_npm_descriptor }}
+
+  local-npm-result:
+    name: Local npm candidate checks passed
+    if: ${{ always() && inputs.pipeline_mode == 'local-npm' }}
+    needs: local-npm
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require verified original tarballs
+        env:
+          RESULT: ${{ needs.local-npm.result }}
+        run: test "$RESULT" = success
+
   identity:
     name: Verify local acceptance and native source identity
-    if: github.repository == 'holyglory/codex'
+    if: github.repository == 'holyglory/codex' && (inputs.pipeline_mode == 'hosted-build' || inputs.pipeline_mode == 'macos-build')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -97,7 +155,7 @@ jobs:
         env:
           NATIVE_SOURCE_COMMIT: ${{ inputs.native_source_commit }}
           LOCAL_ACCEPTANCE: ${{ inputs.local_acceptance }}
-          CANDIDATE_MODE: ${{ inputs.native_only && 'native-only' || 'complete' }}
+          CANDIDATE_MODE: ${{ (inputs.native_only || inputs.pipeline_mode == 'macos-build') && 'native-only' || 'complete' }}
         run: >-
           python3 scripts/release_identity.py
           --producer "$NATIVE_SOURCE_COMMIT" --packaging "$GITHUB_SHA"
@@ -148,7 +206,7 @@ jobs:
 
   handoff:
     name: Import verified VPS and private Windows outputs
-    if: ${{ !inputs.native_only }}
+    if: ${{ inputs.pipeline_mode == 'hosted-build' && !inputs.native_only }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -180,9 +238,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  macos-local-pipeline:
+    name: Build and test ${{ matrix.target }}
+    if: inputs.pipeline_mode == 'macos-build'
+    needs: identity
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos_amd64
+            bazel_config: ci-macos
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+            platform: macos_arm64
+            bazel_config: ci-macos
+    uses: ./.github/workflows/downstream-unix-native-target.yml
+    with:
+      source_sha: ${{ inputs.native_source_commit }}
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      platform: ${{ matrix.platform }}
+      bazel_config: ${{ matrix.bazel_config }}
+      source_version: ${{ needs.identity.outputs.source_version }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
   native:
     name: Build and test ${{ matrix.target }}
-    if: inputs.hosted_native_run_id == '' && inputs.hosted_native_runs == '' && !inputs.reuse_linux_arm_handoff
+    if: inputs.pipeline_mode == 'hosted-build' && inputs.hosted_native_run_id == '' && inputs.hosted_native_runs == '' && !inputs.reuse_linux_arm_handoff
     needs: identity
     permissions:
       contents: read
@@ -217,7 +305,7 @@ jobs:
 
   native-mac:
     name: Build and test ${{ matrix.target }} with verified Linux ARM handoff
-    if: inputs.reuse_linux_arm_handoff
+    if: inputs.pipeline_mode == 'hosted-build' && inputs.reuse_linux_arm_handoff
     needs: identity
     permissions:
       contents: read
@@ -249,6 +337,7 @@ jobs:
   npm:
     name: Assemble and verify all seven npm tarballs
     if: >-
+      inputs.pipeline_mode == 'hosted-build' &&
       !cancelled() && !inputs.native_only && needs.identity.result == 'success' &&
       needs.handoff.result == 'success' &&
       (needs.native.result == 'success' || needs.native-mac.result == 'success' ||
@@ -324,7 +413,7 @@ jobs:
 
   candidate-result:
     name: Candidate checks passed
-    if: ${{ !inputs.native_only && always() }}
+    if: ${{ inputs.pipeline_mode == 'hosted-build' && !inputs.native_only && always() }}
     needs: [identity, handoff, native, native-mac, npm]
     runs-on: ubuntu-24.04
     steps:

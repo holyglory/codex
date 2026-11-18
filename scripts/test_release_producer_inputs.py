@@ -188,6 +188,43 @@ class ProducerInputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify(self.proof)
 
+    def test_npm_runtime_preserves_full_sidecar_binding_without_symbol_body(self):
+        symbols = self.folder / f"codex-package-{self.target}.symbols.tar.gz"
+        symbols.write_bytes(b"original separately retained symbols")
+        self.receipt["archives"][symbols.name] = {
+            "sha256": inputs.digest(symbols),
+            "size_bytes": symbols.stat().st_size,
+        }
+        self.write_receipt()
+        proof = self.capture()
+        full = self.verify(proof)
+        original_receipt = (self.folder / "native-manifest.json").read_bytes()
+        original_sidecar = (self.folder / inputs.SIDECAR).read_bytes()
+        symbols.unlink()
+        with self.assertRaises(FileNotFoundError):
+            identity.verify_artifacts(self.folder.parent, self.packaging)
+        runtime = identity.verify_artifacts(
+            self.folder.parent, self.packaging, archive_scope="npm-runtime"
+        )
+        self.assertEqual(runtime, full)
+        self.assertEqual(
+            (self.folder / "native-manifest.json").read_bytes(), original_receipt
+        )
+        self.assertEqual((self.folder / inputs.SIDECAR).read_bytes(), original_sidecar)
+        self.receipt["archives"][symbols.name]["sha256"] = "0" * 64
+        self.write_receipt()
+        with self.assertRaises(ValueError):
+            identity.verify_artifacts(
+                self.folder.parent, self.packaging, archive_scope="npm-runtime"
+            )
+        (self.folder / "native-manifest.json").write_bytes(original_receipt)
+        canonical = self.folder / f"codex-package-{self.target}.tar.gz"
+        canonical.write_bytes(b"changed runtime bytes")
+        with self.assertRaises(ValueError):
+            identity.verify_artifacts(
+                self.folder.parent, self.packaging, archive_scope="npm-runtime"
+            )
+
     def test_wrapper_exception_rejects_any_other_change(self):
         self.write(self.wrapper, "different wrapper\n")
         with self.assertRaises(ValueError):

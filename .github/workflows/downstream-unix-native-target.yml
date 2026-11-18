@@ -3,6 +3,10 @@ name: downstream-unix-native-target
 on:
   workflow_call:
     inputs:
+      source_sha:
+        description: Exact product source for the local pipeline's hosted Mac fallback
+        required: false
+        type: string
       runner:
         required: true
         type: string
@@ -53,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -68,10 +73,22 @@ jobs:
         with:
           target: ${{ inputs.target }}
           cache-scope: downstream-v8-source
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          toolchain: "1.95.0"
-          targets: ${{ inputs.target }}
+      - name: Install the Rust toolchain declared by product source
+        run: |
+          set -euo pipefail
+          source_rust=$(python3 - <<'PYTHON'
+          import pathlib, re
+          source = pathlib.Path('.github/workflows/rust-release.yml').read_text()
+          versions = set(re.findall(r'dtolnay/rust-toolchain@[^\s#]+\s+#\s*(\d+\.\d+\.\d+)\s*$', source, re.MULTILINE))
+          if len(versions) != 1:
+              raise SystemExit('Product source must declare one exact Rust toolchain')
+          print(versions.pop())
+          PYTHON
+          )
+          rustup toolchain install "$source_rust" --profile minimal --target "$TARGET"
+          rustup run "$source_rust" rustc --version
+          rustup run "$source_rust" cargo --version
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$source_rust" >> "$GITHUB_ENV"
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         if: runner.os == 'Linux'
         with:
@@ -122,6 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -155,10 +173,22 @@ jobs:
         with:
           target: ${{ inputs.target }}
           cache-scope: downstream-v8-source
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          toolchain: "1.95.0"
-          targets: ${{ inputs.target }}
+      - name: Install the Rust toolchain declared by product source
+        run: |
+          set -euo pipefail
+          source_rust=$(python3 - <<'PYTHON'
+          import pathlib, re
+          source = pathlib.Path('.github/workflows/rust-release.yml').read_text()
+          versions = set(re.findall(r'dtolnay/rust-toolchain@[^\s#]+\s+#\s*(\d+\.\d+\.\d+)\s*$', source, re.MULTILINE))
+          if len(versions) != 1:
+              raise SystemExit('Product source must declare one exact Rust toolchain')
+          print(versions.pop())
+          PYTHON
+          )
+          rustup toolchain install "$source_rust" --profile minimal --target "$TARGET"
+          rustup run "$source_rust" rustc --version
+          rustup run "$source_rust" cargo --version
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$source_rust" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: nextest

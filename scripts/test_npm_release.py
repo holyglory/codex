@@ -37,6 +37,75 @@ SPEC.loader.exec_module(candidate)
 
 
 class NpmReleaseContractTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "requires Bash")
+    def test_hosted_native_installs_product_declared_rust_before_compilation(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/downstream-unix-native-target.yml"
+        ).read_text()
+        steps = workflow.split(
+            "      - name: Install the Rust toolchain declared by product source\n"
+        )[1:]
+        self.assertEqual(len(steps), 2)
+        for index, step in enumerate(steps):
+            command = "\n".join(
+                line[10:]
+                for line in step.split("        run: |\n", 1)[1]
+                .split("      - ", 1)[0]
+                .splitlines()
+            )
+            with self.subTest(phase=index), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                declaration = root / ".github/workflows/rust-release.yml"
+                declaration.parent.mkdir(parents=True)
+                binary = root / "bin"
+                binary.mkdir()
+                rustup = binary / "rustup"
+                rustup.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
+                rustup.chmod(0o755)
+                calls, output = root / "calls", root / "env"
+                environment = {
+                    **os.environ,
+                    "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                    "COMMAND_LOG": str(calls),
+                    "GITHUB_ENV": str(output),
+                    "TARGET": "aarch64-apple-darwin",
+                }
+                declaration.write_text(
+                    "- uses: dtolnay/rust-toolchain@fixture # 1.96.0\n"
+                )
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    cwd=root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    calls.read_text().splitlines(),
+                    [
+                        "toolchain install 1.96.0 --profile minimal --target aarch64-apple-darwin",
+                        "run 1.96.0 rustc --version",
+                        "run 1.96.0 cargo --version",
+                    ],
+                )
+                self.assertEqual(output.read_text(), "RUSTUP_TOOLCHAIN=1.96.0\n")
+                calls.unlink()
+                declaration.write_text(
+                    declaration.read_text()
+                    + "- uses: dtolnay/rust-toolchain@other # 1.97.0\n"
+                )
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    cwd=root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(calls.exists())
+
     def test_windows_long_build_keeps_target_checkpoints_and_heartbeat(self) -> None:
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/trusted-windows-native.yml").read_text()
@@ -711,6 +780,7 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
             Path(__file__).resolve().parents[1]
             / ".github/workflows/downstream-candidate.yml"
         ).read_text()
+        workflow = workflow.replace("inputs.pipeline_mode == 'hosted-build' && ", "")
         native_job = (
             release_identity._extract_yaml_job(workflow, "native")
             .replace(" && !inputs.reuse_linux_arm_handoff", "")
@@ -810,6 +880,27 @@ just() { "$FIXTURE_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))'
                     producer, mapped_reuse, target="x86_64-apple-darwin"
                 )
                 verify_hosted_native_source(handoff_matrix, mapped_reuse)
+            mapped_workflow = candidate_workflow.read_text()
+            candidate_workflow.write_text(
+                mapped_workflow.replace(
+                    "    if: ", "    if: inputs.pipeline_mode == 'hosted-build' && "
+                )
+            )
+            local_default = commit("make hosted compilation an explicit fallback")
+            with patch("release_identity.ROOT", root):
+                verify_hosted_v8_source(mapped_reuse, local_default)
+                verify_hosted_native_source(mapped_reuse, local_default)
+            candidate_workflow.write_text(
+                mapped_workflow.replace(
+                    "    if: ", "    if: inputs.pipeline_mode == 'local-npm' && "
+                )
+            )
+            invalid_mode = commit("reject unrelated native admission changes")
+            with patch("release_identity.ROOT", root):
+                with self.assertRaises(ValueError):
+                    verify_hosted_v8_source(mapped_reuse, invalid_mode)
+                with self.assertRaisesRegex(ValueError, "Hosted native job"):
+                    verify_hosted_native_source(mapped_reuse, invalid_mode)
             for original, changed in (
                 ("macos-15-intel", "macos-14"),
                 ("platform: macos_arm64", "platform: linux_arm64_musl"),
@@ -1379,6 +1470,76 @@ python3() {
             candidate.verify_candidate_run(
                 run, repository, "b" * 40, jobs, hosted_native=True
             )
+
+    def test_local_candidate_requires_original_byte_checks_and_final_gate(self) -> None:
+        repository, commit = "holyglory/codex", "a" * 40
+        run = {
+            "status": "completed",
+            "conclusion": "success",
+            "path": ".github/workflows/downstream-candidate.yml",
+            "event": "workflow_dispatch",
+            "head_sha": commit,
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+        }
+        required = (
+            (
+                candidate.LOCAL_NPM_JOB,
+                (
+                    "Fetch authenticated owned asset, verify identities and smoke installed launcher",
+                    "Run actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+                    candidate.UPLOAD_STEP,
+                ),
+            ),
+            (candidate.LOCAL_RESULT_JOB, ("Require verified original tarballs",)),
+        )
+        jobs = [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {"name": step, "status": "completed", "conclusion": "success"}
+                    for step in steps
+                ],
+            }
+            for name, steps in required
+        ]
+        candidate.verify_candidate_run(run, repository, commit, jobs)
+        for job_index, job in enumerate(jobs):
+            for step_index, step in enumerate(job["steps"]):
+                for failure in ("missing", "skipped", "failure", "in_progress"):
+                    with self.subTest(
+                        job=job["name"], step=step["name"], failure=failure
+                    ):
+                        changed = json.loads(json.dumps(jobs))
+                        steps = changed[job_index]["steps"]
+                        if failure == "missing":
+                            steps.pop(step_index)
+                        elif failure == "in_progress":
+                            steps[step_index]["status"] = failure
+                        else:
+                            steps[step_index]["conclusion"] = failure
+                        with self.assertRaises(ValueError):
+                            candidate.verify_candidate_run(
+                                run, repository, commit, changed
+                            )
+            for changed in (jobs[:job_index] + jobs[job_index + 1 :], [*jobs, job]):
+                with self.subTest(missing_or_duplicate=job["name"]):
+                    with self.assertRaises(ValueError):
+                        candidate.verify_candidate_run(run, repository, commit, changed)
+        for field, value in (("conclusion", "cancelled"), ("head_sha", "b" * 40)):
+            with self.subTest(run_field=field):
+                with self.assertRaisesRegex(ValueError, "exact-source"):
+                    candidate.verify_candidate_run(
+                        {**run, field: value}, repository, commit, jobs
+                    )
+        for mode in ("hosted_native", "hosted_v8"):
+            with self.subTest(native_only=mode):
+                with self.assertRaises(ValueError):
+                    candidate.verify_candidate_run(
+                        run, repository, commit, jobs, **{mode: True}
+                    )
 
     def test_partial_hosted_run_can_prove_only_successful_v8_jobs(self) -> None:
         commit = "a" * 40

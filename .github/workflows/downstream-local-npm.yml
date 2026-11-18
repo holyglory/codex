@@ -1,0 +1,104 @@
+name: downstream-local-npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact product commit with complete retained local release acceptance
+        required: true
+        type: string
+      packaging_commit:
+        description: Exact packaging commit; must equal the workflow revision
+        required: true
+        type: string
+      tag:
+        description: Annotated npm-v<version> tag at the exact product source
+        required: true
+        type: string
+      transport_descriptor:
+        description: JSON from local_npm_release.py descriptor for the uploaded owned GitHub asset
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      source_commit:
+        required: true
+        type: string
+      packaging_commit:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      transport_descriptor:
+        required: true
+        type: string
+    outputs:
+      npm_version:
+        value: ${{ jobs.verify.outputs.npm_version }}
+      manifest_sha256:
+        value: ${{ jobs.verify.outputs.manifest_sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify original local npm bundle without rebuilding
+    if: github.repository == 'holyglory/codex'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # Owned draft release inputs, as in the existing handoff job.
+      id-token: write
+      attestations: write
+    outputs:
+      npm_version: ${{ steps.verify.outputs.npm_version }}
+      packaging_commit: ${{ inputs.packaging_commit }}
+      manifest_sha256: ${{ steps.verify.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Fetch authenticated owned asset, verify identities and smoke installed launcher
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          PACKAGING_COMMIT: ${{ inputs.packaging_commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          TRANSPORT_DESCRIPTOR: ${{ inputs.transport_descriptor }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PACKAGING_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PACKAGING_COMMIT" == "$GITHUB_SHA" ]]
+          printf '%s' "$TRANSPORT_DESCRIPTOR" > "$RUNNER_TEMP/npm-transport.json"
+          python3 scripts/local_npm_release.py verify \
+            --descriptor "$RUNNER_TEMP/npm-transport.json" \
+            --source-commit "$SOURCE_COMMIT" --packaging-commit "$PACKAGING_COMMIT" \
+            --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+            --output-dir "$RUNNER_TEMP/local-npm"
+          echo "npm_version=$(python3 -c 'from scripts.release_identity import version; print(version()[1])')" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$(sha256sum "$RUNNER_TEMP/local-npm/candidate/npm-build-manifest.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/local-npm/candidate/*.tgz
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: npm-candidate-${{ steps.verify.outputs.npm_version }}
+          # The digest-bound input asset retains the native archives. Publication
+          # needs the original npm bytes and receipts, without duplicating them.
+          path: |
+            ${{ runner.temp }}/local-npm/candidate/*.tgz
+            ${{ runner.temp }}/local-npm/candidate/*.json
+            ${{ runner.temp }}/local-npm/candidate/SHA256SUMS
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+

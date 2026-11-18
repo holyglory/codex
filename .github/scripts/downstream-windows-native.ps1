@@ -587,9 +587,13 @@ class Producer:
         record = json.loads((self.handoff / f"v8-{target}.json").read_text())
         if self.pair_receipt(target, pair, "source-native-windows")["files"] != record["files"]:
             raise ValueError("The staged native V8 pair changed after its source build.")
-        return {**os.environ, "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
-                "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
-                "LIBCLANG_PATH": record["compiler_directory"], "PATH": record["compiler_directory"] + os.pathsep + os.environ["PATH"]}
+        environment = {**os.environ, "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
+                       "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
+                       "LIBCLANG_PATH": record["compiler_directory"], "PATH": record["compiler_directory"] + os.pathsep + os.environ["PATH"]}
+        # C++ unwinding must release DuckDB resources when a query is interrupted.
+        cxx_flags = "CXXFLAGS_x86_64_pc_windows_msvc"
+        environment[cxx_flags] = (environment.get(cxx_flags, "") + " /EHsc").strip()
+        return environment
 
     def published_v8(self) -> None:
         # Reuse the canonical checksum verifier without the composite action's

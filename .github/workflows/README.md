@@ -1,5 +1,14 @@
 # Workflow Strategy
 
+## Downstream releases
+
+Future CodexMulti releases use the [local compilation and native verification
+pipeline](LOCAL_RELEASE_PIPELINE.md). Linux compilation and npm assembly belong
+on the persistent local build host; native verification and trusted publication
+remain separate gates. Windows keeps its dedicated runner. macOS retains its
+hosted fallback until a local Mac builder is qualified. Do not change a frozen
+release's active jobs when adopting this pipeline.
+
 The workflows in this directory are split so that pull requests get fast, review-friendly signal while `main` still gets the full cross-platform verification pass.
 
 ## Pull Requests
