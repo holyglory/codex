@@ -34,7 +34,7 @@ fn main() -> std::io::Result<()> {
         }
     }
     if std::env::args().any(|arg| arg == "--descendant") {
-        block_on(output.send(b"descendant-ready".as_slice().into()))?;
+        block_on(output.send(b"descendant-ready".as_slice()))?;
         loop {
             std::thread::park();
         }
@@ -55,12 +55,13 @@ fn main() -> std::io::Result<()> {
         AllowStdIo::new(std::io::stdin().lock()).compat(),
         framing::codec(),
     );
-    block_on(output.send(codex_plugin_host::READY.into()))?;
+    block_on(output.send(codex_plugin_host::READY))?;
     #[cfg(unix)]
     {
         // SAFETY: getpgrp reads this process's group identifier.
         let group = unsafe { libc::getpgrp() };
-        block_on(output.send(serde_json::to_vec(&(std::process::id(), group))?.into()))?;
+        let packet = serde_json::to_vec(&(std::process::id(), group))?;
+        block_on(output.send(packet.as_slice()))?;
     }
     let mut descendants = Vec::new();
     while let Some(message) = block_on(input.next()) {
