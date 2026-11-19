@@ -10,13 +10,13 @@ INSTA_UPDATE = "no"
 name = "pricing-and-response-contracts"
 tier = "release"
 timeout_seconds = 14000
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-usage", "-p", "codex-api", "-E", "package(codex-usage) | package(codex-api)"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", ".", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-usage", "-p", "codex-api", "-E", "package(codex-usage) | package(codex-api)"]
 [[test.pricing-focused.check]]
 name = "capture-inheritance-and-public-rpc"
 tier = "release"
 requires = ["pricing-and-response-contracts"]
 timeout_seconds = 14000
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-core", "-p", "codex-app-server", "-E", "test(local_usage) | test(token_usage_rollout) | test(responses_websocket_preserves_credit_usage_metadata) | test(usage_work) | test(usage_metadata_preserves) | test(recovery_preserves_durable_turn_attribution)"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", ".", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-core", "-p", "codex-app-server", "-E", "test(local_usage) | test(token_usage_rollout) | test(responses_websocket_preserves_credit_usage_metadata) | test(usage_work) | test(usage_metadata_preserves) | test(recovery_preserves_durable_turn_attribution)"]
 [test.pricing-workspace]
 timeout_seconds = 28800
 [test.pricing-workspace.env]
@@ -28,7 +28,7 @@ INSTA_UPDATE = "no"
 name = "complete-frozen-workspace"
 tier = "release"
 timeout_seconds = 27600
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", ".", "just", "test", "--locked", "--retries", "0", "--test-threads", "4"]
 
 [test.multi1-local-package]
 timeout_seconds = 9000
