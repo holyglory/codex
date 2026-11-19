@@ -10,11 +10,9 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-PACKAGE_ROOT = ROOT / "codex-rs/target/multi13-local"
+PACKAGE_ROOT = ROOT / "codex-rs/target/multi1-local"
 CARGO_TARGET = Path(
-    os.environ.get(
-        "CARGO_TARGET_DIR", "/mnt/build-storage/codex/multi13-release-target"
-    )
+    os.environ.get("CARGO_TARGET_DIR", "/mnt/build-storage/codex/multi1-release-target")
 )
 
 
@@ -52,7 +50,7 @@ def git(*args: str) -> str:
 
 
 version = source_version()
-if version != "0.166.0+multi.13":
+if version != "0.170.0+multi.1":
     raise RuntimeError(f"unexpected product version: {version}")
 commit = git("rev-parse", "HEAD")
 if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
@@ -108,7 +106,7 @@ for relative in ["bin/codex", "codex-resources/bwrap", "codex-path/rg"]:
         raise RuntimeError(f"missing package file: {relative}")
 proof = {
     "schema": 1,
-    "kind": "multi13-local-package",
+    "kind": "multi1-local-package",
     "source_commit": commit,
     "version": version,
     "target": TARGET,

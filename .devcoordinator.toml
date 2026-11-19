@@ -10,13 +10,13 @@ INSTA_UPDATE = "no"
 name = "pricing-and-response-contracts"
 tier = "release"
 timeout_seconds = 14000
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi13_rust.py", "/mnt/build-storage/codex/multi13-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-usage", "-p", "codex-api", "-E", "package(codex-usage) | package(codex-api)"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-usage", "-p", "codex-api", "-E", "package(codex-usage) | package(codex-api)"]
 [[test.pricing-focused.check]]
 name = "capture-inheritance-and-public-rpc"
 tier = "release"
 requires = ["pricing-and-response-contracts"]
 timeout_seconds = 14000
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi13_rust.py", "/mnt/build-storage/codex/multi13-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-core", "-p", "codex-app-server", "-E", "test(local_usage) | test(token_usage_rollout) | test(responses_websocket_preserves_credit_usage_metadata) | test(usage_work) | test(usage_metadata_preserves) | test(recovery_preserves_durable_turn_attribution)"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4", "-p", "codex-core", "-p", "codex-app-server", "-E", "test(local_usage) | test(token_usage_rollout) | test(responses_websocket_preserves_credit_usage_metadata) | test(usage_work) | test(usage_metadata_preserves) | test(recovery_preserves_durable_turn_attribution)"]
 [test.pricing-workspace]
 timeout_seconds = 28800
 [test.pricing-workspace.env]
@@ -28,29 +28,29 @@ INSTA_UPDATE = "no"
 name = "complete-frozen-workspace"
 tier = "release"
 timeout_seconds = 27600
-command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi13_rust.py", "/mnt/build-storage/codex/multi13-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4"]
+command = ["bash", "scripts/run_isolated_workspace_tests.sh", "/mnt/build-storage/codex/rebase166-test-temp", "python3", "/mnt/build-storage/codex/state/run_multi1_rust.py", "/mnt/build-storage/codex/multi1-cost-correction", "just", "test", "--locked", "--retries", "0", "--test-threads", "4"]
 
-[test.multi13-local-package]
+[test.multi1-local-package]
 timeout_seconds = 9000
-[test.multi13-local-package.env]
+[test.multi1-local-package.env]
 PATH = "/home/holyglory/.cargo/bin:/home/holyglory/.local/bin:/usr/local/bin:/usr/bin:/bin"
 PYTHONDONTWRITEBYTECODE = "1"
 INSTA_UPDATE = "no"
-[[test.multi13-local-package.check]]
+[[test.multi1-local-package.check]]
 name = "build-exact-local-package"
 tier = "release"
 timeout_seconds = 8400
-command = ["python3", "scripts/build_multi13_local_package.py"]
-retained_artifacts = [{name = "multi13-package-proof", path = "codex-rs/target/multi13-local", max_bytes = 1073741824}]
+command = ["python3", "scripts/build_multi1_local_package.py"]
+retained_artifacts = [{name = "multi1-package-proof", path = "codex-rs/target/multi1-local", max_bytes = 1073741824}]
 
-[deployment.local-activation-v13]
+[deployment.local-activation-v1]
 source = ["worktree"]
 components = ["owner"]
 public = false
-[deployment.local-activation-v13.component.owner]
+[deployment.local-activation-v1.component.owner]
 type = "process"
 allow_new_privileges = true
-command = ["python3", "scripts/local_deploy_owner.py", "codex-rs/target/multi13-local-plan.json"]
+command = ["python3", "scripts/local_deploy_owner.py", "codex-rs/target/multi1-local-plan.json"]
 port = false
 route = false
-persistent_paths = ["codex-rs/target/multi13-local-plan.json"]
+persistent_paths = ["codex-rs/target/multi1-local-plan.json"]
