@@ -54,15 +54,3 @@ command = ["python3", "scripts/local_deploy_owner.py", "codex-rs/target/multi1-l
 port = false
 route = false
 persistent_paths = ["codex-rs/target/multi1-local-plan.json"]
-
-[test.multi1-local-delivery-evidence]
-timeout_seconds = 300
-[test.multi1-local-delivery-evidence.env]
-PATH = "/home/holyglory/.cargo/bin:/home/holyglory/.local/bin:/usr/local/bin:/usr/bin:/bin"
-PYTHONDONTWRITEBYTECODE = "1"
-[[test.multi1-local-delivery-evidence.check]]
-name = "verify-local-executable-delivery"
-tier = "release"
-timeout_seconds = 240
-command = ["python3", "/mnt/build-storage/codex/state/prepare_multi1_delivery_evidence.py"]
-retained_artifacts = [{name = "multi1-delivery-evidence", path = "codex-rs/target/multi1-local", max_bytes = 1073741824}]

@@ -434,10 +434,15 @@ just() { "$NPM_FIXTURE_PYTHON" -c 'import json,os,resource,sys; print(json.dumps
                             str(dist / "package"),
                             "--archive-output",
                             str(dist / f"codex-package-{target}.tar.gz"),
-                            "--archive-output",
-                            str(dist / f"codex-package-{target}.tar.zst"),
                         ]
                     )
+                    if platform["os"] == "linux":
+                        expected.extend(
+                            [
+                                "--archive-output",
+                                str(dist / f"codex-package-{target}.tar.zst"),
+                            ]
+                        )
                     self.assertEqual(
                         json.loads(result.stdout),
                         {
