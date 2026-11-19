@@ -263,8 +263,15 @@ EOF
   package_args+=(
     --package-dir "$dist/package"
     --archive-output "$dist/codex-package-$TARGET.tar.gz"
-    --archive-output "$dist/codex-package-$TARGET.tar.zst"
   )
+  # The npm candidate consumes the canonical gzip archive.  On macOS, the
+  # additional maximum-level zstd archive adds a long, redundant compression
+  # pass after the package is already complete and can prevent the manifest
+  # sealing step from running before the hosted job timeout.  Keep the zstd
+  # alternate for Linux, where the existing native handoff consumes it.
+  if [[ "$TARGET" != *-apple-darwin ]]; then
+    package_args+=(--archive-output "$dist/codex-package-$TARGET.tar.zst")
+  fi
   run_check canonical-package just assemble-codex-package "${package_args[@]}"
   run_check native-version "$dist/package/bin/codex" --version
   if [[ "$(cat "$dist/logs/native-version.log")" != "codex-cli $SOURCE_VERSION" ]]; then
