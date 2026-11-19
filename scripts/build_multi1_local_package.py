@@ -56,8 +56,15 @@ commit = git("rev-parse", "HEAD")
 if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
     raise RuntimeError("source checkout does not have an immutable commit")
 status = git("status", "--porcelain", "--untracked-files=all")
-if status:
-    raise RuntimeError("source must be clean before package assembly")
+unexpected_status = [
+    line
+    for line in status.splitlines()
+    if line
+    and line[3:] != ".devcoordinator.toml"
+    and not line[3:].startswith(".devcoordinator/")
+]
+if unexpected_status:
+    raise RuntimeError("source must be clean except for governed coordinator files")
 if PACKAGE_ROOT.exists():
     raise RuntimeError("preserve existing output; choose a fresh release source")
 
