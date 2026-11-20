@@ -519,7 +519,8 @@ class Producer:
             output_base = Path(self.bazel("v8-output-base", "info", "output_base", capture_output=True).strip())
 
             def resolve(value: str) -> Path:
-                path = Path(value.strip())
+                value = value.strip().replace("\\", "/")
+                path = Path(value)
                 return path if path.is_absolute() else (output_base if value.startswith("external/") else execution_root) / path
 
             paths = [resolve(line) for line in outputs.splitlines() if line.strip()]
@@ -532,12 +533,59 @@ class Producer:
             target = "x86_64-pc-windows-msvc"
             directory = self.evidence / "v8" / target
             stage_artifacts(target, archives[0], bindings[0], directory, True)
-            compilers = self.bazel("v8-pinned-clang", "cquery", *BAZEL_FLAGS, "--output=files", "@v8_native_windows_llvm//:compiler_files", capture_output=True)
-            clang_paths = [resolve(line) for line in compilers.splitlines() if line.strip().replace("\\", "/").endswith("/clang-cl.exe")]
-            if len(clang_paths) != 1 or not clang_paths[0].is_file():
-                raise ValueError("The source-pinned Windows LLVM compiler is unavailable.")
+            # Product .166 declares a full native LLVM repository. Stable .170
+            # uses @llvm's public, configured aliases into its minimal archive.
+            # Query outputs instead of guessing either repository's cache name.
+            legacy_llvm = re.search(
+                r'''(?m)^\s*native_windows_llvm\s*\(\s*name\s*=\s*["']v8_native_windows_llvm["']''',
+                (ROOT / "MODULE.bazel").read_text(encoding="utf-8"),
+            ) is not None
+            compiler_labels = (
+                ("@v8_native_windows_llvm//:all_files",)
+                if legacy_llvm
+                else ("@llvm//tools:clang-cl", "@llvm//tools:llvm-lib", "@llvm//tools:lld-link")
+            )
+            compilers = self.bazel(
+                "v8-pinned-clang", "cquery", *BAZEL_FLAGS, "--output=files",
+                "set(" + " ".join((*compiler_labels, "@llvm//:MODULE.bazel")) + ")",
+                capture_output=True,
+            )
+            compiler_paths = {resolve(line) for line in compilers.splitlines() if line.strip()}
+            tools = {}
+            for name in ("clang-cl.exe", "llvm-lib.exe", "lld-link.exe"):
+                matches = [path for path in compiler_paths if path.name.lower() == name]
+                if len(matches) != 1 or not matches[0].is_file() or matches[0].stat().st_size == 0:
+                    raise ValueError(f"The source-pinned Windows LLVM tool is unavailable or ambiguous: {name}")
+                tools[name] = matches[0]
+            compiler = tools["clang-cl.exe"].parent
+            if any(path.parent != compiler for path in tools.values()):
+                raise ValueError("The source-pinned Windows LLVM tools come from different installations.")
+            declarations = [path for path in compiler_paths if path.name == "MODULE.bazel"]
+            if len(declarations) != 1:
+                raise ValueError("The source-pinned LLVM version declaration is unavailable or ambiguous.")
+            versions = re.findall(
+                r'''(?m)^LLVM_VERSION\s*=\s*["'](\d+\.\d+\.\d+)["']\s*$''',
+                declarations[0].read_text(encoding="utf-8"),
+            )
+            if len(versions) != 1:
+                raise ValueError("The source-pinned LLVM module must declare one exact compiler version.")
+            version_output = self.run("v8-pinned-clang-version", [str(tools["clang-cl.exe"]), "--version"], capture_output=True)
+            if re.search(r"\bclang version " + re.escape(versions[0]) + r"\b", version_output) is None:
+                raise ValueError("The Windows LLVM compiler version differs from its source pin.")
+            libclang = None
+            if legacy_llvm:
+                libraries = [path for path in compiler_paths if path.name.lower() == "libclang.dll"]
+                if len(libraries) != 1 or libraries[0].parent != compiler or not libraries[0].is_file():
+                    raise ValueError("The legacy source-pinned libclang library is unavailable or ambiguous.")
+                libclang = str(libraries[0].parent)
+                tools["libclang.dll"] = libraries[0]
             pair = self.pair_receipt(target, directory, "source-native-windows")
-            pair["compiler_directory"] = str(clang_paths[0].parent)
+            pair.update({
+                "compiler_directory": str(compiler), "compiler_version": versions[0],
+                "compiler_labels": list(compiler_labels),
+                "compiler_files": {name: digest(path) for name, path in tools.items()},
+                "libclang_directory": libclang,
+            })
             write_json(self.handoff / f"v8-{target}.json", pair)
         finally:
             # Let the runner's normal cleanup remove its workspace without a live
@@ -589,7 +637,15 @@ class Producer:
             raise ValueError("The staged native V8 pair changed after its source build.")
         environment = {**os.environ, "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
                        "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
-                       "LIBCLANG_PATH": record["compiler_directory"], "PATH": record["compiler_directory"] + os.pathsep + os.environ["PATH"]}
+                       "PATH": record["compiler_directory"] + os.pathsep + os.environ["PATH"]}
+        # Cargo consumes the verified pair, so rusty_v8 does not invoke bindgen.
+        # Modern LLVM's minimal compiler has no DLL; Bazel bindgen is self-contained.
+        environment.pop("V8_FROM_SOURCE", None)
+        environment.pop("LIBCLANG_PATH", None)
+        # Older full-LLVM handoffs recorded one directory for both tools and libclang.
+        libclang = record.get("libclang_directory", record["compiler_directory"])
+        if libclang:
+            environment["LIBCLANG_PATH"] = libclang
         # C++ unwinding must release DuckDB resources when a query is interrupted.
         cxx_flags = "CXXFLAGS_x86_64_pc_windows_msvc"
         environment[cxx_flags] = (environment.get(cxx_flags, "") + " /EHsc").strip()
@@ -635,7 +691,11 @@ class Producer:
             compiler = Path(x64_pair["compiler_directory"])
             for name, tool in (("CC", "clang-cl.exe"), ("CXX", "clang-cl.exe"), ("AR", "llvm-lib.exe")):
                 environment[f"{name}_aarch64_pc_windows_msvc"] = str(compiler / tool)
-            environment["LIBCLANG_PATH"] = str(compiler)
+            environment.pop("V8_FROM_SOURCE", None)
+            environment.pop("LIBCLANG_PATH", None)
+            libclang = x64_pair.get("libclang_directory", x64_pair["compiler_directory"])
+            if libclang:
+                environment["LIBCLANG_PATH"] = libclang
             environment["PATH"] = str(compiler) + os.pathsep + environment["PATH"]
             self.run("v8-arm64-compile-link", ["cargo", "nextest", "list", "--manifest-path", "codex-rs/Cargo.toml", "--config", "codex-rs/.cargo/config.toml", "--locked", "--target", target, "--list-type", "binaries-only", "--message-format", "json", "-p", "codex-v8-poc"], environment=environment)
             pair["runtime_not_executed"] = "The owner-controlled runner is x64; ARM64 receives compile/link and PE architecture proof only."

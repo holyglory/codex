@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import base64
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import io
@@ -30,16 +30,215 @@ SPEC.loader.exec_module(MODULE)
 
 
 class WindowsNativeHelperTest(unittest.TestCase):
+    @contextmanager
+    def source_v8_fixture(self, *, legacy: bool):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source with spaces"
+            root.mkdir()
+            (root / "MODULE.bazel").write_text(
+                'native_windows_llvm(name = "v8_native_windows_llvm")\n'
+                if legacy
+                else 'bazel_dep(name = "llvm", version = "0.8.11")\n'
+            )
+            output_base = root / "bazel-output-base"
+            execution_root = root / "execution-root"
+            compiler_repo = (
+                "v8_native_windows_llvm"
+                if legacy
+                else "llvm++llvm_toolchain_minimal+llvm-toolchain-minimal-windows-amd64"
+            )
+            compiler = output_base / "external" / compiler_repo / "bin"
+            compiler.mkdir(parents=True)
+            tools = [
+                compiler / name
+                for name in ("clang-cl.exe", "llvm-lib.exe", "lld-link.exe")
+            ]
+            if legacy:
+                tools.append(compiler / "libclang.dll")
+            for path in tools:
+                path.write_bytes(b"synthetic pinned tool")
+            version = "22.1.8" if legacy else "23.1.2"
+            declaration = output_base / "external/llvm+/MODULE.bazel"
+            declaration.parent.mkdir(parents=True)
+            declaration.write_text(f'LLVM_VERSION = "{version}"\n')
+            queried_tools = [
+                path.relative_to(output_base).as_posix().replace("/", "\\")
+                for path in [*tools, declaration]
+            ]
+            archive = execution_root / "bazel-out/v8/native.lib"
+            binding = archive.with_suffix(".rs")
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"synthetic V8 archive")
+            binding.write_text("synthetic V8 binding")
+            producer = MODULE.Producer.__new__(MODULE.Producer)
+            producer.evidence = root / "evidence"
+            producer.handoff = root / "handoff"
+
+            def bazel_output(name, *_arguments, **_kwargs):
+                return {
+                    "v8-x64-source-outputs": "\n".join(
+                        path.relative_to(execution_root).as_posix()
+                        for path in (archive, binding)
+                    ),
+                    "v8-execution-root": str(execution_root),
+                    "v8-output-base": str(output_base),
+                    "v8-pinned-clang": "\n".join(queried_tools),
+                }.get(name, "")
+
+            with (
+                patch.object(MODULE, "ROOT", root),
+                patch.object(producer, "bazel", side_effect=bazel_output) as bazel,
+                patch.object(
+                    producer, "run", return_value=f"clang version {version}\n"
+                ) as run,
+                patch.object(
+                    producer, "pair_receipt", return_value={"source_built": True}
+                ) as receipt,
+                patch.object(MODULE, "stage_artifacts") as stage,
+            ):
+                yield SimpleNamespace(
+                    producer=producer,
+                    compiler=compiler,
+                    queried_tools=queried_tools,
+                    declaration=declaration,
+                    version=version,
+                    bazel=bazel,
+                    run=run,
+                    receipt=receipt,
+                    stage=stage,
+                    archive=archive,
+                    binding=binding,
+                )
+
+    def test_source_v8_resolves_modern_minimal_and_legacy_full_llvm(self) -> None:
+        for legacy in (False, True):
+            with (
+                self.subTest(legacy=legacy),
+                self.source_v8_fixture(legacy=legacy) as fixture,
+            ):
+                fixture.producer.source_v8()
+                target = "x86_64-pc-windows-msvc"
+                receipt = json.loads(
+                    (fixture.producer.handoff / f"v8-{target}.json").read_text()
+                )
+                self.assertEqual(receipt["compiler_directory"], str(fixture.compiler))
+                self.assertEqual(receipt["compiler_version"], fixture.version)
+                self.assertEqual(
+                    receipt["libclang_directory"],
+                    str(fixture.compiler) if legacy else None,
+                )
+                expected_labels = (
+                    ["@v8_native_windows_llvm//:all_files"]
+                    if legacy
+                    else [
+                        "@llvm//tools:clang-cl",
+                        "@llvm//tools:llvm-lib",
+                        "@llvm//tools:lld-link",
+                    ]
+                )
+                self.assertEqual(receipt["compiler_labels"], expected_labels)
+                query = next(
+                    item
+                    for item in fixture.bazel.call_args_list
+                    if item.args[0] == "v8-pinned-clang"
+                )
+                self.assertEqual(
+                    query.args[1:],
+                    (
+                        "cquery",
+                        *MODULE.BAZEL_FLAGS,
+                        "--output=files",
+                        "set("
+                        + " ".join([*expected_labels, "@llvm//:MODULE.bazel"])
+                        + ")",
+                    ),
+                )
+                fixture.run.assert_called_once_with(
+                    "v8-pinned-clang-version",
+                    [str(fixture.compiler / "clang-cl.exe"), "--version"],
+                    capture_output=True,
+                )
+                fixture.stage.assert_called_once_with(
+                    target,
+                    fixture.archive,
+                    fixture.binding,
+                    fixture.producer.evidence / "v8" / target,
+                    True,
+                )
+                self.assertEqual(
+                    fixture.bazel.call_args_list[0],
+                    call(
+                        "v8-x64-source-build",
+                        "build",
+                        *MODULE.BAZEL_FLAGS,
+                        *MODULE.NATIVE_V8,
+                    ),
+                )
+                self.assertEqual(
+                    fixture.bazel.call_args_list[-1],
+                    call("v8-bazel-shutdown", "shutdown"),
+                )
+
+    def test_source_v8_rejects_invalid_pinned_compilers_without_host_fallback(
+        self,
+    ) -> None:
+        for failure in (
+            "missing",
+            "ambiguous",
+            "mixed",
+            "version",
+            "declaration",
+            "legacy-dll",
+        ):
+            with (
+                self.subTest(failure=failure),
+                self.source_v8_fixture(legacy=failure == "legacy-dll") as fixture,
+            ):
+                if failure == "missing":
+                    (fixture.compiler / "clang-cl.exe").unlink()
+                elif failure == "ambiguous":
+                    duplicate = fixture.compiler.parent / "duplicate/clang-cl.exe"
+                    duplicate.parent.mkdir()
+                    duplicate.write_bytes(b"ambiguous tool")
+                    fixture.queried_tools.append(str(duplicate))
+                elif failure == "mixed":
+                    mixed = fixture.compiler.parent / "mixed/llvm-lib.exe"
+                    mixed.parent.mkdir()
+                    mixed.write_bytes(b"different installation")
+                    fixture.queried_tools[:] = [
+                        value
+                        for value in fixture.queried_tools
+                        if not value.endswith("llvm-lib.exe")
+                    ] + [str(mixed)]
+                elif failure == "version":
+                    fixture.run.return_value = "clang version 21.0.0\n"
+                elif failure == "declaration":
+                    fixture.declaration.write_text('LLVM_VERSION = "unknown"\n')
+                else:
+                    (fixture.compiler / "libclang.dll").unlink()
+                with self.assertRaises(ValueError):
+                    fixture.producer.source_v8()
+                self.assertFalse(
+                    (
+                        fixture.producer.handoff / "v8-x86_64-pc-windows-msvc.json"
+                    ).exists()
+                )
+                self.assertEqual(
+                    fixture.bazel.call_args_list[-1],
+                    call("v8-bazel-shutdown", "shutdown"),
+                )
+
     def test_x64_acceptance_and_package_preserve_flags_and_enable_cpp_unwinding(
         self,
     ) -> None:
         target = "x86_64-pc-windows-msvc"
-        for prior_flags, expected_flags in (
-            (None, "/EHsc"),
-            ("/DPRIOR_FLAG=1 /O2", "/DPRIOR_FLAG=1 /O2 /EHsc"),
+        for prior_flags, expected_flags, layout in (
+            (None, "/EHsc", "minimal"),
+            ("/DPRIOR_FLAG=1 /O2", "/DPRIOR_FLAG=1 /O2 /EHsc", "full"),
+            (None, "/EHsc", "retained-full"),
         ):
             with (
-                self.subTest(prior_flags=prior_flags),
+                self.subTest(prior_flags=prior_flags, layout=layout),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory)
@@ -53,11 +252,19 @@ class WindowsNativeHelperTest(unittest.TestCase):
                     "binding": {"name": "native-binding.rs"},
                     "compiler_directory": str(root / "compiler"),
                 }
+                expected_libclang = str(root / "compiler")
+                if layout != "retained-full":
+                    expected_libclang = (
+                        str(root / "legacy-libclang") if layout == "full" else None
+                    )
+                    record["libclang_directory"] = expected_libclang
                 MODULE.write_json(producer.handoff / f"v8-{target}.json", record)
                 environment = {
                     "PATH": "existing-tools",
                     "CXXFLAGS": "/DGLOBAL_FLAG=1",
                     "CODEX_WINDOWS_NEXTEST_CONFIG_FILE": "nextest.toml",
+                    "LIBCLANG_PATH": "unverified-host-library",
+                    "V8_FROM_SOURCE": "1",
                 }
                 if prior_flags is not None:
                     environment["CXXFLAGS_x86_64_pc_windows_msvc"] = prior_flags
@@ -67,11 +274,14 @@ class WindowsNativeHelperTest(unittest.TestCase):
                     "CXXFLAGS_x86_64_pc_windows_msvc": expected_flags,
                     "RUSTY_V8_ARCHIVE": str(pair / record["archive"]["name"]),
                     "RUSTY_V8_SRC_BINDING_PATH": str(pair / record["binding"]["name"]),
-                    "LIBCLANG_PATH": record["compiler_directory"],
                     "PATH": record["compiler_directory"]
                     + os.pathsep
                     + environment["PATH"],
                 }
+                expected_environment.pop("V8_FROM_SOURCE")
+                expected_environment.pop("LIBCLANG_PATH")
+                if expected_libclang:
+                    expected_environment["LIBCLANG_PATH"] = expected_libclang
                 with (
                     patch.object(
                         MODULE,
@@ -108,6 +318,74 @@ class WindowsNativeHelperTest(unittest.TestCase):
                         [call(target, pair, "source-native-windows")] * 2,
                     )
                 self.assertEqual(environment, original_environment)
+
+    def test_arm64_package_uses_the_pinned_compiler_and_optional_legacy_libclang(
+        self,
+    ) -> None:
+        for layout in ("minimal", "full", "retained-full"):
+            with (
+                self.subTest(layout=layout),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                target = "aarch64-pc-windows-msvc"
+                producer = MODULE.Producer.__new__(MODULE.Producer)
+                producer.evidence = root / "evidence"
+                producer.handoff = root / "handoff"
+                compiler = root / "compiler"
+                x64_pair = {"compiler_directory": str(compiler)}
+                expected_libclang = str(compiler)
+                if layout != "retained-full":
+                    expected_libclang = (
+                        str(root / "legacy-libclang") if layout == "full" else None
+                    )
+                    x64_pair["libclang_directory"] = expected_libclang
+                MODULE.write_json(
+                    producer.handoff / "v8-x86_64-pc-windows-msvc.json", x64_pair
+                )
+                pair = {
+                    "archive": {"name": "v8.lib.gz"},
+                    "binding": {"name": "binding.rs"},
+                }
+                environment = {
+                    "PATH": "existing-tools",
+                    "VSCMD_ARG_HOST_ARCH": "x64",
+                    "VSCMD_ARG_TGT_ARCH": "arm64",
+                    "LIBCLANG_PATH": "unverified-host-library",
+                    "V8_FROM_SOURCE": "yes",
+                }
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(producer, "pair_receipt", return_value=pair),
+                    patch.object(
+                        producer,
+                        "run",
+                        side_effect=[None, RuntimeError("build intercepted")],
+                    ) as run,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "build intercepted"):
+                        producer.package(target)
+                self.assertEqual(
+                    [item.args[0] for item in run.call_args_list],
+                    ["v8-arm64-compile-link", f"{target}-build"],
+                )
+                for item in run.call_args_list:
+                    actual = item.kwargs["environment"]
+                    self.assertEqual(
+                        actual["CC_aarch64_pc_windows_msvc"],
+                        str(compiler / "clang-cl.exe"),
+                    )
+                    self.assertEqual(
+                        actual["CXX_aarch64_pc_windows_msvc"],
+                        str(compiler / "clang-cl.exe"),
+                    )
+                    self.assertEqual(
+                        actual["AR_aarch64_pc_windows_msvc"],
+                        str(compiler / "llvm-lib.exe"),
+                    )
+                    self.assertEqual(actual.get("LIBCLANG_PATH"), expected_libclang)
+                    self.assertNotIn("V8_FROM_SOURCE", actual)
+                self.assertIn("--locked", run.call_args_list[0].args[1])
 
     def test_successive_target_builds_retain_distinct_cargo_timing_reports(
         self,
