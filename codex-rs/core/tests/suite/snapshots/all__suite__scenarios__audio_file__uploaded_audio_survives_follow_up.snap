@@ -14,8 +14,9 @@ Scenario: An uploaded audio file ID is forwarded to Responses and retained acros
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user[2]:
     [01] Listen to this recording.
     [02] <input_audio:file_id>
@@ -30,4 +31,6 @@ Scenario: An uploaded audio file ID is forwarded to Responses and retained acros
 07:message/user:
     <ENVIRONMENT_CONTEXT>
 08:message/user:
+    <USAGE_WORK_BOUNDARY>
+09:message/user:
     Listen to the same recording again.

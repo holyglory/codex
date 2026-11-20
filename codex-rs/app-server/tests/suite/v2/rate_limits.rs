@@ -761,6 +761,10 @@ async fn account_requests_share_runtime_and_rotate_on_restart(mode: &str) -> Res
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
+    let test_name = std::thread::current()
+        .name()
+        .context("current libtest case name")?
+        .to_owned();
     let enabled = mode != "disabled";
     let token = format!("e30.{}.c2ln", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&json!({
@@ -921,14 +925,7 @@ async fn account_requests_share_runtime_and_rotate_on_restart(mode: &str) -> Res
         .expect(/*r*/ 2)
         .mount(&server)
         .await;
-    run_harness_through_proxy(
-        &server,
-        &format!(
-            "suite::v2::rate_limits::account_requests_share_runtime_and_rotate_on_restart::{mode}"
-        ),
-        /*realtime_target*/ None,
-    )
-    .await?;
+    run_harness_through_proxy(&server, &test_name, /*realtime_target*/ None).await?;
 
     let requests = server
         .received_requests()

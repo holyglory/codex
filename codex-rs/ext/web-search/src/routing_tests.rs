@@ -24,6 +24,7 @@ use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
 use codex_model_provider::ModelProviderFuture;
+use codex_model_provider::ProviderAuthContext;
 use codex_model_provider::WorkspaceRoutingContext;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
@@ -66,7 +67,13 @@ async fn config_changes_preserve_the_threads_established_routing() {
     // Use a thread bootstrap distinct from either config so reconstructing it is observable.
     let thread_bootstrap = "https://thread.example/backend-api";
     thread_store.insert(WorkspaceRoutingContext::new(thread_bootstrap.into()));
-    let extension = WebSearchExtension { auth_manager };
+    thread_store.insert(ProviderAuthContext {
+        credentials: auth_manager,
+        runtime_auth: None,
+    });
+    let extension = WebSearchExtension {
+        auth_manager: AuthManager::from_auth_for_testing(CodexAuth::from_api_key("process")),
+    };
     extension
         .on_thread_start(ThreadStartInput {
             config: &config,

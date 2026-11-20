@@ -54,6 +54,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tracing::instrument;
 
+#[path = "turn_context_account_routing.rs"]
+mod account_routing;
+
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
 pub(crate) type ShellSnapshotCache =
     Arc<Mutex<HashMap<ShellSnapshotCacheKey, Arc<ShellSnapshotFile>>>>;
@@ -366,7 +369,7 @@ pub struct TurnContext {
     pub(crate) disabled_plugin_ids: Vec<String>,
     pub(super) active_host_plugin_identities: Option<Vec<PluginIdentity>>,
     /// Settings for the next step; environments are owned by `ThreadEnvironments`.
-    pub(super) next_step_settings: ArcSwap<ResolvedStepSettings>,
+    pub(super) next_step_settings: Arc<ArcSwap<ResolvedStepSettings>>,
     /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
@@ -410,8 +413,8 @@ pub struct TurnContext {
 }
 
 /// Selects which preparation is needed when building a turn context.
-#[derive(Debug)]
-enum TurnContextBuildMode {
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TurnContextBuildMode {
     /// Resolves and stores model/multi-agent metadata and performs normal skill discovery.
     /// Used for execution and initial context creation.
     Full,
@@ -463,7 +466,7 @@ impl TurnContext {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
@@ -903,7 +906,7 @@ impl TurnContext {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
@@ -1173,7 +1176,7 @@ impl Session {
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
-            next_step_settings: ArcSwap::from(step_settings),
+            next_step_settings: Arc::new(ArcSwap::from(step_settings)),
             session_telemetry: session_telemetry_for_context,
             provider,
             session_source,
@@ -1341,6 +1344,22 @@ impl Session {
                     namespaces,
                 )
             });
+        // Profile selection can probe credentials while this context is built during startup.
+        // Keep that request state off the session initialization poll stack.
+        let turn_auth = Box::pin(self.select_turn_auth(&per_turn_config, build_mode)).await;
+        let turn_auth_manager = turn_auth
+            .lease
+            .as_ref()
+            .map(|lease| Arc::clone(lease.auth_manager()))
+            .unwrap_or_else(|| Arc::clone(&self.services.auth_manager));
+        let turn_provider = if turn_auth.lease.is_some() {
+            codex_model_provider::create_model_provider(
+                session_configuration.provider.info().clone(),
+                Some(Arc::clone(&turn_auth_manager)),
+            )
+        } else {
+            session_configuration.provider.clone()
+        };
         // Legacy turn consumers still refer to the primary executor's repository.
         let cwd = primary_turn_environment
             .and_then(|environment| environment.cwd().to_abs_path().ok())
@@ -1440,9 +1459,9 @@ impl Session {
             self.thread_id(),
             self.session_id(),
             Arc::clone(&self.services.granted_permissions_by_environment_id),
-            Some(Arc::clone(&self.services.auth_manager)),
+            Some(turn_auth_manager),
             &self.services.session_telemetry,
-            session_configuration.provider.clone(),
+            turn_provider,
             &session_configuration,
             multi_agent_version,
             per_turn_config,
@@ -1472,6 +1491,8 @@ impl Session {
         turn_context.overridden_direct_only_tool_namespaces =
             overridden_direct_only_tool_namespaces;
         turn_context.code_mode_available = self.services.code_mode_service.is_available();
+        turn_context.install_turn_auth(self, turn_auth);
+        turn_context.install_usage_capture(self);
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.active_host_plugin_identities = Some(
             plugin_outcome

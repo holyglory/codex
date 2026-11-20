@@ -1,0 +1,597 @@
+//! Bounded-tail review queries over a pinned operation projection.
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+use arrow_schema::DataType;
+use duckdb::Connection;
+
+use crate::Result;
+use crate::TimeRange;
+use crate::UsageFilter;
+use crate::UsageReader;
+use crate::duckdb_connection::ReadBudget;
+use crate::reader_query::CORRECTION_COLUMNS;
+use crate::reader_query::RECORD_COLUMNS;
+use crate::reader_query::empty_source;
+use crate::reader_query::matching_files;
+use crate::reader_query::milliseconds_expression;
+use crate::reader_query::parquet_source;
+use crate::reader_query::query_error;
+use crate::reader_query::quoted;
+use crate::reader_query::values_source;
+use crate::review_index::select_review_contribution_files;
+use crate::review_index::select_review_files;
+use crate::review_projection::load_review_operations;
+use crate::review_projection::load_review_projection_shared as load_review_projection;
+use crate::review_state::ReviewClassification;
+use crate::review_state::ReviewContribution;
+use crate::review_state::ReviewOperation;
+use crate::review_state::lifecycle;
+use crate::review_storage::CLASSIFICATION_COLUMNS;
+use crate::review_storage::CONTRIBUTION_COLUMNS;
+use crate::review_storage::OPERATION_COLUMNS;
+
+#[path = "report_work_lookup.rs"]
+mod work_lookup;
+
+#[derive(Clone, Copy)]
+pub(crate) enum Materialization {
+    Foreground,
+    Background,
+}
+
+impl Materialization {
+    pub(crate) fn table(self) -> &'static str {
+        match self {
+            Self::Foreground => "TEMP TABLE",
+            Self::Background => "TABLE",
+        }
+    }
+}
+
+pub(crate) struct ReportQuery {
+    pub(crate) connection: Connection,
+    pub(crate) materialization: Materialization,
+    pub(crate) background_cancellation:
+        Option<std::sync::Arc<crate::global_review_cancel::GlobalReviewCancellation>>,
+    pub(crate) operations: String,
+    pub(crate) operation_statistics: String,
+    pub(crate) retained_operation_statistics: String,
+    pub(crate) contributions: String,
+    work_operations: String,
+    pub(crate) complete_from_sequence: u64,
+    pub(crate) work_assignment_coverage: crate::WorkAssignmentCoverage,
+    pub(crate) complete_observations: bool,
+    /// Only the default outcome timing of this immutable prepared selection.
+    pub(crate) default_outcome_timings: OnceLock<crate::OutcomeTimings>,
+}
+
+impl ReportQuery {
+    pub(crate) fn new(
+        reader: &UsageReader,
+        range: TimeRange,
+        filter: &UsageFilter,
+    ) -> Result<Self> {
+        let connection = crate::duckdb_connection::open_read_in_memory(ReadBudget::Report)
+            .map_err(query_error)?;
+        Self::with_connection(
+            reader,
+            range,
+            filter,
+            connection,
+            Materialization::Foreground,
+            /*background_cancellation*/ None,
+        )
+    }
+
+    pub(crate) fn with_connection(
+        reader: &UsageReader,
+        range: TimeRange,
+        filter: &UsageFilter,
+        connection: Connection,
+        materialization: Materialization,
+        background_cancellation: Option<
+            std::sync::Arc<crate::global_review_cancel::GlobalReviewCancellation>,
+        >,
+    ) -> Result<Self> {
+        let check = || {
+            background_cancellation.as_deref().map_or(
+                Ok(()),
+                crate::global_review_cancel::GlobalReviewCancellation::check,
+            )
+        };
+        let execute = |sql: &str| {
+            let stage = || connection.execute_batch(sql).map_err(query_error);
+            match background_cancellation.as_deref() {
+                Some(cancellation) => cancellation.run_stage(stage),
+                None => stage(),
+            }
+        };
+        check()?;
+        let table = materialization.table();
+        let descriptor = load_review_projection(&reader.root, &reader.manifest)?;
+        let directory = reader.root.join("segments");
+        let operation_columns = sql_columns(OPERATION_COLUMNS);
+        let contribution_columns = sql_columns(CONTRIBUTION_COLUMNS);
+        let classification_columns = sql_columns(CLASSIFICATION_COLUMNS);
+        let mut operation_files = Vec::new();
+        let mut contribution_files = Vec::new();
+        let mut classification_files = Vec::new();
+        let hourly_contribution_source = if reader.manifest.correction_files.is_empty()
+            && reader.corrections.is_empty()
+            && reader.manifest.review_retention_cutoff_at_ms.is_none()
+            && !crate::review_compaction::has_index(&reader.root)
+        {
+            check()?;
+            hourly_contribution_source(&connection, reader, range, filter)?
+        } else {
+            None
+        };
+        let mut complete_from_sequence = reader.manifest.watermark.saturating_add(1);
+        if let Some(descriptor) = &descriptor {
+            complete_from_sequence = descriptor.complete_from_sequence;
+            check()?;
+            operation_files = select_review_files(&reader.root, descriptor, range, filter)?;
+            if hourly_contribution_source.is_none() {
+                check()?;
+                contribution_files =
+                    select_review_contribution_files(&reader.root, descriptor, range, filter)?;
+                contribution_files.extend(descriptor.contribution_rollup_files.iter().cloned());
+            }
+            classification_files.clone_from(&descriptor.classification_files);
+        }
+        // Current complete publications contain one row per operation and one
+        // first-write record per contribution. Retained and partial families
+        // keep the conservative deduplication path.
+        let canonical = reader.manifest.retired_observations == 0
+            && reader.manifest.retired_review_operations == 0
+            && reader.manifest.retired_review_contributions == 0
+            && descriptor.as_ref().is_some_and(|value| {
+                value.complete_from_sequence == 1
+                    && value.retired_operation_rows == 0
+                    && value.retired_contribution_rows == 0
+                    && value.operation_rollup_files.is_empty()
+                    && value.contribution_rollup_files.is_empty()
+            });
+        check()?;
+        let tail = canonical_tail(reader, &connection)?;
+        let operation_ids = tail
+            .iter()
+            .filter(|row| lifecycle(row).is_some())
+            .filter_map(|row| row.operation_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut states = if let Some(descriptor) = &descriptor {
+            check()?;
+            load_review_operations(&reader.root, descriptor, &operation_ids, &connection)?
+                .into_iter()
+                .map(|row| (row.operation_id.clone(), row))
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+        let mut contributions = Vec::new();
+        let mut classifications = Vec::new();
+        for record in tail {
+            let sequence = reader.record_sequences[&record.id];
+            contributions.push(ReviewContribution::from_fact(sequence, record));
+            if lifecycle(record).is_some() {
+                let id = record.operation_id.as_deref().unwrap_or_default();
+                if let Some(state) = states.get_mut(id) {
+                    state.merge(sequence, record)?;
+                } else {
+                    let state = ReviewOperation::from_fact(sequence, record)?;
+                    states.insert(state.operation_id.clone(), state);
+                }
+            }
+            if record.event.as_deref() == Some("classification_correction")
+                && let Some(operation_id) = &record.operation_id
+            {
+                classifications.push(ReviewClassification {
+                    record_id: record.id.clone(),
+                    operation_id: operation_id.clone(),
+                    source_sequence: sequence,
+                    observed_at_ms: record.effective_observed_at_ms(),
+                    phase: record.phase.clone(),
+                    activity: record.activity.clone(),
+                    classification: record.classification.clone(),
+                });
+            }
+        }
+        let operation_source = if operation_files.is_empty() {
+            empty_source(&operation_columns)
+        } else {
+            parquet_source(&directory, &operation_files, &operation_columns)?
+        };
+        // Tail facts from other scopes must not trigger their binding-history
+        // lookups or contaminate availability for the requested scope.
+        let (mut states, unrelated): (Vec<_>, Vec<_>) = states.into_values().partition(|state| {
+            filter
+                .account_id
+                .as_ref()
+                .is_none_or(|id| state.account_id.as_ref() == Some(id))
+                && filter
+                    .repository_id
+                    .as_ref()
+                    .is_none_or(|id| state.repository_id.as_ref() == Some(id))
+                && filter
+                    .thread_id
+                    .as_ref()
+                    .is_none_or(|id| state.thread_id.as_ref() == Some(id))
+                && filter
+                    .model
+                    .as_ref()
+                    .is_none_or(|id| state.model.as_ref() == Some(id))
+                && filter
+                    .thread_ids
+                    .as_ref()
+                    .is_none_or(|ids| state.thread_id.as_ref().is_some_and(|id| ids.contains(id)))
+        });
+        check()?;
+        let work_assignment_coverage =
+            crate::assign_work_dimensions(&reader.root, &mut states, &[]);
+        states.extend(unrelated);
+        let operation_tail = values_source(&states, &operation_columns)?;
+        let classification_source = if classification_files.is_empty() {
+            empty_source(&classification_columns)
+        } else {
+            parquet_source(&directory, &classification_files, &classification_columns)?
+        };
+        let classification_tail = values_source(&classifications, &classification_columns)?;
+        let classifications = format!(
+            "SELECT * FROM ({classification_source} UNION ALL {classification_tail}) \
+             QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC) = 1"
+        );
+        let predicate = dimension_predicate(filter);
+        // Identity fields are first-write immutable after a lifecycle accepts
+        // them. Push only those fields before latest-state selection; interval
+        // predicates stay after latest so an older open state cannot reappear.
+        let operation_source = format!("SELECT * FROM ({operation_source}) AS r WHERE {predicate}");
+        let operation_tail = format!("SELECT * FROM ({operation_tail}) AS r WHERE {predicate}");
+        let latest = if canonical {
+            if states.is_empty() {
+                operation_source
+            } else {
+                // Tail states were merged once per explicit operation in Rust.
+                // Replace the immutable state before applying interval bounds.
+                format!(
+                    "WITH tail_states AS MATERIALIZED ({operation_tail}) \
+                     SELECT r.* FROM ({operation_source}) r \
+                     ANTI JOIN tail_states t USING(operation_id) \
+                     UNION ALL SELECT * FROM tail_states"
+                )
+            }
+        } else {
+            format!(
+                "SELECT * FROM ({operation_source} UNION ALL {operation_tail}) \
+                 QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC) = 1"
+            )
+        };
+        let operations = format!(
+            "WITH latest AS ({latest}), \
+             classifications AS ({classifications}) \
+             SELECT r.* EXCLUDE (phase, activity, classification), \
+                    COALESCE(c.phase,r.phase) phase, COALESCE(c.activity,r.activity) activity, \
+                    COALESCE(c.classification,r.classification) classification \
+             FROM latest r LEFT JOIN classifications c USING (operation_id) \
+             WHERE {predicate} AND (started_at_ms IS NULL OR started_at_ms < {}) \
+             AND (ended_at_ms IS NULL OR ended_at_ms > {} \
+                  OR (started_at_ms = ended_at_ms AND ended_at_ms = {}))",
+            range.end_ms(),
+            range.start_ms(),
+            range.start_ms()
+        );
+        let contribution_source =
+            hourly_contribution_source.unwrap_or(if contribution_files.is_empty() {
+                empty_source(&contribution_columns)
+            } else {
+                parquet_source(&directory, &contribution_files, &contribution_columns)?
+            });
+        let contribution_tail = values_source(&contributions, &contribution_columns)?;
+        // Contribution dimensions and observation times are immutable after
+        // first-write publication. Push the finite scope before record-id
+        // deduplication so a repository read does not materialize unrelated
+        // token rows from otherwise shared compacted runs.
+        let contribution_predicate = dimension_predicate(filter);
+        let contribution_source = format!(
+            "SELECT * FROM ({contribution_source}) AS r WHERE {contribution_predicate} \
+             AND observed_at_ms >= {} AND observed_at_ms < {}",
+            range.start_ms(),
+            range.end_ms()
+        );
+        let contribution_tail = format!(
+            "SELECT * FROM ({contribution_tail}) AS r WHERE {contribution_predicate} \
+             AND observed_at_ms >= {} AND observed_at_ms < {}",
+            range.start_ms(),
+            range.end_ms()
+        );
+        let correction_source = if reader.manifest.correction_files.is_empty() {
+            empty_source(CORRECTION_COLUMNS)
+        } else {
+            parquet_source(
+                &directory,
+                &reader.manifest.correction_files,
+                CORRECTION_COLUMNS,
+            )?
+        };
+        let correction_tail = values_source(&reader.corrections, CORRECTION_COLUMNS)?;
+        let eligible = crate::reader_query::eligible_corrections(&reader.manifest);
+        let facts = if canonical {
+            // UsageReader has already removed published IDs from its bounded
+            // tail, or withheld that entire overlay when proof is unavailable.
+            format!("{contribution_source} UNION ALL {contribution_tail}")
+        } else {
+            format!(
+                "SELECT * FROM ({contribution_source} UNION ALL {contribution_tail}) \
+                 QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY source_sequence) = 1"
+            )
+        };
+        let contributions = format!(
+            "WITH facts AS ({facts}), \
+             corrections AS (SELECT * FROM ({correction_source} UNION ALL {correction_tail}) \
+             WHERE {eligible} \
+             QUALIFY row_number() OVER (PARTITION BY id ORDER BY observed_at) = 1), \
+             deltas AS (SELECT record_id, SUM(input_tokens_delta) i, SUM(cached_input_tokens_delta) c, \
+                       SUM(output_tokens_delta) o, SUM(reasoning_output_tokens_delta) r FROM corrections GROUP BY record_id) \
+             SELECT r.* EXCLUDE (input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens), \
+                    r.input_tokens::HUGEINT + COALESCE(d.i,0) input_tokens, \
+                    r.cached_input_tokens::HUGEINT + COALESCE(d.c,0) cached_input_tokens, \
+                    r.output_tokens::HUGEINT + COALESCE(d.o,0) output_tokens, \
+                    r.reasoning_output_tokens::HUGEINT + COALESCE(d.r,0) reasoning_output_tokens \
+             FROM facts r LEFT JOIN deltas d USING(record_id) WHERE {predicate}"
+        );
+        let operation_statistics = crate::review_aggregate::statistics_source(
+            &reader.root,
+            descriptor.as_deref(),
+            "SELECT * FROM selected_operations",
+            range,
+            filter,
+        )?;
+        let retained_operation_statistics = crate::review_aggregate::retained_statistics_source(
+            &reader.root,
+            descriptor.as_deref(),
+            range,
+            filter,
+        )?;
+        // Materializing only the selected indexed slice avoids repeating Parquet
+        // reads for the small aggregate and detail queries that form one report.
+        execute(&format!(
+            "CREATE {table} selected_operations AS {operations}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_operation_statistics AS {operation_statistics}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_contributions AS {contributions}"
+        ))?;
+        execute(&format!(
+            "CREATE {table} selected_classifications AS {classifications}"
+        ))?;
+        // Late tokens can name an operation outside the operation-time slice.
+        // Resolve only those explicit IDs through the immutable exact index;
+        // provider-only response IDs never trigger a canonical history scan.
+        execute(&format!(
+            "CREATE {table} work_operation_lookup AS {}",
+            empty_source(&operation_columns)
+        ))?;
+        if let Some(descriptor) = &descriptor {
+            check()?;
+            work_lookup::populate(
+                &reader.root,
+                descriptor,
+                &connection,
+                materialization,
+                background_cancellation.as_deref(),
+            )?;
+        }
+        check()?;
+        let names = operation_columns
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let work_operations = format!(
+            "SELECT * FROM (SELECT {names} FROM selected_operations UNION ALL \
+             {operation_tail} UNION ALL SELECT * FROM work_operation_lookup) \
+             QUALIFY row_number() OVER (PARTITION BY operation_id ORDER BY source_sequence DESC)=1"
+        );
+        Ok(Self {
+            connection,
+            materialization,
+            background_cancellation,
+            operations: "SELECT * FROM selected_operations".into(),
+            operation_statistics: "SELECT * FROM selected_operation_statistics".into(),
+            retained_operation_statistics,
+            contributions: "SELECT * FROM selected_contributions".into(),
+            work_operations,
+            complete_from_sequence,
+            work_assignment_coverage,
+            default_outcome_timings: OnceLock::new(),
+            complete_observations: complete_from_sequence == 1
+                && reader.manifest.retired_observations == 0
+                && reader.manifest.retired_review_contributions == 0
+                && reader.manifest.unapplied_retention_records == 0
+                && reader.manifest.unapplied_retention_corrections == 0
+                && descriptor.as_ref().is_some_and(|value| {
+                    value.retired_contribution_rows == 0
+                        && value.contribution_rollup_files.is_empty()
+                }),
+        })
+    }
+
+    /// Corrected live and retained token effort, linked only to captured work.
+    pub(crate) fn work_contributions(&self) -> String {
+        crate::review_aggregate::work_contribution_source(
+            &self.contributions,
+            &self.work_operations,
+        )
+    }
+}
+
+/// Read finite dimension contributions from the hourly membership index. The
+/// immutable review contribution fragments are intentionally append-only and
+/// broad, so scanning them for one repository would decode the full history.
+/// Hourly segments retain the same facts with a much narrower file set.
+fn hourly_contribution_source(
+    connection: &Connection,
+    reader: &UsageReader,
+    range: TimeRange,
+    filter: &UsageFilter,
+) -> Result<Option<String>> {
+    if range == TimeRange::all()
+        || filter.model.is_some()
+        || filter.account_id.is_none()
+            && filter.repository_id.is_none()
+            && filter.thread_id.is_none()
+            && filter.thread_ids.is_none()
+        || reader.manifest.membership_files.is_empty() && reader.manifest.membership_file.is_none()
+    {
+        return Ok(None);
+    }
+    let files = matching_files(connection, reader, range, filter)?;
+    if files.is_empty() {
+        return Ok(Some(crate::reader_query::empty_source(&sql_columns(
+            CONTRIBUTION_COLUMNS,
+        ))));
+    }
+    let source = parquet_source(&reader.root.join("segments"), &files, RECORD_COLUMNS)?;
+    let predicate = raw_dimension_predicate(filter);
+    let observed_at_ms = milliseconds_expression("observed_at");
+    let fields = [
+        "id AS record_id".into(),
+        format!("row_number() OVER (ORDER BY {observed_at_ms}, id)::UBIGINT AS source_sequence"),
+        format!("{observed_at_ms} AS observed_at_ms"),
+        "operation_id".into(),
+        "response_id".into(),
+        "account_id".into(),
+        "thread_id".into(),
+        "repository_id".into(),
+        "model".into(),
+        "tool".into(),
+        "event".into(),
+        "coverage".into(),
+        "phase".into(),
+        "activity".into(),
+        "classification".into(),
+        "input_tokens".into(),
+        "cached_input_tokens".into(),
+        "output_tokens".into(),
+        "reasoning_output_tokens".into(),
+        "provider_total_tokens".into(),
+        "cache_write_input_tokens".into(),
+        "missing_observations".into(),
+        "NULL::UBIGINT observation_count".into(),
+        "NULL::UBIGINT provider_total_unknowns".into(),
+        "NULL::UBIGINT cache_write_unknowns".into(),
+        "NULL::UBIGINT missing_observations_sum".into(),
+        "attempt_number".into(),
+        "rework_of_operation_id".into(),
+        "NULL::VARCHAR work_native_project_id".into(),
+        "NULL::VARCHAR workstream_id".into(),
+        "NULL::VARCHAR work_outcome_id".into(),
+        "context_size".into(),
+        "cost_provenance".into(),
+        "actual_billing_micros".into(),
+    ]
+    .join(", ");
+    Ok(Some(format!(
+        "SELECT * FROM (SELECT {fields} FROM ({source}) AS r WHERE {predicate}) AS facts \
+         QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY source_sequence) = 1"
+    )))
+}
+
+fn raw_dimension_predicate(filter: &UsageFilter) -> String {
+    let mut predicates = Vec::new();
+    for (column, value) in [
+        ("account_id", &filter.account_id),
+        ("repository_id", &filter.repository_id),
+        ("thread_id", &filter.thread_id),
+    ] {
+        if let Some(value) = value {
+            predicates.push(format!("{column} = {}", quoted(value)));
+        }
+    }
+    if let Some(threads) = &filter.thread_ids {
+        predicates.push(if threads.is_empty() {
+            "false".into()
+        } else {
+            format!(
+                "thread_id IN ({})",
+                threads
+                    .iter()
+                    .map(|id| quoted(id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+    }
+    if predicates.is_empty() {
+        "true".into()
+    } else {
+        predicates.join(" AND ")
+    }
+}
+
+pub(crate) fn dimension_predicate(filter: &UsageFilter) -> String {
+    let mut predicates = Vec::new();
+    for (column, value) in [
+        ("account_id", &filter.account_id),
+        ("repository_id", &filter.repository_id),
+        ("thread_id", &filter.thread_id),
+        ("model", &filter.model),
+    ] {
+        if let Some(value) = value {
+            predicates.push(format!("r.{column} = {}", quoted(value)));
+        }
+    }
+    if let Some(threads) = &filter.thread_ids {
+        predicates.push(if threads.is_empty() {
+            "false".into()
+        } else {
+            format!(
+                "r.thread_id IN ({})",
+                threads
+                    .iter()
+                    .map(|id| quoted(id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+    }
+    if predicates.is_empty() {
+        "true".into()
+    } else {
+        predicates.join(" AND ")
+    }
+}
+
+pub(crate) fn sql_columns(
+    columns: &'static [(&str, DataType)],
+) -> Vec<(&'static str, &'static str)> {
+    columns
+        .iter()
+        .map(|(name, kind)| {
+            (
+                *name,
+                match kind {
+                    DataType::Utf8 => "VARCHAR",
+                    DataType::Int64 => "BIGINT",
+                    DataType::UInt64 => "UBIGINT",
+                    DataType::Boolean => "BOOLEAN",
+                    _ => unreachable!("review schema uses primitive scalar types"),
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn canonical_tail<'a>(
+    reader: &'a UsageReader,
+    _connection: &Connection,
+) -> Result<Vec<&'a crate::UsageRecord>> {
+    // Opening the reader has already reconciled this bounded tail against the
+    // immutable exact-ID index. Reuse that result across every report action.
+    let mut tail = reader.records.iter().collect::<Vec<_>>();
+    tail.sort_by_key(|row| reader.record_sequences[&row.id]);
+    Ok(tail)
+}

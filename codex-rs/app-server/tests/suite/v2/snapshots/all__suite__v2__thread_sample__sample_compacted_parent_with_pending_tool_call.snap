@@ -11,8 +11,9 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Initial turn
 
@@ -23,8 +24,9 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Initial turn
 04:function_call/unknown_tool:{}
@@ -32,7 +34,7 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 06:message/user:
     <SUMMARIZATION_PROMPT>
 
-## Window 3 (after request 2: input diverged at item 04, settings changed (parallel_tool_calls, tools))
+## Window 3 (after request 2: input diverged at item 02, settings changed (parallel_tool_calls, tools))
 -- request 3 (request; Parent requests a tool) --
 00:message/developer:
     Help the user with their task.

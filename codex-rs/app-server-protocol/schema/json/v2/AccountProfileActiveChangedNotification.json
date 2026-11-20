@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "accountId": {
+      "type": "string"
+    },
+    "changedAt": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "generation": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "previousAccountId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "accountId",
+    "changedAt",
+    "generation"
+  ],
+  "title": "AccountProfileActiveChangedNotification",
+  "type": "object"
+}

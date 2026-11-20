@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::manager::save_auth;
+use super::profile::ProfileAuthStorage;
 use super::storage::AuthDotJson;
 use super::storage::AuthKeyringBackendKind;
 use codex_protocol::auth::AuthMode;
@@ -53,6 +54,31 @@ pub fn login_with_bedrock_api_key(
         auth_credentials_store_mode,
         keyring_backend_kind,
     )
+}
+
+/// Store Amazon Bedrock API-key credentials in one managed profile namespace.
+pub fn login_with_bedrock_api_key_to_profile(
+    profile: &ProfileAuthStorage,
+    api_key: &str,
+    region: &str,
+) -> std::io::Result<()> {
+    profile.save(&bedrock_auth(api_key, region))
+}
+
+fn bedrock_auth(api_key: &str, region: &str) -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(AuthMode::BedrockApiKey),
+        openai_api_key: None,
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: Some(BedrockApiKeyAuth {
+            api_key: api_key.to_string(),
+            region: region.to_string(),
+        }),
+        bedrock_access_keys: None,
+    }
 }
 
 #[cfg(test)]

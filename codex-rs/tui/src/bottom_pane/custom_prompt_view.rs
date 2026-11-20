@@ -49,6 +49,7 @@ pub(crate) struct CustomPromptView {
     placeholder: String,
     context_label: Option<String>,
     on_submit: PromptSubmitted,
+    allow_empty_submit: bool,
     submit_label: &'static str,
     preserve_whitespace: bool,
     dismiss_after_child_accept: bool,
@@ -81,6 +82,7 @@ impl CustomPromptView {
             placeholder,
             context_label,
             on_submit,
+            allow_empty_submit: false,
             submit_label: "submit",
             preserve_whitespace: false,
             dismiss_after_child_accept: false,
@@ -97,6 +99,12 @@ impl CustomPromptView {
     pub(crate) fn with_child_flow(mut self, submit_label: &'static str) -> Self {
         self.submit_label = submit_label;
         self.dismiss_after_child_accept = true;
+        self
+    }
+
+    /// Allow Enter to submit an empty value for prompts where clearing is meaningful.
+    pub(crate) fn allow_empty_submit(mut self) -> Self {
+        self.allow_empty_submit = true;
         self
     }
 
@@ -171,7 +179,7 @@ impl CustomPromptView {
                 }
                 if modifiers == KeyModifiers::NONE {
                     let text = self.textarea.text();
-                    if !text.trim().is_empty() {
+                    if self.allow_empty_submit || !text.trim().is_empty() {
                         let text = if self.preserve_whitespace {
                             text.to_string()
                         } else {

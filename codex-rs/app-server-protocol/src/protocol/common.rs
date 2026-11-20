@@ -1187,6 +1187,26 @@ client_request_definitions! {
         serialization: None,
         response: v2::ModelListResponse,
     },
+    LocalUsageSummary => "localUsage/summary" {
+        params: v2::LocalUsageSummaryParams,
+        serialization: None,
+        response: v2::LocalUsageSummaryResponse,
+    },
+    LocalUsageBindingTransition => "localUsage/bindingTransition" {
+        params: v2::LocalUsageBindingTransitionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::LocalUsageBindingTransitionResponse,
+    },
+    LocalUsageBindingStatus => "localUsage/bindingStatus" {
+        params: v2::LocalUsageBindingStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::LocalUsageBindingStatusResponse,
+    },
+    LocalUsageRepositoryIdentity => "localUsage/repositoryIdentity" {
+        params: v2::LocalUsageRepositoryIdentityParams,
+        serialization: None,
+        response: v2::LocalUsageRepositoryIdentityResponse,
+    },
     GatewayOAuthRead => "account/gatewayOAuth/read" {
         params: #[ts(optional, as = "Option<GatewayOAuthReadParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGatewayOAuthReadParams,
         serialization: None,
@@ -1363,6 +1383,67 @@ client_request_definitions! {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: global("config"),
         response: v2::WindowsSandboxReadinessResponse,
+    },
+
+    #[experimental("accountProfile/list")]
+    AccountProfileList => "accountProfile/list" {
+        params: v2::AccountProfileListParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileListResponse,
+    },
+    #[experimental("accountProfile/read")]
+    AccountProfileRead => "accountProfile/read" {
+        params: v2::AccountProfileReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileReadResponse,
+    },
+    #[experimental("accountProfile/activate")]
+    AccountProfileActivate => "accountProfile/activate" {
+        params: v2::AccountProfileActivateParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileActivateResponse,
+    },
+    #[experimental("accountProfile/update")]
+    AccountProfileUpdate => "accountProfile/update" {
+        params: v2::AccountProfileUpdateParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileUpdateResponse,
+    },
+    #[experimental("accountProfile/remove")]
+    AccountProfileRemove => "accountProfile/remove" {
+        params: v2::AccountProfileRemoveParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountProfileRemoveResponse,
+    },
+    #[experimental("accountProfileLogin/start")]
+    AccountProfileLoginStart => "accountProfileLogin/start" {
+        params: v2::AccountProfileLoginStartParams,
+        serialization: global("account-profile-auth"),
+        response: v2::AccountProfileLoginStartResponse,
+    },
+    #[experimental("accountProfileLogin/cancel")]
+    AccountProfileLoginCancel => "accountProfileLogin/cancel" {
+        params: v2::AccountProfileLoginCancelParams,
+        serialization: global("account-profile-auth"),
+        response: v2::AccountProfileLoginCancelResponse,
+    },
+    #[experimental("accountProfileRateLimit/read")]
+    AccountProfileRateLimitRead => "accountProfileRateLimit/read" {
+        params: v2::AccountProfileRateLimitReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountProfileRateLimitReadResponse,
+    },
+    #[experimental("accountAutoSelection/read")]
+    AccountAutoSelectionRead => "accountAutoSelection/read" {
+        params: v2::AccountAutoSelectionReadParams,
+        serialization: global_shared_read("account-profiles"),
+        response: v2::AccountAutoSelectionReadResponse,
+    },
+    #[experimental("accountAutoSelection/write")]
+    AccountAutoSelectionWrite => "accountAutoSelection/write" {
+        params: v2::AccountAutoSelectionWriteParams,
+        serialization: global("account-profiles"),
+        response: v2::AccountAutoSelectionWriteResponse,
     },
 
     LoginAccount => "account/login/start" {
@@ -2119,6 +2200,8 @@ server_notification_definitions! {
     #[experimental("mcpServer/event/stream/notification")]
     McpServerEventStream => "mcpServer/event/stream/notification" (v2::McpServerEventStreamNotification),
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),
+    #[experimental("accountProfile/activeChanged")]
+    AccountProfileActiveChanged => "accountProfile/activeChanged" (v2::AccountProfileActiveChangedNotification),
     GatewayOAuthChanged => "account/gatewayOAuth/changed" (v2::GatewayOAuthChangedNotification),
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),

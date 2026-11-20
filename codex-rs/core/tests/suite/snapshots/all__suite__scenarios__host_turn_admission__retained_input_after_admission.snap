@@ -24,8 +24,9 @@ Scenario: The admitted turn receives input retained after denial and interruptio
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-06:message/user:
-    <ENVIRONMENT_CONTEXT>
+06:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 07:message/user:
     Continue the work.
 -- request 2 (turn) --

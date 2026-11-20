@@ -2,3 +2,5 @@
 # .git/sl/origbackups (which can be populated by Sapling SCM).
 .git
 codex-rs/target
+# Coordinator records generated test logs here.
+.devcoordinator

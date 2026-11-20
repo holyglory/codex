@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Out-of-band assignment control. Send only on an explicit job switch.",
+  "properties": {
+    "expectedRevision": {
+      "description": "Revision returned by status or the previous receipt. Zero before any declaration.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "nativeProjectId": {
+      "description": "Null or omission explicitly clears work; workstream and outcome must then be null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outcomeId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workstreamId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "expectedRevision",
+    "threadId",
+    "version"
+  ],
+  "title": "LocalUsageBindingTransitionParams",
+  "type": "object"
+}

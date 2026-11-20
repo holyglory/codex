@@ -14,8 +14,9 @@ Scenario: Elastic sync budgeting keeps retained instructions, caps ordinary tool
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Inspect the workspace. Inspect the workspace. Inspect the workspace. Inspect the workspace. Inspect the ...kspace. Inspect the workspace. Inspect the workspace. [hash=78da252216610fbc]
 -- request 2 (turn) --
@@ -134,8 +135,9 @@ Scenario: Elastic sync budgeting keeps retained instructions, caps ordinary tool
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Inspect the workspace. Inspect the workspace. Inspect the workspace. Inspect the workspace. Inspect the ...kspace. Inspect the workspace. Inspect the workspace. [hash=78da252216610fbc]
 04:custom_tool_call/exec:await tools.update_plan({plan:[{step:"Inspect",status:"in_progress"}]}); text("selected-" + "x".repeat(640) + "-end");

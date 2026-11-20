@@ -226,6 +226,8 @@ fn next_goal_draft(
     }
 }
 
+#[path = "tests/account_profiles.rs"]
+mod account_profiles;
 mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]

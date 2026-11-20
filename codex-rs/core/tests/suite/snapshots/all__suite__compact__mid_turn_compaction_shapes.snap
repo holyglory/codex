@@ -14,8 +14,9 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     function call limit push
 
@@ -29,8 +30,9 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     function call limit push
 04:function_call/test_tool:{}
@@ -38,7 +40,7 @@ Scenario: True mid-turn continuation compaction after tool output: compact reque
 06:message/user:
     <SUMMARIZATION_PROMPT>
 
-## Window 3 (after request 2: input diverged at item 04, settings changed (parallel_tool_calls, tools))
+## Window 3 (after request 2: input diverged at item 02, settings changed (parallel_tool_calls, tools))
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

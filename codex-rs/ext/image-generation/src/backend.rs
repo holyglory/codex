@@ -86,6 +86,11 @@ impl CodexImagesBackend {
         )
         .await
         .map_err(|err| ImageBackendError::from_message(err.to_string()))?;
+        if self.provider.info().requires_openai_auth && !setup.has_authentication() {
+            return Err(ImageBackendError::from_message(
+                "authentication is required for image generation".to_string(),
+            ));
+        }
         let transport = create_transport_for_routes_async(
             setup.http_client_factory,
             ClientRouteClass::Api,

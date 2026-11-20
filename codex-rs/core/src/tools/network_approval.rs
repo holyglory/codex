@@ -910,6 +910,11 @@ impl NetworkApprovalService {
             retry_reason: Some(policy_denial_message.clone()),
             network_approval_context: Some(network_approval_context.clone()),
         };
+        let mut usage = crate::usage_capture::ApprovalObservation::start(
+            &turn_context,
+            &telemetry_call_id,
+            &telemetry_tool_name.name,
+        );
         let user_prompt = pending_owner.review_user_prompt(
             &session,
             &turn_context,
@@ -935,6 +940,12 @@ impl NetworkApprovalService {
         } else {
             approval.await
         };
+        let approval_source = approval_result.source;
+        let reviewed_decision = approval_result
+            .result
+            .as_ref()
+            .ok()
+            .map(ReviewDecision::to_opaque_string);
         let approval_decision = match approval_result.result {
             Ok(decision) => decision,
             Err(ToolError::Rejected(rejection)) => {
@@ -947,6 +958,12 @@ impl NetworkApprovalService {
                     &ReviewDecision::denied("network approval was rejected"),
                     /*source*/ None,
                 );
+                if let Some(usage) = &mut usage {
+                    usage.resolve(
+                        &ReviewDecision::denied("network approval was rejected"),
+                        /*source*/ None,
+                    );
+                }
                 pending_owner.complete(PendingApprovalDecision::Deny);
                 return NetworkDecision::deny(REASON_NOT_ALLOWED);
             }
@@ -976,6 +993,9 @@ impl NetworkApprovalService {
                     &telemetry_decision,
                     /*source*/ None,
                 );
+                if let Some(usage) = &mut usage {
+                    usage.resolve(&telemetry_decision, /*source*/ None);
+                }
                 pending_owner.complete(PendingApprovalDecision::Deny);
                 return NetworkDecision::deny(REASON_NOT_ALLOWED);
             }
@@ -1172,6 +1192,14 @@ impl NetworkApprovalService {
             &telemetry_decision,
             /*source*/ None,
         );
+        if let Some(usage) = &mut usage {
+            let source = if Some(telemetry_decision.to_opaque_string()) == reviewed_decision {
+                approval_source
+            } else {
+                None
+            };
+            usage.resolve(&telemetry_decision, source);
+        }
         pending_owner.complete(resolved);
 
         resolved.to_network_decision()

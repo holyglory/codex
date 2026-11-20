@@ -6,6 +6,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::effective_tool_mode;
+use crate::tools::handlers::AccountManagementHandler;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -28,6 +29,10 @@ use crate::tools::handlers::SendMessageToUserAsyncHandler;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::UsageActivityHandler;
+use crate::tools::handlers::UsageStatsHandler;
+use crate::tools::handlers::UsageWorkBoundaryHandler;
+use crate::tools::handlers::UsageWorkHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -1438,6 +1443,14 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         .any(|tool| tool == "clock");
     if current_time_reminder_enabled || model_has_clock {
         registry.add(CurrentTimeHandler);
+    }
+    // Local usage is a downstream built-in, independent of the provider's tool catalog.
+    if features.enabled(Feature::LocalAccountAndUsageTools) {
+        registry.add(UsageStatsHandler);
+        registry.add(UsageActivityHandler);
+        registry.add(UsageWorkHandler);
+        registry.add(UsageWorkBoundaryHandler);
+        registry.add(AccountManagementHandler);
     }
     if features.enabled(Feature::SleepTool)
         && match turn_context.config.sleep_tool_mode {

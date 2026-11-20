@@ -222,6 +222,26 @@ async fn critical_path_follows_runtime_admission(
         ]),
     )
     .await;
+    let captures_timing = critical_path_timing
+        && !matches!(admission, Admission::Unsupported)
+        && !matches!(source, CaptureSource::MemoryConsolidation);
+    if captures_timing {
+        // An unresolved batch has an unknown tail only after sampling ends.
+        // Keep the handlers gated until then so a tool is the last dependency.
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+            loop {
+                let probe_start = Instant::now();
+                tokio::task::yield_now().await;
+                let probe_end = Instant::now();
+                if observe(probe_start, probe_end)
+                    .is_some_and(|[_, _, _, _, unknown]| unknown > Duration::ZERO)
+                {
+                    break;
+                }
+            }
+        })
+        .await?;
+    }
     let (second_start, held_start, held_end) = if matches!(admission, Admission::Parallel) {
         let (second_id, second_start) =
             tokio::time::timeout(Duration::from_secs(/* secs */ 20), entries.recv())
@@ -266,10 +286,7 @@ async fn critical_path_follows_runtime_admission(
         );
     }
     let end = Instant::now();
-    if matches!(admission, Admission::Unsupported)
-        || !critical_path_timing
-        || matches!(source, CaptureSource::MemoryConsolidation)
-    {
+    if !captures_timing {
         assert_eq!(observe(start, end), None);
     } else {
         let [inference, review, tools, overhead, unknown] =

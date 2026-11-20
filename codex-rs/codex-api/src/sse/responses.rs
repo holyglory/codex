@@ -518,14 +518,45 @@ pub fn process_responses_event(
             }
             if let Some(resp_val) = event.response {
                 let reasoning_removals = reasoning_removals(&resp_val);
-                let metadata = resp_val
+                let raw_usage = resp_val
                     .get("usage")
-                    .filter(|usage| !usage.is_null())
+                    .filter(|value| !value.is_null())
                     .cloned();
+                let observed = ["model", "service_tier"]
+                    .into_iter()
+                    .filter_map(|key| {
+                        resp_val
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .map(|value| (key.to_string(), Value::String(value.to_string())))
+                    })
+                    .collect::<serde_json::Map<_, _>>();
                 match serde_json::from_value::<ResponseCompleted>(resp_val) {
                     Ok(mut resp) => {
-                        if let Some(metadata) = metadata {
-                            resp.usage_metadata.get_or_insert_default().metadata = Some(metadata);
+                        if raw_usage.is_some() || resp.usage_metadata.is_some() {
+                            let explicit = resp.usage_metadata.get_or_insert_default();
+                            match explicit.metadata.as_mut() {
+                                None => {
+                                    explicit.metadata =
+                                        raw_usage.or_else(|| Some(serde_json::json!({})))
+                                }
+                                Some(Value::Object(fields)) => {
+                                    if let Some(Value::Object(raw)) = raw_usage {
+                                        for (key, value) in raw {
+                                            fields.entry(key).or_insert(value);
+                                        }
+                                    }
+                                }
+                                Some(_) => {}
+                            }
+                            if !observed.is_empty()
+                                && let Some(Value::Object(fields)) = explicit.metadata.as_mut()
+                            {
+                                fields.insert(
+                                    "codex_observed_response".into(),
+                                    Value::Object(observed),
+                                );
+                            }
                         }
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,

@@ -1031,7 +1031,15 @@ impl ToolRegistry {
                             "PostToolUse hook blocked the tool result".to_string()
                         });
                         let err = FunctionCallError::RespondToModel(message);
-                        dispatch_trace.record_failed(&err);
+                        // The hook rejects delivery of the result after the
+                        // tool has already completed; preserve that observed
+                        // execution outcome in usage capture.
+                        dispatch_trace.record_completed(
+                            &invocation,
+                            &result.call_id,
+                            &result.payload,
+                            result.result.as_ref(),
+                        );
                         return Err(err);
                     }
                     if let Some(feedback_message) = outcome.feedback_message {

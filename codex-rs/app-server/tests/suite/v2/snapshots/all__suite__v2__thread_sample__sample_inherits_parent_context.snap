@@ -1,5 +1,6 @@
 ---
 source: app-server/tests/suite/v2/thread_sample.rs
+assertion_line: 358
 expression: "context_snapshot::format_request_history_snapshot(\"A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.
@@ -16,12 +17,17 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d67074ec8e1aa60b):
+        - namespace/functions; hash=4d2843b30b182eb9
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - function/view_image
           - function/get_goal
           - function/create_goal
@@ -55,14 +61,18 @@ Settings:
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
     [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
+        </environment_context>
 04:message/user:
     Initial turn
 05:configuration_update:reasoning={"effort":"high"}
@@ -77,12 +87,17 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d67074ec8e1aa60b):
+        - namespace/functions; hash=4d2843b30b182eb9
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - function/view_image
           - function/get_goal
           - function/create_goal
@@ -116,14 +131,18 @@ Settings: same as window 1
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
     [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
+        </environment_context>
 04:message/user:
     Initial turn
 05:configuration_update:reasoning={"effort":"high"}
@@ -137,12 +156,17 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d67074ec8e1aa60b):
+        - namespace/functions; hash=4d2843b30b182eb9
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/request_permissions
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - function/view_image
           - function/get_goal
           - function/create_goal
@@ -176,14 +200,18 @@ Settings: same as window 1
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
     [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
-03:message/user:
-    <environment_context>
-      <cwd><CWD></cwd>
-      <shell><HOST_SHELL></shell>
-      <current_date><CURRENT_DATE></current_date>
-      <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-    </environment_context>
+03:message/user[2]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] <environment_context>
+          <cwd><CWD></cwd>
+          <shell><HOST_SHELL></shell>
+          <current_date><CURRENT_DATE></current_date>
+          <timezone><HOST_TIMEZONE></timezone>
+          <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
+        </environment_context>
 04:message/user:
     Initial turn
 05:configuration_update:reasoning={"effort":"high"}

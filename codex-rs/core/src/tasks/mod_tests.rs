@@ -63,6 +63,42 @@ impl SessionTask for PendingTask {
     }
 }
 
+async fn active_task_done(session: &Session) -> Arc<tokio::sync::Notify> {
+    let active = session.active_turn.lock().await;
+    Arc::clone(&active.as_ref().unwrap().task.as_ref().unwrap().done)
+}
+
+#[tokio::test]
+async fn task_finish_rejects_replaced_admission_with_the_same_context() {
+    let (session, turn_context, receiver) = make_session_and_context_with_rx().await;
+    session
+        .spawn_task(Arc::clone(&turn_context), Vec::new(), PendingTask)
+        .await;
+    let previous_done = active_task_done(&session).await;
+    session
+        .spawn_task(Arc::clone(&turn_context), Vec::new(), PendingTask)
+        .await;
+    let current_done = active_task_done(&session).await;
+    assert!(!Arc::ptr_eq(&previous_done, &current_done));
+    while receiver.try_recv().is_ok() {}
+
+    session
+        .on_task_finished(turn_context, &previous_done, /*task_result*/ Ok(None))
+        .await;
+
+    assert!(Arc::ptr_eq(
+        &active_task_done(&session).await,
+        &current_done
+    ));
+    assert!(
+        receiver.is_empty(),
+        "stale completion must not finish the replacement"
+    );
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
+}
+
 #[tokio::test]
 async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input() {
     let (session, turn_context, receiver) = make_session_and_context_with_rx().await;
@@ -102,8 +138,13 @@ async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input()
         )
         .await;
 
+    let task_done = active_task_done(&session).await;
     session
-        .on_task_finished(Arc::clone(&turn_context), /*task_result*/ Ok(None))
+        .on_task_finished(
+            Arc::clone(&turn_context),
+            &task_done,
+            /*task_result*/ Ok(None),
+        )
         .await;
 
     let history = session.clone_history().await;
@@ -344,7 +385,10 @@ async fn turn_completion_metrics_follow_model_switch(scenario: UsageScenario) {
         Ok(None)
     };
     let expected_root = turn_context.root_turn_id();
-    session.on_task_finished(turn_context, task_result).await;
+    let task_done = active_task_done(&session).await;
+    session
+        .on_task_finished(turn_context, &task_done, task_result)
+        .await;
     let mut terminal_root = None;
     while let Ok(event) = receiver.try_recv() {
         match event.msg {

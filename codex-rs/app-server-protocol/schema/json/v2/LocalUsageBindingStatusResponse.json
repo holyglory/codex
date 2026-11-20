@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LocalUsageBindingSnapshot": {
+      "description": "The most recent explicit declaration, including a clear with a null project. Source and authority describe stored declaration provenance, not verified delivery.",
+      "properties": {
+        "authority": {
+          "type": "string"
+        },
+        "capturedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "effectiveCaptureSequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "nativeProjectId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcomeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workstreamId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "authority",
+        "capturedAtMs",
+        "effectiveCaptureSequence",
+        "source",
+        "threadId"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "transition": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LocalUsageBindingSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Explicit null and revision zero mean no declaration has been captured."
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "revision",
+    "version"
+  ],
+  "title": "LocalUsageBindingStatusResponse",
+  "type": "object"
+}

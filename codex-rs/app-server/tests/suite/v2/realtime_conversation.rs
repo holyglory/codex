@@ -4594,6 +4594,10 @@ async fn realtime_requests_use_runtime_auth(transport: &str, mode: &str) -> Resu
     use std::collections::BTreeSet;
 
     skip_if_no_network!(Ok(()));
+    let test_name = std::thread::current()
+        .name()
+        .context("current libtest case name")?
+        .to_owned();
     let sideband = matches!(transport, "webrtc" | "existing_call");
     if let Ok(server_uri) = std::env::var(PROBE_SERVER) {
         let home = TempDir::new()?;
@@ -4761,14 +4765,6 @@ async fn realtime_requests_use_runtime_auth(transport: &str, mode: &str) -> Resu
     .await;
     let target =
         url::Url::parse(realtime.uri())?.socket_addrs(/*default_port_number*/ || None)?[0];
-    let case = match transport {
-        "webrtc" => "webrtc_reconnect",
-        "existing_call" => "existing_call_reconnect",
-        other => other,
-    };
-    let test_name = format!(
-        "suite::v2::realtime_conversation::realtime_requests_use_runtime_auth::{case}_{mode}"
-    );
     let (result, ()) = tokio::join!(
         run_harness_through_proxy(&server, &test_name, Some(target)),
         async {

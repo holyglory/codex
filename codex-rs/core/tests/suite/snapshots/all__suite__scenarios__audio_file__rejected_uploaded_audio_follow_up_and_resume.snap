@@ -14,8 +14,9 @@ Scenario: A rejected uploaded recording is omitted only from request projections
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Listen to this recording.
 04:message/user:
@@ -24,4 +25,6 @@ Scenario: A rejected uploaded recording is omitted only from request projections
 05:message/user:
     <ENVIRONMENT_CONTEXT>
 06:message/user:
+    <USAGE_WORK_BOUNDARY>
+07:message/user:
     Continue after restart.

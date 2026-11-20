@@ -173,13 +173,15 @@ pub(super) async fn wait_for_turn_completed(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn safety_recourse_handles_a_policy_block() -> Result<()> {
     let (mut app, mut events, _) = make_test_app_with_channels().await;
+    let workspace = tempfile::tempdir()?;
+    std::fs::write(workspace.path().join(".git"), "")?;
+    let workspace_cwd = workspace.path().canonicalize()?;
     let model = responses::start_mock_server().await;
     app_test_support::MockResponsesConfig::new(&model.uri())
         .with_root_config("instructions = 'Help the user.'")
         .write(app.config.codex_home.as_path())?;
-    app.config = app
-        .rebuild_config_for_cwd(app.config.cwd.to_path_buf())
-        .await?;
+    app.config = app.rebuild_config_for_cwd(workspace_cwd.clone()).await?;
+    app.launch_cwd = workspace_cwd;
     let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     for (domain, error_domain) in [("cyber", "cyber"), ("bio", "bio"), ("cyber", "bio")] {
@@ -311,6 +313,12 @@ async fn safety_recourse_handles_a_policy_block() -> Result<()> {
         wait_for_turn_completed(&mut app, &mut server, fork_id).await;
         let requests = responses::received_responses_requests(&model).await;
         assert_eq!(requests[1].body_json()["model"], selected_model);
+        assert!(requests.iter().all(|request| {
+            request
+                .message_input_texts("user")
+                .iter()
+                .all(|text| !text.starts_with("# AGENTS.md instructions"))
+        }));
         insta::assert_snapshot!(
             "safety_recourse_request_history",
             context_snapshot::format_request_history_snapshot(

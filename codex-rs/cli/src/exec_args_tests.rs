@@ -2,6 +2,7 @@
 
 use super::MultitoolCli;
 use clap::CommandFactory;
+use clap::Parser;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -27,4 +28,16 @@ fn exec_help_documents_cyber_access_program() {
 
               [possible values: standard, daybreak_blue, daybreak_red]
     ");
+}
+
+#[test]
+fn account_pin_parses_for_interactive_exec_resume_and_app_server() {
+    for argv in [
+        vec!["codex", "--account", "local"],
+        vec!["codex", "exec", "--account", "local", "hello"],
+        vec!["codex", "exec", "resume", "--account", "local", "--last"],
+        vec!["codex", "app-server", "--account", "local"],
+    ] {
+        MultitoolCli::try_parse_from(argv).expect("local account pin should parse");
+    }
 }

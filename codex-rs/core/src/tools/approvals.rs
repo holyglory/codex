@@ -24,7 +24,9 @@ use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::with_cached_approval;
 use codex_analytics::GuardianApprovalRequestSource;
 use codex_config::types::AppToolApproval;
+use codex_file_system::FileSystemSandboxContext;
 use codex_hooks::PermissionRequestDecision;
+use codex_mcp::McpServerKey;
 use codex_otel::ToolDecisionSource;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::approvals::ExecApprovalKind;
@@ -121,7 +123,7 @@ pub(crate) enum ApprovalAction {
         environment_id: String,
         server: String,
         #[serde(skip_serializing)]
-        server_key: codex_mcp::McpServerKey,
+        server_key: McpServerKey,
         tool_name: String,
         arguments: Option<serde_json::Value>,
         connector_id: Option<String>,
@@ -139,7 +141,7 @@ pub(crate) enum ApprovalAction {
         allow_session_remember: bool,
         allow_persistent_approval: bool,
         #[serde(skip_serializing)]
-        prompt_permissions: Option<(String, Arc<codex_file_system::FileSystemSandboxContext>)>,
+        prompt_permissions: Option<(String, Arc<FileSystemSandboxContext>)>,
     },
     NetworkAccess {
         id: String,
@@ -461,10 +463,14 @@ pub(crate) enum ApprovalResolutionSource {
     Hook,
     Guardian,
     User,
+    SessionCache,
+    Preapproved,
+    Policy,
 }
 
 /// Preserves the approval path even when the decision becomes a tool error.
-/// The source identifies the reviewer, not the actor that caused cancellation.
+/// The source identifies the resolution path, not the actor causing cancellation.
+/// Policy, preapproval and cache paths do not imply contact with a reviewer.
 #[must_use]
 pub(crate) struct ApprovalResult {
     pub(crate) result: Result<ReviewDecision, ToolError>,
@@ -505,7 +511,10 @@ impl ApprovalResolution {
                     ApprovalResolutionSource::Guardian => {
                         "automatic approval review denied the action"
                     }
-                    ApprovalResolutionSource::User => "rejected by user",
+                    ApprovalResolutionSource::User
+                    | ApprovalResolutionSource::SessionCache
+                    | ApprovalResolutionSource::Preapproved
+                    | ApprovalResolutionSource::Policy => "rejected by user",
                 };
                 Err(ToolError::Rejected(rejection.to_string()))
             }
@@ -566,7 +575,26 @@ impl Session {
         ctx: &ApprovalContext,
         user_prompt: impl Future<Output = ApprovalResolution>,
     ) -> ApprovalResult {
+        // Network approval finishes after policy validation and persistence in
+        // network_approval; that outer owner records its final observation.
+        let mut usage = if matches!(action, ApprovalAction::NetworkAccess { .. }) {
+            None
+        } else {
+            crate::usage_capture::ApprovalObservation::start(
+                ctx.review_context.turn(),
+                &ctx.call_id,
+                &ctx.tool_name.name,
+            )
+        };
         if let Err(err) = self.check_approval_requirement(ctx).await {
+            if let Some(usage) = &mut usage
+                && let ToolError::Rejected(reason) = &err
+            {
+                usage.resolve(
+                    &ReviewDecision::denied(reason.clone()),
+                    Some(ApprovalResolutionSource::Policy),
+                );
+            }
             return ApprovalResult {
                 result: Err(err),
                 source: None,
@@ -583,6 +611,12 @@ impl Session {
             && let Some(reason) =
                 prompt_is_rejected_by_policy(policy, /*prompt_is_rule*/ false)
         {
+            if let Some(usage) = &mut usage {
+                usage.resolve(
+                    &ReviewDecision::denied(reason),
+                    Some(ApprovalResolutionSource::Policy),
+                );
+            }
             return ApprovalResult {
                 result: Err(ToolError::Rejected(reason.to_string())),
                 source: None,
@@ -637,6 +671,9 @@ impl Session {
             {
                 resolution.decision = ReviewDecision::Abort;
             }
+        }
+        if let Some(usage) = &mut usage {
+            usage.resolve(&resolution.decision, Some(resolution.source));
         }
         // Network approvals record their final telemetry after validation and persistence.
         if !is_network_approval {
@@ -861,7 +898,8 @@ impl Session {
                         .into_iter()
                         .map(|key| (key, &policy_fingerprint))
                         .collect();
-                    with_cached_approval(&self.services, tool_name, cache_keys, request).await
+                    return with_cached_approval(&self.services, tool_name, cache_keys, request)
+                        .await;
                 }
             }
             ApprovalAction::WriteStdin {
@@ -908,7 +946,11 @@ impl Session {
                     .clone()
                     .or_else(|| ctx.approval_reason.clone());
                 if *permissions_preapproved && reason.is_none() {
-                    ReviewDecision::Approved
+                    return ApprovalResolution {
+                        decision: ReviewDecision::Approved,
+                        source: ApprovalResolutionSource::Preapproved,
+                        cancellation_reason: None,
+                    };
                 } else if reason.is_some() {
                     self.request_patch_approval(
                         ctx.review_context.turn(),
@@ -919,7 +961,7 @@ impl Session {
                     )
                     .await
                 } else {
-                    with_cached_approval(
+                    return with_cached_approval(
                         &self.services,
                         "apply_patch",
                         action.cache_keys(),
@@ -934,7 +976,7 @@ impl Session {
                             .await
                         },
                     )
-                    .await
+                    .await;
                 }
             }
             ApprovalAction::McpToolCall { .. } => {
@@ -986,7 +1028,10 @@ fn record_resolution(ctx: &ApprovalContext, resolution: &ApprovalResolution) {
     let source = match resolution.source {
         ApprovalResolutionSource::Hook => ToolDecisionSource::Config,
         ApprovalResolutionSource::Guardian => ToolDecisionSource::AutomatedReviewer,
-        ApprovalResolutionSource::User => ToolDecisionSource::User,
+        ApprovalResolutionSource::User
+        | ApprovalResolutionSource::SessionCache
+        | ApprovalResolutionSource::Preapproved
+        | ApprovalResolutionSource::Policy => ToolDecisionSource::User,
     };
     ctx.review_context.turn().session_telemetry.tool_decision(
         &ctx.tool_name,

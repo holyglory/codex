@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_agent_message_board_http.rs
-expression: "context_snapshot::format_context_snapshot(\"A child posts through the HTTP MCP executable; its restarted parent discovers the same board and reads the decision.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
+expression: "context_snapshot::format_context_snapshot(if mode == BoardMode::Feature\n{\n    \"The config flag starts an in-memory MCP board shared by a parent and child.\"\n} else\n{\n    \"A child posts through the HTTP MCP executable; its restarted parent discovers the same board and reads the decision.\"\n}, &bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A child posts through the HTTP MCP executable; its restarted parent discovers the same board and reads the decision.
 
@@ -82,8 +82,9 @@ Scenario: A child posts through the HTTP MCP executable; its restarted parent di
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Spawn a worker and finish your turn.
 06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Say ready.","task_name":"worker"}
@@ -93,12 +94,14 @@ Scenario: A child posts through the HTTP MCP executable; its restarted parent di
 09:message/user:
     <ENVIRONMENT_CONTEXT>
 10:message/user:
+    <USAGE_WORK_BOUNDARY>
+11:message/user:
     Find the board tools and read the worker's decision.
 -- request 5 (request) --
-11:tool_search_call
-12:tool_search_output
+12:tool_search_call
+13:tool_search_output
 -- request 6 (request) --
-13:function_call/mcp__codex_message_board.search_posts:{"channel_name":"design"}
-14:function_call_output:Wall time: <DURATION> seconds
+14:function_call/mcp__codex_message_board.search_posts:{"channel_name":"design"}
+15:function_call_output:Wall time: <DURATION> seconds
     Output:
     {"has_more":false,"n_returned":1,"next_cursor":null,"results":[{"author":"/root/worker","channel_name":"...ecision.","thread_id":"<UUID 1>","truncated":false}]} [hash=0322071c1fb9baa5]

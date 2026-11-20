@@ -192,8 +192,13 @@ async fn environment_context_time_follows_config(
         .zip([FIRST_TIME_UNIX_SECONDS, FIRST_TIME_UNIX_SECONDS + 86_400])
         .enumerate()
     {
-        assert!(request.has_content_kinds(&["environments.environment_context"]));
+        assert!(request.has_content_kinds(&[
+            "usage_work.boundary_prompt",
+            "environments.environment_context"
+        ]));
         let text = request.message_input_texts("user").join("\n");
+        assert_eq!(text.matches("<usage_work_boundary>").count(), 1);
+        assert_eq!(text.matches("</usage_work_boundary>").count(), 1);
         assert_eq!(
             text.matches("<environment_context>").count(),
             if include_time { index + 1 } else { 1 }
