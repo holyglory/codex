@@ -1,4 +1,4 @@
-"""Prepare an identity-bound plan for the governed local 0.170.0+multi.1 activation."""
+"""Prepare an identity-bound plan for the governed local 0.170.0+multi.2 activation."""
 
 import hashlib
 import json
@@ -8,9 +8,9 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "codex-rs/target/multi1-local"
+PACKAGE_ROOT = ROOT / "codex-rs/target/multi2-local"
 SOCKET = Path("/home/holyglory/.codex/app-server-control/app-server-control.sock")
-STATE = Path("/mnt/build-storage/codex/state/local-multi1-live")
+STATE = Path("/mnt/build-storage/codex/state/local-multi2-live")
 
 
 def digest(path: Path) -> str:
@@ -23,8 +23,8 @@ from local_deploy_owner import peer
 
 
 proof = json.loads((PACKAGE_ROOT / "package-proof.json").read_text())
-if proof["version"] != "0.170.0+multi.1":
-    raise RuntimeError("package proof is not 0.170.0+multi.1")
+if proof["version"] != "0.170.0+multi.2":
+    raise RuntimeError("package proof is not 0.170.0+multi.2")
 commit = subprocess.check_output(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
 ).strip()
@@ -52,7 +52,7 @@ plan = {
     "drainSeconds": 30,
     "old": old,
 }
-output = ROOT / "codex-rs/target/multi1-local-plan.json"
+output = ROOT / "codex-rs/target/multi2-local-plan.json"
 if output.exists():
     raise RuntimeError("preserve prior activation plan")
 output.write_text(json.dumps(plan, indent=2) + "\n")
