@@ -78,6 +78,10 @@ async fn git_attribution_runtime_auth_uses_request_destination(
     use core_test_support::runtime_auth::run_harness_through_proxy;
 
     skip_if_no_network!(Ok(()));
+    let test_name = std::thread::current()
+        .name()
+        .context("current libtest case name")?
+        .to_owned();
     let token = format!(
         "e30.{}.c2ln",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({
@@ -171,17 +175,7 @@ async fn git_attribution_runtime_auth_uses_request_destination(
         .expect(1)
         .mount(&server)
         .await;
-    let case = if custom_destination {
-        format!("{mode}_custom_destination")
-    } else {
-        mode.into()
-    };
-    run_harness_through_proxy(
-        &server,
-        &format!("suite::v2::git_attribution::git_attribution_runtime_auth_uses_request_destination::{case}"),
-        /*realtime_target*/ None,
-    )
-    .await?;
+    run_harness_through_proxy(&server, &test_name, /*realtime_target*/ None).await?;
 
     let requests = server
         .received_requests()

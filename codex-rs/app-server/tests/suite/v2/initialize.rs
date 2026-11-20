@@ -54,17 +54,36 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
     let JSONRPCMessage::Response(response) = message else {
         anyhow::bail!("expected initialize response, got {message:?}");
     };
+    assert_eq!(response.result["localUsageAccounting"]["version"], 1);
     let InitializeResponse {
         user_agent,
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        local_usage_accounting,
+        ..
     } = to_response::<InitializeResponse>(response)?;
 
     assert!(user_agent.starts_with("codex_vscode/"));
     assert_eq!(response_codex_home, expected_codex_home);
     assert_eq!(platform_family, std::env::consts::FAMILY);
     assert_eq!(platform_os, std::env::consts::OS);
+    let capability = local_usage_accounting.expect("local usage capability");
+    assert_eq!(capability.supported_versions, vec![1]);
+    assert_eq!(
+        capability.methods,
+        vec![
+            "localUsage/summary",
+            "localUsage/repositoryIdentity",
+            "localUsage/bindingTransition",
+            "localUsage/bindingStatus"
+        ]
+    );
+    assert_eq!(capability.storage, "usage-v2");
+    assert!(capability.supports_work_context_bindings);
+    assert!(capability.supports_workstream_outcomes);
+    assert!(capability.supports_token_headlines);
+    assert_eq!(capability.snapshot_retention_ms, 5_000);
     Ok(())
 }
 
@@ -171,6 +190,7 @@ async fn initialize_respects_originator_override_env_var() -> Result<()> {
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        ..
     } = to_response::<InitializeResponse>(response)?;
 
     assert!(user_agent.starts_with("codex_originator_via_env_var/"));

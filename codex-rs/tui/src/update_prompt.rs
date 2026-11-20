@@ -283,11 +283,13 @@ mod tests {
     use ratatui::widgets::FrameExt;
 
     fn new_prompt() -> UpdatePromptScreen {
-        UpdatePromptScreen::new(
+        let mut prompt = UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
             UpdateAction::NpmGlobalLatest,
-        )
+        );
+        prompt.current_version = "0.0.0".to_string();
+        prompt
     }
 
     #[test]

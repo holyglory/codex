@@ -633,6 +633,8 @@ pub enum ThreadStoreConfig {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    /// Invocation-only profile pin; never loaded from or persisted to config.toml.
+    pub process_account: Option<String>,
     /// App-server-owned destination policy; other runtimes remain unmanaged.
     pub application_network_policy: codex_http_client::NetworkPolicy,
     /// Auth bootstrap routing installed by the app-server configuration owner.
@@ -1013,6 +1015,9 @@ pub struct Config {
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
+
+    /// Retention thresholds for the local usage collector.
+    pub usage: codex_usage::RetentionPolicy,
 
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
@@ -2721,6 +2726,7 @@ impl EffectivePermissionSelection<'_> {
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
+    pub process_account: Option<String>,
     pub model: Option<String>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -3354,6 +3360,11 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        if let Some(usage) = cfg.usage.as_ref() {
+            usage.validate().map_err(|message| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
+            })?;
+        }
         for (slot, dial) in cfg.tui.iter().flat_map(|tui| &tui.quick_dials) {
             if !matches!(slot.as_bytes(), [b'0'..=b'9']) {
                 return Err(std::io::Error::new(
@@ -3470,6 +3481,7 @@ impl Config {
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
+            process_account,
             model,
             review_model: override_review_model,
             cwd,
@@ -3696,6 +3708,17 @@ impl Config {
                 "config defines `[permissions]` profiles but does not set `default_permissions`",
             ));
         }
+
+        let usage_toml = cfg.usage.clone().unwrap_or_default();
+        let usage_defaults = codex_usage::RetentionPolicy::default();
+        let usage = codex_usage::RetentionPolicy {
+            raw_retention_days: usage_toml
+                .raw_retention_days
+                .unwrap_or(usage_defaults.raw_retention_days),
+            inactive_chat_days: usage_toml
+                .inactive_chat_days
+                .unwrap_or(usage_defaults.inactive_chat_days),
+        };
 
         let mut memories = cfg.memories.clone().unwrap_or_default();
         // Fresh profiles have no V1 context to preserve or warm up before using V2.
@@ -4563,6 +4586,7 @@ impl Config {
             async_compaction_threshold_percent,
             model_provider_id,
             model_provider,
+            process_account,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,
@@ -4660,6 +4684,7 @@ impl Config {
                 })
                 .transpose()?,
             memories: memories_config,
+            usage,
             agent_interrupt_message_enabled,
             codex_home,
             sqlite,

@@ -493,7 +493,13 @@ impl ToolOrchestrator {
                 let retry_preapproved = !human_once
                     && matches!(
                         initial_approval_source,
-                        Some(ApprovalResolutionSource::User | ApprovalResolutionSource::Hook)
+                        Some(
+                            ApprovalResolutionSource::User
+                                | ApprovalResolutionSource::Hook
+                                | ApprovalResolutionSource::SessionCache
+                                | ApprovalResolutionSource::Preapproved
+                                | ApprovalResolutionSource::Policy
+                        )
                     );
                 let bypass_retry_approval = !human_once
                     && !strict_auto_review

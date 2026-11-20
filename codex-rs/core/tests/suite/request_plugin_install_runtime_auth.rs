@@ -32,6 +32,10 @@ fn actor_token(actor: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resumed_plugin_install_uses_the_threads_account(mode: RuntimeAuthMode) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    let test_name = std::thread::current()
+        .name()
+        .context("current libtest case name")?
+        .to_owned();
     const PLUGIN_ID: &str = "plugin_connector_github";
     if std::env::var(PROBE_SERVER).is_ok() {
         let server = start_mock_server().await;
@@ -205,15 +209,7 @@ async fn resumed_plugin_install_uses_the_threads_account(mode: RuntimeAuthMode) 
         .expect(1)
         .mount(&server)
         .await;
-    let case = match mode {
-        RuntimeAuthMode::DualHeader => "dual_header",
-        RuntimeAuthMode::AssertionOnly => "assertion_only",
-    };
-    run_harness_through_proxy(
-        &server,
-        &format!("suite::request_plugin_install::runtime_auth_tests::resumed_plugin_install_uses_the_threads_account::{case}"),
-        /*realtime_target*/ None,
-    ).await?;
+    run_harness_through_proxy(&server, &test_name, /*realtime_target*/ None).await?;
     let requests = server
         .received_requests()
         .await

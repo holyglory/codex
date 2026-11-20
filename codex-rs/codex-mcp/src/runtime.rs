@@ -578,58 +578,65 @@ impl McpRuntime {
         required_plugins: &HashSet<String>,
     ) -> Option<Arc<McpBinding>> {
         let config = Arc::clone(current.config.as_ref()?);
-        let stable_catalog_revisions = current
+        let mut stable_catalog_revisions = current
             .connections
             .stable_catalog_revisions(required_servers, required_plugins)
             .await;
-        if let Some(catalog_revisions) = &stable_catalog_revisions {
-            let cached = current
-                .cached_binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = cached.as_ref()
-                && &cached.catalog_revisions == catalog_revisions
-                && let Some(binding) = cached.binding.upgrade()
-            {
-                return Some(binding);
+        loop {
+            if let Some(catalog_revisions) = &stable_catalog_revisions {
+                let cached = current
+                    .cached_binding
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(cached) = cached.as_ref()
+                    && &cached.catalog_revisions == catalog_revisions
+                    && let Some(binding) = cached.binding.upgrade()
+                {
+                    return Some(binding);
+                }
             }
-        }
 
-        let binding = Arc::new(
-            current
-                .connections
-                .capture_binding_with_metadata(
-                    config,
-                    current.plugins_available,
-                    required_servers,
-                    required_plugins,
-                )
-                .await,
-        );
-        if let Some(catalog_revisions) = stable_catalog_revisions
-            && current
+            let binding = Arc::new(
+                current
+                    .connections
+                    .capture_binding_with_metadata(
+                        Arc::clone(&config),
+                        current.plugins_available,
+                        required_servers,
+                        required_plugins,
+                    )
+                    .await,
+            );
+            let latest_catalog_revisions = current
                 .connections
                 .stable_catalog_revisions(required_servers, required_plugins)
-                .await
-                .as_ref()
-                == Some(&catalog_revisions)
-        {
-            let mut cached = current
-                .cached_binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = cached.as_ref()
-                && cached.catalog_revisions == catalog_revisions
-                && let Some(binding) = cached.binding.upgrade()
-            {
-                return Some(binding);
+                .await;
+            if stable_catalog_revisions.is_none() && latest_catalog_revisions.is_some() {
+                // Required servers can finish startup during capture. Capture once more
+                // with stable revisions so the next step can reuse the same binding.
+                stable_catalog_revisions = latest_catalog_revisions;
+                continue;
             }
-            *cached = Some(CachedMcpBinding {
-                catalog_revisions,
-                binding: Arc::downgrade(&binding),
-            });
+            if let Some(catalog_revisions) = stable_catalog_revisions
+                && latest_catalog_revisions.as_ref() == Some(&catalog_revisions)
+            {
+                let mut cached = current
+                    .cached_binding
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(cached) = cached.as_ref()
+                    && cached.catalog_revisions == catalog_revisions
+                    && let Some(binding) = cached.binding.upgrade()
+                {
+                    return Some(binding);
+                }
+                *cached = Some(CachedMcpBinding {
+                    catalog_revisions,
+                    binding: Arc::downgrade(&binding),
+                });
+            }
+            return Some(binding);
         }
-        Some(binding)
     }
 
     /// Returns whether the published snapshot still belongs to the current credentials.
@@ -1297,6 +1304,72 @@ mod tests {
         let (publish, gate) = McpPublicationGate::pending();
         drop(publish);
         assert!(!gate.wait().await);
+    }
+
+    #[tokio::test]
+    async fn first_binding_capture_is_reused_after_apps_startup() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let cache_context = ConnectorRuntimeManager::<ToolInfo>::default().context(
+            codex_home.path().to_path_buf(),
+            ConnectorRuntimeContextKey::personal(
+                /*account_id*/ None, /*chatgpt_user_id*/ None,
+            ),
+        );
+        let connections =
+            crate::connection_manager::tests::create_test_manager_with_ready_apps_client(
+                cache_context,
+                "search",
+                /*list_started*/ None,
+                /*release_list*/ None,
+            )
+            .await?;
+        let required = [McpServerKey::unscoped(CODEX_APPS_MCP_SERVER_NAME)];
+        let plugins = HashSet::new();
+        // The shared startup future is ready but has not been polled. First capture must
+        // complete it before a stable live catalog revision can be observed.
+        assert!(
+            connections
+                .stable_catalog_revisions(&required, &plugins)
+                .await
+                .is_none()
+        );
+        let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+        config
+            .server_permissions
+            .insert(required[0].clone(), McpServerPermissions::Thread);
+        let published = Arc::new(PublishedMcpRuntime {
+            connections: Arc::clone(&connections),
+            config: Some(Arc::new(config)),
+            auth: None,
+            auth_token: None,
+            auth_manager: None,
+            auth_owner: None,
+            auth_generation: Arc::new(()),
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
+            cached_binding: Mutex::new(None),
+        });
+        let first =
+            McpRuntime::binding_from_published_runtime(Arc::clone(&published), &required, &plugins)
+                .await
+                .expect("first required capture");
+        assert!(first.prepare_call(&required[0], "search").is_some());
+        assert!(
+            connections
+                .stable_catalog_revisions(&required, &plugins)
+                .await
+                .is_some()
+        );
+        let second = McpRuntime::binding_from_published_runtime(published, &required, &plugins)
+            .await
+            .expect("second required capture");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "unchanged startup must not invalidate turn-scoped discovery"
+        );
+        Ok(())
     }
 
     #[tokio::test]

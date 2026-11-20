@@ -1,4 +1,5 @@
 exports_files([
+    "libduckdb_sys_thrift_iterator_equality.patch",
     "opusic_sys_install_headers.patch",
     "protobuf_windows_arm64_seh.patch",
     "opusic-sys_presume_neon.patch",

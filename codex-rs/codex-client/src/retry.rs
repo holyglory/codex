@@ -3,7 +3,12 @@ use codex_http_client::RetryAfter;
 use codex_http_client::TransportError;
 use rand::Rng;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
+
+use crate::RequestTelemetry;
+use crate::RetryWaitOutcome;
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -83,8 +88,22 @@ macro_rules! record_retry {
 
 pub async fn run_with_retry<T, F, Fut>(
     policy: RetryPolicy,
+    make_req: impl FnMut() -> Request,
+    op: F,
+) -> Result<T, TransportError>
+where
+    F: Fn(Request, u64) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    run_with_retry_and_telemetry(policy, make_req, op, /*telemetry*/ None).await
+}
+
+/// Runs the same retry policy while observing actual retry timer lifetimes.
+pub async fn run_with_retry_and_telemetry<T, F, Fut>(
+    policy: RetryPolicy,
     mut make_req: impl FnMut() -> Request,
     op: F,
+    telemetry: Option<Arc<dyn RequestTelemetry>>,
 ) -> Result<T, TransportError>
 where
     F: Fn(Request, u64) -> Fut,
@@ -105,14 +124,57 @@ where
                     .map(RetryAfter::remaining_delay)
                     .unwrap_or_else(|| backoff(policy.base_delay, retry_attempt));
                 crate::record_retry!(retry_attempt, delay, RetryOperation::HttpRequest);
+                let wait = RetryWait::start(telemetry.clone(), retry_attempt);
                 if let Some(retry_after) = retry_after {
                     tokio::time::sleep_until(retry_after.deadline()).await;
                 } else {
                     tokio::time::sleep(delay).await;
                 }
+                wait.finish();
             }
             Err(err) => return Err(err),
         }
     }
     Err(TransportError::RetryLimit)
+}
+
+struct RetryWait {
+    telemetry: Option<Arc<dyn RequestTelemetry>>,
+    attempt: u64,
+    started: Instant,
+}
+
+impl RetryWait {
+    fn start(telemetry: Option<Arc<dyn RequestTelemetry>>, attempt: u64) -> Self {
+        if let Some(telemetry) = &telemetry {
+            telemetry.on_retry_wait_started(attempt);
+        }
+        Self {
+            telemetry,
+            attempt,
+            started: Instant::now(),
+        }
+    }
+
+    fn finish(mut self) {
+        if let Some(telemetry) = self.telemetry.take() {
+            telemetry.on_retry_wait_finished(
+                self.attempt,
+                self.started.elapsed(),
+                RetryWaitOutcome::Completed,
+            );
+        }
+    }
+}
+
+impl Drop for RetryWait {
+    fn drop(&mut self) {
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.on_retry_wait_finished(
+                self.attempt,
+                self.started.elapsed(),
+                RetryWaitOutcome::Cancelled,
+            );
+        }
+    }
 }

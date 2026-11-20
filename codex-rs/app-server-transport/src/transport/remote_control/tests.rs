@@ -1905,6 +1905,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                             codex_home: codex_home.path().abs(),
                             platform_family: "test-family".to_string(),
                             platform_os: "test-os".to_string(),
+                            multi_account: None,
+                            local_usage_accounting: None,
                         },
                     ),
                 ),
@@ -1925,6 +1927,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                     "codexHome": codex_home.path(),
                     "platformFamily": "test-family",
                     "platformOs": "test-os",
+                    "multiAccount": null,
+                    "localUsageAccounting": null,
                 }
             }
         })

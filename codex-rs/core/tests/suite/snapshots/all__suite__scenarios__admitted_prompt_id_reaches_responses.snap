@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 389
 expression: "context_snapshot::format_request_history_snapshot(\"An admitted prompt and an ordinary prompt with identical text reach Responses on successive turns.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: An admitted prompt and an ordinary prompt with identical text reach Responses on successive turns.
@@ -15,7 +16,9 @@ Scenario: An admitted prompt and an ordinary prompt with identical text reach Re
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
 02:message/user:
+    <USAGE_WORK_BOUNDARY>
+03:message/user:
     Repeat this input.
 -- request 2 (turn) --
-03:message/user:
+04:message/user:
     Repeat this input.

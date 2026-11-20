@@ -4,7 +4,9 @@ use codex_client::HttpTransport;
 use codex_client::RequestBody;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_login::AuthManager;
 use codex_login::default_client::create_transport_for_routes_async;
+use codex_model_provider::ProviderAuthContext;
 use codex_model_provider::SharedModelProvider;
 use codex_utils_output_truncation::TruncationPolicy;
 use http::HeaderValue;
@@ -32,6 +34,17 @@ impl HistoryNotesBackend {
             provider,
             http_client_factory,
         }
+    }
+
+    pub(crate) fn with_auth_manager(&self, auth_manager: std::sync::Arc<AuthManager>) -> Self {
+        Self::new(
+            ProviderAuthContext {
+                credentials: auth_manager,
+                runtime_auth: self.provider.runtime_auth().cloned(),
+            }
+            .model_provider(self.provider.info().clone()),
+            self.http_client_factory.clone(),
+        )
     }
 
     pub(crate) async fn call(

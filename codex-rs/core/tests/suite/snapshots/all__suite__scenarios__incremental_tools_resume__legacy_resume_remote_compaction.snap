@@ -16,13 +16,18 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
-        - namespace/functions; hash=f3355f5705e28592
+00:additional_tools/developer (2; hash=1cd52ef4645240aa):
+        - namespace/functions; hash=40041eec96f9c952
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -34,28 +39,36 @@ Settings:
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Begin with the legacy tool prefix.
 -- request 2 (turn) --
 05:message/user:
     <ENVIRONMENT_CONTEXT>
 06:message/user:
+    <USAGE_WORK_BOUNDARY>
+07:message/user:
     Resume without moving the tool prefix.
 -- request 3 (compaction) --
-07:compaction_trigger
+08:compaction_trigger
 
 ## Window 2 (after request 3: input diverged at item 02)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
-        - namespace/functions; hash=f3355f5705e28592
+00:additional_tools/developer (2; hash=1cd52ef4645240aa):
+        - namespace/functions; hash=40041eec96f9c952
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -69,8 +82,9 @@ Settings: same as window 1
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Resume without moving the tool prefix.
 06:compaction:encrypted=true; chars=17; hash=6c10f5e81c1f8e16
@@ -80,26 +94,32 @@ Settings: same as window 1
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     Resume with the new window unchanged.
 -- request 6 (turn) --
-10:message/developer:
+11:message/developer:
     This is an incremental tools update. Previously declared tools remain available for direct calls unless ...here, its latest definition replaces the earlier one. [hash=bceb65fad1afdf9c]
-11:additional_tools/developer (1; hash=845cf7662dc8512b):
+12:additional_tools/developer (1; hash=845cf7662dc8512b):
         - namespace/functions; hash=0c787fbffa4d7ddf
           - function/update_plan
-12:message/developer:
+13:message/developer:
     The following tools are no longer available. Do not call them:
     - functions.exec_command
     - functions.write_stdin
-13:message/user:
-    <ENVIRONMENT_CONTEXT>
 14:message/user:
+    <ENVIRONMENT_CONTEXT>
+15:message/user:
+    <USAGE_WORK_BOUNDARY>
+16:message/user:
     Enable planning and remove shell tools after migration.
 -- request 7 (turn) --
-15:message/user:
+17:message/user:
     Continue with the same tools.
 -- request 8 (turn) --
-16:message/user:
+18:message/user:
     <ENVIRONMENT_CONTEXT>
-17:message/user:
+19:message/user:
+    <USAGE_WORK_BOUNDARY>
+20:message/user:
     Resume with the same updated tools.

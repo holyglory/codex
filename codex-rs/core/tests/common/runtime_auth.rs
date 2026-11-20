@@ -1,6 +1,7 @@
 //! Route isolated first-party auth tests to loopback without relaxing destination checks.
 
 use anyhow::Result;
+use anyhow::ensure;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -145,12 +146,22 @@ pub async fn run_harness_through_proxy_with_env(
     let output = tokio::time::timeout(Duration::from_secs(90), command.output()).await;
     proxy_task.abort();
     let output = output??;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "harness subprocess failed\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        "harness subprocess failed\n{stdout}\n{stderr}"
+    );
+    ensure!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")),
+        "harness subprocess did not run exactly one passing test for {test_name}\n{stdout}\n{stderr}"
     );
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "runtime_auth_tests.rs"]
+mod tests;

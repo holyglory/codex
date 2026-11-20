@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_agent_messages_tests.rs
+assertion_line: 265
 expression: snapshot
 ---
 Scenario: A historical MAv2 send_message call and an encrypted parent reply reach both Guardian reviews exactly once, in order. Calls retain their original IDs, namespace and encryption metadata, with a paired evidence-only output. The second review appends to the first request. Ciphertext and decisions are mocked; this verifies transport, not backend decryption or authorization outcomes.
@@ -30,8 +31,9 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 -- request 2 (turn) --
@@ -64,8 +66,9 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 06:function_call/team.send_message:{"message":"opaque-message-request","target":"missing_worker"}
@@ -182,8 +185,9 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 06:function_call/team.send_message:{"message":"opaque-message-request","target":"missing_worker"}
@@ -347,8 +351,9 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the change after the parent confirms the exact action.
 06:function_call/team.send_message:{"message":"opaque-message-request","target":"missing_worker"}

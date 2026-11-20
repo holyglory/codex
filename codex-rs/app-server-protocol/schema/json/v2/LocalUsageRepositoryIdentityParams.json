@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "contractVersion": {
+      "default": null,
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "path": {
+      "description": "Private local input; never echoed in the response or error.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "LocalUsageRepositoryIdentityParams",
+  "type": "object"
+}

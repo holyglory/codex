@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_partial_answers.rs
+assertion_line: 335
 expression: "context_snapshot::format_request_history_snapshot(\"A forked worker receives both stable answer fragments, with their phases preserved and parent commentary filtered out.\",\n&child_requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A forked worker receives both stable answer fragments, with their phases preserved and parent commentary filtered out.
@@ -10,8 +11,9 @@ Scenario: A forked worker receives both stable answer fragments, with their phas
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Give me both results.
 04:message/assistant:

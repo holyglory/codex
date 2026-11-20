@@ -15,6 +15,7 @@ use super::RecommendedPluginsInstructions;
 use super::SubagentNotification;
 use super::TurnAborted;
 use super::UnsupportedMedia;
+use super::UsageWorkBoundaryPrompt;
 use super::UserGoalUpdate;
 use super::UserInstructions;
 use super::UserShellCommand;
@@ -36,6 +37,7 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     LegacyUnifiedExecProcessLimitWarning::matches_text,
     LegacyApplyPatchExecCommandWarning::matches_text,
     LegacyModelMismatchWarning::matches_text,
+    UsageWorkBoundaryPrompt::matches_text,
 ];
 
 /// Hidden runtime context is not user authorization. Explicit user goal edits are.

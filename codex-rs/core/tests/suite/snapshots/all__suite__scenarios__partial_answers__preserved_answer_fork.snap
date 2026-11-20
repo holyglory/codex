@@ -6,12 +6,12 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=855bf977570202a9):
-        - namespace/functions; hash=2e61665749f6eed1
+00:additional_tools/developer (2; hash=962d9448dacbbe28):
+        - namespace/functions; hash=ea9fd28b52f47a2b
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=ae875a9d734f2fc2
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -27,8 +27,9 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
     You are /root. Coordinate the investigation.
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Give me both results.
 -- request 2 (turn) --
@@ -46,12 +47,12 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
 
 ## Window 2 (after request 3: input diverged at item 12)
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=855bf977570202a9):
-        - namespace/functions; hash=2e61665749f6eed1
+00:additional_tools/developer (2; hash=962d9448dacbbe28):
+        - namespace/functions; hash=ea9fd28b52f47a2b
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=ae875a9d734f2fc2
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -67,8 +68,9 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
     You are /root. Coordinate the investigation.
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:message/user:
     Give me both results.
 07:message/assistant:

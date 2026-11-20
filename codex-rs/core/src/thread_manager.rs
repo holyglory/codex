@@ -2,6 +2,7 @@ mod managed;
 mod model_catalog;
 mod shared_instructions;
 mod shutdown;
+mod usage_work;
 
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
@@ -589,6 +590,10 @@ pub(crate) struct ThreadManagerState {
     auth_manager: Arc<AuthManager>,
     runtime_auth: crate::runtime_auth::RuntimeAuthSlot,
     model_catalog: model_catalog::ThreadModelCatalog,
+    models_manager: SharedModelsManager,
+    profile_auth_router: Option<codex_login::SharedProfileAuthRouter>,
+    _usage_publisher: Option<codex_usage::UsagePublisherRuntime>,
+    usage_capture: Option<crate::usage_capture::UsageCaptureRuntime>,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
     starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<StartupMcpInvalidations>>>,
@@ -651,7 +656,16 @@ impl ThreadManager {
             installation_id,
             catalog: model_catalog,
         } = startup;
+        let models_manager = model_catalog.manager.clone();
         let codex_home = config.codex_home.clone();
+        let usage_capture = crate::usage_capture::UsageCaptureRuntime::new(codex_home.as_path());
+        let extensions = usage_capture.instrument_extensions(extensions);
+        let usage_publisher = codex_usage::UsagePublisherRuntime::start_with_retention(
+            codex_home.to_path_buf(),
+            config.usage,
+        )
+        .map_err(|_| tracing::warn!("local usage publisher is unavailable"))
+        .ok();
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
@@ -690,6 +704,22 @@ impl ThreadManager {
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
                 model_catalog,
+                models_manager,
+                profile_auth_router: Some(match config.process_account.as_ref() {
+                    Some(account) => codex_login::SharedProfileAuthRouter::new_pinned(
+                        config.auth_config(),
+                        account.clone(),
+                        crate::router_external_auth_state(config),
+                        Arc::clone(&auth_manager),
+                    ),
+                    None => codex_login::SharedProfileAuthRouter::new_with_external_auth(
+                        config.auth_config(),
+                        crate::router_external_auth_state(config),
+                        Arc::clone(&auth_manager),
+                    ),
+                }),
+                _usage_publisher: usage_publisher,
+                usage_capture: Some(usage_capture),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -760,6 +790,23 @@ impl ThreadManager {
             .code_mode_session_provider
             .sample_process_metrics()
             .await
+    }
+
+    /// Install one managed-profile router shared by management and inference.
+    pub fn with_profile_auth_router(
+        mut self,
+        router: codex_login::SharedProfileAuthRouter,
+    ) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("profile router must be installed before the manager is shared");
+        };
+        state.profile_auth_router = Some(router);
+        self
+    }
+
+    /// Return the router shared by profile management and inference in this process.
+    pub fn profile_auth_router(&self) -> Option<codex_login::SharedProfileAuthRouter> {
+        self.state.profile_auth_router.clone()
     }
 
     /// Replaces the process-wide provider before this manager is shared with threads.
@@ -894,6 +941,19 @@ impl ThreadManager {
             state_db.clone(),
         ));
         let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
+        let model_catalog = model_catalog::ThreadModelCatalog::new(
+            provider,
+            /*catalog*/ None,
+            Arc::new(codex_models_manager::manager::ModelCatalogSettings::disk(
+                codex_home,
+            )),
+            /*api_key_model_discovery_default*/ false,
+            codex_model_provider::ProviderAuthContext {
+                credentials: Arc::clone(&auth_manager),
+                runtime_auth: None,
+            },
+        );
+        let models_manager = model_catalog.manager.clone();
         Self {
             state: Arc::new(ThreadManagerState {
                 runtime_auth,
@@ -902,18 +962,11 @@ impl ThreadManager {
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
-                model_catalog: model_catalog::ThreadModelCatalog::new(
-                    provider,
-                    /*catalog*/ None,
-                    Arc::new(codex_models_manager::manager::ModelCatalogSettings::disk(
-                        codex_home,
-                    )),
-                    /*api_key_model_discovery_default*/ false,
-                    codex_model_provider::ProviderAuthContext {
-                        credentials: Arc::clone(&auth_manager),
-                        runtime_auth: None,
-                    },
-                ),
+                model_catalog,
+                models_manager,
+                profile_auth_router: None,
+                _usage_publisher: None,
+                usage_capture: None,
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -2746,6 +2799,12 @@ impl ThreadManagerState {
                 .get::<codex_extension_api::IsolatedSessionExtensions<Config>>()
                 .map(|extensions| Arc::clone(&extensions.0))
                 .unwrap_or_else(empty_extension_registry);
+            let extensions = self
+                .usage_capture
+                .as_ref()
+                .map_or(Arc::clone(&extensions), |capture| {
+                    capture.instrument_extensions(extensions)
+                });
             let mcp_manager = McpManager::new_with_extensions(
                 Arc::clone(&self.plugins_manager),
                 Arc::clone(&extensions),
@@ -2854,6 +2913,9 @@ impl ThreadManagerState {
                 &session_source,
             ) => manager,
         };
+        if let Some(router) = &self.profile_auth_router {
+            thread_extension_init.insert(router.clone());
+        }
         let spawn_result = Session::spawn(SessionSpawnArgs {
             attached_thread,
             startup,
@@ -2931,6 +2993,25 @@ impl ThreadManagerState {
                 return Err(error);
             }
         };
+        // Bind a child before it can accept its first turn. Resume keeps its persisted
+        // thread-scoped binding and therefore does not copy from a parent again.
+        if !is_resumed_thread
+            && let Some(parent_thread_id) = parent_thread_id.or(startup_context.attachment_source)
+            && let Some(capture) = &self.usage_capture
+            && let Err(error) = capture
+                .inherit_work(
+                    parent_thread_id.to_string(),
+                    session.thread_id().to_string(),
+                )
+                .await
+        {
+            warn!(
+                %parent_thread_id,
+                child_thread_id = %session.thread_id(),
+                %error,
+                "failed to inherit usage work binding"
+            );
+        }
         if let Some(source_thread_id) = startup_context.attachment_source
             && session.live_thread().is_some()
             && self.thread_store.supports_thread_attachments()

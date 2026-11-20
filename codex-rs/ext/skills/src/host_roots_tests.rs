@@ -57,6 +57,7 @@ struct BlockingMetadataCalls {
     marker_paths: Mutex<Vec<PathUri>>,
     denied_marker: Mutex<Option<PathUri>>,
     canonicalized_paths: Mutex<Vec<PathUri>>,
+    metadata_root: Option<AbsolutePathBuf>,
     started: Notify,
     release: Semaphore,
     round_trip: std::time::Duration,
@@ -72,6 +73,7 @@ impl Default for BlockingMetadataCalls {
             marker_paths: Mutex::new(Vec::new()),
             denied_marker: Mutex::new(None),
             canonicalized_paths: Mutex::new(Vec::new()),
+            metadata_root: None,
             started: Notify::new(),
             release: Semaphore::new(0),
             round_trip: std::time::Duration::ZERO,
@@ -168,6 +170,14 @@ impl ExecutorFileSystem for BlockingMetadataFileSystem {
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async move {
+            if let Some(root) = &self.calls.metadata_root
+                && !path.to_abs_path()?.starts_with(root)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "outside the fixture filesystem",
+                ));
+            }
             if !self.calls.round_trip.is_zero() {
                 tokio::time::sleep(self.calls.round_trip).await;
             }
@@ -466,12 +476,23 @@ async fn unique_extra_root_loads_as_recursive_user_root() {
 
 #[tokio::test]
 async fn repo_ancestry_without_project_marker_does_not_walk_parents() {
-    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let temp_dir = TempDir::new().expect("temp dir");
     let outer = absolute(temp_dir.path().join("outer"));
     let cwd = outer.join("nested/inner");
     fs::create_dir_all(outer.join(".agents/skills")).expect("create outer skills");
     fs::create_dir_all(cwd.join(".agents/skills")).expect("create cwd skills");
+
+    // Keep ancestor metadata probes inside this test filesystem.
+    let calls = Arc::new(BlockingMetadataCalls {
+        metadata_root: Some(absolute(temp_dir.path())),
+        release: Semaphore::new(Semaphore::MAX_PERMITS),
+        ..Default::default()
+    });
+    let fixture: Arc<dyn ExecutorFileSystem> = Arc::new(BlockingMetadataFileSystem {
+        inner: Arc::clone(&LOCAL_FS),
+        calls,
+    });
+    let access = FileSystemEnvironmentAccessor::unrestricted(&fixture);
 
     // Sandbox runners can put a .git marker above the temporary directory.
     // Probe for an absent fixture marker while retaining the real ancestor search.

@@ -46,6 +46,104 @@ class GcpAccount(BaseModel):
     type: Annotated[Literal["gcp"], Field(title="GcpAccountType")]
 
 
+class AccountAutoSelectionPolicy(RootModel[Literal["priority"]]):
+    root: Literal["priority"]
+
+
+class AccountPriorityOrder(RootModel[Literal["higherFirst"]]):
+    root: Literal["higherFirst"]
+
+
+class AccountProfileActiveChangedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str, Field(alias="accountId")]
+    changed_at: Annotated[int, Field(alias="changedAt")]
+    generation: Annotated[int, Field(ge=0)]
+    previous_account_id: Annotated[str | None, Field(alias="previousAccountId")] = None
+
+
+class ApiKeyAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginType")]
+
+
+class ChatgptAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    auth_url: Annotated[str, Field(alias="authUrl")]
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginType")]
+
+
+class ChatgptDeviceCodeAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    login_id: Annotated[str, Field(alias="loginId")]
+    type: Annotated[
+        Literal["chatgptDeviceCode"], Field(title="ChatgptDeviceCodeAccountProfileLoginType")
+    ]
+    user_code: Annotated[str, Field(alias="userCode")]
+    verification_url: Annotated[str, Field(alias="verificationUrl")]
+
+
+class AmazonBedrockAccountProfileLogin(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginType")]
+
+
+class AccountProfileLogin(
+    RootModel[
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    ]
+):
+    root: (
+        ApiKeyAccountProfileLogin
+        | ChatgptAccountProfileLogin
+        | ChatgptDeviceCodeAccountProfileLogin
+        | AmazonBedrockAccountProfileLogin
+    )
+
+
+class ApiKeyAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    type: Annotated[Literal["apiKey"], Field(title="ApiKeyAccountProfileLoginMethodParamsType")]
+
+
+class ChatgptDeviceCodeAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[
+        Literal["chatgptDeviceCode"],
+        Field(title="ChatgptDeviceCodeAccountProfileLoginMethodParamsType"),
+    ]
+
+
+class AmazonBedrockAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    api_key: Annotated[str, Field(alias="apiKey")]
+    region: str
+    type: Annotated[
+        Literal["amazonBedrock"], Field(title="AmazonBedrockAccountProfileLoginMethodParamsType")
+    ]
+
+
 class AccountRoutingOverride(Enum):
     no_constraint = "NO_CONSTRAINT"
     us = "us"
@@ -2362,6 +2460,168 @@ class LocalShellStatus(Enum):
     completed = "completed"
     in_progress = "in_progress"
     incomplete = "incomplete"
+
+
+class LocalUsageBindingSnapshot(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authority: str
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    effective_capture_sequence: Annotated[int, Field(alias="effectiveCaptureSequence", ge=0)]
+    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    source: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageBindingStatusParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    version: Annotated[
+        int | None,
+        Field(description="Omission selects version 1; unsupported versions are rejected.", ge=0),
+    ] = None
+
+
+class LocalUsageBindingStatusResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    revision: Annotated[int, Field(ge=0)]
+    transition: Annotated[
+        LocalUsageBindingSnapshot | None,
+        Field(description="Explicit null and revision zero mean no declaration has been captured."),
+    ] = None
+    version: Annotated[int, Field(ge=0)]
+
+
+class LocalUsageBindingTransitionParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    expected_revision: Annotated[
+        int,
+        Field(
+            alias="expectedRevision",
+            description="Revision returned by status or the previous receipt. Zero before any declaration.",
+            ge=0,
+        ),
+    ]
+    native_project_id: Annotated[
+        str | None,
+        Field(
+            alias="nativeProjectId",
+            description="Null or omission explicitly clears work; workstream and outcome must then be null.",
+        ),
+    ] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    version: Annotated[int, Field(ge=0)]
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageBindingTransitionResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    effective_capture_sequence: Annotated[int, Field(alias="effectiveCaptureSequence", ge=0)]
+    revision: Annotated[
+        int,
+        Field(
+            description="Actual persisted revision, including an unchanged or idempotent declaration.",
+            ge=0,
+        ),
+    ]
+    version: Annotated[int, Field(ge=0)]
+
+
+class LocalUsageCursor(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: str
+    observed_at_ms: Annotated[int, Field(alias="observedAtMs")]
+
+
+class LocalUsageOperationBinding(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    operation_id: Annotated[str, Field(alias="operationId")]
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    work_context_id: Annotated[str, Field(alias="workContextId")]
+
+
+class LocalUsageRepositoryIdentityParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    contract_version: Annotated[int | None, Field(alias="contractVersion", ge=0)] = None
+    path: Annotated[
+        str, Field(description="Private local input; never echoed in the response or error.")
+    ]
+
+
+class LocalUsageRepositoryIdentityResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    contract_version: Annotated[int, Field(alias="contractVersion", ge=0)]
+    format_version: Annotated[int, Field(alias="formatVersion", ge=0)]
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    source: str
+
+
+class LocalUsageSnapshot(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    freshness: str
+    generated_at: Annotated[int, Field(alias="generatedAt", ge=0)]
+    generation: Annotated[int, Field(ge=0)]
+    journal_watermark: Annotated[int, Field(alias="journalWatermark", ge=0)]
+    pending_corrections: Annotated[int, Field(alias="pendingCorrections", ge=0)]
+    pending_entries: Annotated[int, Field(alias="pendingEntries", ge=0)]
+    refresh_id: Annotated[str | None, Field(alias="refreshId")] = None
+    source_watermark: Annotated[str, Field(alias="sourceWatermark")]
+    updated_at_ms: Annotated[int, Field(alias="updatedAtMs")]
+    watermark: Annotated[int, Field(ge=0)]
+    watermark_at_ms: Annotated[int, Field(alias="watermarkAtMs")]
+
+
+class LocalUsageWorkContext(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    experiment_ref: Annotated[str | None, Field(alias="experimentRef")] = None
+    id: str
+    native_project_id: Annotated[str | None, Field(alias="nativeProjectId")] = None
+    outcome_id: Annotated[str | None, Field(alias="outcomeId")] = None
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    turn_id: Annotated[str | None, Field(alias="turnId")] = None
+    workstream_id: Annotated[str | None, Field(alias="workstreamId")] = None
+
+
+class LocalUsageWorkContextBinding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    captured_at_ms: Annotated[int, Field(alias="capturedAtMs")]
+    operation_id: Annotated[str, Field(alias="operationId")]
+    schema_version: Annotated[int, Field(alias="schemaVersion", ge=0)]
+    work_context: Annotated[LocalUsageWorkContext, Field(alias="workContext")]
 
 
 class ApiKeyLoginAccountParams(BaseModel):
@@ -4884,6 +5144,24 @@ class McpServerEventStreamNotificationServerNotification(BaseModel):
     params: McpServerEventStreamNotification
 
 
+class AccountProfileActiveChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["accountProfile/activeChanged"],
+        Field(title="AccountProfile/activeChangedNotificationMethod"),
+    ]
+    params: AccountProfileActiveChangedNotification
+
+
 class RemoteControlStatusChangedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7327,6 +7605,15 @@ class Account(RootModel[ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount | 
     root: ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount | GcpAccount
 
 
+class AccountAutoSelection(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    enabled: bool
+    policy: AccountAutoSelectionPolicy
+    priority_order: Annotated[AccountPriorityOrder, Field(alias="priorityOrder")]
+
+
 class AccountLoginCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7337,6 +7624,65 @@ class AccountLoginCompletedNotification(BaseModel):
         DesktopOnboardingEntrypoint | None, Field(alias="onboardingEntrypoint")
     ] = None
     success: bool
+
+
+class AccountProfile(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    alias: str
+    auth_mode: Annotated[AuthMode, Field(alias="authMode")]
+    authenticated: Annotated[
+        bool,
+        Field(
+            description="Whether this profile currently has locally managed credentials. Credential values are never returned."
+        ),
+    ]
+    created_at: Annotated[int, Field(alias="createdAt")]
+    credit_usage_enabled: Annotated[
+        bool | None,
+        Field(
+            alias="creditUsageEnabled",
+            description="Permission for automatic credit fallback; manual sessions and pins are unaffected.",
+        ),
+    ] = False
+    email: str | None = None
+    enabled: bool
+    id: str
+    is_active: Annotated[bool, Field(alias="isActive")]
+    is_default: Annotated[bool, Field(alias="isDefault")]
+    last_used_at: Annotated[int | None, Field(alias="lastUsedAt")] = None
+    note: str | None = None
+    plan_type: Annotated[PlanType | None, Field(alias="planType")] = None
+    priority: Annotated[int, Field(ge=0)]
+
+
+class ChatgptAccountProfileLoginMethodParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    app_brand: Annotated[LoginAppBrand | None, Field(alias="appBrand")] = None
+    codex_streamlined_login: Annotated[bool | None, Field(alias="codexStreamlinedLogin")] = None
+    type: Annotated[Literal["chatgpt"], Field(title="ChatgptAccountProfileLoginMethodParamsType")]
+    use_hosted_login_success_page: Annotated[
+        bool | None, Field(alias="useHostedLoginSuccessPage")
+    ] = None
+
+
+class AccountProfileLoginMethodParams(
+    RootModel[
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    ]
+):
+    root: (
+        ApiKeyAccountProfileLoginMethodParams
+        | ChatgptAccountProfileLoginMethodParams
+        | ChatgptDeviceCodeAccountProfileLoginMethodParams
+        | AmazonBedrockAccountProfileLoginMethodParams
+    )
 
 
 class AccountSessionWorkspace(BaseModel):
@@ -8097,6 +8443,41 @@ class ModelListRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["model/list"], Field(title="Model/listRequestMethod")]
     params: ModelListParams
+
+
+class LocalUsageBindingTransitionRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/bindingTransition"],
+        Field(title="LocalUsage/bindingTransitionRequestMethod"),
+    ]
+    params: LocalUsageBindingTransitionParams
+
+
+class LocalUsageBindingStatusRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/bindingStatus"], Field(title="LocalUsage/bindingStatusRequestMethod")
+    ]
+    params: LocalUsageBindingStatusParams
+
+
+class LocalUsageRepositoryIdentityRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["localUsage/repositoryIdentity"],
+        Field(title="LocalUsage/repositoryIdentityRequestMethod"),
+    ]
+    params: LocalUsageRepositoryIdentityParams
 
 
 class AccountGatewayOAuthReadRequest(BaseModel):
@@ -9370,6 +9751,121 @@ class ListMcpServerStatusParams(BaseModel):
         ),
     ] = None
     thread_id: Annotated[str | None, Field(alias="threadId")] = None
+
+
+class LocalUsageSummaryParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_id: Annotated[str | None, Field(alias="accountId")] = None
+    contract_version: Annotated[
+        int | None,
+        Field(
+            alias="contractVersion",
+            description="Omission selects version 1; unsupported versions are rejected.",
+            ge=0,
+        ),
+    ] = None
+    expected_snapshot: Annotated[
+        str | None,
+        Field(
+            alias="expectedSnapshot",
+            description="Required with a continuation, so paging never silently mixes snapshots.",
+        ),
+    ] = None
+    from_at_ms: Annotated[int | None, Field(alias="fromAtMs")] = None
+    include_review: Annotated[
+        bool | None,
+        Field(
+            alias="includeReview",
+            description="False with no detail pages selects exact published token headlines; counts, costs, timing, lifecycle, context, and work attribution are deferred.",
+        ),
+    ] = False
+    include_unassigned: Annotated[
+        bool | None,
+        Field(
+            alias="includeUnassigned",
+            description="Compatibility flag, meaningful only alongside a worktree selector.",
+        ),
+    ] = False
+    operation_limit: Annotated[int | None, Field(alias="operationLimit", ge=0)] = 0
+    operations_after: Annotated[LocalUsageCursor | None, Field(alias="operationsAfter")] = None
+    record_limit: Annotated[
+        int | None,
+        Field(
+            alias="recordLimit",
+            description="Zero/omission excludes detail; a requested page is limited to 50 rows.",
+            ge=0,
+        ),
+    ] = 0
+    records_after: Annotated[LocalUsageCursor | None, Field(alias="recordsAfter")] = None
+    repository_id: Annotated[str | None, Field(alias="repositoryId")] = None
+    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    to_at_ms: Annotated[int | None, Field(alias="toAtMs")] = None
+    work_context_bindings: Annotated[
+        list[LocalUsageWorkContextBinding] | None,
+        Field(
+            alias="workContextBindings",
+            description="Explicit authority declarations; at most 256, never persisted by this RPC.",
+        ),
+    ] = None
+    workstream_id: Annotated[
+        str | None,
+        Field(
+            alias="workstreamId",
+            description="Select outcome accounting only. Repository report/totals retain scope.",
+        ),
+    ] = None
+    worktree_keys: Annotated[
+        list[str] | None,
+        Field(
+            alias="worktreeKeys",
+            description="Reserved compatibility selector; non-null is rejected until captured.",
+        ),
+    ] = None
+
+
+class LocalUsageSummaryResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    context_size: Annotated[
+        Any | None,
+        Field(
+            alias="contextSize",
+            description="Context-size measurements from the bounded report, when available.",
+        ),
+    ] = None
+    contract_version: Annotated[int, Field(alias="contractVersion", ge=0)]
+    cost_provenance: Annotated[
+        Any | None,
+        Field(
+            alias="costProvenance",
+            description="Cost provenance and API-equivalent estimate, when available.",
+        ),
+    ] = None
+    generated_at: Annotated[int, Field(alias="generatedAt", ge=0)]
+    lifecycle: Annotated[
+        Any | None, Field(description="Lifecycle timestamps and coverage for the selected report.")
+    ] = None
+    next_operations_cursor: Annotated[
+        LocalUsageCursor | None, Field(alias="nextOperationsCursor")
+    ] = None
+    next_records_cursor: Annotated[LocalUsageCursor | None, Field(alias="nextRecordsCursor")] = None
+    observations: list[Any] | None = None
+    operation_bindings: Annotated[
+        list[LocalUsageOperationBinding], Field(alias="operationBindings")
+    ]
+    operations: list[Any] | None = None
+    report: Any
+    review: Any | None = None
+    snapshot: LocalUsageSnapshot
+    source: str
+    summary: Any
+    timing: Annotated[
+        Any | None, Field(description="Union-safe elapsed, active, and wait measurements.")
+    ] = None
+    work_contexts: Annotated[list[LocalUsageWorkContext], Field(alias="workContexts")]
 
 
 class ChatgptLoginAccountParams(BaseModel):
@@ -11731,6 +12227,15 @@ class ReviewStartRequest(BaseModel):
     params: ReviewStartParams
 
 
+class LocalUsageSummaryRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["localUsage/summary"], Field(title="LocalUsage/summaryRequestMethod")]
+    params: LocalUsageSummaryParams
+
+
 class ModelProviderConfigWriteRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13868,6 +14373,10 @@ class ClientRequest(
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
+        | LocalUsageSummaryRequest
+        | LocalUsageBindingTransitionRequest
+        | LocalUsageBindingStatusRequest
+        | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
         | AccountGatewayOAuthCancelRequest
@@ -13980,6 +14489,10 @@ class ClientRequest(
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
+        | LocalUsageSummaryRequest
+        | LocalUsageBindingTransitionRequest
+        | LocalUsageBindingStatusRequest
+        | LocalUsageRepositoryIdentityRequest
         | AccountGatewayOAuthReadRequest
         | AccountGatewayOAuthLoginRequest
         | AccountGatewayOAuthCancelRequest
@@ -14246,6 +14759,7 @@ class ServerNotification(
         | McpServerStartupStatusUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
         | AppListUpdatedServerNotification
@@ -14335,6 +14849,7 @@ class ServerNotification(
         | McpServerStartupStatusUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
+        | AccountProfileActiveChangedServerNotification
         | AccountGatewayOAuthChangedServerNotification
         | AccountRateLimitsUpdatedServerNotification
         | AppListUpdatedServerNotification

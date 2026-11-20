@@ -14,8 +14,9 @@ Scenario: Unsupported audio queued during an active turn is never forwarded or p
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Start working.
 -- request 2 (request) --
@@ -29,4 +30,6 @@ Scenario: Unsupported audio queued during an active turn is never forwarded or p
 07:message/user:
     <ENVIRONMENT_CONTEXT>
 08:message/user:
+    <USAGE_WORK_BOUNDARY>
+09:message/user:
     Continue after restart.

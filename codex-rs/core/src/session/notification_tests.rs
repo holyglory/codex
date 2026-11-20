@@ -47,9 +47,14 @@ async fn task_finish_preserves_notification_budget_and_queued_user_input() {
         codex_protocol::openai_models::TruncationPolicyConfig::tokens(/*limit*/ 400);
     turn.next_step_settings.store(Arc::new(current));
 
+    let task_done = {
+        let active = session.active_turn.lock().await;
+        Arc::clone(&active.as_ref().unwrap().task.as_ref().unwrap().done)
+    };
     // Stall recording the first batch, then inject while finalization is in progress.
     let state = session.state.lock().await;
-    let finish = session.on_task_finished(Arc::clone(&turn), /*task_result*/ Ok(None));
+    let finish =
+        session.on_task_finished(Arc::clone(&turn), &task_done, /*task_result*/ Ok(None));
     let late = vec![notification("late notification".to_string())];
     tokio::join!(finish, async {
         while session

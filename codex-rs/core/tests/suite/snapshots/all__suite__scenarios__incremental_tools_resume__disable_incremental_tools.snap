@@ -16,11 +16,16 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=ba36cb129fbde5df):
-        - namespace/functions; hash=106dd1b983efd2f7
+00:additional_tools/developer (2; hash=9d404841c65c293d):
+        - namespace/functions; hash=46a4f81b525f412b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -32,8 +37,9 @@ Settings:
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
+03:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 04:message/user:
     Begin with all tools.
 -- request 2 (turn) --
@@ -49,17 +55,24 @@ Settings:
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     Disable incremental tools, enable planning, and remove shell tools in the existing window.
 -- request 3 (compaction) --
-10:compaction_trigger
+11:compaction_trigger
 
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=4f95a0a93c66dfca):
-        - namespace/functions; hash=e61b39bab731172a
+00:additional_tools/developer (2; hash=f8097fd1774664ae):
+        - namespace/functions; hash=fdbba245c1e332ec
           - function/update_plan
           - function/request_user_input
+          - function/usage_stats
+          - function/usage_activity
+          - function/usage_work
+          - function/usage_work_boundary
+          - function/account_management
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -84,4 +97,6 @@ Settings: same as window 1
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     Resume with the same tools.

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/model_visible_layout.rs
+assertion_line: 695
 expression: "format_labeled_requests_snapshot(\"First post-resume turn where pre-turn override sets model to rollout model; no model-switch update should appear.\",\n&[(\"Last Request Before Resume\", &initial_request),\n(\"First Request After Resume + Override\", &resumed_request),])"
 ---
 Scenario: First post-resume turn where pre-turn override sets model to rollout model; no model-switch update should appear.
@@ -11,8 +12,9 @@ Scenario: First post-resume turn where pre-turn override sets model to rollout m
 01:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     seed resume history
 -- request 2 (turn; First Request After Resume + Override) --
@@ -21,4 +23,6 @@ Scenario: First post-resume turn where pre-turn override sets model to rollout m
 05:message/user:
     <ENVIRONMENT_CONTEXT>
 06:message/user:
+    <USAGE_WORK_BOUNDARY>
+07:message/user:
     first resumed turn after model override

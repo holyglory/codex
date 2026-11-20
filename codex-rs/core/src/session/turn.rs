@@ -216,7 +216,7 @@ async fn preserve_initial_input_during<T>(
 ///
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     mut input: Vec<TurnInput>,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
@@ -252,14 +252,21 @@ pub(crate) async fn run_turn(
     // Record results from hooks that finished after the previous turn before this turn's user prompt.
     drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
 
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let turn_model_client = turn_context.model_client(&sess)?;
+    let mut client_session = prewarmed_client_session
+        .filter(|client| {
+            turn_context
+                .extension_data
+                .get::<codex_login::AuthManagerLease>()
+                .is_none_or(|lease| client.auth_manager_matches(lease.auth_manager()))
+        })
+        .unwrap_or_else(|| turn_model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if auto_compaction_enabled
-        && let Err(err) = preserve_initial_input_during(
+    let pre_sampling_compact_result = if auto_compaction_enabled {
+        preserve_initial_input_during(
             &sess,
             &turn_context,
             &mut input,
@@ -271,7 +278,18 @@ pub(crate) async fn run_turn(
             ),
         )
         .await?
+    } else {
+        Ok(())
+    };
+    turn_context = sess.reconcile_turn_auth(&turn_context).await;
+    if let Some(lease) = turn_context
+        .extension_data
+        .get::<codex_login::AuthManagerLease>()
+        && !client_session.auth_manager_matches(lease.auth_manager())
     {
+        client_session = turn_context.model_client(&sess)?.new_session();
+    }
+    if let Err(err) = pre_sampling_compact_result {
         // Compaction runs before the new input is recorded, so preserve it on every failure.
         let _ = run_hooks_and_record_inputs(
             &sess,
@@ -339,7 +357,7 @@ pub(crate) async fn run_turn(
     required_servers.dedup();
 
     // run_turn owns the step used to seed context and make the first sampling request.
-    let first_step_context = match sess
+    let mut first_step_context = match sess
         .capture_step_context_with_required_mcp_servers(
             Arc::clone(&turn_context),
             &cancellation_token,
@@ -442,6 +460,18 @@ pub(crate) async fn run_turn(
             /*candidate*/ None,
         )
         .await?;
+        let current = sess.reconcile_turn_auth(&turn_context).await;
+        if !Arc::ptr_eq(&current, &turn_context) {
+            turn_context = current;
+            first_step_context = sess
+                .capture_step_context_with_required_mcp_servers(
+                    Arc::clone(&turn_context),
+                    &cancellation_token,
+                    required_servers,
+                    required_plugins,
+                )
+                .await?;
+        }
         world_state = sess
             .record_context_updates_and_set_reference_context_item(first_step_context.as_ref())
             .await?;
@@ -540,7 +570,20 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
+    let mut sampling_retry_state = ResponsesStreamRetryState::default();
     loop {
+        let current = sess.reconcile_turn_auth(&turn_context).await;
+        if !Arc::ptr_eq(&current, &turn_context) {
+            turn_context = current;
+            next_step_context = None;
+        }
+        if let Some(lease) = turn_context
+            .extension_data
+            .get::<codex_login::AuthManagerLease>()
+            && !client_session.auth_manager_matches(lease.auth_manager())
+        {
+            client_session = turn_context.model_client(&sess)?.new_session();
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -613,6 +656,7 @@ pub(crate) async fn run_turn(
                 .await?
             }
         };
+        let mut response_started = false;
         let sampling_request_result: CodexResult<_> = async {
             super::time_reminder::maybe_record_current_time_reminder(
                 sess.as_ref(),
@@ -652,12 +696,34 @@ pub(crate) async fn run_turn(
                 &mut client_session,
                 sampling_request_input,
                 cancellation_token.child_token(),
+                &mut sampling_retry_state,
+                &mut response_started,
             )
             .await
         }
         .await;
+        // Keep profile probing out of the common turn future's inline storage.
+        if let Err(error) = &sampling_request_result
+            && matches!(error.details(), CodexErrorDetails::UsageLimitReached(_))
+            && !response_started
+            && let Some(next_turn) = Box::pin(sess.failover_turn_auth(&turn_context))
+                .or_cancel(&cancellation_token)
+                .await?
+        {
+            let next_turn = Arc::new(next_turn);
+            let next_client_session = next_turn.model_client(&sess)?.new_session();
+            sess.publish_failover_turn_auth(&turn_context, &next_turn)
+                .or_cancel(&cancellation_token)
+                .await??;
+            turn_context = next_turn;
+            client_session = next_client_session;
+            turn_context.turn_timing_state.record_sampling_retry();
+            can_drain_pending_input = false;
+            continue;
+        }
         match sampling_request_result {
             Ok((sampling_request_output, notify_messages)) => {
+                sampling_retry_state = ResponsesStreamRetryState::default();
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -770,6 +836,7 @@ pub(crate) async fn run_turn(
                         candidate,
                     )
                     .await;
+                    turn_context = sess.reconcile_turn_auth(&turn_context).await;
                     match compacted {
                         Ok(true) => {
                             if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -1553,15 +1620,16 @@ async fn run_pre_sampling_compact(
 ) -> CodexResult<()> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
+    let turn_context = sess.reconcile_turn_auth(turn_context).await;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
-    let candidate = super::async_compaction::take_ready(sess, turn_context).await;
+    let candidate = super::async_compaction::take_ready(sess, &turn_context).await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached || candidate.is_some() {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
-            .capture_step_context(Arc::clone(turn_context), cancellation_token)
+            .capture_step_context(Arc::clone(&turn_context), cancellation_token)
             .await?;
         run_auto_compact(
             sess,
@@ -1896,6 +1964,8 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     input: crate::context_manager::ContextManager,
     cancellation_token: CancellationToken,
+    retry_state: &mut ResponsesStreamRetryState,
+    response_started: &mut bool,
 ) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
@@ -1927,7 +1997,6 @@ async fn run_sampling_request(
         &step_context.session_telemetry,
         incremental_tools,
     );
-    let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
     let mut notify_messages = Vec::new();
     let mut executed_tool_calls_by_output = HashMap::new();
@@ -1960,9 +2029,10 @@ async fn run_sampling_request(
             base_instructions.clone(),
             incremental_tools,
         );
-        let responses_metadata = sess
+        let mut responses_metadata = sess
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
             .await;
+        responses_metadata.request_store = Some(Arc::clone(&retry_state.request_store));
         if crate::guardian::is_basic_session_source(&turn_context.session_source) {
             crate::guardian::prepare_guardian_prompt(
                 &sess,
@@ -2018,6 +2088,7 @@ async fn run_sampling_request(
             input_item_count,
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
+            response_started,
         )
         .await
         {
@@ -2034,6 +2105,7 @@ async fn run_sampling_request(
                     if let Some(rate_limits) = rate_limits {
                         sess.update_rate_limits(&turn_context, *rate_limits).await;
                     }
+                    sess.record_usage_limit_rejection(&turn_context, e);
                     return Err(err);
                 }
                 CodexErrorDetails::SessionBudgetExceeded
@@ -2059,7 +2131,7 @@ async fn run_sampling_request(
             }
         }
         let retry = handle_response_stream_error(
-            &mut retry_state,
+            retry_state,
             max_retries,
             err,
             client_session,
@@ -2900,6 +2972,7 @@ async fn try_run_sampling_request(
     input_item_count: usize,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
+    response_started: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
@@ -3181,6 +3254,8 @@ async fn try_run_sampling_request(
         step_context
             .session_telemetry
             .record_responses(&handle_responses, &event);
+        record_turn_ttft_metric(&turn_context, &event).await;
+        *response_started |= crate::responses_retry::response_generation_started(&event);
 
         match event {
             ResponseEvent::Created { response_id } => {
@@ -3518,7 +3593,8 @@ async fn try_run_sampling_request(
             ResponseEvent::RateLimits(snapshot) => {
                 // Update internal state with latest rate limits, but defer sending until
                 // token usage is available to avoid duplicate TokenCount events.
-                sess.record_rate_limits_info(snapshot).await;
+                sess.record_rate_limits_for_turn(&turn_context, snapshot)
+                    .await;
                 should_emit_token_count = true;
             }
             ResponseEvent::ModelsEtag(etag) => {

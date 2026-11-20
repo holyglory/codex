@@ -13,12 +13,15 @@ use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::StepPreparationInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
+use codex_model_provider::ProviderAuthContext;
 use codex_model_provider::WorkspaceRoutingContext;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -118,6 +121,14 @@ impl ConfigContributor<Config> for WebSearchExtension {
 }
 
 impl ToolContributor for WebSearchExtension {
+    /// Carries the selected turn account into the step that executes web search.
+    fn prepare_for_step<'a>(&'a self, input: StepPreparationInput<'a>) -> ExtensionFuture<'a, ()> {
+        if let Some(lease) = input.turn_store.get::<AuthManagerLease>() {
+            input.step_store.insert_arc(lease);
+        }
+        Box::pin(async {})
+    }
+
     fn tools_for_step(
         &self,
         session_store: &ExtensionData,
@@ -136,15 +147,16 @@ impl ToolContributor for WebSearchExtension {
         if !config.provider_supports_search || *mode == WebSearchMode::Disabled {
             return Vec::new();
         }
-        let auth = thread_store
-            .get::<codex_model_provider::ProviderAuthContext>()
-            .unwrap_or_else(|| {
-                Arc::new(codex_model_provider::ProviderAuthContext {
-                    credentials: Arc::clone(&self.auth_manager),
-                    runtime_auth: None,
-                })
+        let mut auth = thread_store
+            .get::<ProviderAuthContext>()
+            .map(|context| context.as_ref().clone())
+            .unwrap_or_else(|| ProviderAuthContext {
+                credentials: Arc::clone(&self.auth_manager),
+                runtime_auth: None,
             });
-
+        if let Some(lease) = step_store.get::<AuthManagerLease>() {
+            auth.credentials = Arc::clone(lease.auth_manager());
+        }
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
             http_client_factory: config.http_client_factory.clone(),
@@ -254,6 +266,34 @@ mod tests {
         assert_eq!(
             tool_names,
             vec![(ToolName::namespaced(WEB_NAMESPACE, RUN_TOOL_NAME), true)]
+        );
+        for mode in [WebSearchMode::Live, WebSearchMode::Indexed] {
+            step_store.insert(mode);
+            assert_eq!(
+                registry.tool_contributors()[0]
+                    .tools_for_step(&session_store, &thread_store, &step_store)
+                    .len(),
+                1,
+            );
+        }
+        step_store.insert(WebSearchMode::Disabled);
+        assert!(
+            registry.tool_contributors()[0]
+                .tools_for_step(&session_store, &thread_store, &step_store)
+                .is_empty()
+        );
+        step_store.remove::<WebSearchMode>();
+        assert!(
+            registry.tool_contributors()[0]
+                .tools_for_step(&session_store, &thread_store, &step_store)
+                .is_empty()
+        );
+        step_store.insert(WebSearchMode::Live);
+        thread_store.remove::<WorkspaceRoutingContext>();
+        assert!(
+            registry.tool_contributors()[0]
+                .tools_for_step(&session_store, &thread_store, &step_store)
+                .is_empty()
         );
     }
 }

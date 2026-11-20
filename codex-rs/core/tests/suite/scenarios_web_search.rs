@@ -17,6 +17,7 @@ use std::sync::atomic::Ordering;
 use wiremock::Mock;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::body_partial_json;
+use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -37,6 +38,10 @@ async fn literature_search_and_open() -> Result<()> {
         Mock::given(method("POST"))
             .and(path("/v1/alpha/search"))
             .and(body_partial_json(json!({"commands": commands})))
+            .and(body_partial_json(
+                json!({"settings": {"external_web_access": true}}),
+            ))
+            .and(header("authorization", "Bearer dummy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"output": output})))
             .expect(1)
             .mount(&server)
@@ -63,7 +68,10 @@ async fn literature_search_and_open() -> Result<()> {
 
     let auth = codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("dummy"));
     let mut extensions = ExtensionRegistryBuilder::new();
-    codex_web_search_extension::install(&mut extensions, Arc::clone(&auth));
+    codex_web_search_extension::install(
+        &mut extensions,
+        codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("extension-only")),
+    );
     let test = test_codex()
         .with_auth_manager(auth)
         .with_extensions(Arc::new(extensions.build()))

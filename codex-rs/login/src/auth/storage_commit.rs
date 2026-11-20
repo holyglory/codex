@@ -98,6 +98,18 @@ impl AuthStorageBackend for CommittedStorage {
         let _guard = self.lock()?;
         self.inner.delete()
     }
+
+    fn repair_durability(&self) -> std::io::Result<()> {
+        self.inner.repair_durability()
+    }
+
+    fn backend_kind(&self) -> PersistentAuthBackendKind {
+        self.inner.backend_kind()
+    }
+
+    fn resolved_backend_kind(&self) -> std::io::Result<Option<PersistentAuthBackendKind>> {
+        self.inner.resolved_backend_kind()
+    }
 }
 
 #[cfg(test)]

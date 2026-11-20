@@ -10,8 +10,9 @@ Scenario: Injected agent messages enter idle history, interrupt active sampling,
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:agent_message
 04:message/user:
     Plan the next action.

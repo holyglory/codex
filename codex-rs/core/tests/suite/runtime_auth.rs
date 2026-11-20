@@ -6,6 +6,15 @@ use base64::Engine;
 use codex_core::CodexThread;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_extension_api::ConversationHistory;
+use codex_extension_api::ExtensionData;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::NoopTurnItemEmitter;
+use codex_extension_api::ThreadStartInput;
+use codex_extension_api::ToolCall;
+use codex_extension_api::ToolCallSource;
+use codex_extension_api::ToolName;
+use codex_extension_api::ToolPayload;
 use codex_features::Feature;
 use codex_features::RuntimeAuthMode;
 use codex_history::InitialHistory;
@@ -102,6 +111,23 @@ async fn harness_shares_runtime_and_honors_thread_auth_config() -> Result<()> {
         .expect(2)
         .mount(&server)
         .await;
+    for (endpoint, response) in [
+        (
+            "/v1/alpha/search",
+            json!({"output": "authenticated search"}),
+        ),
+        (
+            "/v1/images/generations",
+            json!({"created": 1, "data": [{"b64_json": "cG5n"}]}),
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(response))
+            .expect(/*r*/ 2)
+            .mount(&server)
+            .await;
+    }
     let responses = responses::mount_response_sequence(
         &server,
         (0..14)
@@ -260,6 +286,37 @@ async fn harness_shares_runtime_and_honors_thread_auth_config() -> Result<()> {
         );
     }
     let requests = server.received_requests().await.unwrap();
+    let auxiliary: Vec<_> = requests
+        .iter()
+        .filter(|request| {
+            matches!(
+                request.url.path(),
+                "/v1/alpha/search" | "/v1/images/generations"
+            )
+        })
+        .collect();
+    assert_eq!(auxiliary.len(), 4);
+    let mut auxiliary_modes = (0, 0);
+    for request in auxiliary {
+        let authorization = request.headers["authorization"].to_str()?;
+        let proof = if let Some(proof) = request.headers.get("x-openai-agent-assertion") {
+            assert_eq!(authorization, "Bearer key-a");
+            auxiliary_modes.0 += 1;
+            proof.to_str()?
+        } else {
+            auxiliary_modes.1 += 1;
+            authorization
+                .strip_prefix("AgentAssertion ")
+                .context("auxiliary assertion-only auth")?
+        };
+        let payload: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(proof.split('.').nth(/*n*/ 2).unwrap())?,
+        )?;
+        assert_eq!(payload["runtime_agent_instance"], "runtime-shared");
+        assert!(proof_ids.insert(payload["id"].as_str().unwrap().to_owned()));
+    }
+    assert_eq!(auxiliary_modes, (2, 2));
     let reloaded_catalogs: Vec<_> = requests
         .iter()
         .filter(|request| request.url.path().starts_with("/catalog-reload/"))
@@ -623,6 +680,71 @@ async fn exercise_provider_destinations(
     for request in requests {
         assert_eq!(request.headers["authorization"], "Bearer key-a");
         assert!(!request.headers.contains_key("x-openai-agent-assertion"));
+    }
+    let mut registry = ExtensionRegistryBuilder::new();
+    let installation_auth = codex_core::test_support::auth_manager_from_auth(
+        CodexAuth::from_api_key("installation-only"),
+    );
+    codex_web_search_extension::install(&mut registry, Arc::clone(&installation_auth));
+    codex_image_generation_extension::install(&mut registry, installation_auth, |_| None);
+    let registry = registry.build();
+    let session_store = ExtensionData::new("auxiliary-session");
+    let thread_store = ExtensionData::new("auxiliary-thread");
+    thread_store.insert(auth.as_ref().clone());
+    thread_store.insert(codex_model_provider::WorkspaceRoutingContext::new(
+        config.chatgpt_base_url.clone(),
+    ));
+    for contributor in registry.thread_lifecycle_contributors() {
+        contributor
+            .on_thread_start(ThreadStartInput {
+                config,
+                session_source: &SessionSource::Exec,
+                persistent_thread_state_available: false,
+                environments: &[],
+                mcp_resource_client: None,
+                extension_metrics: None,
+                session_store: &session_store,
+                thread_store: &thread_store,
+            })
+            .await;
+    }
+    let step_store = ExtensionData::new("auxiliary-step");
+    step_store.insert(codex_protocol::config_types::WebSearchMode::Live);
+    for (namespace, name, arguments) in [
+        ("web", "run", json!({"search_query": [{"q": "test"}]})),
+        (
+            "image_gen",
+            "imagegen",
+            json!({"prompt": "paint a blue whale"}),
+        ),
+    ] {
+        let tool_name = ToolName::namespaced(namespace, name);
+        let tool = registry
+            .tool_contributors()
+            .iter()
+            .flat_map(|contributor| {
+                contributor.tools_for_step(&session_store, &thread_store, &step_store)
+            })
+            .find(|tool| tool.tool_name() == tool_name)
+            .context("auxiliary tool")?;
+        let call = ToolCall {
+            turn_id: "auxiliary-turn".into(),
+            call_id: "auxiliary-call".into(),
+            tool_name,
+            model: "test-model".into(),
+            codex_turn_metadata: None,
+            truncation_policy: codex_protocol::protocol::TruncationPolicy::Bytes(1024),
+            source: ToolCallSource::Direct,
+            conversation_history: ConversationHistory::default(),
+            turn_item_emitter: Arc::new(NoopTurnItemEmitter),
+            attachment_store: codex_core::passthrough_image_store(),
+            ephemeral: false,
+            environments: Vec::new(),
+            payload: ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        };
+        assert!(tool.handle(call).await?.success_for_logging());
     }
     external.verify().await;
     Ok(())

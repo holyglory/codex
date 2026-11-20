@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::inline_visualization::InlineVisualizationContext;
+use codex_app_server_protocol::AccountProfile;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
@@ -54,6 +55,9 @@ use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
+use crate::chatwidget::AccountProfilesError;
+use crate::chatwidget::AccountProfilesRequest;
+use crate::chatwidget::AccountProfilesResponse;
 use crate::chatwidget::AstraModelPickerAction;
 use crate::chatwidget::ConfiguredPetLoadGeneration;
 use crate::chatwidget::ConnectorScopeGeneration;
@@ -919,6 +923,47 @@ pub(crate) enum AppEvent {
     /// Open the authenticated account analytics dashboard.
     OpenAnalytics {
         view: Option<crate::analytics::TokenActivityView>,
+    },
+
+    OpenAccountProfiles {
+        request: AccountProfilesRequest,
+    },
+    RefreshAccountProfiles {
+        request_id: u64,
+        request: AccountProfilesRequest,
+    },
+    AccountProfilesLoaded {
+        request_id: u64,
+        request: AccountProfilesRequest,
+        result: Result<AccountProfilesResponse, AccountProfilesError>,
+    },
+    ShowAccountProfileActions {
+        profile: AccountProfile,
+    },
+    OpenAccountAliasPrompt {
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountLoginChoice {
+        alias: String,
+    },
+    OpenAccountAliasEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountPriorityEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountNoteEditor {
+        profile: AccountProfile,
+        value: Option<String>,
+        error: Option<String>,
+    },
+    OpenAccountRemoveConfirmation {
+        profile: AccountProfile,
     },
 
     /// Open the reset-credit flow selected from the `/usage` menu.
